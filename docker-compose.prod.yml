@@ -30,8 +30,6 @@ services:
       - BUILDS_DIR=/app/exports
       - SESSION_SECRET=${SESSION_SECRET:?Set SESSION_SECRET in .env or environment}
       - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost}
-      # Transcription requires a separate model setup; see backend/Dockerfile.prod for details
-      - WHISPER_MODEL=base
     depends_on:
       db:
         condition: service_healthy

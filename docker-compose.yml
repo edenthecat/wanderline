@@ -35,7 +35,6 @@ services:
       - DATABASE_URL=postgresql://wanderline:wanderline_dev@db:5432/wanderline
       - UPLOAD_DIR=/app/uploads
       - BUILDS_DIR=/app/exports
-      - WHISPER_MODEL=base
       - SESSION_SECRET=${SESSION_SECRET:?Set SESSION_SECRET in .env or environment}
       - CORS_ORIGIN=http://localhost:3000,http://localhost:5173
     command: ['sh', '/app/start-dev.sh']
