@@ -4,7 +4,7 @@
 [![CodeQL](https://github.com/edenthecat/wanderline/actions/workflows/codeql.yml/badge.svg)](https://github.com/edenthecat/wanderline/actions/workflows/codeql.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Wanderline turns branching-narrative source files into audio-first, choice-driven web apps. You upload an [**Ink**](https://www.inklestudios.com/ink/) (`.ink`) or [**Twee 3**](https://github.com/iftechfoundation/twine-specs/blob/master/twee-3-specification.md) (`.tw*`) story, attach voiceover / music / choice-indicator audio, and the tooling generates a standalone player app the reader can listen to and navigate — with keyboard, on-screen buttons, or (importantly) Bluetooth headphone controls with no screen at all.
+Wanderline turns branching-narrative source files into audio-first, choice-driven web apps. You upload an [**Ink**](https://www.inklestudios.com/ink/) (`.ink`) or [**Twee 3**](https://github.com/iftechfoundation/twine-specs/blob/master/twee-3-specification.md) (`.tw*`) story, attach voiceover / music / choice-indicator audio, and the tooling generates a standalone player app the reader can listen to and navigate with keyboard, on-screen buttons, or Bluetooth headphone controls with no screen at all.
 
 The project is a single npm-workspaces monorepo covering four packages:
 
