@@ -15,13 +15,12 @@ The project is a single npm-workspaces monorepo covering four packages:
 | `player-app/` | Standalone React player. Ships as a static bundle inside every generated project. Handles playback, keyboard / MediaSession / wired-IEM headphone controls, save slots, and offline caching.               |
 | `shared/`     | Types + helpers cross-consumed by the three above.                                                                                                                                                         |
 
-The player runtime and editor are decoupled: the editor uploads source + audio; a build job produces a versioned player bundle + story data; the reader loads the bundle from the built project's URL and never talks back to the editor.
+The player runtime and editor are decoupled: the editor uploads source + audio; a build job produces a versioned player bundle + story data; the reader loads the bundle from the built project's URL.
 
 ## Capabilities
 
-- **Ink 3 + Twee 3 in the same editor.** Same story graph shape either way — the parser branch determines the source language and the emitter round-trips back to the format you uploaded (with cross-format export as an escape hatch).
-- **Audio-first playback.** Voiceover per node, background music per project, distinct indicators for each choice (heard, not seen). Choice selection maps to configurable Bluetooth transport actions (`nexttrack` / `previoustrack` / `play`).
-- **Whisper transcription.** Uploaded audio can be transcribed locally with ggerganov's whisper.cpp; the transcript becomes captions in the player and the MediaSession metadata title on the lock screen.
+- **Ink 3 + Twee 3 in the same editor.** The parser branch determines the source language and the emitter round-trips back to the format you uploaded (with cross-format export as an escape hatch).
+- **Audio-first playback.** Voiceover per node, background music per project, distinct indicators for each choice. Choice selection maps to configurable Bluetooth transport actions (`nexttrack` / `previoustrack` / `play`).
 - **Real-time collaborative editing.** Node content, choice text, and settings edits sync across every editor tab open on the project (Yjs + WebSocket + Postgres persistence via a shadow-saver).
 - **Theme designer.** Per-component CSS-variable overrides (page / header / storyCard / choiceButton / instructionsCard / startButton / settingsPanel / resumePicker / errorBanner) with a font picker (any Google Font), live preview, and light/dark surface variants.
 - **Build pipeline.** Each build is a pinnable, downloadable snapshot: story JSON + audio + player bundle + integrity hashes. Retention + soft-delete + idempotent dedup keep the pipeline fast under repeat edits.
@@ -45,11 +44,11 @@ You'll be walked through creating an admin account on first load.
 
 ## Local dev without Docker
 
-If you'd rather run the pieces on the host (faster edit-refresh, easier attaching debuggers):
+If you'd rather run the pieces on the host:
 
 ```bash
-# Prereqs: Node 20 (pinned via engines), Postgres 16, ffmpeg on PATH.
-# .env files in each workspace — see .env.example for the shape.
+# Prereqs: Node 20, Postgres 16, ffmpeg on PATH.
+# .env files in each workspace; see .env.example for the shape.
 
 npm ci
 npm run build --workspace=shared
@@ -90,7 +89,6 @@ Both apps read from `.env` files at their workspace root; commit-safe examples a
 - `PORT` — default `3001`
 - `DATABASE_URL` — PostgreSQL connection string
 - `NODE_ENV` — `development` / `production`
-- `WHISPER_MODEL_PATH` — path to a `.bin` model (falls back to `whisper.cpp/models/ggml-base.en.bin`)
 - `GCS_BUCKET`, `GOOGLE_APPLICATION_CREDENTIALS` — audio storage in prod; local dev writes to `uploads/`
 - `USE_SIGNED_URL_DOWNLOADS` — when `true`, download endpoints return 307 redirects to GCS-signed URLs (cost mitigation for high-bandwidth downloads)
 
@@ -111,7 +109,7 @@ A project can be authored in either **Ink** or **Twee 3**. Both feed the same in
 - Export endpoints: `GET /api/projects/:id/exports/ink`, `GET /api/projects/:id/exports/twee` (cross-format re-emits from the graph)
 - The UI adapts vocabulary to the source language (Ink: _knot / stitch / choice / divert_; Twee: _passage / link / continue_), overridable via `Settings → Nomenclature`.
 
-The uploader sniffs by extension **and** content — a mis-named `.txt` still lands in the right parser. Twine 2 published `.html` archives (`<tw-storydata>` wrapper) are rejected up front with a targeted "export as Twee 3 first" message.
+The uploader sniffs by extension **and** content. Twine 2 published `.html` archives (`<tw-storydata>` wrapper) are rejected up front with a targeted "export as Twee 3 first" message.
 
 ## API surface
 
