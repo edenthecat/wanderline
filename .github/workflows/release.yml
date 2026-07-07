@@ -1,0 +1,158 @@
+# On a semver tag (v1.2.3), build and publish the three service images
+# to GHCR. Instances (public or private) deploy from the published tags
+# — they do NOT build from source.
+#
+# Tag conventions:
+#   - v1.2.3          => production release, tagged `1.2.3` + `latest`
+#   - v1.2.3-rc.1     => release candidate, tagged `1.2.3-rc.1` only
+#   - v1.2.3-alpha.7  => pre-release, tagged `1.2.3-alpha.7` only
+#
+# All builds also carry a `sha-<8-char>` tag so an instance can pin to
+# an exact commit if a rollback is needed between releases.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+  # Manual trigger so we can rebuild an existing tag without pushing a
+  # new one — useful when the CI environment changes but the source
+  # doesn't.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Semver tag to build (e.g. 1.2.3)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: backend
+            dockerfile: backend/Dockerfile.prod
+            context: .
+          - service: frontend
+            dockerfile: frontend/Dockerfile.prod
+            context: .
+    # NB: player-app isn't published as its own image. The backend
+    # Dockerfile bakes `player-app/dist` into its own bundle and serves
+    # it via /api/_player/*, so an instance only needs backend + frontend.
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version + short SHA
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RAW_TAG="${{ inputs.tag }}"
+          else
+            # Strip the leading "v" from a pushed git tag.
+            RAW_TAG="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=$RAW_TAG" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$(git rev-parse --short=8 HEAD)" >> "$GITHUB_OUTPUT"
+          # Mark pre-releases so we can omit the `latest` tag on them.
+          if [[ "$RAW_TAG" == *-* ]]; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          IMAGE="ghcr.io/${{ github.repository_owner }}/wanderline-${{ matrix.service }}"
+          TAGS="$IMAGE:${{ steps.version.outputs.version }}"
+          TAGS="$TAGS,$IMAGE:sha-${{ steps.version.outputs.short_sha }}"
+          if [ "${{ steps.version.outputs.is_prerelease }}" = "false" ]; then
+            TAGS="$TAGS,$IMAGE:latest"
+          fi
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+          echo "Image tags: $TAGS"
+
+      - name: Build + push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          # Cache from the previous `latest` build for a fast rebuild
+          # when only a subset of files changed. Cache to the same
+          # registry as the built image so successive releases can
+          # reuse layers.
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/wanderline-${{ matrix.service }}:buildcache
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/wanderline-${{ matrix.service }}:buildcache,mode=max
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.licenses=MIT
+
+  smoke:
+    # After all three services publish, spin them up against a fresh
+    # Postgres and make sure migrations apply cleanly. This is the
+    # "anyone can install this" gate — see docs/RELEASE-PROCESS.md.
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve tag
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run migrations against a fresh Postgres from the published image
+        run: |
+          docker network create wanderline-smoke
+          docker run -d --name pg --network wanderline-smoke \
+            -e POSTGRES_DB=wanderline \
+            -e POSTGRES_USER=wanderline \
+            -e POSTGRES_PASSWORD=wanderline \
+            postgres:16-alpine
+          # Wait for readiness (up to ~30s).
+          for i in $(seq 1 15); do
+            if docker exec pg pg_isready -U wanderline >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          docker exec pg pg_isready -U wanderline
+          docker run --rm --network wanderline-smoke \
+            -e DATABASE_URL='postgres://wanderline:wanderline@pg:5432/wanderline' \
+            ghcr.io/${{ github.repository_owner }}/wanderline-backend:${{ steps.version.outputs.version }} \
+            npm run migrate
+          # Confirm the pgmigrations bookkeeping table shows a non-zero
+          # migration count — proves node-pg-migrate actually ran.
+          COUNT=$(docker exec pg psql -U wanderline -d wanderline -tAc 'SELECT count(*) FROM pgmigrations')
+          echo "Applied migrations: $COUNT"
+          if [ "$COUNT" -eq "0" ]; then
+            echo "::error::No migrations recorded — release image is broken."
+            exit 1
+          fi

@@ -1,0 +1,50 @@
+# Stage 1: Build shared and frontend with Vite
+FROM node:20-alpine AS builder
+
+WORKDIR /build
+
+# Copy root workspace config and lockfile for reproducible installs
+COPY package.json package-lock.json ./
+COPY shared/package.json ./shared/
+COPY frontend/package.json ./frontend/
+
+# Install dependencies via workspaces with lockfile. --ignore-scripts
+# skips the root `prepare: husky` hook (DEV-76) — husky is only used
+# for local git hooks and its binary isn't on PATH during a workspace-
+# scoped install, so the prepare step fails the build otherwise.
+RUN npm ci --ignore-scripts \
+      --workspace=@wanderline/frontend \
+      --workspace=@wanderline/shared
+
+# Copy shared source and build it first
+COPY shared/ ./shared/
+RUN npm run build --workspace=@wanderline/shared
+
+# Set VITE_API_URL at build time so it compiles into the bundle.
+# When empty, the frontend uses relative URLs via the nginx proxy.
+ARG VITE_API_URL=""
+ENV VITE_API_URL=$VITE_API_URL
+
+# Copy frontend source and build
+COPY frontend/ ./frontend/
+RUN npm run build --workspace=@wanderline/frontend
+
+# Stage 2: Serve with nginx
+FROM nginx:alpine
+
+# Copy built static files
+COPY --from=builder /build/frontend/dist /usr/share/nginx/html
+
+# Copy nginx config template — rendered at startup with envsubst so BACKEND_URL
+# and PORT can be set per-environment (Docker Compose, Cloud Run, etc.)
+COPY frontend/nginx.conf.template /etc/nginx/templates/default.conf.template
+
+# Defaults for local Docker Compose; Cloud Run will override these.
+ENV PORT=80
+ENV BACKEND_URL=http://backend:3001
+ENV DNS_RESOLVER=127.0.0.11
+
+EXPOSE 80
+
+# nginx:alpine auto-renders /etc/nginx/templates/*.template using envsubst
+CMD ["nginx", "-g", "daemon off;"]

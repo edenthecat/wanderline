@@ -1,0 +1,11 @@
+node_modules
+dist
+build
+coverage
+.vite
+**/*.min.js
+package-lock.json
+backend/migrations/*.sql
+cypress/screenshots
+cypress/videos
+documents

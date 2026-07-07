@@ -1,0 +1,87 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  # PR runs share a group keyed on the PR number (globally unique, so PRs from
+  # different forks that share a branch name don't collide); pushes to main
+  # fall through to run_id, which is unique per run, so main builds never
+  # cancel each other.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: Cypress E2E
+    runs-on: ubuntu-latest
+    env:
+      SESSION_SECRET: ci-test-secret
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Start services with Docker Compose
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d --build
+
+      - name: Wait for services to be healthy
+        run: |
+          echo "Waiting for backend to be ready..."
+          retries=60
+          until curl -sf http://localhost:3001/api/setup/status > /dev/null 2>&1; do
+            retries=$((retries - 1))
+            if [ "$retries" -le 0 ]; then
+              echo "Backend failed to start"
+              docker compose logs backend
+              exit 1
+            fi
+            echo "Retrying backend... ($retries attempts left)"
+            sleep 5
+          done
+          echo "Backend is ready"
+
+          echo "Waiting for frontend to be ready..."
+          retries=30
+          until curl -sf http://localhost:3000 > /dev/null 2>&1; do
+            retries=$((retries - 1))
+            if [ "$retries" -le 0 ]; then
+              echo "Frontend failed to start"
+              docker compose logs frontend
+              exit 1
+            fi
+            echo "Retrying frontend... ($retries attempts left)"
+            sleep 5
+          done
+          echo "Frontend is ready"
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Cypress tests
+        run: npx cypress run
+
+      - name: Upload Cypress artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cypress-artifacts
+          path: |
+            cypress/screenshots/
+            cypress/videos/
+          retention-days: 7
+
+      - name: Stop services
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml down

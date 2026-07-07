@@ -1,0 +1,62 @@
+name: PR Template Check
+
+on:
+  pull_request:
+    types: [opened, edited]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check-template:
+    name: Check PR Template
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
+
+    steps:
+      - name: Verify PR uses template
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const body = context.payload.pull_request.body || '';
+
+            const requiredSections = [
+              '## Description',
+              '## How was this tested?',
+              '## Checklist',
+            ];
+
+            const missing = requiredSections.filter(section => !body.includes(section));
+
+            if (missing.length > 0) {
+              const list = missing.map(s => `  - ${s}`).join('\n');
+              core.setFailed(
+                `PR description is missing required sections:\n${list}\n\n` +
+                `Please use the PR template and fill in all sections.`
+              );
+            }
+
+            // Check that sections have content beyond the HTML comment placeholders
+            const descriptionContent = body
+              .split('## How was this tested?')[0]
+              .replace('## Description', '')
+              .replace(/<!--[\s\S]*?-->/g, '')
+              .trim();
+
+            const testingContent = body
+              .split('## Checklist')[0]
+              .split('## How was this tested?')[1]
+              ?.replace(/<!--[\s\S]*?-->/g, '')
+              ?.trim() || '';
+
+            if (!descriptionContent) {
+              core.setFailed('The "Description" section is empty. Please describe what this PR does and why.');
+            }
+
+            if (!testingContent) {
+              core.setFailed('The "How was this tested?" section is empty. Please describe how you verified your changes.');
+            }

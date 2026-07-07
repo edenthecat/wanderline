@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/edenthecat/wanderline/blob/main/SECURITY.md
+    about: Please report security issues privately per SECURITY.md — do NOT open a public issue.

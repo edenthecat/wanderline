@@ -1,0 +1,85 @@
+# Stage 1: Build shared, backend, AND player-app.
+# The player-app's compiled dist gets served by the backend's /preview
+# endpoint, so without baking it into this image the prod backend
+# returns 500 on every preview request (the path expected by
+# projects-preview.ts is /player-app/dist/index.html).
+FROM node:20-alpine AS builder
+
+RUN apk add --no-cache make g++ git python3
+
+WORKDIR /build
+
+# Copy root workspace config and lockfile
+COPY package.json package-lock.json ./
+COPY shared/package.json ./shared/
+COPY backend/package.json ./backend/
+COPY player-app/package.json ./player-app/
+
+# Install all dependencies (including devDependencies for build) via
+# workspaces. --ignore-scripts skips the root `prepare: husky` hook
+# (DEV-76) — husky is only used for local git hooks and its binary
+# isn't on PATH during a workspace-scoped install, so the prepare
+# step fails the build with exit 127 otherwise.
+RUN npm ci --ignore-scripts \
+      --workspace=@wanderline/backend \
+      --workspace=@wanderline/shared \
+      --workspace=@wanderline/player-app
+
+# Copy shared source and build it first
+COPY shared/ ./shared/
+RUN npm run build --workspace=@wanderline/shared
+
+# Build the player-app so its dist is available to copy into the
+# production image. vite emits to player-app/dist/.
+COPY player-app/ ./player-app/
+RUN npm run build --workspace=@wanderline/player-app
+
+# Copy backend source and build
+COPY backend/ ./backend/
+RUN npm run build --workspace=@wanderline/backend
+
+# Prune devDependencies from builder to reuse in production stage
+RUN npm prune --omit=dev --workspace=@wanderline/backend --workspace=@wanderline/shared
+
+# Stage 2: Production image
+FROM node:20-alpine
+
+# NOTE: This production image intentionally excludes whisper/transcription dependencies.
+# Whisper requires native build tools and a downloaded model that are too heavy for the
+# standard prod image. Transcription requires a separate dedicated service or setup.
+RUN apk add --no-cache ffmpeg
+
+WORKDIR /app
+
+# Copy pruned production node_modules from builder. npm workspaces hoists most
+# packages to the root, so per-workspace node_modules dirs may not exist.
+COPY --from=builder /build/node_modules ./node_modules
+COPY package.json ./
+COPY backend/package.json ./backend/
+COPY shared/package.json ./shared/
+
+# Copy compiled backend and shared
+COPY --from=builder /build/backend/dist ./backend/dist
+COPY --from=builder /build/shared/dist ./shared/dist
+
+# Copy migrations alongside the compiled backend so init.ts can find them
+COPY --from=builder /build/backend/migrations ./backend/migrations
+
+# Copy player-app source (used by build-service at runtime to compile
+# a per-build player into the generated game zip).
+COPY player-app/ /player-app/
+
+# Copy the player-app's compiled dist into the same /player-app
+# location so projects-preview.ts's PLAYER_DIST_DOCKER path
+# (/player-app/dist) resolves on the running container. Without
+# this the /preview endpoint 500s with "Player app not built".
+COPY --from=builder /build/player-app/dist /player-app/dist
+
+# Create directories for uploads and exports, owned by non-root user
+RUN mkdir -p /app/uploads /app/exports && chown -R node:node /app/uploads /app/exports
+
+USER node
+
+EXPOSE 3001
+
+CMD ["node", "backend/dist/index.js"]

@@ -1,0 +1,15 @@
+{
+  "name": "@wanderline/shared",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Shared types and utilities for Wanderline",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "echo 'Run tests'"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}

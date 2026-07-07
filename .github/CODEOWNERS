@@ -1,0 +1,41 @@
+# Path-based reviewer routing for Wanderline.
+#
+# Order matters: the LAST matching pattern wins. Keep the catch-all at the top
+# and refine below. As collaborators are added, replace @edenthecat on the
+# relevant lines (or swap in a team handle like @org/backend).
+#
+# Syntax reference: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-security/managing-repository-settings/about-code-owners
+
+# Default owner for anything not matched below.
+*                               @edenthecat
+
+# Backend
+/backend/                       @edenthecat
+
+# Frontend (admin/editor app + player runtime)
+/frontend/                      @edenthecat
+/player-app/                    @edenthecat
+/cypress/                       @edenthecat
+/cypress.config.ts              @edenthecat
+
+# Code shared between backend and frontend — both groups should review.
+/shared/                        @edenthecat
+
+# DevOps / infra: CI workflows, Docker, deploy scripts, root configs.
+# Root-level YAML / Dockerfile patterns are scoped with leading `/` so they
+# don't override the path-based owners above for files like
+# `backend/Dockerfile` or `.github/workflows/*.yml`.
+/.github/                       @edenthecat
+/scripts/                       @edenthecat
+/*.yml                          @edenthecat
+/*.yaml                         @edenthecat
+/Dockerfile*                    @edenthecat
+/docker-compose*.yml            @edenthecat
+/.env.example                   @edenthecat
+/.env.production.example        @edenthecat
+
+# Docs
+/docs/                          @edenthecat
+/documents/                     @edenthecat
+/README.md                      @edenthecat
+# /apps/docs/                   @edenthecat   # enable once DEV-75 lands

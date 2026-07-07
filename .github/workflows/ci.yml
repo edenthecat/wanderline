@@ -1,0 +1,65 @@
+name: Build & Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  # PR runs share a group keyed on the PR number (globally unique, so PRs from
+  # different forks that share a branch name don't collide); pushes to main
+  # fall through to run_id, which is unique per run, so main builds never
+  # cancel each other.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Format check
+        run: npm run format:check
+
+      # shared must build first — other packages depend on its types
+      - name: Build shared
+        run: npm run build --workspace=shared
+
+      # Build remaining packages (they only depend on shared, not each other)
+      - name: Build backend
+        run: npm run build --workspace=backend
+
+      - name: Build frontend
+        run: npx --workspace=frontend vite build
+
+      - name: Build player-app
+        run: npm run build --workspace=player-app
+
+      # Run tests for packages that have real test suites
+      - name: Test backend
+        run: npm test --workspace=backend
+
+      - name: Test player-app
+        run: npm test --workspace=player-app
+
+      - name: Test frontend
+        run: npm test --workspace=frontend

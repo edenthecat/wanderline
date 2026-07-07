@@ -1,0 +1,130 @@
+name: PR Safety Checks
+
+on:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      # GitHub Advanced Security is required for this action on private repos.
+      # Until GHAS is enabled the action errors out, so warn-only by default.
+      # Set repo variable DEPENDENCY_REVIEW_ENFORCE=true (Settings → Variables)
+      # to flip this to blocking once GHAS is on — no workflow edit needed.
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@v4
+        continue-on-error: ${{ vars.DEPENDENCY_REVIEW_ENFORCE != 'true' }}
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit production dependencies
+        run: npm audit --audit-level=high --omit=dev
+
+  check-secrets:
+    name: Check for Secrets
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check PR diff for secret files
+        run: |
+          # Get list of files changed in this PR
+          CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+
+          # Patterns that indicate secrets or credentials
+          PATTERNS='\.env$|\.env\.local|\.env\.prod|\.env\.staging|credentials\.json|\.pem$|\.key$|id_rsa|\.secret$'
+
+          # Find matching files, excluding template files like .example and .template
+          MATCHES=$(echo "$CHANGED_FILES" | grep -iE "$PATTERNS" | grep -ivE '\.(example|template|sample)$' || true)
+
+          if [ -n "$MATCHES" ]; then
+            echo "::error::Potential secret or credential files detected in this PR:"
+            echo ""
+            echo "$MATCHES" | while read -r file; do
+              echo "  - $file"
+            done
+            echo ""
+            echo "If these files are intentional (e.g., .env.example), update the check pattern."
+            echo "Otherwise, remove them from the commit and add them to .gitignore."
+            exit 1
+          fi
+
+          echo "No secret files detected."
+
+  check-large-files:
+    name: Check for Large Files
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check for files exceeding 1MB
+        run: |
+          # Get added or modified files in this PR
+          CHANGED_FILES=$(git diff --name-only --diff-filter=AM origin/${{ github.base_ref }}...HEAD)
+
+          OVERSIZED=""
+          for file in $CHANGED_FILES; do
+            # Skip if file was deleted or doesn't exist
+            [ ! -f "$file" ] && continue
+
+            # Get file size in bytes
+            SIZE=$(stat --format=%s "$file")
+            MAX_SIZE=1048576  # 1MB in bytes
+
+            if [ "$SIZE" -gt "$MAX_SIZE" ]; then
+              SIZE_MB=$(echo "scale=2; $SIZE / 1048576" | bc)
+              OVERSIZED="${OVERSIZED}  - ${file} (${SIZE_MB} MB)\n"
+            fi
+          done
+
+          if [ -n "$OVERSIZED" ]; then
+            echo "::error::Files exceeding 1MB detected:"
+            echo ""
+            echo -e "$OVERSIZED"
+            echo "Large binary files should not be committed to the repository."
+            echo "Consider using Git LFS or hosting the file externally."
+            exit 1
+          fi
+
+          echo "No oversized files detected."

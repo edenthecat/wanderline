@@ -1,0 +1,154 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* theme variables. Defaults match the pre-theme look so an
+   empty theme reproduces the original gradient + cool accent. The
+   editor's Theme tab overrides any of these on :root. */
+:root {
+  --wl-page-bg: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  --wl-card-bg: rgba(255, 255, 255, 0.1);
+  --wl-text: #eee;
+  --wl-accent: #4ecdc4;
+  --wl-heading: #f5f5f5;
+  --wl-chrome: rgba(255, 255, 255, 0.05);
+  --wl-font-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  --wl-font-heading: var(--wl-font-body);
+  --wl-icon-color: currentColor;
+}
+
+/* iconoir SVGs render with `currentColor`, so the
+   wrapper-level `color: var(--wl-icon-color)` rule below propagates
+   to fill+stroke. Defaults to `currentColor` so icons match nearby
+   text when the author hasn't set an explicit color. */
+.wl-icon {
+  color: var(--wl-icon-color, currentColor);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.wl-icon > svg {
+  display: block;
+}
+
+html,
+body {
+  height: 100%;
+  font-family: var(--wl-page-fontFamily, var(--wl-font-body));
+  /* `background` is the shorthand; default lives in `--wl-page-bg`
+     (a gradient). `--wl-page-backgroundImage` is an *opt-in*
+     override the theme editor can set per project; the fallback
+     intentionally re-applies `--wl-page-bg` so the gradient is not
+     overwritten when no override is set. (Earlier this used
+     `initial`, which resolves to `none` for `background-image` and
+     stripped the gradient.) */
+  background: var(--wl-page-background, var(--wl-page-bg));
+  background-image: var(--wl-page-backgroundImage, var(--wl-page-bg));
+  color: var(--wl-page-textColor, var(--wl-text));
+  line-height: var(--wl-page-lineHeight, 1.6);
+}
+
+#root {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+@keyframes spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+/* Offline support UI: drops anchored at the top of the viewport
+   so it stays visible without competing with the story content.
+   Designed for mobile-first thumb reach. */
+.wl-offline-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  padding: 8px 14px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 13px;
+  text-align: center;
+  font-weight: 500;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+}
+.wl-offline-controls {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 49;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  pointer-events: none;
+  /* Don't let two stacked pills + the longest possible label
+     ("Retry download (N failed)") overflow the viewport on narrow
+     phones; cap the column width and let buttons wrap text. */
+  max-width: calc(100vw - 24px);
+}
+.wl-offline-controls > * {
+  max-width: 100%;
+}
+.wl-offline-controls > * {
+  pointer-events: auto;
+}
+.wl-offline-btn,
+.wl-install-btn {
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  min-height: 36px; /* tap-target */
+}
+.wl-offline-btn:disabled {
+  opacity: 0.6;
+}
+.wl-offline-progress,
+.wl-offline-done {
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 11px;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.wl-offline-done {
+  background: rgba(34, 197, 94, 0.7);
+}
+.wl-offline-failed {
+  color: #fca5a5;
+  margin-left: 4px;
+}
+/* When the offline banner is up, push the floating controls down
+   so they don't overlap. */
+.wl-offline-banner ~ .wl-offline-controls {
+  top: 48px;
+}

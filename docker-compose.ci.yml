@@ -1,0 +1,24 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      args:
+        WHISPER_MODEL: 'skip'
+    volumes: []
+    environment:
+      - NODE_ENV=development
+      - PORT=3001
+      - DATABASE_URL=postgresql://wanderline:wanderline_dev@db:5432/wanderline
+      - UPLOAD_DIR=/app/uploads
+      - BUILDS_DIR=/app/exports
+      - WHISPER_MODEL=skip
+      - SESSION_SECRET=${SESSION_SECRET:?Set SESSION_SECRET in .env or environment}
+      - CORS_ORIGIN=http://localhost:3000,http://localhost:5173
+      # Cypress hammers /api/setup/status, /api/auth/login etc. on every
+      # before/beforeEach hook — disable rate limiting for the CI/test
+      # stack so the runs don't 429 themselves out.
+      - RATE_LIMIT_DISABLED=1
+
+  frontend:
+    volumes: []

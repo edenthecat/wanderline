@@ -1,0 +1,63 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Per-workspace lockfiles — npm workspaces uses a single root
+# package-lock.json; any per-workspace lockfile typically came from
+# an accidental `npm install` inside a dev container or sub-workspace
+# shell. Keep the root lockfile, ignore the rest.
+**/package-lock.json
+!/package-lock.json
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Testing
+coverage/
+cypress/videos/
+cypress/screenshots/
+cypress/downloads/
+
+# Docker
+.docker/
+
+# Uploaded assets (local dev)
+uploads/
+
+# Generated app bundles
+exports/
+.claude/
+.playwright-mcp/
+
+# PR-review / scratch screenshots at repo root. `pr-final-*` catches
+# the visual-QA snapshots we save while reviewing a PR;
+# `.screenshots/` catches the batch export dir that the graph-v2
+# diff tooling drops at repo root.
+pr-final-*
+.screenshots/

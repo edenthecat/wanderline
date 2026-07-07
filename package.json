@@ -1,0 +1,70 @@
+{
+  "name": "wanderline",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Audio-narrative generation pipeline for Ink files with Bluetooth-navigation support",
+  "workspaces": [
+    "backend",
+    "frontend",
+    "player-app",
+    "shared"
+  ],
+  "scripts": {
+    "dev": "docker compose up",
+    "build": "npm run build --workspace=shared && npm run build --workspace=backend && npm run build --workspace=frontend && npm run build --workspace=player-app",
+    "test": "npm test --workspace=backend && npm test --workspace=player-app && npm test --workspace=frontend",
+    "cypress:open": "cypress open",
+    "cypress:run": "cypress run",
+    "test:e2e": "cypress run",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepare": "husky"
+  },
+  "keywords": [
+    "ink",
+    "inkle",
+    "twee",
+    "twine",
+    "interactive-fiction",
+    "audio-narrative",
+    "yjs",
+    "collaborative-editor",
+    "whisper",
+    "bluetooth"
+  ],
+  "license": "MIT",
+  "author": "Eden Rohatensky",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/edenthecat/wanderline.git"
+  },
+  "bugs": {
+    "url": "https://github.com/edenthecat/wanderline/issues"
+  },
+  "homepage": "https://github.com/edenthecat/wanderline#readme",
+  "engines": {
+    "node": "20.20.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "cypress": "^15.17.0",
+    "eslint": "^9.39.4",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.6.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.4.0",
+    "prettier": "^3.8.4",
+    "typescript-eslint": "^8.61.0"
+  },
+  "lint-staged": {
+    "*.{js,jsx,ts,tsx,mjs,cjs}": [
+      "eslint --fix --no-warn-ignored",
+      "prettier --write"
+    ],
+    "*.{json,md,yml,yaml,html,css}": "prettier --write --ignore-unknown"
+  }
+}

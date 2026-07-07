@@ -1,0 +1,3257 @@
+/* === Reset & Base === */
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --color-primary: #4f46e5;
+  --color-primary-hover: #4338ca;
+  --color-bg: #f9fafb;
+  --color-surface: #ffffff;
+  --color-border: #e5e7eb;
+  --color-text: #111827;
+  --color-text-muted: #6b7280;
+  --color-danger: #dc2626;
+  --color-danger-hover: #b91c1c;
+  --radius: 8px;
+  --radius-sm: 4px;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.1), 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+body {
+  min-height: 100vh;
+  background: var(--color-bg);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  color: var(--color-text);
+  line-height: 1.5;
+  font-size: 14px;
+}
+
+/* === Layout === */
+
+.layout {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.header {
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  padding: 0 24px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.header-logo {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+.header-nav-link {
+  font-size: 14px;
+  color: var(--color-text-muted);
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.header-nav-link:hover {
+  color: var(--color-text);
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.header-user {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--color-text);
+}
+
+.header-user-name {
+  white-space: nowrap;
+}
+
+.header-role {
+  background: var(--color-bg);
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border: 1px solid var(--color-border);
+}
+
+.main {
+  flex: 1;
+  padding: 24px;
+  max-width: 1200px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+/* Project workspace: ignore the centered max-width and outer padding
+   so the sidebar can sit flush against the viewport's left edge and
+   the workspace-main has the full remaining width for the graph /
+   theme editor / etc. Restored to the centered container for the
+   marketing-style pages (login, projects list, users). */
+.main:has(.project-workspace) {
+  max-width: none;
+  padding: 0;
+}
+
+/* Mobile header: the user's display name + admin "Users" link both
+   start to crowd the logo at sub-tablet widths. Hide the name (the
+   role chip stays as a quick visual cue) and tighten side padding;
+   the underlying user info remains in DOM and reachable to screen
+   readers via the aria-label on .header-user. */
+@media (max-width: 600px) {
+  .header {
+    padding: 0 12px;
+  }
+  .header-user-name {
+    display: none;
+  }
+  .header-nav-link {
+    font-size: 13px;
+  }
+  .main {
+    padding: 16px 12px;
+  }
+}
+
+/* === Auth Pages === */
+
+.auth-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--color-bg);
+}
+
+.auth-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 40px;
+  width: 100%;
+  max-width: 400px;
+  box-shadow: var(--shadow);
+}
+
+.auth-card h1 {
+  font-size: 24px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.auth-subtitle {
+  color: var(--color-text-muted);
+  margin-bottom: 24px;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* === Form Elements === */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+input[type='text'],
+input[type='email'],
+input[type='password'],
+input[type='number'],
+textarea,
+.select {
+  padding: 8px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-family: inherit;
+  color: var(--color-text);
+  background: var(--color-surface);
+  transition: border-color 0.15s;
+}
+
+input:focus,
+textarea:focus,
+.select:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+}
+
+.select {
+  appearance: none;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='%236b7280'%3E%3Cpath d='m5.23 7.21 4.77 4.78 4.77-4.78a.75.75 0 0 1 1.06 1.06l-5.3 5.3a.75.75 0 0 1-1.06 0l-5.3-5.3a.75.75 0 0 1 1.06-1.06z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 16px;
+  padding-right: 32px;
+}
+
+/* === Buttons === */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: inherit;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+.btn-danger {
+  color: var(--color-danger);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: #fef2f2;
+  color: var(--color-danger-hover);
+  border-color: #fecaca;
+}
+
+.btn-sm {
+  padding: 4px 10px;
+  font-size: 13px;
+}
+
+.btn-xs {
+  padding: 2px 6px;
+  font-size: 11px;
+}
+
+.btn-full {
+  width: 100%;
+}
+
+/* === Cards === */
+
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 16px;
+  box-shadow: var(--shadow-sm);
+}
+
+/* === Alerts === */
+
+.alert {
+  padding: 12px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+.alert ul {
+  margin-top: 4px;
+  padding-left: 20px;
+}
+
+.alert-error {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+}
+
+.alert-warning {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  color: #92400e;
+}
+
+/* === Badges === */
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.badge-green {
+  background: #dcfce7;
+  color: #166534;
+}
+.badge-blue {
+  background: #dbeafe;
+  color: #1e40af;
+}
+.badge-red {
+  background: #fee2e2;
+  color: #991b1b;
+}
+.badge-gray {
+  background: #f3f4f6;
+  color: #4b5563;
+}
+/* reserved for Twee source-language chip on the projects
+   list. Ink projects reuse .badge-blue (matches the editor's Ink
+   accent); Twee sits on a distinct hue so a glance tells them
+   apart. */
+.badge-purple {
+  background: #f3e8ff;
+  color: #6b21a8;
+}
+
+/* === Pages === */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.page-header h1 {
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.page-loader {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 64px;
+  color: var(--color-text-muted);
+  font-size: 14px;
+}
+
+.breadcrumb {
+  font-size: 13px;
+  color: var(--color-primary);
+  text-decoration: none;
+  display: block;
+  margin-bottom: 4px;
+}
+
+.breadcrumb:hover {
+  text-decoration: underline;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 48px 24px;
+  color: var(--color-text-muted);
+}
+
+.empty-state p + p {
+  margin-top: 4px;
+}
+
+/* === Text Helpers === */
+
+.text-muted {
+  color: var(--color-text-muted);
+}
+.text-sm {
+  font-size: 12px;
+}
+
+/* Visually-hidden but kept in the a11y tree. Use for column-header
+   labels that are obvious from cell context (e.g. "Actions" on a
+   row of buttons) and for severity prefixes on icon-only states. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* === Project Grid === */
+
+.project-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 16px;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.project-grid > li {
+  display: flex;
+}
+
+.project-grid > li > .project-card {
+  flex: 1;
+}
+
+.project-card {
+  text-decoration: none;
+  color: inherit;
+  transition:
+    box-shadow 0.15s,
+    border-color 0.15s;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.project-card:hover {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow);
+}
+
+.project-card-name {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.project-card-desc {
+  color: var(--color-text-muted);
+  font-size: 13px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.project-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+  font-size: 12px;
+}
+
+/* === Create Form === */
+
+.create-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* === Tabs === */
+
+.tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.tab {
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: inherit;
+  color: var(--color-text-muted);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s;
+  margin-bottom: -1px;
+}
+
+.tab:hover {
+  color: var(--color-text);
+}
+
+.tab-active {
+  color: var(--color-primary);
+  border-bottom-color: var(--color-primary);
+}
+
+.tab-content {
+  padding-top: 20px;
+}
+
+.tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* === Section Headers === */
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.section-header h2 {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.section-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* === Stats Row === */
+
+.stats-row {
+  display: flex;
+  gap: 24px;
+  padding: 16px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stat-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.stat-label {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* === Story Node Tree === */
+
+.node-tree h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.node-group {
+  position: relative;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  margin-bottom: 4px;
+  overflow: hidden;
+}
+
+.node-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--color-surface);
+  border: none;
+  font-family: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s;
+}
+
+.node-header:hover {
+  background: var(--color-bg);
+}
+
+.node-toggle {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  width: 14px;
+}
+
+.node-name {
+  font-weight: 500;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 13px;
+}
+
+/* node rename affordance. Absolute-positioned inside
+   .node-group (which sets position: relative up top) so it can
+   float over the .node-header button — the two can't be siblings
+   inside the button because <button>-in-<button> is invalid HTML. */
+.node-rename-slot {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 1;
+}
+.node-header .node-rename-button {
+  margin-left: auto;
+}
+.node-rename-button {
+  padding: 2px 6px;
+  font-size: 12px;
+  line-height: 1;
+  /* Default at 0.65 so the pencil is visible on touch devices
+     (no :hover), but subdued enough that it doesn't compete with
+     the primary node-header content. Hover / focus lifts to full
+     opacity for pointer + keyboard users. */
+  opacity: 0.65;
+  transition: opacity 0.1s;
+}
+.node-group:hover .node-rename-button,
+.node-rename-button:focus-visible {
+  opacity: 1;
+}
+/* Coarse pointers (touch) don't fire hover — pin at 1 so the
+   affordance is fully visible on iPad / phone. */
+@media (hover: none) and (pointer: coarse) {
+  .node-rename-button {
+    opacity: 1;
+  }
+}
+.node-rename-form {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--color-surface);
+  padding: 2px 4px;
+  border-radius: var(--radius);
+  border: 1px solid var(--color-border);
+}
+.node-rename-input {
+  padding: 2px 6px;
+  font-size: 13px;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-bg);
+  color: var(--color-text);
+  min-width: 120px;
+}
+.node-rename-error {
+  margin-left: 4px;
+}
+
+/* Per-collaborator presence dot rendered on a knot header when
+   another user has it expanded in their StoryTab. Same hash-color
+   as the PresenceChips so the same person reads consistently. */
+.node-peer-dot-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 4px;
+}
+.node-peer-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid var(--surface, #fff);
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+
+/* Author QoL: collapsible story-health strip above the node list. */
+.story-health {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  margin-bottom: 12px;
+  background: var(--color-surface);
+}
+.story-health-summary {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+}
+.story-health-summary:focus-visible {
+  outline: 2px solid var(--color-accent, #3b82f6);
+  outline-offset: -2px;
+}
+.story-health-toggle {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  width: 14px;
+}
+.story-health-stat strong {
+  font-weight: 600;
+}
+.story-health-badge {
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.story-health-badge-warn {
+  background: #fef3c7;
+  color: #92400e;
+}
+.story-health-badge-ok {
+  background: #dcfce7;
+  color: #166534;
+}
+.story-health-body {
+  border-top: 1px solid var(--color-border);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.story-health-section h4 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.story-health-list {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+.story-health-link {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  background: var(--color-surface-2, #f1f5f9);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.story-health-link:hover {
+  background: var(--color-surface-3, #e2e8f0);
+}
+
+.node-children {
+  border-top: 1px solid var(--color-border);
+  padding: 12px 16px;
+  background: var(--color-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.node-child {
+  padding-left: 16px;
+  border-left: 2px solid var(--color-border);
+}
+
+.node-child-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.node-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.node-text {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* One editable paragraph of node body content. Each row is the
+   textarea + an optional tag chip strip below — authors edit prose
+   in place rather than the previous read-only <p>. */
+.node-content-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.node-content-input {
+  width: 100%;
+  resize: vertical;
+  min-height: 44px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: #ffffff;
+}
+.node-content-input:focus {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -1px;
+}
+/* Tag chips for a content line align under the textarea's left edge,
+   not indented by the global .node-tags margin that was designed for
+   the inline-with-<p> layout. */
+.node-content-row .node-tags {
+  margin-left: 0;
+}
+
+.transcript-override {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 10px 12px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.transcript-override-label {
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.transcript-override-hint {
+  margin: 0;
+  line-height: 1.4;
+}
+
+.transcript-override-input {
+  font-family: inherit;
+  font-size: 13px;
+  resize: vertical;
+  min-height: 48px;
+  max-height: 70vh;
+}
+
+.transcript-override-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.timing-controls {
+  margin-top: 8px;
+}
+
+.timing-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px 16px;
+  margin-bottom: 8px;
+}
+
+.timing-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.timing-field input[type='number'] {
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.timing-field-checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-text);
+}
+
+.timing-field-checkbox input {
+  width: 16px;
+  height: 16px;
+}
+
+.transcript-override-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.text-danger {
+  color: var(--color-danger);
+}
+
+.node-tags {
+  margin-left: 8px;
+}
+
+.tag {
+  display: inline-block;
+  padding: 1px 6px;
+  background: #ede9fe;
+  color: #5b21b6;
+  border-radius: 3px;
+  font-size: 11px;
+  margin-left: 4px;
+}
+
+.node-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 8px;
+}
+
+.node-choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.choice-arrow {
+  color: var(--color-primary);
+}
+
+.choice-text {
+  font-weight: 500;
+}
+
+.choice-target {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+}
+
+.node-divert {
+  font-size: 12px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.ink-source {
+  margin-top: 16px;
+}
+
+.ink-source summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--color-text-muted);
+  padding: 8px 0;
+}
+
+/* CodeMirror-hosted Ink source editor. Used inline inside StoryTab
+   when the "Source" view is active, and inside a slide-in panel
+   from GraphTab. */
+.ink-source-editor {
+  display: flex;
+  flex-direction: column;
+  min-height: 480px;
+  height: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #ffffff;
+}
+.ink-source-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border);
+  background: #f8fafc;
+}
+.ink-source-toolbar-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.ink-source-toolbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ink-source-host {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.ink-source-host .cm-editor {
+  height: 100%;
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, monospace;
+  font-size: 13px;
+}
+.ink-source-host .cm-scroller {
+  font-family: inherit;
+}
+.ink-source-host .cm-gutters {
+  background: #f8fafc;
+  border-right: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+}
+.ink-source-host .cm-focused {
+  outline: none;
+}
+
+/* Slide-in source-editor panel inside the Graph view. */
+.graph-source-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(560px, 50%);
+  background: #ffffff;
+  border-left: 1px solid var(--color-border);
+  box-shadow: -8px 0 24px rgba(15, 23, 42, 0.08);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+}
+.graph-source-panel .ink-source-editor {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Inline button-styled link used in body copy (e.g. "switch to the
+   Source view"). Matches the surrounding text but indicates affordance. */
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: var(--color-primary);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.link-button:hover {
+  color: var(--color-primary-hover, var(--color-primary));
+}
+
+.badge-amber {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.code-block {
+  padding: 16px;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  border-radius: var(--radius);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+/* === Tables === */
+
+/* Wrap tables in `.table-scroll` to get horizontal scrolling at
+   narrow widths so the columns stay readable instead of crushing
+   into illegible rags. Keeps tables-as-tables (no card collapse). */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.table caption {
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+  padding: 6px 12px;
+}
+
+.table th,
+.table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.table th {
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+  background: var(--color-bg);
+}
+
+.table tbody tr:hover {
+  background: var(--color-bg);
+}
+
+.audio-filename {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+}
+
+.audio-section {
+  margin-bottom: 24px;
+}
+
+.audio-section-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  text-transform: capitalize;
+}
+
+.audio-section-summary {
+  cursor: pointer;
+  padding: 8px 0;
+  list-style: disclosure-closed;
+}
+
+.audio-section-summary::-webkit-details-marker {
+  color: var(--color-text-muted);
+}
+
+details[open] > .audio-section-summary {
+  list-style: disclosure-open;
+}
+
+/* === Audio Assignment Form === */
+
+.assign-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.assign-form-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.assign-form-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+}
+
+.assign-form-field {
+  min-width: 160px;
+}
+
+.assign-form-field-wide {
+  flex: 1;
+  min-width: 200px;
+}
+
+.assign-form-action {
+  flex-shrink: 0;
+}
+
+/* === Bulk Upload Results === */
+
+.bulk-result {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.bulk-result-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.bulk-result-summary {
+  display: flex;
+  gap: 8px;
+}
+
+.bulk-result-section h4 {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.bulk-result-list {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bulk-result-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+/* === Missing Nodes List === */
+
+.missing-nodes-list {
+  list-style: none;
+  padding: 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.missing-nodes-list li {
+  font-size: 13px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.missing-nodes-list li:hover {
+  background: var(--color-bg);
+}
+
+/* Per-file usage panel that opens under a row in the audio library.
+   Lets the author see every (node, slot) where the file is assigned
+   and either swap all at once or replace each one individually —
+   the typical fix-up when an earlier upload of incorrect audio has
+   already been spread across the story. */
+.audio-usage-row > td {
+  background: #f8fafc;
+  padding: 0;
+}
+.audio-usage-panel {
+  padding: 14px 16px;
+  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+}
+.audio-usage-swap-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-bottom: 10px;
+  margin-bottom: 8px;
+  border-bottom: 1px dashed var(--color-border);
+}
+.audio-usage-swap-header label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.audio-usage-table {
+  background: #ffffff;
+}
+.audio-usage-table td,
+.audio-usage-table th {
+  padding: 6px 10px;
+  font-size: 12.5px;
+}
+.audio-usage-badge {
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.audio-usage-badge:hover {
+  filter: brightness(0.97);
+}
+
+/* === Alert Success === */
+
+.alert-success {
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  color: #166534;
+}
+
+/* === Characters === */
+
+.character-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.character-card {
+  padding: 12px 16px;
+}
+
+.character-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.character-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.character-name {
+  font-weight: 500;
+  flex: 1;
+}
+
+.character-actions {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.character-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.character-edit-name {
+  font-size: 14px;
+}
+
+.character-edit-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* === Theme Picker === */
+
+.theme-picker {
+  display: flex;
+  gap: 6px;
+}
+
+.theme-swatch {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.theme-swatch:hover {
+  transform: scale(1.1);
+}
+
+.theme-swatch-active {
+  border-color: var(--color-text);
+  box-shadow: 0 0 0 2px var(--color-surface);
+}
+
+.theme-swatch-sm {
+  width: 22px;
+  height: 22px;
+}
+
+.theme-picker-sm {
+  gap: 4px;
+}
+
+/* === Builds === */
+
+.build-trigger {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.build-trigger-row {
+  display: flex;
+  gap: 8px;
+}
+
+.build-label-input {
+  flex: 1;
+}
+
+.build-actions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.build-details-row td {
+  background: var(--bg-subtle, #f8f9fa);
+  padding: 12px 16px;
+}
+
+.build-details {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px 24px;
+  margin: 0;
+}
+
+.build-details > div {
+  display: flex;
+  flex-direction: column;
+}
+
+.build-details dt {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted, #666);
+  margin-bottom: 2px;
+}
+
+.build-details dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.build-preview-note {
+  margin-top: 16px;
+}
+
+/* pin marker + inline mono text used in the build details.
+   Small utilities scoped to the builds surface — keep here rather
+   than promoting to globals until another surface needs them. */
+.pin-marker {
+  color: #f0b400;
+}
+
+.text-mono {
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, monospace;
+  font-size: 0.85em;
+}
+
+/* === Preview === */
+
+.preview-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.preview-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.preview-shortcuts-hint {
+  margin: 0;
+}
+
+.preview-shortcuts-hint kbd {
+  display: inline-block;
+  padding: 1px 6px;
+  margin: 0 2px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8em;
+  background: var(--bg-subtle, #f0f1f3);
+  border: 1px solid var(--border, #d0d3d8);
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.preview-frame-wrap {
+  width: 100%;
+  /* Roughly mimic a phone-screen aspect ratio for the embedded player.
+     Capped on desktop so the frame doesn't dominate the viewport. */
+  aspect-ratio: 9 / 16;
+  max-height: 75vh;
+  min-height: 480px;
+  border: 1px solid var(--border, #d0d3d8);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #000;
+}
+
+.preview-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+/* === Graph === */
+
+.graph-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  /* Anchor for the slide-in .graph-source-panel which overlays the
+     right edge of the canvas. */
+  position: relative;
+}
+
+/* Two-column layout: graph fills available width, detail rail is
+   fixed at 320px on the right. Mobile collapses to a single column;
+   the detail rail becomes a bottom sheet via .graph-detail's media
+   query below. */
+.graph-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.graph-frame {
+  width: 100%;
+  /* Fill the available workspace-main height. The graph-tab is the
+     entire `tab-panel` so this flex chain reaches up to the
+     viewport; the 480px floor keeps it usable when the editor sits
+     in a short viewport. */
+  flex: 1;
+  min-height: 480px;
+  border: 1px solid var(--color-border, #d0d3d8);
+  border-radius: 12px;
+  overflow: hidden;
+  background: #f8fafc;
+  /* Anchor for overlays (retarget-error banner). */
+  position: relative;
+}
+
+.graph-tab {
+  flex: 1;
+  min-height: 0;
+}
+
+.graph-layout {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Custom node card — replaces ReactFlow's default rectangle.
+   ComfyUI-inspired card aesthetic: rounded corners, soft shadow,
+   chip + status dot on top, node id as primary text. */
+.graph-node-card {
+  width: 200px;
+  min-height: 78px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 10px 12px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-family: inherit;
+  color: var(--color-text);
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease,
+    transform 0.12s ease;
+  cursor: pointer;
+}
+
+.graph-node-card:hover {
+  border-color: var(--color-primary);
+  box-shadow: 0 4px 12px rgba(79, 70, 229, 0.12);
+}
+
+.graph-node-card.is-selected {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
+}
+
+.graph-node-card.is-start {
+  border-color: var(--color-primary);
+  background: linear-gradient(180deg, #ffffff 0%, #f5f3ff 100%);
+}
+
+.graph-node-card.is-stitch {
+  border-style: dashed;
+}
+
+.graph-node-card.is-error {
+  border-color: var(--color-danger);
+  background: #fef2f2;
+}
+
+.graph-node-card.is-warning {
+  border-color: #d97706;
+  background: #fffbeb;
+}
+
+.graph-node-card.is-missing {
+  border-color: var(--color-danger);
+  background: #fef2f2;
+  border-style: dashed;
+}
+
+.graph-node-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.graph-node-chip {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #475569;
+  background: #f1f5f9;
+  padding: 2px 6px;
+  border-radius: 999px;
+}
+
+.graph-node-chip[data-kind='knot'] {
+  color: #4c1d95;
+  background: #ede9fe;
+}
+
+.graph-node-chip[data-kind='stitch'] {
+  color: #5b21b6;
+  background: #f5f3ff;
+}
+
+.graph-node-chip[data-kind='gather'] {
+  color: #166534;
+  background: #dcfce7;
+}
+
+.graph-node-card.is-start .graph-node-chip {
+  color: #ffffff;
+  background: var(--color-primary);
+}
+
+.graph-node-chip[data-kind='missing'] {
+  color: #991b1b;
+  background: #fee2e2;
+}
+
+.graph-node-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 8px;
+}
+
+.graph-node-dot.is-on {
+  background: #22c55e;
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.18);
+}
+
+.graph-node-dot.is-off {
+  background: #cbd5e1;
+}
+
+.graph-node-card-title {
+  font-size: 12.5px;
+  font-weight: 500;
+  word-break: break-all;
+  line-height: 1.25;
+  color: #0f172a;
+}
+
+.graph-node-card-footer {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  margin-top: auto;
+}
+
+/* Connection handles — make them subtle and on-brand rather than
+   ReactFlow's default chunky blue dots. */
+.graph-node-handle {
+  width: 8px !important;
+  height: 8px !important;
+  background: var(--color-primary) !important;
+  border: 2px solid #ffffff !important;
+  border-radius: 50% !important;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.graph-node-card:hover .graph-node-handle,
+.graph-node-card.is-selected .graph-node-handle {
+  opacity: 1;
+}
+
+/* Per-choice row strip inside the card. Each row is a horizontal
+   triple: leading bullet/glyph → choice text → target chip → source
+   handle (on the right edge). The visual hierarchy is: glyph + text
+   call out "this is an authored choice"; the target chip is the
+   mini-link to whatever it points at; the handle is the drag affordance.
+   Designed so a peer can scan a knot top-to-bottom and immediately see
+   "this branch goes to X, that one to Y." */
+.graph-node-choices {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 4px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-top: 1px solid #e2e8f0;
+}
+.graph-node-choice-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 12px 1fr auto;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  color: #334155;
+  padding: 2px 4px;
+  border-radius: 4px;
+  line-height: 1.3;
+}
+.graph-node-choice-row:hover {
+  background: #f1f5f9;
+}
+.graph-node-choice-bullet {
+  font-size: 8px;
+  color: #94a3b8;
+  line-height: 1;
+}
+.graph-node-choice-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+.graph-node-choice-target {
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, monospace;
+  font-size: 9.5px;
+  color: #6366f1;
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  padding: 1px 5px;
+  border-radius: 4px;
+  max-width: 80px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.graph-node-card.is-error .graph-node-choice-target {
+  border-color: #fca5a5;
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+.graph-node-card-footer.graph-node-divert-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 12px 1fr;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  padding: 4px 4px 2px;
+  border-top: 1px dashed #e2e8f0;
+  font-size: 10.5px;
+}
+.graph-node-divert-bullet {
+  font-size: 11px;
+  color: #94a3b8;
+  line-height: 1;
+}
+.graph-node-divert-label {
+  font-style: italic;
+  color: #64748b;
+}
+
+/* The per-row source handle. Subtle filled dot at the right edge by
+   default so authors can see the drag-target exists; brighter on
+   hover/select so a deliberate retarget gesture lands accurately. */
+.graph-node-handle-row {
+  opacity: 0.55 !important;
+  background: #94a3b8 !important;
+}
+.graph-node-card:hover .graph-node-handle-row,
+.graph-node-card.is-selected .graph-node-handle-row {
+  opacity: 1 !important;
+  background: var(--color-primary) !important;
+}
+.graph-node-handle-divert {
+  background: #94a3b8 !important;
+}
+
+/* Ending nodes get a soft green wash + thicker border so the eye
+   can find the conclusions in a big graph. */
+.graph-node-card.is-ending {
+  border-color: #16a34a;
+  background: linear-gradient(180deg, #ffffff 0%, #f0fdf4 100%);
+}
+.graph-node-card.is-ending .graph-node-chip {
+  color: #166534;
+  background: #dcfce7;
+}
+
+/* Animated start-node pulse — subtle outer ring that breathes so the
+   author's eye always finds the entry point. */
+@keyframes graph-start-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(124, 58, 237, 0.32);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(124, 58, 237, 0);
+  }
+}
+.graph-node-card.is-start {
+  animation: graph-start-pulse 2.4s ease-in-out infinite;
+}
+/* Respect users who've opted out of motion in their OS — replace
+   the infinite pulse with a static border-glow so the start node
+   stays findable without any animation. */
+@media (prefers-reduced-motion: reduce) {
+  .graph-node-card.is-start {
+    animation: none;
+    box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.22);
+  }
+}
+
+/* Overlay visuals: dim, on-path, search match/unmatched. */
+.graph-node-card.is-dim {
+  opacity: 0.32;
+  filter: saturate(0.35);
+}
+.graph-node-card.is-on-path {
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.18);
+}
+.graph-node-card.is-matched {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+}
+.graph-node-card.is-unmatched {
+  opacity: 0.35;
+}
+
+/* On-path edges pop in front; dim edges fade back. */
+.graph-edge-on-path .react-flow__edge-path,
+.react-flow__edge.graph-edge-on-path .react-flow__edge-path {
+  stroke: #f59e0b !important;
+  stroke-width: 2.4 !important;
+}
+.graph-edge-dim .react-flow__edge-path,
+.react-flow__edge.graph-edge-dim .react-flow__edge-path {
+  opacity: 0.25;
+}
+
+/* Hover preview card — replaces the browser's native title=. Floats
+   near the cursor with a richer multi-line layout. */
+.graph-hover-card {
+  position: fixed;
+  z-index: 50;
+  width: 260px;
+  background: #ffffff;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  pointer-events: none;
+  font-size: 12px;
+}
+.graph-hover-card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.graph-hover-card-title {
+  font-size: 13px;
+  color: #0f172a;
+}
+.graph-hover-card-body {
+  margin: 0;
+  color: #475569;
+  line-height: 1.45;
+}
+.graph-hover-card-tags {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+/* Toolbar between the section header and the canvas: search input,
+   dim-unreachable toggle, path-trace breadcrumb. */
+.graph-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0 12px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+.graph-toolbar-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 240px;
+  min-width: 200px;
+}
+.graph-search-input {
+  flex: 1;
+  padding: 5px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 13px;
+}
+.graph-toolbar-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+}
+.graph-toolbar-path {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 6px;
+}
+
+/* Direction toggle styled as a segmented control. */
+.graph-toolbar-segmented {
+  display: inline-flex;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  overflow: hidden;
+  font-size: 12px;
+}
+.graph-toolbar-segmented button {
+  background: #ffffff;
+  border: none;
+  padding: 5px 10px;
+  cursor: pointer;
+  color: #475569;
+  font-family: inherit;
+}
+.graph-toolbar-segmented button + button {
+  border-left: 1px solid var(--color-border);
+}
+.graph-toolbar-segmented button:hover {
+  background: #f1f5f9;
+}
+.graph-toolbar-segmented button.is-active {
+  background: var(--color-primary);
+  color: #ffffff;
+}
+
+/* Reachable-from panel inside the node detail rail. */
+.node-reachable-from {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border);
+}
+.node-reachable-from-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #475569;
+  margin: 0 0 6px;
+}
+.node-reachable-from-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+}
+.node-reachable-from-link {
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, monospace;
+  font-size: 11.5px;
+  background: var(--color-surface-2, #f1f5f9);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  color: var(--color-text);
+}
+.node-reachable-from-link:hover {
+  background: var(--color-surface-3, #e2e8f0);
+}
+
+/* Per-choice action buttons (move up/down, delete) in the editor. */
+.node-choice-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 4px;
+}
+.node-choice-actions .btn-xs {
+  padding: 2px 6px;
+  font-size: 11px;
+  min-width: 22px;
+}
+.node-choice-delete {
+  color: var(--color-danger);
+}
+.node-choice-add {
+  background: rgba(34, 197, 94, 0.06);
+  border-top: 1px dashed rgba(34, 197, 94, 0.3);
+  padding-top: 6px;
+  margin-top: 4px;
+}
+.node-choice-add .choice-arrow {
+  color: #16a34a;
+  font-weight: 600;
+}
+
+/* When zoomed out, edge labels become overlapping noise on large
+   graphs. Hide them so the eye can land on cards + edges instead.
+   The toggle threshold lives in GraphTab.tsx (see `showEdgeLabels`). */
+.graph-canvas.is-zoomed-out .react-flow__edge-textbg,
+.graph-canvas.is-zoomed-out .react-flow__edge-text {
+  display: none;
+}
+
+/* Floating banner over the canvas when a drag-to-retarget call fails.
+   Surfaces server error messages so silent failures don't leave the
+   user confused about why the drag did nothing. */
+.graph-retarget-error {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 6px 14px;
+  background: #fef2f2;
+  border: 1px solid var(--color-danger);
+  color: #991b1b;
+  border-radius: 8px;
+  box-shadow: 0 8px 16px rgba(220, 38, 38, 0.16);
+  font-size: 13px;
+  z-index: 10;
+  max-width: 90%;
+}
+
+/* Terminal sinks (END / DONE). */
+.graph-node-terminal {
+  min-width: 80px;
+  text-align: center;
+  padding: 8px 14px;
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #475569;
+}
+
+/* Customize ReactFlow's controls + minimap to fit the lighter
+   aesthetic. Round corners, soft shadow, thinner borders. */
+.graph-canvas .react-flow__controls,
+.graph-canvas .graph-controls {
+  background: #ffffff;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
+  overflow: hidden;
+}
+
+.graph-canvas .react-flow__controls-button {
+  border-bottom: 1px solid var(--color-border);
+  background: #ffffff;
+}
+
+.graph-canvas .react-flow__controls-button:last-child {
+  border-bottom: none;
+}
+
+.graph-canvas .react-flow__minimap,
+.graph-canvas .graph-minimap {
+  background: #ffffff;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
+  overflow: hidden;
+}
+
+.graph-canvas .react-flow__minimap-mask {
+  fill: rgba(79, 70, 229, 0.08);
+}
+
+.graph-detail {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  padding: 12px 14px;
+  overflow-y: auto;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.graph-detail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.graph-detail-title {
+  font-size: 14px;
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.graph-detail-subhead {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+  margin-bottom: 4px;
+}
+
+.graph-detail-content {
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
+.graph-detail-audio {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.graph-detail-audio-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+}
+
+.graph-detail-choices {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.graph-detail-choices li {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.graph-detail-choice-text {
+  font-size: 13px;
+  display: block;
+}
+
+.graph-detail-choice-target {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  margin-top: 2px;
+}
+
+.graph-detail-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--color-primary);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.graph-detail-link:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.graph-detail-missing {
+  color: var(--color-danger);
+}
+
+@media (max-width: 900px) {
+  .graph-layout {
+    grid-template-columns: 1fr;
+  }
+  /* Mobile: detail becomes a bottom sheet anchored to the viewport
+     so it doesn't push the graph offscreen. Tap a node, sheet
+     slides up, tap dismiss / outside to close. */
+  .graph-detail {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    max-height: 55vh;
+    border-radius: 12px 12px 0 0;
+    border-left: none;
+    border-right: none;
+    border-bottom: none;
+    box-shadow: 0 -8px 24px -8px rgba(0, 0, 0, 0.2);
+    z-index: 60;
+  }
+}
+
+/* === Validation panel === */
+
+.validation-panel {
+  border-radius: 8px;
+  border: 1px solid #fde68a;
+  background: #fffbeb;
+  padding: 12px 16px;
+}
+
+.validation-panel-error {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+
+.validation-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  width: 100%;
+  text-align: left;
+}
+
+.validation-toggle-icon {
+  font-size: 10px;
+  opacity: 0.6;
+}
+
+.validation-list {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.validation-item {
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: #ffffff;
+  border-left: 4px solid #f59e0b;
+}
+
+.validation-item-error {
+  border-left-color: #dc2626;
+}
+
+.validation-item-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.validation-icon {
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.validation-item-error .validation-icon {
+  color: #dc2626;
+}
+
+.validation-item-warning .validation-icon {
+  color: #d97706;
+}
+
+.validation-title {
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.validation-meta {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--color-text-muted, #6b7280);
+}
+
+.validation-line {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.validation-node-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--color-primary, #4f46e5);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.validation-node-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.validation-hint {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--color-text-muted, #6b7280);
+  line-height: 1.4;
+}
+
+.validation-docs {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--color-primary, #4f46e5);
+}
+
+/* === Orphaned audio panel === */
+
+.orphaned-audio-panel {
+  margin: 16px 0;
+  padding: 16px;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 8px;
+  background: #fffbeb;
+}
+
+.orphaned-audio-panel .section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 8px;
+}
+
+.orphaned-audio-panel table {
+  margin: 12px 0;
+}
+
+.orphan-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.orphan-actions {
+  text-align: right;
+}
+
+.orphan-bulk-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.orphan-bulk-confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* === Bluetooth controls === */
+
+.bluetooth-option {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  cursor: default;
+}
+
+.bluetooth-option > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.bluetooth-option select {
+  flex-shrink: 0;
+  min-width: 240px;
+}
+
+.bluetooth-option strong {
+  display: block;
+  font-weight: 500;
+}
+
+.bluetooth-option p {
+  margin: 2px 0 0;
+}
+
+/* === Validation === */
+
+.validation-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* === Dropdown === */
+
+.dropdown {
+  position: relative;
+}
+
+.dropdown-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  min-width: 200px;
+  z-index: 50;
+  padding: 4px;
+}
+
+.dropdown-item {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  text-align: left;
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--color-text);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+.dropdown-item:hover {
+  background: var(--color-bg);
+}
+
+.page-header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* === Responsive === */
+
+@media (max-width: 640px) {
+  .main {
+    padding: 16px;
+  }
+
+  .header {
+    padding: 0 16px;
+  }
+
+  .project-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .stats-row {
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+
+  .page-header {
+    flex-direction: column;
+  }
+
+  .section-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .build-trigger-row {
+    flex-direction: column;
+  }
+
+  .assign-form-row {
+    flex-direction: column;
+  }
+
+  .assign-form-field,
+  .assign-form-field-wide {
+    min-width: 0;
+    width: 100%;
+  }
+}
+
+/* === Story Filter Bar === */
+
+.story-filter-bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.story-filter-bar .input {
+  flex: 1;
+}
+
+.node-header.node-header-static {
+  cursor: default;
+  background: none;
+}
+
+.node-header.node-header-static:hover {
+  background: none;
+}
+
+.node-preview {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.input-inline {
+  padding: 2px 6px;
+  font-size: 13px;
+  width: auto;
+  min-width: 80px;
+  max-width: 200px;
+}
+
+.select-inline {
+  padding: 2px 6px;
+  font-size: 13px;
+  width: auto;
+  min-width: 80px;
+  max-width: 180px;
+}
+
+/* === Settings === */
+
+.settings-section {
+  padding: 20px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.settings-section:last-child {
+  border-bottom: none;
+}
+
+.settings-section h3 {
+  margin-bottom: 8px;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+/* Default-volume rows — meta on the left, slider + percent readout
+   on the right. On narrow screens they stack. */
+.settings-volume-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 320px);
+  gap: 16px;
+  align-items: center;
+}
+
+.settings-volume-meta strong {
+  display: block;
+}
+
+.settings-volume-control {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.settings-volume-control input[type='range'] {
+  flex: 1;
+  accent-color: var(--color-primary);
+}
+
+.settings-volume-value {
+  min-width: 44px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
+@media (max-width: 640px) {
+  .settings-volume-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.settings-danger {
+  border-color: var(--color-danger);
+}
+
+.settings-danger h3 {
+  color: var(--color-danger);
+}
+
+.settings-subhead {
+  margin-top: 12px;
+  margin-bottom: 4px;
+  font-size: 14px;
+}
+.settings-section .settings-subhead:first-of-type {
+  margin-top: 0;
+}
+
+.settings-danger-divider {
+  margin: 18px 0;
+  border: none;
+  border-top: 1px dashed rgba(220, 38, 38, 0.35);
+}
+
+.settings-project-delete {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 6px;
+}
+.settings-project-delete-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--color-text);
+}
+.settings-project-delete-prompt code {
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, monospace;
+  background: rgba(220, 38, 38, 0.08);
+  border: 1px solid rgba(220, 38, 38, 0.25);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.settings-project-delete-input {
+  padding: 6px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 13px;
+  max-width: 360px;
+}
+.settings-project-delete-input:focus {
+  outline: 2px solid var(--color-danger);
+  outline-offset: -1px;
+}
+
+.ui-options-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ui-option label {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  cursor: pointer;
+}
+
+.ui-option input[type='checkbox'] {
+  margin-top: 2px;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.ui-option strong {
+  display: block;
+  font-weight: 500;
+}
+
+.ui-option p {
+  margin-top: 2px;
+}
+
+/* === Theme editor layout === */
+.theme-layout {
+  display: grid;
+  grid-template-columns: minmax(360px, 1fr) minmax(360px, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .theme-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* === Project workspace nav: grouped sidebar + mobile bottom-bar === */
+/* DEV follow-up: replaces the top-tabs nav with workflow-stage groups.
+   Desktop = left sidebar; mobile (< 768px) = bottom bar that opens a
+   sheet of the tools in the tapped group. */
+
+/* Workspace layout: sidebar flush against the viewport's left edge
+   (no card gutter), main content fills the rest. The whole thing
+   sits directly under the sticky global header — together they
+   feel more like a real workspace than a centered card. */
+.project-workspace {
+  gap: 0;
+}
+
+.workspace-layout {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 0;
+  align-items: stretch;
+  min-height: calc(100vh - 57px); /* viewport minus the 56px sticky header (+1 border) */
+}
+
+.workspace-sidebar {
+  position: sticky;
+  top: 56px; /* sit right under the global header */
+  align-self: start;
+  height: calc(100vh - 57px);
+  background: var(--color-surface);
+  border: none;
+  border-right: 1px solid var(--color-border);
+  border-radius: 0;
+  padding: 16px 10px;
+  overflow-y: auto;
+}
+
+.workspace-sidebar nav {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.workspace-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.workspace-group-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+  padding: 6px 10px 2px;
+}
+
+.workspace-group-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.workspace-link {
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 14px;
+  font-family: inherit;
+  color: var(--color-text);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.workspace-link:hover {
+  background: var(--color-bg);
+}
+
+.workspace-link:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+}
+
+.workspace-link-active {
+  background: var(--color-primary);
+  color: #fff;
+  font-weight: 500;
+}
+
+.workspace-link-active:hover {
+  background: var(--color-primary-hover);
+}
+
+.workspace-main {
+  min-width: 0; /* let inner grid/flex children shrink */
+  display: flex;
+  flex-direction: column;
+}
+
+.workspace-main .tab-content {
+  padding: 20px 24px 24px;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Compact toolbar replacing the old free-floating page-header. Sits
+   on top of the tab content as a thin row: back arrow → project
+   name → current section label, with the Export menu on the right.
+   Visually anchors to the global header above and the sidebar to
+   the left so the title doesn't feel orphaned. */
+.workspace-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 24px;
+  height: 56px;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.workspace-toolbar-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.workspace-toolbar-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  color: var(--color-text-muted);
+  text-decoration: none;
+  font-size: 18px;
+  line-height: 1;
+  transition: background-color 0.12s ease;
+}
+
+.workspace-toolbar-back:hover {
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+.workspace-toolbar-back:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+}
+
+.workspace-toolbar-name {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.workspace-toolbar-name h1 {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* inline rename of the project title. Read state looks
+   exactly like the static h1 (no extra decoration) except for a
+   subtle hover hint and focus ring; clicking flips to an input. */
+.editable-title {
+  cursor: text;
+  border-radius: 4px;
+  padding: 2px 4px;
+  margin: -2px -4px;
+}
+.editable-title:hover {
+  background: var(--color-surface-2, rgba(0, 0, 0, 0.04));
+}
+.editable-title:focus-visible {
+  outline: 2px solid var(--color-accent, #3b82f6);
+  outline-offset: -2px;
+}
+.editable-title-editing {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.editable-title-input {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.2;
+  padding: 2px 4px;
+  margin: -2px -4px;
+  border: 1px solid var(--color-border, #cbd5e1);
+  border-radius: 4px;
+  background: var(--color-surface, #fff);
+  color: inherit;
+  font-family: inherit;
+  width: 100%;
+  min-width: 120px;
+}
+.editable-title-input:focus {
+  outline: 2px solid var(--color-accent, #3b82f6);
+  outline-offset: -1px;
+}
+.editable-title-error {
+  font-size: 11px;
+}
+
+/* dedicated music panel. Mirrors the spacing of
+   HistoryTab + AudioTab so it feels consistent. */
+.music-tab header {
+  margin-bottom: 16px;
+}
+.music-upload {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.music-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.music-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 6px;
+  background: var(--color-surface, #fff);
+}
+.music-item-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.workspace-toolbar-desc {
+  display: none; /* keep the toolbar height stable; description belongs in a tooltip */
+}
+
+.workspace-toolbar-current {
+  font-size: 13px;
+  position: relative;
+  padding-left: 12px;
+}
+
+.workspace-toolbar-current::before {
+  content: '/';
+  position: absolute;
+  left: 0;
+  color: var(--color-border);
+}
+
+.workspace-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* presence chips for active collaborators. The
+   chips overlap slightly so a group of 4 occupies roughly the
+   width of two, keeping the toolbar uncluttered. */
+.presence-chips {
+  display: inline-flex;
+  align-items: center;
+  padding-left: 6px; /* room for the first chip's negative margin */
+}
+.presence-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-left: -6px;
+  border-radius: 50%;
+  border: 2px solid var(--surface, #fff);
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.25);
+  cursor: default;
+  user-select: none;
+}
+.presence-chip-overflow {
+  background-color: var(--text-muted, #94a3b8);
+  font-size: 10px;
+}
+
+/* Version history */
+.history-tab header {
+  margin-bottom: 16px;
+}
+.history-create {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.history-create .input {
+  flex: 1;
+}
+.history-list {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.history-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 6px;
+  background: var(--color-surface, #fff);
+}
+.history-item-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.history-item-meta > strong {
+  font-size: 14px;
+}
+.history-source {
+  align-self: flex-start;
+  display: inline-block;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--color-surface-2, #f1f5f9);
+}
+.history-source-auto {
+  background: #fef3c7;
+  color: #92400e;
+}
+.history-source-manual {
+  background: #dcfce7;
+  color: #166534;
+}
+.history-item-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* Some tab content (the graph) wants to fill the remaining viewport
+   height; let that bubble through workspace-main. */
+.workspace-main .tab-panel {
+  flex: 1;
+  min-height: 0;
+}
+
+@media (max-width: 600px) {
+  .workspace-toolbar {
+    padding: 0 12px;
+  }
+  .workspace-toolbar-current {
+    display: none; /* tab name is already shown in the mobile bottom-bar */
+  }
+}
+
+/* Mobile bottom-bar nav. Hidden on >= md. */
+.workspace-mobile-nav {
+  display: none;
+}
+
+.workspace-mobile-sheet-backdrop {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  .workspace-layout {
+    grid-template-columns: 1fr;
+  }
+  .workspace-sidebar {
+    display: none;
+  }
+  .workspace-main {
+    /* leave room so the bottom bar doesn't sit on top of content */
+    padding-bottom: 80px;
+  }
+  .workspace-mobile-nav {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: var(--color-surface);
+    border-top: 1px solid var(--color-border);
+    box-shadow: 0 -4px 10px -4px rgba(0, 0, 0, 0.08);
+    z-index: 50;
+  }
+  .workspace-mobile-tab {
+    padding: 12px 4px;
+    font-size: 12px;
+    font-weight: 500;
+    font-family: inherit;
+    color: var(--color-text-muted);
+    background: none;
+    border: none;
+    border-top: 2px solid transparent;
+    cursor: pointer;
+    min-height: 56px;
+  }
+  .workspace-mobile-tab:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: -2px;
+  }
+  .workspace-mobile-tab-active {
+    color: var(--color-primary);
+    border-top-color: var(--color-primary);
+  }
+  .workspace-mobile-sheet-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(17, 24, 39, 0.35);
+    z-index: 60;
+  }
+  .workspace-mobile-sheet {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 56px;
+    background: var(--color-surface);
+    border-top: 1px solid var(--color-border);
+    border-radius: 12px 12px 0 0;
+    padding: 16px 12px 20px;
+    box-shadow: 0 -8px 24px -8px rgba(0, 0, 0, 0.2);
+    z-index: 70;
+  }
+  .workspace-mobile-sheet-title {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--color-text-muted);
+    margin-bottom: 8px;
+  }
+  .workspace-mobile-sheet-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .workspace-mobile-sheet-link {
+    width: 100%;
+    text-align: left;
+    padding: 12px;
+    font-size: 16px;
+    font-family: inherit;
+    color: var(--color-text);
+    background: none;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    min-height: 44px;
+  }
+  .workspace-mobile-sheet-link:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: -2px;
+  }
+  .workspace-mobile-sheet-link-active {
+    background: var(--color-primary);
+    color: #fff;
+    font-weight: 500;
+  }
+}

@@ -1,0 +1,39 @@
+:: StoryTitle
+SugarCube Sample
+
+:: StoryData
+{"start":"Cave"}
+
+:: Cave [entrance dark]
+You stand at the mouth of a cave. A torch flickers on the wall.
+
+<<if $hasKey>>
+The lock is finally something you can open.
+<</if>>
+
+// This is a SugarCube-flavoured line comment; the parser should keep it in
+// content, not treat it as an emitter directive.
+
+[[Enter the cave->Corridor]]
+[[Turn back|Village]]
+
+:: Corridor
+The corridor bends left. You hear water.
+
+<<set $hasKey to true>>
+
+[[Follow the water->Waterfall]]
+
+:: Waterfall
+A curtain of falling water blocks the way.
+
+[[Waterfall<-Push through the mist]]
+
+:: Village
+Home again. Warm hearths and warm bread.
+
+:: Twee2WouldParseThisAsPassage
+This content contains a leading colon later on — not at the start:
+prices are :: complex.
+
+\:: This literal is a content line, not a header.

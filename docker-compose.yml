@@ -1,0 +1,64 @@
+services:
+  db:
+    image: postgres:16-alpine
+    ports:
+      - '5432:5432'
+    environment:
+      POSTGRES_USER: wanderline
+      POSTGRES_PASSWORD: wanderline_dev
+      POSTGRES_DB: wanderline
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U wanderline']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - '3001:3001'
+    volumes:
+      - ./backend:/app
+      - ./shared:/shared
+      - ./player-app:/player-app
+      - /player-app/node_modules
+      - ./uploads:/app/uploads
+      - ./exports:/app/exports
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+      - PORT=3001
+      - DATABASE_URL=postgresql://wanderline:wanderline_dev@db:5432/wanderline
+      - UPLOAD_DIR=/app/uploads
+      - BUILDS_DIR=/app/exports
+      - WHISPER_MODEL=base
+      - SESSION_SECRET=${SESSION_SECRET:?Set SESSION_SECRET in .env or environment}
+      - CORS_ORIGIN=http://localhost:3000,http://localhost:5173
+    command: ['sh', '/app/start-dev.sh']
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports:
+      - '3000:3000'
+    volumes:
+      - ./frontend:/app
+      - ./shared:/shared
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+      - VITE_API_URL=http://localhost:3001
+      - VITE_API_TARGET=http://backend:3001
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:

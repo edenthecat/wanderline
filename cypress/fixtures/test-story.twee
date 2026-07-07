@@ -1,0 +1,52 @@
+:: StoryTitle
+Test Twee Story
+
+:: StoryData
+{"start":"Start"}
+
+:: Start [intro]
+Hi, whoever's reading this. This is a test story for e2e testing.
+
+[[Enter site->Her]]
+[[Leave site->Credits]]
+
+:: Her
+I can't remember how I met her. Was it BEFORE or AFTER we moved?
+
+[[BEFORE|Ending]]
+[[AFTER|TellYou]]
+
+:: TellYou
+She was interesting. Her way of looking at the world ennobles it.
+
+[[Do they?|NoReason]]
+[[I don't know.|InfiniteGrace]]
+
+:: InfiniteGrace
+You know those kinds of people?
+
+[[I was thrown for a loop.|Thrown]]
+
+:: NoReason
+I couldn't stop myself from thinking: is she for real?
+
+[[I was thrown for a loop.|Thrown]]
+
+:: Thrown
+Anna is one of those people who's marked for tragedy.
+
+[[Marked for tragedy.|Marked]]
+
+:: Marked
+Bad things just happened to her.
+
+[[Credits]]
+
+:: Credits
+[[See you later, friend.|ActualCredits]]
+
+:: ActualCredits
+written and designed for testing
+
+:: Ending
+The end.

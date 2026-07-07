@@ -1,0 +1,53 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: wanderline
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env or environment}
+      POSTGRES_DB: wanderline
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U wanderline']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.prod
+    ports:
+      - '3001:3001'
+    volumes:
+      - uploads:/app/uploads
+      - exports:/app/exports
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - DATABASE_URL=postgresql://wanderline:${POSTGRES_PASSWORD}@db:5432/wanderline
+      - UPLOAD_DIR=/app/uploads
+      - BUILDS_DIR=/app/exports
+      - SESSION_SECRET=${SESSION_SECRET:?Set SESSION_SECRET in .env or environment}
+      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost}
+      # Transcription requires a separate model setup; see backend/Dockerfile.prod for details
+      - WHISPER_MODEL=base
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile.prod
+      args:
+        VITE_API_URL: ''
+    ports:
+      - '80:80'
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  uploads:
+  exports:
