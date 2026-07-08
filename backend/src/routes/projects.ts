@@ -24,6 +24,34 @@ export function createProjectsRouter(
     router.use('/:id', projectAccess);
   }
 
+  // Owner-or-admin check for destructive operations. `projectAccess`
+  // above only proves the caller is a collaborator on the project;
+  // deleting a project (which cascades to builds, audio, snapshots,
+  // and every collaborator) must be gated more tightly. Mirrors the
+  // `requireOwnerOrAdmin` helper the collaborators router uses for
+  // adding / removing collaborators.
+  async function requireOwnerOrAdmin(
+    req: Request,
+    res: Response,
+    projectId: string,
+  ): Promise<boolean> {
+    try {
+      const currentUser = req.user!;
+      if (currentUser.role === 'admin') return true;
+      const accessCheck = await pool.query(
+        `SELECT role FROM project_collaborators WHERE project_id = $1 AND user_id = $2`,
+        [projectId, currentUser.id],
+      );
+      if (accessCheck.rows[0]?.role === 'owner') return true;
+      res.status(403).json({ error: 'Only project owners can perform this action' });
+      return false;
+    } catch (err) {
+      req.log.error({ err }, 'Error checking owner access');
+      res.status(500).json({ error: 'Failed to verify access' });
+      return false;
+    }
+  }
+
   /**
    * @openapi
    * /projects:
@@ -367,6 +395,8 @@ export function createProjectsRouter(
   router.delete('/:id', async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
+
+      if (!(await requireOwnerOrAdmin(req, res, id))) return;
 
       // Snapshot related rows before deletion — the cascade removes them and
       // we need the filenames to clean up storage objects afterward.

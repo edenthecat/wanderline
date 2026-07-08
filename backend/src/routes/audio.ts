@@ -29,9 +29,23 @@ async function convertWavToMp3(inputPath: string, outputPath: string): Promise<v
 // Configure multer for audio file uploads
 const UPLOAD_DIR = process.env.UPLOAD_DIR || '/tmp/wanderline-uploads';
 
+// Project ids in the URL are always UUIDs generated server-side. We
+// don't accept anything else — a bare `..` (or any other non-UUID
+// value) would pass through requireProjectAccess for an admin because
+// that middleware doesn't validate id shape, and multer's destination
+// callback below runs BEFORE any route handler code. A path traversal
+// there would land the uploaded file outside the project's uploads
+// tree before the route body ever ran.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const storage = multer.diskStorage({
   destination: async (req, file, cb) => {
-    const projectDir = join(UPLOAD_DIR, req.params.id);
+    const projectId = req.params.id;
+    if (!UUID_RE.test(projectId)) {
+      cb(new Error('Invalid project id'), '');
+      return;
+    }
+    const projectDir = join(UPLOAD_DIR, projectId);
     if (!existsSync(projectDir)) {
       await mkdir(projectDir, { recursive: true });
     }

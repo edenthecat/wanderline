@@ -137,9 +137,16 @@ export function renderThemeCss(theme: ThemeConfig | undefined): string {
     blocks.push(`:root {\n${variableLines.join('\n')}\n}`);
   }
   if (theme.customCss && theme.customCss.trim()) {
-    // Strip </style> from author input so we can't be tricked into
-    // breaking out of the embedded <style> block.
-    blocks.push(theme.customCss.replace(/<\/style>/gi, ''));
+    // Strip </style...> from author input so we can't be tricked into
+    // breaking out of the embedded <style> block. HTML5 tokenizes an
+    // end-tag as `</` + tagname + zero-or-more whitespace + optional
+    // attributes + `>`, so the previous exact-`</style>` match let
+    // `</style   >`, `</style\n>`, and `</STYLE >` through and closed
+    // the block. Match the tokenizer's grammar instead of the literal
+    // string. Same fragment is written unchanged into the built game's
+    // dist/index.html (build-service.ts), where there is no CSP to
+    // catch a script that slips past this filter.
+    blocks.push(theme.customCss.replace(/<\/style(?=[\s/>])[\s\S]*?>/gi, ''));
   }
   return blocks.join('\n\n');
 }

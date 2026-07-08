@@ -182,11 +182,19 @@ const sessionMiddleware = session({
     createTableIfMissing: true,
   }),
   secret: (() => {
+    // Fail closed in every environment. The previous dev fallback string
+    // is world-visible in the public source, so any exposed instance
+    // running without SESSION_SECRET could have its session cookies
+    // forged for arbitrary users. NODE_ENV=test still needs a value —
+    // the test harness sets one in its bootstrap.
     const secret = process.env.SESSION_SECRET;
-    if (!secret && process.env.NODE_ENV === 'production') {
-      throw new Error('SESSION_SECRET environment variable must be set in production');
+    if (!secret) {
+      throw new Error(
+        'SESSION_SECRET environment variable must be set. ' +
+          'Generate one with: openssl rand -base64 32',
+      );
     }
-    return secret || 'wanderline-dev-secret-change-in-production';
+    return secret;
   })(),
   resave: false,
   saveUninitialized: false,

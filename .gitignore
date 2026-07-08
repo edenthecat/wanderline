@@ -16,10 +16,17 @@ build/
 .next/
 out/
 
-# Environment files
+# Environment files. Any concrete env file lives here — only the
+# `.example` variants are checked in. `.env.production*` blocks
+# both the exact `.env.production` and `.env.production.something`,
+# since instance operators are told to copy `.env.production.example`
+# and fill in real values.
 .env
 .env.local
 .env.*.local
+.env.production
+.env.production.*
+!.env.production.example
 
 # IDE
 .idea/
