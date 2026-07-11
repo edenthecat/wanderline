@@ -42,7 +42,11 @@ const storage = multer.diskStorage({
   destination: async (req, file, cb) => {
     const projectId = req.params.id;
     if (!UUID_RE.test(projectId)) {
-      cb(new Error('Invalid project id'), '');
+      // On the error path, multer ignores the directory arg — but we
+      // hand back UPLOAD_DIR (a safe, existing path) rather than ''
+      // (which would resolve relative to process.cwd() and be a
+      // surprising foot-gun if multer's error-handling ever changes).
+      cb(new Error('Invalid project id'), UPLOAD_DIR);
       return;
     }
     const projectDir = join(UPLOAD_DIR, projectId);
