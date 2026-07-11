@@ -93,7 +93,14 @@ export function buildPreviewCsp(nonce: string): string {
     `style-src 'self' 'nonce-${nonce}' https://fonts.googleapis.com`,
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data:",
-    "media-src 'self' blob:",
+    // media-src must include storage.googleapis.com because the
+    // preview-audio route (projects-preview.ts) 307-redirects to a
+    // signed GCS URL when USE_SIGNED_URL_DOWNLOADS=true. CSP evaluates
+    // media-src on the REDIRECT TARGET, not the initial URL, so
+    // without this host <audio> silently fails to load, oncanplaythrough
+    // never fires, and the preloader stays stuck on "Preparing..." —
+    // DEV-169.
+    "media-src 'self' blob: https://storage.googleapis.com",
     // renderThemeForPreview emits <link rel="preconnect"> to both
     // Google Fonts hosts — preconnect is governed by connect-src (not
     // font-src / style-src), so leaving them out here would emit

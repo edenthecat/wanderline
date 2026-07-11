@@ -92,6 +92,19 @@ describe('buildPreviewCsp', () => {
     expect(csp).toMatch(/font-src[^;]*https:\/\/fonts\.gstatic\.com/);
   });
 
+  it('allows storage.googleapis.com in media-src so signed-URL audio redirects load', () => {
+    // The preview-audio route 307-redirects to a signed
+    // https://storage.googleapis.com/... URL when
+    // USE_SIGNED_URL_DOWNLOADS=true. CSP evaluates media-src on the
+    // redirect target — without this the <audio> element silently
+    // fails to load, oncanplaythrough never fires, and the
+    // preloader stays stuck on "Preparing..." (DEV-169).
+    const csp = buildPreviewCsp('N');
+    expect(csp).toMatch(/media-src[^;]*'self'/);
+    expect(csp).toMatch(/media-src[^;]*blob:/);
+    expect(csp).toMatch(/media-src[^;]*https:\/\/storage\.googleapis\.com/);
+  });
+
   it('allows Google Fonts hosts in connect-src for the <link rel="preconnect"> hints', () => {
     // renderThemeForPreview emits `<link rel="preconnect">` to both
     // hosts. Browsers govern preconnect via connect-src (NOT style /
