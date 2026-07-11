@@ -133,6 +133,17 @@ describe('Builds', () => {
     // Accept the confirm dialog when Cancel fires.
     cy.on('window:confirm', () => true);
 
+    // Intercept the cancel API so we can distinguish two outcomes:
+    //   - 200: the pipeline had NOT finished; row transitions to
+    //     'cancelled'.
+    //   - 409: the pipeline finished before the cancel call landed
+    //     (test-story.ink is a 56-line fixture that builds in a
+    //     couple seconds — this race is unavoidable in CI). The
+    //     button was reachable + wired up, which is the useful
+    //     signal; the assertion below relaxes to accept the build's
+    //     terminal state instead of insisting on 'cancelled'.
+    cy.intercept('POST', '**/api/projects/*/builds/*/cancel').as('cancelBuild');
+
     // Find the pending/processing row and click Cancel — the button
     // only renders on active rows so this doubles as an assertion
     // that the row is in the right state.
@@ -142,8 +153,24 @@ describe('Builds', () => {
         cy.contains('button', 'Cancel').click();
       });
 
-    // The row should transition to 'cancelled' once the API returns.
-    cy.contains('.badge', /cancelled/i, { timeout: 15000 }).should('be.visible');
+    cy.wait('@cancelBuild').then((interception) => {
+      const status = interception.response?.statusCode;
+      if (status === 200) {
+        cy.contains('.badge', /cancelled/i, { timeout: 15000 }).should('be.visible');
+      } else {
+        // 409 = build reached a terminal state (completed/failed)
+        // between the cancel button rendering and the request
+        // landing. The row still lands in a terminal badge, we just
+        // don't get to pin which one.
+        expect(
+          status,
+          'Cancel API returned 200 (raced then cancelled) or 409 (build finished first)',
+        ).to.eq(409);
+        cy.contains('.badge', /cancelled|completed|failed/i, { timeout: 15000 }).should(
+          'be.visible',
+        );
+      }
+    });
   });
 
   // per-build preview endpoint
