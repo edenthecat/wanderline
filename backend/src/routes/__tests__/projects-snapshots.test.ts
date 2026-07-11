@@ -10,8 +10,25 @@ import express, { type RequestHandler } from 'express';
 import request from 'supertest';
 import { Router } from 'express';
 import type { Pool, PoolClient } from 'pg';
-import { mountSnapshotRoutes } from '../projects-snapshots.js';
-import * as collab from '../../services/collab-server.js';
+
+// Mock collab-server before importing the module under test.
+// jest.spyOn can't intercept an ESM namespace (which is read-only),
+// so we replace the module at resolve-time. This mirrors the
+// pattern in src/__tests__/sentry.test.ts.
+const mockInvalidateRoom = jest
+  .fn<(projectId: string) => Promise<boolean>>()
+  .mockResolvedValue(true);
+const mockFlushPendingShadowSave = jest
+  .fn<(projectId: string) => Promise<void>>()
+  .mockResolvedValue(undefined);
+jest.unstable_mockModule('../../services/collab-server.js', () => ({
+  invalidateRoom: mockInvalidateRoom,
+  flushPendingShadowSave: mockFlushPendingShadowSave,
+}));
+
+// Import after the mock is registered so the route picks up the
+// mocked functions.
+const { mountSnapshotRoutes } = await import('../projects-snapshots.js');
 
 interface QueryCall {
   text: string;
@@ -186,7 +203,7 @@ describe('snapshot routes', () => {
         return null;
       });
 
-      const invSpy = jest.spyOn(collab, 'invalidateRoom').mockResolvedValue(true);
+      mockInvalidateRoom.mockClear();
 
       const res = await request(makeApp(pool, { userId: 'u' })).post(
         `/api/projects/${VALID_PROJECT_ID}/snapshots/${VALID_SNAPSHOT_ID}/restore`,
@@ -222,8 +239,7 @@ describe('snapshot routes', () => {
       );
       expect(calls.some((c) => c.text.includes('INSERT INTO node_metadata'))).toBe(true);
 
-      expect(invSpy).toHaveBeenCalledWith(VALID_PROJECT_ID);
-      invSpy.mockRestore();
+      expect(mockInvalidateRoom).toHaveBeenCalledWith(VALID_PROJECT_ID);
       expect(client.release).toHaveBeenCalled();
     });
 

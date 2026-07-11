@@ -98,6 +98,30 @@ export function mountSnapshotRoutes(router: Router, pool: Pool): void {
    *   get:
    *     summary: List a project's snapshots, newest first.
    *     tags: [Snapshots]
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema: { type: string, format: uuid }
+   *     responses:
+   *       200:
+   *         description: Snapshots.
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 snapshots:
+   *                   type: array
+   *                   items:
+   *                     type: object
+   *                     properties:
+   *                       id: { type: string, format: uuid }
+   *                       label: { type: string }
+   *                       source: { type: string, enum: [manual, auto] }
+   *                       createdAt: { type: string, format: date-time }
+   *                       createdBy: { type: string, format: uuid, nullable: true }
+   *                       createdByName: { type: string, nullable: true }
    */
   router.get('/:id/snapshots', async (req: Request, res: Response) => {
     try {
@@ -126,6 +150,35 @@ export function mountSnapshotRoutes(router: Router, pool: Pool): void {
    *   post:
    *     summary: Capture the current state as a manual snapshot.
    *     tags: [Snapshots]
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema: { type: string, format: uuid }
+   *     requestBody:
+   *       required: false
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: object
+   *             properties:
+   *               label: { type: string, maxLength: 200 }
+   *     responses:
+   *       201:
+   *         description: Snapshot captured.
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 snapshot:
+   *                   type: object
+   *                   properties:
+   *                     id: { type: string, format: uuid }
+   *                     label: { type: string }
+   *                     source: { type: string, enum: [manual, auto] }
+   *                     createdAt: { type: string, format: date-time }
+   *       404: { description: Project not found. }
    */
   router.post('/:id/snapshots', async (req: Request, res: Response) => {
     try {
@@ -162,6 +215,25 @@ export function mountSnapshotRoutes(router: Router, pool: Pool): void {
    *       snapshot, then drops the live collab room so connected
    *       editors reconnect against the restored row.
    *     tags: [Snapshots]
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema: { type: string, format: uuid }
+   *       - in: path
+   *         name: snapshotId
+   *         required: true
+   *         schema: { type: string, format: uuid }
+   *     responses:
+   *       200:
+   *         description: Restored.
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 success: { type: boolean }
+   *       404: { description: Snapshot not found for this project. }
    */
   router.post('/:id/snapshots/:snapshotId/restore', async (req: Request, res: Response) => {
     const client = await pool.connect();
@@ -262,6 +334,25 @@ export function mountSnapshotRoutes(router: Router, pool: Pool): void {
    *   delete:
    *     summary: Delete a snapshot.
    *     tags: [Snapshots]
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema: { type: string, format: uuid }
+   *       - in: path
+   *         name: snapshotId
+   *         required: true
+   *         schema: { type: string, format: uuid }
+   *     responses:
+   *       200:
+   *         description: Deleted.
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 success: { type: boolean }
+   *       404: { description: Snapshot not found for this project. }
    */
   router.delete('/:id/snapshots/:snapshotId', async (req: Request, res: Response) => {
     try {

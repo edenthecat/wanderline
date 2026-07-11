@@ -767,7 +767,7 @@ export function createAudioRouter(pool: Pool): Router {
    *               properties:
    *                 success: { type: boolean }
    *                 swapped: { type: integer }
-   *       400: { description: Bad op (missing/invalid fields, unknown file, no matching assignment). }
+   *       400: { description: 'Bad op (missing/invalid fields, unknown file, no matching assignment).' }
    */
   router.post('/assignments/bulk-reassign', async (req: Request, res: Response) => {
     const { id } = req.params;

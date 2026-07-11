@@ -201,7 +201,7 @@ export function mountBuildRoutes(
    *         description: Dedup or idempotent hit (existing build returned).
    *       202:
    *         description: Queued.
-   *       400: { description: No story, malformed key, or all builds pinned. }
+   *       400: { description: 'No story, malformed key, or all builds pinned.' }
    *       404: { description: Project not found. }
    *       409: { description: A build is already in progress. }
    *       429: { description: Rate limit exceeded. }
