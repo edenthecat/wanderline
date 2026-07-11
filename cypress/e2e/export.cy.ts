@@ -44,17 +44,4 @@ describe.skip('Export', () => {
       expect(res.status).to.eq(200);
     });
   });
-
-  it('should generate script diff via API', () => {
-    cy.request('GET', `/api/projects/${projectId}/script-diff?format=json`).then((res) => {
-      expect(res.status).to.eq(200);
-    });
-  });
-
-  it('should generate HTML script diff report via API', () => {
-    cy.request('GET', `/api/projects/${projectId}/script-diff?format=html`).then((res) => {
-      expect(res.status).to.eq(200);
-      expect(res.headers['content-type']).to.include('text/html');
-    });
-  });
 });

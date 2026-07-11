@@ -4,7 +4,7 @@
 
 Since this plan was first drafted, several phases have shipped incrementally:
 
-- **Phase 1 (Extract Services) — DONE.** `story-data-builder.ts`, `audio-processor.ts`, `ink-converter.ts`, `diff-reporter.ts` all live in `backend/src/services/`. `projects.ts` is now 496 lines.
+- **Phase 1 (Extract Services) — DONE.** `story-data-builder.ts`, `audio-processor.ts`, `ink-converter.ts` all live in `backend/src/services/`. `projects.ts` is now 496 lines.
 - **Phase 2 (Split Routes) — DONE.** `projects-story.ts`, `projects-settings.ts`, `projects-export.ts`, `projects-builds.ts`, `projects-preview.ts`, `projects-snapshots.ts`, `projects-collaborators.ts` are all in place.
 - **Phase 4 (Player app) — PARTIALLY DONE.** The player is canonical (`player-app/`) and its pre-built `dist/` is baked into the image (see `PLAYER_APP_DIST` in `build-service.ts`). Not yet done: versioned bundles in GCS, SRI hashes, per-build player-version pinning.
 - **Everything else — NOT DONE.** Builds still run in-process (`executeBuild(...)` fired off with `.catch(...)` from the POST handler on `projects-builds.ts:258`); artifacts still live under `/tmp/wanderline-builds`; `MAX_BUILDS_PER_PROJECT = 5` is a hard constant; no `pinned` / `deleted_at` / `idempotency_key` / worker-lease columns; no signed-URL downloads; no SSE progress; no CSP on preview; no rate limits.
@@ -298,7 +298,7 @@ backend/src/routes/
   projects.ts           -- ~400 lines: CRUD only
   projects-story.ts     -- ink upload, story editing
   projects-settings.ts  -- settings get/patch
-  projects-export.ts    -- .wanderline archive, ink export, script-diff
+  projects-export.ts    -- .wanderline archive, ink export
   projects-builds.ts    -- build management routes
 
 backend/src/services/
@@ -307,7 +307,6 @@ backend/src/services/
   build-service.ts       -- orchestrates build pipeline
   preview-service.ts     -- generates preview HTML shell
   ink-converter.ts       -- extracted convertStoryGraphToInk()
-  diff-reporter.ts       -- extracted diff report generation
 ```
 
 ### API Endpoints
@@ -334,9 +333,8 @@ Order chosen so that in-request builds are eliminated before the surface area gr
 1. Create `story-data-builder.ts` — extract duplicated story data building
 2. Create `audio-processor.ts` — extract duplicated audio processing
 3. Create `ink-converter.ts` — extract `convertStoryGraphToInk()`
-4. Create `diff-reporter.ts` — extract diff report functions
-5. Update `projects.ts` to call services
-6. Bug fix: return proper 404/400 (via `StoryDataError`) instead of generic 500 for missing project / missing story
+4. Update `projects.ts` to call services
+5. Bug fix: return proper 404/400 (via `StoryDataError`) instead of generic 500 for missing project / missing story
 
 ### Phase 2: Split Routes
 1. Create `projects-story.ts` — move ink upload + story editing routes
