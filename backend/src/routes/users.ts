@@ -266,17 +266,19 @@ export function createUsersRouter(pool: Pool): Router {
 
       let result;
       if (lastAdminGuardNeeded && role !== 'admin') {
-        // Self-demote path: SELECT ... FOR UPDATE inside a transaction
-        // serializes concurrent demotes. The lock is on every currently
-        // active admin row, so a second self-demote can't observe the
-        // pre-decrement count.
+        // Self-demote path: lock every active-admin row inside a
+        // transaction so concurrent demotes serialize. Postgres does
+        // not allow FOR UPDATE with an aggregate function, so select
+        // the id column and count the rows in JS. When a second
+        // demote lands mid-flight it blocks on the first tx's row
+        // locks and observes the post-decrement count on unlock.
         const client = await pool.connect();
         try {
           await client.query('BEGIN');
-          const adminCount = await client.query(
-            "SELECT COUNT(*) as count FROM users WHERE role = 'admin' AND is_active = true FOR UPDATE",
+          const adminRows = await client.query(
+            "SELECT id FROM users WHERE role = 'admin' AND is_active = true FOR UPDATE",
           );
-          if (parseInt(adminCount.rows[0].count, 10) <= 1) {
+          if (adminRows.rowCount !== null && adminRows.rowCount <= 1) {
             await client.query('ROLLBACK');
             res.status(400).json({ error: 'Cannot demote the last admin' });
             return;
