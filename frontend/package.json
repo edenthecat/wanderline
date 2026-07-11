@@ -12,19 +12,19 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@codemirror/commands": "^6.10.3",
-    "@codemirror/language": "^6.12.3",
+    "@codemirror/commands": "^6.10.4",
+    "@codemirror/language": "^6.12.4",
     "@codemirror/lint": "^6.9.7",
     "@codemirror/search": "^6.7.1",
     "@codemirror/state": "^6.6.0",
-    "@codemirror/view": "^6.43.1",
+    "@codemirror/view": "^6.43.6",
     "@dagrejs/dagre": "^3.0.0",
     "@lezer/highlight": "^1.2.3",
-    "@sentry/react": "^10.57.0",
-    "@xyflow/react": "^12.11.0",
+    "@sentry/react": "^10.65.0",
+    "@xyflow/react": "^12.11.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^7.17.0",
+    "react-router-dom": "^7.18.1",
     "y-protocols": "^1.0.7",
     "y-websocket": "^3.0.0",
     "yjs": "^13.6.31"
@@ -39,6 +39,6 @@
     "jsdom": "^25.0.1",
     "typescript": "^6.0.3",
     "vite": "^5.4.0",
-    "vitest": "^4.1.8"
+    "vitest": "^4.1.10"
   }
 }
