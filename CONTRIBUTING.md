@@ -6,7 +6,7 @@ Thanks for looking at Wanderline. This is a small project maintained by one pers
 
 The project is a single npm-workspaces monorepo covering four packages:
 
-- `backend/` — Express API + Postgres (audio ingest, story graph, Whisper transcription, Yjs collab server)
+- `backend/` — Express API + Postgres (audio ingest, story graph, Yjs collab server)
 - `frontend/` — React editor UI (Vite)
 - `player-app/` — Standalone React app that plays generated stories
 - `shared/` — Cross-package types + helpers

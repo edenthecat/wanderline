@@ -44,9 +44,7 @@ RUN npm prune --omit=dev --workspace=@wanderline/backend --workspace=@wanderline
 # Stage 2: Production image
 FROM node:20-alpine
 
-# NOTE: This production image intentionally excludes whisper/transcription dependencies.
-# Whisper requires native build tools and a downloaded model that are too heavy for the
-# standard prod image. Transcription requires a separate dedicated service or setup.
+# ffmpeg is used at runtime to transcode uploaded WAV audio to MP3.
 RUN apk add --no-cache ffmpeg
 
 WORKDIR /app

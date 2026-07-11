@@ -1,7 +1,10 @@
 FROM node:20-alpine
 
-# Install FFmpeg, build tools for whisper.cpp, git, wget, and cmake
-RUN apk add --no-cache ffmpeg make g++ git wget cmake
+# ffmpeg is used at runtime to transcode uploaded WAV audio to MP3.
+# make/g++/python3 are kept for native npm modules (bcrypt in
+# particular) that fall back to compiling from source when a prebuilt
+# binary for the host arch isn't available on npm.
+RUN apk add --no-cache ffmpeg make g++ python3
 
 WORKDIR /app
 
@@ -14,11 +17,6 @@ RUN npm install
 # Copy source code
 COPY backend/ ./
 COPY shared/ ../shared/
-
-# Download Whisper model during build (takes a few minutes but only happens once)
-ARG WHISPER_MODEL=base
-ENV WHISPER_MODEL=${WHISPER_MODEL}
-RUN npm run download-whisper
 
 EXPOSE 3001
 

@@ -7,12 +7,6 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import {
-  triggerTranscription,
-  retryTranscription,
-  getTranscriptionStatus,
-  getWhisperModelStatus,
-} from '../services/transcription.js';
 import { getStorage, audioKey } from '../services/storage.js';
 import { buildMatchTables, matchAudioFile } from '../services/audio-matcher.js';
 
@@ -622,11 +616,6 @@ export function createAudioRouter(pool: Pool): Router {
       // Update project timestamp
       await pool.query('UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1', [id]);
 
-      // Trigger transcription for voiceover assignments (runs in background)
-      if (audioType === 'voiceover') {
-        triggerTranscription(pool, audioFileId, id);
-      }
-
       res.status(201).json({ assignment: result.rows[0] || { nodeId, audioType, audioFileId } });
     } catch (error) {
       req.log.error({ err: error }, 'Failed to assign audio');
@@ -816,7 +805,6 @@ export function createAudioRouter(pool: Pool): Router {
       }
 
       let swapped = 0;
-      const transcriptionTargets: string[] = [];
       for (const op of ops) {
         const del = await client.query(
           `DELETE FROM node_audio_assignments
@@ -841,34 +829,10 @@ export function createAudioRouter(pool: Pool): Router {
           [id, op.nodeId, op.audioType, op.toFileId],
         );
         swapped += 1;
-        if (op.audioType === 'voiceover') {
-          transcriptionTargets.push(op.toFileId);
-        }
       }
 
       await client.query('UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1', [id]);
       await client.query('COMMIT');
-
-      // Transcription is best-effort, runs in the background after the
-      // tx commits so a failure there doesn't roll back the swap.
-      // Critically: only kick off transcription for target files that
-      // don't already have one. triggerTranscription unconditionally
-      // sets status='processing' and re-runs whisper, which would
-      // wipe a completed transcription and burn CPU on every swap.
-      if (transcriptionTargets.length > 0) {
-        const uniqueTargets = Array.from(new Set(transcriptionTargets));
-        const statusRes = await pool.query<{ id: string; transcription_status: string | null }>(
-          `SELECT id, transcription_status FROM audio_files WHERE id = ANY($1::uuid[])`,
-          [uniqueTargets],
-        );
-        const needsTranscription = (status: string | null) =>
-          status === null || status === 'pending' || status === 'failed';
-        for (const row of statusRes.rows) {
-          if (needsTranscription(row.transcription_status)) {
-            triggerTranscription(pool, row.id, id);
-          }
-        }
-      }
 
       res.json({ success: true, swapped });
     } catch (error) {
@@ -1385,186 +1349,6 @@ export function createAudioRouter(pool: Pool): Router {
     } catch (error) {
       req.log.error({ err: error }, 'Failed to serve audio file');
       res.status(500).json({ error: 'Failed to serve audio file' });
-    }
-  });
-
-  // Get transcription status for an audio file
-  router.get('/transcription/:audioId', async (req: Request, res: Response) => {
-    try {
-      const { audioId } = req.params;
-
-      const status = await getTranscriptionStatus(pool, audioId);
-
-      if (!status) {
-        res.status(404).json({ error: 'Audio file not found' });
-        return;
-      }
-
-      res.json(status);
-    } catch (error) {
-      req.log.error({ err: error }, 'Failed to get transcription status');
-      res.status(500).json({ error: 'Failed to get transcription status' });
-    }
-  });
-
-  // Retry transcription for an audio file
-  router.post('/transcription/:audioId/retry', async (req: Request, res: Response) => {
-    try {
-      const { id, audioId } = req.params;
-
-      const result = await retryTranscription(pool, audioId, id);
-
-      if (result.success) {
-        res.json({ success: true, transcription: result.transcription });
-      } else {
-        res.status(500).json({ success: false, error: result.error });
-      }
-    } catch (error) {
-      req.log.error({ err: error }, 'Failed to retry transcription');
-      res.status(500).json({ error: 'Failed to retry transcription' });
-    }
-  });
-
-  // Get all transcriptions for a project (for diff export)
-  router.get('/transcriptions', async (req: Request, res: Response) => {
-    try {
-      const { id } = req.params;
-
-      const result = await pool.query(
-        `
-        SELECT
-          af.id,
-          af.original_name,
-          af.transcription,
-          af.transcription_status,
-          af.transcription_error,
-          naa.node_id,
-          naa.audio_type
-        FROM audio_files af
-        LEFT JOIN node_audio_assignments naa ON af.id = naa.audio_file_id
-        WHERE af.project_id = $1
-        ORDER BY naa.node_id
-      `,
-        [id],
-      );
-
-      res.json({ transcriptions: result.rows });
-    } catch (error) {
-      req.log.error({ err: error }, 'Failed to get transcriptions');
-      res.status(500).json({ error: 'Failed to get transcriptions' });
-    }
-  });
-
-  // Get transcription progress for project
-  router.get('/transcription-progress', async (req: Request, res: Response) => {
-    try {
-      const { id } = req.params;
-
-      const result = await pool.query(
-        `
-        SELECT
-          COUNT(*) as total,
-          COUNT(*) FILTER (WHERE transcription_status = 'completed') as completed,
-          COUNT(*) FILTER (WHERE transcription_status = 'processing') as processing,
-          COUNT(*) FILTER (WHERE transcription_status = 'pending' OR transcription_status IS NULL) as pending,
-          COUNT(*) FILTER (WHERE transcription_status = 'failed') as failed
-        FROM audio_files
-        WHERE project_id = $1
-      `,
-        [id],
-      );
-
-      const stats = result.rows[0];
-      const total = parseInt(stats.total);
-      const completed = parseInt(stats.completed);
-      const processing = parseInt(stats.processing);
-      const pending = parseInt(stats.pending);
-      const failed = parseInt(stats.failed);
-
-      res.json({
-        total,
-        completed,
-        processing,
-        pending,
-        failed,
-        percent: total > 0 ? Math.round((completed / total) * 100) : 0,
-        isRunning: processing > 0,
-      });
-    } catch (error) {
-      req.log.error({ err: error }, 'Failed to get transcription progress');
-      res.status(500).json({ error: 'Failed to get transcription progress' });
-    }
-  });
-
-  // Trigger transcription for all audio files in project
-  router.post('/transcribe-all', async (req: Request, res: Response) => {
-    try {
-      const { id } = req.params;
-
-      // Get all audio files that haven't been transcribed yet
-      const result = await pool.query(
-        `
-        SELECT id FROM audio_files
-        WHERE project_id = $1
-        AND (transcription_status IS NULL OR transcription_status IN ('pending', 'failed'))
-      `,
-        [id],
-      );
-
-      const audioIds = result.rows.map((r) => r.id);
-
-      if (audioIds.length === 0) {
-        res.json({ message: 'No audio files need transcription', queued: 0 });
-        return;
-      }
-
-      // Trigger transcription for each file (runs in background)
-      for (const audioId of audioIds) {
-        triggerTranscription(pool, audioId, id);
-      }
-
-      res.json({
-        message: `Queued ${audioIds.length} audio files for transcription`,
-        queued: audioIds.length,
-      });
-    } catch (error) {
-      req.log.error({ err: error }, 'Failed to trigger transcriptions');
-      res.status(500).json({ error: 'Failed to trigger transcriptions' });
-    }
-  });
-
-  // Get Whisper model status (download progress)
-  router.get('/whisper-status', async (req: Request, res: Response) => {
-    try {
-      const status = getWhisperModelStatus();
-      res.json(status);
-    } catch (error) {
-      req.log.error({ err: error }, 'Failed to get whisper status');
-      res.status(500).json({ error: 'Failed to get whisper status' });
-    }
-  });
-
-  // Clear all transcriptions for a project
-  router.post('/clear-transcriptions', async (req: Request, res: Response) => {
-    try {
-      const { id } = req.params;
-
-      const result = await pool.query(
-        `
-        UPDATE audio_files
-        SET transcription = NULL, transcription_status = 'pending', transcription_error = NULL
-        WHERE project_id = $1
-      `,
-        [id],
-      );
-
-      res.json({
-        message: `Cleared transcriptions for ${result.rowCount} audio files`,
-        cleared: result.rowCount,
-      });
-    } catch (error) {
-      req.log.error({ err: error }, 'Failed to clear transcriptions');
-      res.status(500).json({ error: 'Failed to clear transcriptions' });
     }
   });
 

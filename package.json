@@ -31,7 +31,6 @@
     "audio-narrative",
     "yjs",
     "collaborative-editor",
-    "whisper",
     "bluetooth"
   ],
   "license": "MIT",

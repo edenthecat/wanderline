@@ -8,12 +8,12 @@ Wanderline turns branching-narrative source files into audio-first, choice-drive
 
 The project is a single npm-workspaces monorepo covering four packages:
 
-| Package       | What it is                                                                                                                                                                                                 |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `backend/`    | Express + Postgres API. Ink / Twee parsers, story graph storage, [Whisper](https://github.com/ggerganov/whisper.cpp) transcription, audio ingest, Yjs collab server, build pipeline, GCS-backed downloads. |
-| `frontend/`   | React + Vite editor UI. Uploads, node-detail editor, real-time collaborative editing (Yjs), theme designer, preview.                                                                                       |
-| `player-app/` | Standalone React player. Ships as a static bundle inside every generated project. Handles playback, keyboard / MediaSession / wired-IEM headphone controls, save slots, and offline caching.               |
-| `shared/`     | Types + helpers cross-consumed by the three above.                                                                                                                                                         |
+| Package       | What it is                                                                                                                                                                                   |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `backend/`    | Express + Postgres API. Ink / Twee parsers, story graph storage, audio ingest, Yjs collab server, build pipeline, GCS-backed downloads.                                                      |
+| `frontend/`   | React + Vite editor UI. Uploads, node-detail editor, real-time collaborative editing (Yjs), theme designer, preview.                                                                         |
+| `player-app/` | Standalone React player. Ships as a static bundle inside every generated project. Handles playback, keyboard / MediaSession / wired-IEM headphone controls, save slots, and offline caching. |
+| `shared/`     | Types + helpers cross-consumed by the three above.                                                                                                                                           |
 
 The player runtime and editor are decoupled: the editor uploads source + audio; a build job produces a versioned player bundle + story data; the reader loads the bundle from the built project's URL.
 
@@ -21,6 +21,7 @@ The player runtime and editor are decoupled: the editor uploads source + audio; 
 
 - **Ink 3 + Twee 3 in the same editor.** The parser branch determines the source language and the emitter round-trips back to the format you uploaded (with cross-format export as an escape hatch).
 - **Audio-first playback.** Voiceover per node, background music per project, distinct indicators for each choice. Choice selection maps to configurable Bluetooth transport actions (`nexttrack` / `previoustrack` / `play`).
+- **Per-node captions.** Editors can attach a caption string to any node; the player displays it while audio plays and surfaces it as the MediaSession metadata title on the lock screen.
 - **Real-time collaborative editing.** Node content, choice text, and settings edits sync across every editor tab open on the project (Yjs + WebSocket + Postgres persistence via a shadow-saver).
 - **Theme designer.** Per-component CSS-variable overrides (page / header / storyCard / choiceButton / instructionsCard / startButton / settingsPanel / resumePicker / errorBanner) with a font picker (any Google Font), live preview, and light/dark surface variants.
 - **Build pipeline.** Each build is a pinnable, downloadable snapshot: story JSON + audio + player bundle + integrity hashes. Retention + soft-delete + idempotent dedup keep the pipeline fast under repeat edits.

@@ -87,7 +87,7 @@ echo "=== Deploying to Cloud Run: $SERVICE_NAME ==="
 # and we can't use `:` because Cloud SQL connection names contain colons.
 # `~` is safe — it doesn't appear in URLs, SHAs, bucket names, or paths
 # we use here.
-ENV_VARS="NODE_ENV=production~DB_USER=$DB_USER~DB_NAME=$DB_NAME~INSTANCE_CONNECTION_NAME=$INSTANCE_CONNECTION~UPLOAD_DIR=/tmp/uploads~BUILDS_DIR=/tmp/exports~WHISPER_MODEL=skip~STORAGE_BACKEND=gcs~GCS_BUCKET=$GCS_BUCKET~SENTRY_RELEASE=$(git rev-parse --short HEAD)~USE_SIGNED_URL_DOWNLOADS=true"
+ENV_VARS="NODE_ENV=production~DB_USER=$DB_USER~DB_NAME=$DB_NAME~INSTANCE_CONNECTION_NAME=$INSTANCE_CONNECTION~UPLOAD_DIR=/tmp/uploads~BUILDS_DIR=/tmp/exports~STORAGE_BACKEND=gcs~GCS_BUCKET=$GCS_BUCKET~SENTRY_RELEASE=$(git rev-parse --short HEAD)~USE_SIGNED_URL_DOWNLOADS=true"
 # USE_SIGNED_URL_DOWNLOADS=true turns on the signed-URL
 # 307 redirects for build downloads AND preview audio. Bytes go GCS →
 # client directly instead of GCS → Cloud Run → client, so egress leaves
