@@ -36,7 +36,10 @@ describe('Yjs live signals', () => {
     cy.get('[data-testid="yjs-status"]', { timeout: 10000 }).should('have.text', 'connected');
     // Switch to the Audio tab so AudioTab is mounted and listening.
     cy.contains('button', /audio/i).click();
-    cy.contains('Audio Files', { timeout: 10000 }).should('be.visible');
+    // AudioTab's mounted heading — case-sensitive substring per Cypress
+    // default. AudioTab currently renders `<h2>Audio files</h2>` (lower-
+    // case f); if the copy changes, sync here.
+    cy.contains('Audio files', { timeout: 10000 }).should('be.visible');
 
     // Stub the fetch endpoint so we can detect a re-fetch.
     cy.intercept('GET', `/api/projects/${projectId}/audio/assignments*`).as('refetchAssign');

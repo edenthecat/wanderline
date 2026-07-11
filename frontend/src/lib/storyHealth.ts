@@ -79,6 +79,13 @@ function countWords(s: string | undefined | null): number {
 }
 
 function hasOutgoing(node: StoryNode, graph: StoryGraph): boolean {
+  // A node with ANY choice — even one whose target is END/DONE —
+  // offers the reader a way to progress. Only nodes with neither
+  // choices, an explicit divert, nor a knot/stitch fall-through
+  // can actually trap the listener. `outgoingTargets` strips sinks
+  // for BFS purposes, so we check the raw choices array first before
+  // falling back to it.
+  if ((node.choices ?? []).length > 0) return true;
   return outgoingTargets(node, graph).length > 0;
 }
 

@@ -95,11 +95,20 @@ describe('Story graph view', () => {
     // _intro → her is the first choice in the fixture (auto-created
     // implicit start node, then "Enter site -> her"). Shift-clicking
     // both should produce a 2-node path with one highlighted edge.
+    // `force: true`: react-flow's minimap SVG (bottom-right of the
+    // viewport) can overlap the _intro card at the CI viewport size,
+    // and Cypress refuses to click covered elements even though the
+    // card is still visually / interactively reachable to a human
+    // and to react-flow's own pointer handler. The intent of this
+    // test is trace-highlighting, not "is Cypress's actionability
+    // heuristic happy" — bypass the check.
     cy.get('[data-testid="story-graph"]').contains('.graph-node-card', '_intro').click({
       shiftKey: true,
+      force: true,
     });
     cy.get('[data-testid="story-graph"]').contains('.graph-node-card', 'her').click({
       shiftKey: true,
+      force: true,
     });
     cy.get('[data-testid="story-graph"]').find('.graph-node-card.is-on-path').should('exist');
     cy.get('[data-testid="story-graph"]')

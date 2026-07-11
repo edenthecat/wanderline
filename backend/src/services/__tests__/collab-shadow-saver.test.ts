@@ -7,6 +7,7 @@
 // write (because the DB row was already correct), and `flush`
 // forces a synchronous write.
 
+import { jest } from '@jest/globals';
 import * as Y from 'yjs';
 import { CollabShadowSaver } from '../collab-shadow-saver.js';
 import { seedYDocFromStoryGraph } from '../yjs-story.js';

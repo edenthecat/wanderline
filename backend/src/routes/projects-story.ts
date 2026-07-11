@@ -304,7 +304,7 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
    *     responses:
    *       200:
    *         description: Parsed + persisted.
-   *       400: { description: Empty source, Twee 1 shape, or parse failure. }
+   *       400: { description: 'Empty source, Twee 1 shape, or parse failure.' }
    *       404: { description: Project not found. }
    */
   router.post('/:id/twine', async (req: Request, res: Response) => {
@@ -1077,7 +1077,7 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
    *               newId: { type: string }
    *     responses:
    *       200: { description: Renamed. }
-   *       400: { description: Bad request (empty ids, equal ids, unsafe name). }
+   *       400: { description: 'Bad request (empty ids, equal ids, unsafe name).' }
    *       404: { description: Story or old node not found. }
    *       409: { description: newId is already used by another node. }
    */
