@@ -1,31 +1,19 @@
 import { Router, Request, Response } from 'express';
 import { Pool } from 'pg';
+import type { RequireOwnerOrAdmin } from './projects.js';
 
-export function createCollaboratorsRouter(pool: Pool): Router {
+const COLLABORATORS_ERROR = 'Only project owners can manage collaborators';
+
+export function createCollaboratorsRouter(
+  pool: Pool,
+  sharedRequireOwnerOrAdmin: RequireOwnerOrAdmin,
+): Router {
   const router = Router({ mergeParams: true });
 
-  // Helper: check if current user is owner or admin
-  async function requireOwnerOrAdmin(
-    req: Request,
-    res: Response,
-    projectId: string,
-  ): Promise<boolean> {
-    try {
-      const currentUser = req.user!;
-      if (currentUser.role === 'admin') return true;
-      const accessCheck = await pool.query(
-        `SELECT role FROM project_collaborators WHERE project_id = $1 AND user_id = $2`,
-        [projectId, currentUser.id],
-      );
-      if (accessCheck.rows[0]?.role === 'owner') return true;
-      res.status(403).json({ error: 'Only project owners can manage collaborators' });
-      return false;
-    } catch (err) {
-      req.log.error({ err }, 'Error checking access');
-      res.status(500).json({ error: 'Failed to verify access' });
-      return false;
-    }
-  }
+  // Wrap the shared helper with this router's context-specific 403
+  // message so existing clients continue to see the same copy.
+  const requireOwnerOrAdmin = (req: Request, res: Response, projectId: string) =>
+    sharedRequireOwnerOrAdmin(req, res, projectId, COLLABORATORS_ERROR);
 
   /**
    * @openapi

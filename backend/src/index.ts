@@ -210,7 +210,7 @@ app.use(sessionMiddleware);
 // Database schema is initialized before the server starts listening (see bottom of file)
 
 // Auth middleware
-const { requireAuth, requireAdmin, requireProjectAccess, canAccessProject } =
+const { requireAuth, requireAdmin, requireProjectAccess, requireOwnerOrAdmin, canAccessProject } =
   createAuthMiddleware(pool);
 
 // Anyone who lands on the backend's /invite/:token (e.g. an admin
@@ -377,14 +377,14 @@ app.use(
   '/api/projects/:id/collaborators',
   requireAuth,
   requireProjectAccess,
-  createCollaboratorsRouter(pool),
+  createCollaboratorsRouter(pool, requireOwnerOrAdmin),
 );
 
 // Projects routes (auth required, project access checked per-route)
 app.use(
   '/api/projects',
   requireAuth,
-  createProjectsRouter(pool, requireProjectAccess, buildEnqueueLim),
+  createProjectsRouter(pool, requireProjectAccess, requireOwnerOrAdmin, buildEnqueueLim),
 );
 
 // Admin: Delete all audio files across all projects

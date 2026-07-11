@@ -12,9 +12,21 @@ import { BUILDS_DIR } from '../services/build-service.js';
 import { validateProject } from '../services/project-validator.js';
 import { getStorage, audioKey, buildArtifactKey, isStorageKey } from '../services/storage.js';
 
+// Signature of the shared requireOwnerOrAdmin helper from
+// middleware/auth.ts. Passed in via createProjectsRouter so both
+// this router and projects-collaborators.ts share the same
+// authorization query for destructive operations.
+export type RequireOwnerOrAdmin = (
+  req: Request,
+  res: Response,
+  projectId: string,
+  errorMessage?: string,
+) => Promise<boolean>;
+
 export function createProjectsRouter(
   pool: Pool,
-  projectAccess?: RequestHandler,
+  projectAccess: RequestHandler | undefined,
+  requireOwnerOrAdmin: RequireOwnerOrAdmin,
   buildEnqueueLimiter?: RequestHandler,
 ): Router {
   const router = Router();
@@ -22,34 +34,6 @@ export function createProjectsRouter(
   // Apply project access check to all routes with :id param
   if (projectAccess) {
     router.use('/:id', projectAccess);
-  }
-
-  // Owner-or-admin check for destructive operations. `projectAccess`
-  // above only proves the caller is a collaborator on the project;
-  // deleting a project (which cascades to builds, audio, snapshots,
-  // and every collaborator) must be gated more tightly. Mirrors the
-  // `requireOwnerOrAdmin` helper the collaborators router uses for
-  // adding / removing collaborators.
-  async function requireOwnerOrAdmin(
-    req: Request,
-    res: Response,
-    projectId: string,
-  ): Promise<boolean> {
-    try {
-      const currentUser = req.user!;
-      if (currentUser.role === 'admin') return true;
-      const accessCheck = await pool.query(
-        `SELECT role FROM project_collaborators WHERE project_id = $1 AND user_id = $2`,
-        [projectId, currentUser.id],
-      );
-      if (accessCheck.rows[0]?.role === 'owner') return true;
-      res.status(403).json({ error: 'Only project owners can perform this action' });
-      return false;
-    } catch (err) {
-      req.log.error({ err }, 'Error checking owner access');
-      res.status(500).json({ error: 'Failed to verify access' });
-      return false;
-    }
   }
 
   /**
