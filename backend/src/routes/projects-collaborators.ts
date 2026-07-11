@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { Pool } from 'pg';
-import type { RequireOwnerOrAdmin } from './projects.js';
+import type { RequireOwnerOrAdmin } from '../middleware/auth.js';
 
 const COLLABORATORS_ERROR = 'Only project owners can manage collaborators';
 

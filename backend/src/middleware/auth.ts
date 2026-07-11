@@ -22,6 +22,18 @@ declare global {
   }
 }
 
+/**
+ * Signature of the shared requireOwnerOrAdmin helper — exported so
+ * routers can accept it as a constructor parameter without importing
+ * from another router (which would create route-to-route coupling).
+ */
+export type RequireOwnerOrAdmin = (
+  req: Request,
+  res: Response,
+  projectId: string,
+  errorMessage?: string,
+) => Promise<boolean>;
+
 export function createAuthMiddleware(pool: Pool) {
   async function loadUser(req: Request): Promise<AuthUser | null> {
     if (!req.session?.userId) return null;

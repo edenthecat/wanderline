@@ -11,17 +11,7 @@ import { mountSnapshotRoutes } from './projects-snapshots.js';
 import { BUILDS_DIR } from '../services/build-service.js';
 import { validateProject } from '../services/project-validator.js';
 import { getStorage, audioKey, buildArtifactKey, isStorageKey } from '../services/storage.js';
-
-// Signature of the shared requireOwnerOrAdmin helper from
-// middleware/auth.ts. Passed in via createProjectsRouter so both
-// this router and projects-collaborators.ts share the same
-// authorization query for destructive operations.
-export type RequireOwnerOrAdmin = (
-  req: Request,
-  res: Response,
-  projectId: string,
-  errorMessage?: string,
-) => Promise<boolean>;
+import type { RequireOwnerOrAdmin } from '../middleware/auth.js';
 
 export function createProjectsRouter(
   pool: Pool,

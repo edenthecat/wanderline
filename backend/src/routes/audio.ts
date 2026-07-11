@@ -40,16 +40,11 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 const storage = multer.diskStorage({
   destination: async (req, file, cb) => {
-    const projectId = req.params.id;
-    if (!UUID_RE.test(projectId)) {
-      // On the error path, multer ignores the directory arg — but we
-      // hand back UPLOAD_DIR (a safe, existing path) rather than ''
-      // (which would resolve relative to process.cwd() and be a
-      // surprising foot-gun if multer's error-handling ever changes).
-      cb(new Error('Invalid project id'), UPLOAD_DIR);
-      return;
-    }
-    const projectDir = join(UPLOAD_DIR, projectId);
+    // req.params.id is guaranteed to be a UUID by the router-level
+    // middleware in createAudioRouter — bad ids get a clean 400 JSON
+    // before multer runs, so we can build the destination path
+    // straight from it here.
+    const projectDir = join(UPLOAD_DIR, req.params.id);
     if (!existsSync(projectDir)) {
       await mkdir(projectDir, { recursive: true });
     }
@@ -89,6 +84,22 @@ const upload = multer({
 
 export function createAudioRouter(pool: Pool): Router {
   const router = Router({ mergeParams: true });
+
+  // Validate the :id URL param as a real UUID before any route runs.
+  // This catches malformed ids at the router boundary so:
+  //  - multer's destination callback (which fires before the handler
+  //    body) always sees a well-formed id and never has to reject
+  //  - the caller gets a clean 400 JSON response instead of an
+  //    unhandled multer error bubbling up as a 500 / HTML page
+  //  - route bodies that pass the id straight into pg (`WHERE id = $1`)
+  //    don't need to individually guard against pg's uuid cast throwing
+  router.use((req: Request, res: Response, next) => {
+    if (!UUID_RE.test(req.params.id)) {
+      res.status(400).json({ error: 'Invalid project id' });
+      return;
+    }
+    next();
+  });
 
   // List audio files for a project
   /**
