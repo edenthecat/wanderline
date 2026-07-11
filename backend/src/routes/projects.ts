@@ -11,10 +11,12 @@ import { mountSnapshotRoutes } from './projects-snapshots.js';
 import { BUILDS_DIR } from '../services/build-service.js';
 import { validateProject } from '../services/project-validator.js';
 import { getStorage, audioKey, buildArtifactKey, isStorageKey } from '../services/storage.js';
+import type { RequireOwnerOrAdmin } from '../middleware/auth.js';
 
 export function createProjectsRouter(
   pool: Pool,
-  projectAccess?: RequestHandler,
+  projectAccess: RequestHandler | undefined,
+  requireOwnerOrAdmin: RequireOwnerOrAdmin,
   buildEnqueueLimiter?: RequestHandler,
 ): Router {
   const router = Router();
@@ -367,6 +369,8 @@ export function createProjectsRouter(
   router.delete('/:id', async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
+
+      if (!(await requireOwnerOrAdmin(req, res, id))) return;
 
       // Snapshot related rows before deletion — the cascade removes them and
       // we need the filenames to clean up storage objects afterward.

@@ -114,6 +114,42 @@ describe('renderThemeCss', () => {
     expect(css).toContain('body { color: red; }');
   });
 
+  // Regression: HTML5 tokenizes an end tag as `</` + tagname + any
+  // whitespace + optional attributes + `>`. The original strip only
+  // matched the exact literal `</style>`, so each of the variants
+  // below closed the injected <style> block and let the following
+  // <script> run in downloaded builds (which ship without CSP).
+  describe('customCss </style> stripping — end-tag grammar variants', () => {
+    it.each([
+      ['trailing space', 'body{}</style ><script>alert(1)</script>'],
+      ['multiple spaces + tab', 'body{}</style \t ><script>alert(1)</script>'],
+      ['embedded newline', 'body{}</style\n><script>alert(1)</script>'],
+      ['carriage return', 'body{}</style\r><script>alert(1)</script>'],
+      ['form feed', 'body{}</style\f><script>alert(1)</script>'],
+      ['attribute-like garbage', 'body{}</style foo="bar"><script>alert(1)</script>'],
+      ['slash before >', 'body{}</style/><script>alert(1)</script>'],
+      ['mixed case', 'body{}</StYlE><script>alert(1)</script>'],
+      ['uppercase', 'body{}</STYLE ><script>alert(1)</script>'],
+    ])('closes the <style> block via %s', (_desc, malicious) => {
+      const css = renderThemeCss({ customCss: malicious });
+      // Nothing that looks like an end-tag for <style> survives.
+      expect(css).not.toMatch(/<\/style[\s/>]/i);
+      // Defence-in-depth: the follow-up <script> stays as inert
+      // text (not our regex's job to strip, but confirming it
+      // wasn't spliced OUT of the block).
+      expect(css).toContain('<script>alert(1)</script>');
+    });
+
+    it('does NOT strip </styleblah> — that is not a style end tag in HTML5', () => {
+      // </styleblah> is treated as raw text inside <style>, not an
+      // end tag. Stripping it would corrupt legitimate content.
+      const css = renderThemeCss({
+        customCss: '.a::before { content: "</styleblah>"; }',
+      });
+      expect(css).toContain('</styleblah>');
+    });
+  });
+
   it('strips control characters and angle brackets from variable values', () => {
     const css = renderThemeCss({
       variables: {

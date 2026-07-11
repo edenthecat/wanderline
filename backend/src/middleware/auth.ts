@@ -22,6 +22,18 @@ declare global {
   }
 }
 
+/**
+ * Signature of the shared requireOwnerOrAdmin helper — exported so
+ * routers can accept it as a constructor parameter without importing
+ * from another router (which would create route-to-route coupling).
+ */
+export type RequireOwnerOrAdmin = (
+  req: Request,
+  res: Response,
+  projectId: string,
+  errorMessage?: string,
+) => Promise<boolean>;
+
 export function createAuthMiddleware(pool: Pool) {
   async function loadUser(req: Request): Promise<AuthUser | null> {
     if (!req.session?.userId) return null;
@@ -137,5 +149,41 @@ export function createAuthMiddleware(pool: Pool) {
     return collabResult.rows.length > 0;
   }
 
-  return { requireAuth, requireAdmin, requireProjectAccess, canAccessProject };
+  /**
+   * In-handler owner-or-admin check for destructive operations.
+   * Used by the routes that delete a project or manage collaborators.
+   * Sends the response (403 / 500) itself; callers just early-return
+   * on false. Optional errorMessage lets each caller keep its
+   * context-specific 403 copy.
+   */
+  async function requireOwnerOrAdmin(
+    req: Request,
+    res: Response,
+    projectId: string,
+    errorMessage = 'Only project owners can perform this action',
+  ): Promise<boolean> {
+    try {
+      const currentUser = req.user!;
+      if (currentUser.role === 'admin') return true;
+      const accessCheck = await pool.query(
+        `SELECT role FROM project_collaborators WHERE project_id = $1 AND user_id = $2`,
+        [projectId, currentUser.id],
+      );
+      if (accessCheck.rows[0]?.role === 'owner') return true;
+      res.status(403).json({ error: errorMessage });
+      return false;
+    } catch (err) {
+      req.log.error({ err }, 'Error checking owner access');
+      res.status(500).json({ error: 'Failed to verify access' });
+      return false;
+    }
+  }
+
+  return {
+    requireAuth,
+    requireAdmin,
+    requireProjectAccess,
+    requireOwnerOrAdmin,
+    canAccessProject,
+  };
 }

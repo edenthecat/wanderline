@@ -220,21 +220,21 @@ export function createUsersRouter(pool: Pool): Router {
       }
 
       // Role changes
+      let lastAdminGuardNeeded = false;
       if (role !== undefined && isAdmin) {
         if (typeof role !== 'string' || !['admin', 'editor'].includes(role)) {
           res.status(400).json({ error: 'Role must be "admin" or "editor"' });
           return;
         }
-        const isSelf = currentUser.id === userId;
-        if (isSelf) {
-          // Prevent last admin from demoting themselves
-          const adminCount = await pool.query(
-            "SELECT COUNT(*) as count FROM users WHERE role = 'admin' AND is_active = true",
-          );
-          if (parseInt(adminCount.rows[0].count, 10) <= 1 && role !== 'admin') {
-            res.status(400).json({ error: 'Cannot demote the last admin' });
-            return;
-          }
+        // The count-then-update pair for the last-admin check has to
+        // happen inside a single transaction with a row lock on the
+        // active-admin rows. Otherwise two admins concurrently demoting
+        // themselves both observe count=2, both pass the guard, and
+        // both UPDATEs commit — leaving zero active admins and locking
+        // every admin-only route until direct DB access repairs it.
+        // Actual lock happens in the transactional path below.
+        if (currentUser.id === userId) {
+          lastAdminGuardNeeded = true;
         }
         updates.push(`role = $${paramIndex++}`);
         values.push(role);
@@ -260,12 +260,40 @@ export function createUsersRouter(pool: Pool): Router {
       }
 
       values.push(userId);
-      const result = await pool.query(
-        `UPDATE users SET ${updates.join(', ')}
+      const updateSql = `UPDATE users SET ${updates.join(', ')}
          WHERE id = $${paramIndex}
-         RETURNING id, email, display_name, role, is_active, created_at, updated_at`,
-        values,
-      );
+         RETURNING id, email, display_name, role, is_active, created_at, updated_at`;
+
+      let result;
+      if (lastAdminGuardNeeded && role !== 'admin') {
+        // Self-demote path: lock every active-admin row inside a
+        // transaction so concurrent demotes serialize. Postgres does
+        // not allow FOR UPDATE with an aggregate function, so select
+        // the id column and count the rows in JS. When a second
+        // demote lands mid-flight it blocks on the first tx's row
+        // locks and observes the post-decrement count on unlock.
+        const client = await pool.connect();
+        try {
+          await client.query('BEGIN');
+          const adminRows = await client.query(
+            "SELECT id FROM users WHERE role = 'admin' AND is_active = true FOR UPDATE",
+          );
+          if (adminRows.rowCount !== null && adminRows.rowCount <= 1) {
+            await client.query('ROLLBACK');
+            res.status(400).json({ error: 'Cannot demote the last admin' });
+            return;
+          }
+          result = await client.query(updateSql, values);
+          await client.query('COMMIT');
+        } catch (err) {
+          await client.query('ROLLBACK').catch(() => undefined);
+          throw err;
+        } finally {
+          client.release();
+        }
+      } else {
+        result = await pool.query(updateSql, values);
+      }
 
       if (result.rows.length === 0) {
         res.status(404).json({ error: 'User not found' });

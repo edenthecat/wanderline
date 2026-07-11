@@ -23,8 +23,21 @@ async function convertWavToMp3(inputPath: string, outputPath: string): Promise<v
 // Configure multer for audio file uploads
 const UPLOAD_DIR = process.env.UPLOAD_DIR || '/tmp/wanderline-uploads';
 
+// Project ids in the URL are always UUIDs generated server-side. We
+// don't accept anything else — a bare `..` (or any other non-UUID
+// value) would pass through requireProjectAccess for an admin because
+// that middleware doesn't validate id shape, and multer's destination
+// callback below runs BEFORE any route handler code. A path traversal
+// there would land the uploaded file outside the project's uploads
+// tree before the route body ever ran.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const storage = multer.diskStorage({
   destination: async (req, file, cb) => {
+    // req.params.id is guaranteed to be a UUID by the router-level
+    // middleware in createAudioRouter — bad ids get a clean 400 JSON
+    // before multer runs, so we can build the destination path
+    // straight from it here.
     const projectDir = join(UPLOAD_DIR, req.params.id);
     if (!existsSync(projectDir)) {
       await mkdir(projectDir, { recursive: true });
@@ -65,6 +78,22 @@ const upload = multer({
 
 export function createAudioRouter(pool: Pool): Router {
   const router = Router({ mergeParams: true });
+
+  // Validate the :id URL param as a real UUID before any route runs.
+  // This catches malformed ids at the router boundary so:
+  //  - multer's destination callback (which fires before the handler
+  //    body) always sees a well-formed id and never has to reject
+  //  - the caller gets a clean 400 JSON response instead of an
+  //    unhandled multer error bubbling up as a 500 / HTML page
+  //  - route bodies that pass the id straight into pg (`WHERE id = $1`)
+  //    don't need to individually guard against pg's uuid cast throwing
+  router.use((req: Request, res: Response, next) => {
+    if (!UUID_RE.test(req.params.id)) {
+      res.status(400).json({ error: 'Invalid project id' });
+      return;
+    }
+    next();
+  });
 
   // List audio files for a project
   /**

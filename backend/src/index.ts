@@ -182,11 +182,19 @@ const sessionMiddleware = session({
     createTableIfMissing: true,
   }),
   secret: (() => {
+    // Fail closed in every environment. The previous dev fallback string
+    // is world-visible in the public source, so any exposed instance
+    // running without SESSION_SECRET could have its session cookies
+    // forged for arbitrary users. NODE_ENV=test still needs a value —
+    // the test harness sets one in its bootstrap.
     const secret = process.env.SESSION_SECRET;
-    if (!secret && process.env.NODE_ENV === 'production') {
-      throw new Error('SESSION_SECRET environment variable must be set in production');
+    if (!secret) {
+      throw new Error(
+        'SESSION_SECRET environment variable must be set. ' +
+          'Generate one with: openssl rand -base64 32',
+      );
     }
-    return secret || 'wanderline-dev-secret-change-in-production';
+    return secret;
   })(),
   resave: false,
   saveUninitialized: false,
@@ -202,7 +210,7 @@ app.use(sessionMiddleware);
 // Database schema is initialized before the server starts listening (see bottom of file)
 
 // Auth middleware
-const { requireAuth, requireAdmin, requireProjectAccess, canAccessProject } =
+const { requireAuth, requireAdmin, requireProjectAccess, requireOwnerOrAdmin, canAccessProject } =
   createAuthMiddleware(pool);
 
 // Anyone who lands on the backend's /invite/:token (e.g. an admin
@@ -369,14 +377,14 @@ app.use(
   '/api/projects/:id/collaborators',
   requireAuth,
   requireProjectAccess,
-  createCollaboratorsRouter(pool),
+  createCollaboratorsRouter(pool, requireOwnerOrAdmin),
 );
 
 // Projects routes (auth required, project access checked per-route)
 app.use(
   '/api/projects',
   requireAuth,
-  createProjectsRouter(pool, requireProjectAccess, buildEnqueueLim),
+  createProjectsRouter(pool, requireProjectAccess, requireOwnerOrAdmin, buildEnqueueLim),
 );
 
 // Admin: Delete all audio files across all projects
