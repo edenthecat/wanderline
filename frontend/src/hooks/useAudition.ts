@@ -62,12 +62,23 @@ export function useAudition(): UseAuditionResult {
       }
       a.pause();
       a.src = url;
-      a.currentTime = 0;
+      // Same guard as in stop() — some browsers throw on currentTime=
+      // before any media has loaded.
+      try {
+        a.currentTime = 0;
+      } catch {
+        // ignore
+      }
       setPlayingId(id);
       // play() returns a promise; if it rejects (autoplay policy,
       // network error, unsupported codec) reset state so the UI
-      // doesn't look like it's still playing.
-      a.play().catch(() => setPlayingId(null));
+      // doesn't look like it's still playing. Guard with a
+      // functional setState so a stale rejection from an earlier
+      // play() can't clear the state for a click that succeeded
+      // afterwards.
+      a.play().catch(() => {
+        setPlayingId((current) => (current === id ? null : current));
+      });
     },
     [ensureAudio, playingId, stop],
   );

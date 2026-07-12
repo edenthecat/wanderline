@@ -37,7 +37,7 @@ interface Props {
 export default function AudioTab({ projectId, storyGraph }: Props) {
   const { doc: yDoc } = useYjs(projectId);
   const audioSignalTick = useLiveSignal(yDoc, AUDIO_ASSIGNMENTS_SIGNAL);
-  const { playingId, toggle: toggleAudition } = useAudition();
+  const { playingId, toggle: toggleAudition, stop: stopAudition } = useAudition();
 
   const [audioFiles, setAudioFiles] = useState<AudioFile[]>([]);
   const [assignments, setAssignments] = useState<AudioAssignments>({});
@@ -236,6 +236,10 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
 
   async function handleDelete(audioId: string) {
     if (!confirm('Delete this audio file?')) return;
+    // Stop the inline preview if this is the file currently playing —
+    // otherwise loadAll() removes the row (and its Stop button) while
+    // the audio keeps playing with no visible way to stop it.
+    if (playingId === audioId) stopAudition();
     try {
       await deleteAudioFile(projectId, audioId);
       await loadAll();
@@ -249,6 +253,7 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
   // there is explicitly scoped to "files you've already classified as
   // orphans", so a second native modal each click is just friction.
   async function handleOrphanDelete(audioId: string) {
+    if (playingId === audioId) stopAudition();
     try {
       await deleteAudioFile(projectId, audioId);
       await loadAll();

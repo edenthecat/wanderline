@@ -124,6 +124,34 @@ describe('useAudition', () => {
     expect(result.current.playingId).toBeNull();
   });
 
+  it('does NOT clear playingId when an earlier stale rejection lands after a newer play', async () => {
+    // Race scenario: user clicks Play on A, A's play() promise is
+    // slow to resolve. Before it lands, the user clicks Play on B
+    // which succeeds. If A's eventual rejection cleared state
+    // blindly, B would look stopped in the UI even though it's
+    // still playing. Guard: only clear when the current id is the
+    // one whose play() rejected.
+    let rejectA: (reason: unknown) => void = () => undefined;
+    const pendingA = new Promise<void>((_, reject) => {
+      rejectA = reject;
+    });
+    fakeAudio.play = vi
+      .fn()
+      .mockImplementationOnce(() => pendingA) // A: stays pending
+      .mockImplementationOnce(() => Promise.resolve()); // B: succeeds
+    const { result } = renderHook(() => useAudition());
+    act(() => result.current.toggle('a', '/audio/a'));
+    act(() => result.current.toggle('b', '/audio/b'));
+    expect(result.current.playingId).toBe('b');
+    // Now A's play() rejects. Without the guard this would clear
+    // playingId even though B is playing.
+    await act(async () => {
+      rejectA(new Error('autoplay'));
+      await Promise.resolve();
+    });
+    expect(result.current.playingId).toBe('b');
+  });
+
   it('stop() halts playback and rewinds', () => {
     const { result } = renderHook(() => useAudition());
     act(() => result.current.toggle('a', '/audio/a'));
