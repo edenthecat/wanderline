@@ -1,9 +1,8 @@
-// audio audition — hear an uploaded clip without leaving the editor
-// (DEV-168). One Audio element per hook instance, one "now-playing"
-// id at a time; toggling to another id auto-stops the previous. The
-// caller passes a fully-resolved URL to `toggle(id, url)` — the hook
-// itself is transport-agnostic and doesn't know how the URL was
-// built.
+// audio audition — hear an uploaded clip without leaving the editor.
+// One Audio element per hook instance, one "now-playing" id at a
+// time; toggling to another id auto-stops the previous. The caller
+// passes a fully-resolved URL to `toggle(id, url)` — the hook itself
+// is transport-agnostic and doesn't know how the URL was built.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
