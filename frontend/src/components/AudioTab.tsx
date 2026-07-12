@@ -845,6 +845,7 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
                                         {isPlaying ? '■ Stop' : '▶ Play'}
                                       </button>
                                       <button
+                                        type="button"
                                         className="btn btn-ghost btn-sm btn-danger"
                                         onClick={() => handleDelete(f.id)}
                                         aria-label={`Delete audio file ${f.original_name}`}
