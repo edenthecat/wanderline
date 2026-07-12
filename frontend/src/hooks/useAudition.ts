@@ -56,7 +56,7 @@ export function useAudition(): UseAuditionResult {
     try {
       a.currentTime = 0;
     } catch {
-      // Some browsers throw on currentTime= before any media loaded.
+      // Some browsers throw on currentTime = 0 before any media loaded.
     }
     setPlayingId(null);
   }, []);
@@ -70,7 +70,7 @@ export function useAudition(): UseAuditionResult {
       }
       a.pause();
       a.src = url;
-      // Same guard as in stop() — some browsers throw on currentTime=
+      // Same guard as in stop() — some browsers throw on currentTime = 0
       // before any media has loaded.
       try {
         a.currentTime = 0;

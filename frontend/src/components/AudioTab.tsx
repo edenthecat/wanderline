@@ -10,6 +10,7 @@ import {
   fetchAudioCoverage,
   bulkUploadAudio,
   rematchUnassignedAudio,
+  audioFileUrl,
   type AudioFile,
   type AudioAssignments,
   type AudioCoverage,
@@ -266,6 +267,7 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
   // Bulk variant: skip the per-file loadAll so OrphanedAudioPanel can
   // delete N files in N HTTP calls instead of N + (N × ~3 coverage GETs).
   async function handleOrphanDeleteSilent(audioId: string) {
+    if (playingId === audioId) stopAudition();
     try {
       await deleteAudioFile(projectId, audioId);
     } catch (err) {
@@ -770,6 +772,7 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
                         const usages = usagesByFileId.get(f.id) ?? [];
                         const isExpanded = expandedFileId === f.id;
                         const isAssigned = usages.length > 0;
+                        const isPlaying = playingId === f.id;
                         const replacementCandidates = audioFiles.filter(
                           (other) => other.id !== f.id,
                         );
@@ -821,40 +824,30 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
                                 </time>
                               </td>
                               <td>
-                                {(() => {
-                                  const isPlaying = playingId === f.id;
-                                  return (
-                                    <>
-                                      <button
-                                        type="button"
-                                        className="btn btn-ghost btn-sm"
-                                        onClick={() =>
-                                          toggleAudition(
-                                            f.id,
-                                            `/api/projects/${projectId}/audio/file/${f.id}`,
-                                          )
-                                        }
-                                        aria-label={
-                                          isPlaying
-                                            ? `Stop previewing ${f.original_name}`
-                                            : `Preview ${f.original_name}`
-                                        }
-                                        aria-pressed={isPlaying}
-                                        data-testid="audio-preview-btn"
-                                      >
-                                        {isPlaying ? '■ Stop' : '▶ Play'}
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className="btn btn-ghost btn-sm btn-danger"
-                                        onClick={() => handleDelete(f.id)}
-                                        aria-label={`Delete audio file ${f.original_name}`}
-                                      >
-                                        Delete
-                                      </button>
-                                    </>
-                                  );
-                                })()}
+                                <button
+                                  type="button"
+                                  className="btn btn-ghost btn-sm"
+                                  onClick={() =>
+                                    toggleAudition(f.id, audioFileUrl(projectId, f.id))
+                                  }
+                                  aria-label={
+                                    isPlaying
+                                      ? `Stop previewing ${f.original_name}`
+                                      : `Preview ${f.original_name}`
+                                  }
+                                  aria-pressed={isPlaying}
+                                  data-testid="audio-preview-btn"
+                                >
+                                  {isPlaying ? '■ Stop' : '▶ Play'}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-ghost btn-sm btn-danger"
+                                  onClick={() => handleDelete(f.id)}
+                                  aria-label={`Delete audio file ${f.original_name}`}
+                                >
+                                  Delete
+                                </button>
                               </td>
                             </tr>
                             {isExpanded && isAssigned && (
