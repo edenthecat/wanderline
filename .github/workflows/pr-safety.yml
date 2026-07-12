@@ -27,7 +27,7 @@ jobs:
       # Set repo variable DEPENDENCY_REVIEW_ENFORCE=true (Settings → Variables)
       # to flip this to blocking once GHAS is on — no workflow edit needed.
       - name: Review dependency changes
-        uses: actions/dependency-review-action@v4
+        uses: actions/dependency-review-action@v5
         continue-on-error: ${{ vars.DEPENDENCY_REVIEW_ENFORCE != 'true' }}
         with:
           fail-on-severity: high
