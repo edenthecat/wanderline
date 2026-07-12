@@ -38,6 +38,15 @@ describe('Yjs presence chips', () => {
     cy.visit(`/projects/${projectId}?yjsDemo=1`);
     cy.get('[data-testid="yjs-status"]', { timeout: 10000 }).should('have.text', 'connected');
 
+    // YjsDemoField exposes __yjsDebug via a useEffect keyed on
+    // [doc, awareness]. React batches the state updates from useYjs'
+    // acquire effect and the provider status listener — the span
+    // rendering 'connected' can fire on the same tick as, or slightly
+    // BEFORE, YjsDemoField's own effect runs and installs __yjsDebug.
+    // Retry-wait until the debug hook is actually present so we
+    // aren't racing with the first paint after the status flip.
+    cy.window().its('__yjsDebug.awareness', { timeout: 5000 }).should('have.property', 'clientID');
+
     // Push a fake awareness entry under a clientID that ISN'T ours.
     // Awareness state is keyed by clientID; the local hook reads
     // awareness.getStates() and renders every non-local entry.
