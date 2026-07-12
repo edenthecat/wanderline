@@ -1,14 +1,8 @@
-// per-component theming. Single source of truth for the
-// set of components the editor can target, the CSS variables each
-// one exposes, and which player surfaces they map to.
-//
-// This file is duplicated across the three workspaces (backend +
-// frontend + player-app) because the existing `shared/` workspace
-// isn't wired into their dependency trees and threading it through
-// for one helper file is more friction than it's worth. The spec
-// rarely changes — if you edit it here, mirror the change into
-// backend/src/services/theme-components.ts and
-// player-app/src/theme-components.ts.
+// per-component theming. Single source of truth for the set of
+// components the editor can target, the CSS variables each one
+// exposes, and which player surfaces they map to. Consumed by the
+// backend theme-render service, the frontend ThemeTab, and the
+// player-app runtime.
 
 export type ComponentId =
   | 'page'

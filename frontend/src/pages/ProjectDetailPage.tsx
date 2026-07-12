@@ -323,8 +323,15 @@ export default function ProjectDetailPage() {
             </div>
           </header>
 
-          {/* phase 2 collab PoC; appears only on ?yjsDemo=1. */}
-          {typeof window !== 'undefined' &&
+          {/* Yjs collab test surface — only mounted in dev builds
+              when ?yjsDemo=1 is set. Tree-shaken out of the prod
+              bundle by the import.meta.env.DEV check on the
+              component itself (returns null in prod), and gated at
+              the mount site here on the URL param so it doesn't
+              render for typical dev sessions either. Cypress
+              collab specs pass ?yjsDemo=1 to opt in. */}
+          {import.meta.env.DEV &&
+            typeof window !== 'undefined' &&
             new URLSearchParams(window.location.search).get('yjsDemo') === '1' && (
               <YjsDemoField projectId={id} />
             )}

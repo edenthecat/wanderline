@@ -2,9 +2,12 @@ import { Router, Request, Response } from 'express';
 import { Pool } from 'pg';
 import bcrypt from 'bcrypt';
 import { logger } from '../logger.js';
-
-const BCRYPT_ROUNDS = 12;
-const MAX_PASSWORD_LENGTH = 128;
+import {
+  BCRYPT_ROUNDS,
+  MAX_DISPLAY_NAME_LENGTH,
+  validateCredentials,
+  validatePassword,
+} from '../services/credentials.js';
 
 export function createUsersRouter(pool: Pool): Router {
   const router = Router();
@@ -88,28 +91,13 @@ export function createUsersRouter(pool: Pool): Router {
    */
   router.post('/', async (req: Request, res: Response) => {
     try {
-      const { email, password, displayName, role } = req.body;
-
-      if (
-        typeof email !== 'string' ||
-        typeof password !== 'string' ||
-        typeof displayName !== 'string'
-      ) {
-        res.status(400).json({ error: 'Email, password, and display name must be strings' });
+      const creds = validateCredentials(req.body);
+      if (!creds.ok) {
+        res.status(400).json({ error: creds.error });
         return;
       }
-
-      if (!email.trim() || !password || !displayName.trim()) {
-        res.status(400).json({ error: 'Email, password, and display name are required' });
-        return;
-      }
-
-      if (password.length < 8 || password.length > MAX_PASSWORD_LENGTH) {
-        res.status(400).json({ error: 'Password must be between 8 and 128 characters' });
-        return;
-      }
-
-      const trimmedName = displayName.trim();
+      const { email, password, displayName: trimmedName } = creds;
+      const { role } = req.body;
 
       const userRole = role === 'admin' ? 'admin' : 'editor';
       const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
@@ -118,7 +106,7 @@ export function createUsersRouter(pool: Pool): Router {
         `INSERT INTO users (email, password_hash, display_name, role)
          VALUES ($1, $2, $3, $4)
          RETURNING id, email, display_name, role, is_active, created_at`,
-        [email.toLowerCase().trim(), passwordHash, trimmedName, userRole],
+        [email, passwordHash, trimmedName, userRole],
       );
 
       const user = result.rows[0];
@@ -202,21 +190,24 @@ export function createUsersRouter(pool: Pool): Router {
           res.status(400).json({ error: 'Display name cannot be empty' });
           return;
         }
+        if (trimmedName.length > MAX_DISPLAY_NAME_LENGTH) {
+          res
+            .status(400)
+            .json({ error: `Display name must be ${MAX_DISPLAY_NAME_LENGTH} characters or fewer` });
+          return;
+        }
         updates.push(`display_name = $${paramIndex++}`);
         values.push(trimmedName);
       }
 
       if (password !== undefined) {
-        if (
-          typeof password !== 'string' ||
-          password.length < 8 ||
-          password.length > MAX_PASSWORD_LENGTH
-        ) {
-          res.status(400).json({ error: 'Password must be between 8 and 128 characters' });
+        const passwordError = validatePassword(password);
+        if (passwordError) {
+          res.status(400).json({ error: passwordError });
           return;
         }
         updates.push(`password_hash = $${paramIndex++}`);
-        values.push(await bcrypt.hash(password, BCRYPT_ROUNDS));
+        values.push(await bcrypt.hash(password as string, BCRYPT_ROUNDS));
       }
 
       // Role changes

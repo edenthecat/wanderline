@@ -18,41 +18,11 @@
 
 import { useEffect, useRef, useState } from 'react';
 import * as Y from 'yjs';
+import { computeStringDiff } from '@wanderline/shared';
 
-// Smallest-diff insert/delete. Identical impl to shared/src/string-
-// diff.ts — kept inline here because the frontend workspace isn't
-// configured to consume the shared package through its dev / vite
-// resolution chain. The two copies aren't automatically diffed by
-// any test; a divergence would manifest as cursor jumps during
-// concurrent edits, which is loud + caught in two-tab spot checks.
-// If you change one, change the other by hand.
-//
-// exported so the vitest harness can pin the pure diff
-// behaviour (the harness caught the drift risk called out above).
-export function computeStringDiff(
-  before: string,
-  after: string,
-): { at: number; deleteLen: number; insert: string } {
-  if (before === after) return { at: 0, deleteLen: 0, insert: '' };
-  let commonPrefix = 0;
-  const maxPrefix = Math.min(before.length, after.length);
-  while (commonPrefix < maxPrefix && before[commonPrefix] === after[commonPrefix]) {
-    commonPrefix++;
-  }
-  let commonSuffix = 0;
-  while (
-    commonSuffix < before.length - commonPrefix &&
-    commonSuffix < after.length - commonPrefix &&
-    before[before.length - 1 - commonSuffix] === after[after.length - 1 - commonSuffix]
-  ) {
-    commonSuffix++;
-  }
-  return {
-    at: commonPrefix,
-    deleteLen: before.length - commonPrefix - commonSuffix,
-    insert: after.slice(commonPrefix, after.length - commonSuffix),
-  };
-}
+// Re-export so existing consumers (including the vitest harness that
+// pins the diff behaviour) don't need to change their import path.
+export { computeStringDiff };
 
 /**
  * Walk a Y.Text event's delta and translate the user's selection

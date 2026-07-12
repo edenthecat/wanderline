@@ -9,7 +9,7 @@
 // Module-level guard so multiple calls (HMR in dev) don't stack
 // listeners.
 
-import { COMPONENT_SPEC_BY_ID, componentVarName, type ComponentId } from './theme-components';
+import { COMPONENT_SPEC_BY_ID, componentVarName, type ComponentId } from '@wanderline/shared';
 
 const HOVER_OUTLINE = '0 0 0 2px var(--wl-accent, #4ecdc4)';
 

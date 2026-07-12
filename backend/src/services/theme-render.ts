@@ -7,7 +7,7 @@
 import { mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { logger } from '../logger.js';
-import { COMPONENT_SPECS, componentVarName, type ComponentTheming } from './theme-components.js';
+import { COMPONENT_SPECS, componentVarName, type ComponentTheming } from '@wanderline/shared';
 
 export interface ThemeVariables {
   pageBackground?: string;

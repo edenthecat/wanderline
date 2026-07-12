@@ -2,6 +2,7 @@
   "name": "@wanderline/shared",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "description": "Shared types and utilities for Wanderline",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

@@ -152,11 +152,18 @@ export function createCollaboratorsRouter(
       );
 
       res.status(201).json({ collaborator: result.rows[0] });
-    } catch (err: any) {
-      if (err.code === '23505') {
+    } catch (err) {
+      // pg error rows carry a numeric SQLSTATE in `.code`. Narrow off
+      // unknown via a shape check instead of `any` so a future
+      // refactor can't shadow a rethrown non-pg error.
+      const code =
+        err && typeof err === 'object' && 'code' in err && typeof err.code === 'string'
+          ? err.code
+          : null;
+      if (code === '23505') {
         return res.status(409).json({ error: 'User is already a collaborator on this project' });
       }
-      if (err.code === '23503') {
+      if (code === '23503') {
         return res.status(400).json({ error: 'Invalid project or user reference' });
       }
       req.log.error({ err }, 'Error adding collaborator');

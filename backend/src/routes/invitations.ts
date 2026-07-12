@@ -2,14 +2,11 @@ import { Router, Request, Response, RequestHandler } from 'express';
 import { Pool } from 'pg';
 import bcrypt from 'bcrypt';
 import { randomBytes, createHash } from 'crypto';
-
-const BCRYPT_ROUNDS = 12;
-const MIN_PASSWORD_LENGTH = 8;
-const MAX_PASSWORD_LENGTH = 128;
-// users.display_name is VARCHAR(255) in the baseline schema. Cap
-// client-supplied values BEFORE the INSERT so an oversized input
-// surfaces as a 400 instead of a 500 from a DB constraint violation.
-const MAX_DISPLAY_NAME_LENGTH = 255;
+import {
+  BCRYPT_ROUNDS,
+  MAX_DISPLAY_NAME_LENGTH,
+  validatePassword,
+} from '../services/credentials.js';
 // Tokens live for 7 days. Long enough that an admin can hand the link
 // over async without it expiring in the recipient's queue, short enough
 // that a leaked link doesn't stay valid forever.
@@ -414,14 +411,9 @@ export function createPublicInvitationsRouter(
             .json({ error: `Display name must be ${MAX_DISPLAY_NAME_LENGTH} characters or fewer` });
           return;
         }
-        if (
-          typeof password !== 'string' ||
-          password.length < MIN_PASSWORD_LENGTH ||
-          password.length > MAX_PASSWORD_LENGTH
-        ) {
-          res.status(400).json({
-            error: `Password must be between ${MIN_PASSWORD_LENGTH} and ${MAX_PASSWORD_LENGTH} characters`,
-          });
+        const passwordError = validatePassword(password);
+        if (passwordError) {
+          res.status(400).json({ error: passwordError });
           return;
         }
 

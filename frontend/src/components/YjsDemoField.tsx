@@ -1,10 +1,14 @@
-// minimal proof-of-concept that a text field bound
-// to Y.Text correctly mirrors edits across browsers. Rendered only
-// when the URL has ?yjsDemo=1 — keeps the experiment off the
-// regular editor surface while the wiring matures.
+// Yjs collab-editing test surface. Exposes the shared Doc + Awareness +
+// Y namespace on window.__yjsDebug so Cypress e2e specs can drive
+// "remote peer" edits deterministically, and renders a small
+// text-field wired to a demo Y.Text to give the specs a visible
+// binding target.
 //
-// Phase 3 replaces this with the real story-content surfaces;
-// nothing here ships to non-debug users.
+// Guarded by import.meta.env.DEV: in production builds Vite dead-
+// codes the whole return, so this component ships as `return null`
+// only (~zero bytes past the module wrapper). The mount site in
+// ProjectDetailPage additionally gates on ?yjsDemo=1 so it doesn't
+// render during ordinary dev sessions.
 
 import { useEffect } from 'react';
 import * as Y from 'yjs';
@@ -16,6 +20,13 @@ interface Props {
 }
 
 export default function YjsDemoField({ projectId }: Props) {
+  // Belt-and-braces: even if a caller forgets the DEV guard, this
+  // returns null in prod builds. Vite dead-codes the branch.
+  if (!import.meta.env.DEV) return null;
+  return <YjsDemoFieldInner projectId={projectId} />;
+}
+
+function YjsDemoFieldInner({ projectId }: Props) {
   const { doc, awareness, status } = useYjs(projectId);
   const yText = doc ? doc.getText('demo:projectName') : null;
   const { value, inputRef, onChange } = useYjsTextField(yText);

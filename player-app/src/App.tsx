@@ -1012,7 +1012,7 @@ export default function App() {
 
       // Max retries reached - show error
       const filename = currentNode.audio?.voiceover || 'unknown';
-      console.error('Audio load error:', { file: filename, url: audioUrl });
+      console.error('[wanderline] audio load error', { file: filename, url: audioUrl });
       setAudioError('Audio could not be loaded - check your connection');
       setRetryingAudio(false);
       setPlayerState('ready');
@@ -1042,7 +1042,7 @@ export default function App() {
           return;
         }
 
-        console.error('Audio playback failed:', err);
+        console.error('[wanderline] audio playback failed', err);
         setAudioError('Audio playback failed - check your connection');
         setRetryingAudio(false);
         setPlayerState('ready');

@@ -1,9 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { Pool } from 'pg';
 import bcrypt from 'bcrypt';
-
-const BCRYPT_ROUNDS = 12;
-const MAX_PASSWORD_LENGTH = 128;
+import { BCRYPT_ROUNDS, validateCredentials } from '../services/credentials.js';
 
 export function createSetupRouter(pool: Pool): Router {
   const router = Router();
@@ -81,28 +79,12 @@ export function createSetupRouter(pool: Pool): Router {
   router.post('/', async (req: Request, res: Response) => {
     const client = await pool.connect();
     try {
-      const { email, password, displayName } = req.body;
-
-      if (
-        typeof email !== 'string' ||
-        typeof password !== 'string' ||
-        typeof displayName !== 'string'
-      ) {
-        res.status(400).json({ error: 'Email, password, and display name must be strings' });
+      const creds = validateCredentials(req.body);
+      if (!creds.ok) {
+        res.status(400).json({ error: creds.error });
         return;
       }
-
-      if (!email.trim() || !password || !displayName.trim()) {
-        res.status(400).json({ error: 'Email, password, and display name are required' });
-        return;
-      }
-
-      if (password.length < 8 || password.length > MAX_PASSWORD_LENGTH) {
-        res.status(400).json({ error: 'Password must be between 8 and 128 characters' });
-        return;
-      }
-
-      const trimmedName = displayName.trim();
+      const { email, password, displayName: trimmedName } = creds;
 
       // Use serializable transaction to prevent race condition
       await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
@@ -120,7 +102,7 @@ export function createSetupRouter(pool: Pool): Router {
         `INSERT INTO users (email, password_hash, display_name, role)
          VALUES ($1, $2, $3, 'admin')
          RETURNING id, email, display_name, role`,
-        [email.toLowerCase().trim(), passwordHash, trimmedName],
+        [email, passwordHash, trimmedName],
       );
 
       const user = result.rows[0];
