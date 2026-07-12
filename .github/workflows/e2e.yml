@@ -67,7 +67,17 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        # `docker compose up --build` (step above) mounts the repo
+        # into the backend/frontend containers with a root-owned
+        # bind mount. That leaves backend/node_modules (and
+        # frontend/node_modules, when the compose file hoists it)
+        # owned by root on the runner's filesystem. The runner user
+        # then can't add/replace files there when `npm ci` needs to
+        # (e.g. any dependency bump). Fix the ownership before the
+        # install so npm can reify cleanly.
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" backend/node_modules frontend/node_modules player-app/node_modules shared/node_modules 2>/dev/null || true
+          npm ci
 
       - name: Run Cypress tests
         run: npx cypress run
