@@ -327,19 +327,17 @@ function bodyToContent(body: string): TextContent[] {
     .split(/\n\s*\n/)
     .map((chunk) => chunk.trim())
     .filter(Boolean)
-    .map(
-      (text): TextContent => ({
-        // reverse the `\::` line-start escape the emitter
-        // writes. Without this, a genuine `::` paragraph starts
-        // gets a permanent leading backslash on every round-trip.
-        // Only strips the ONE backslash that guards the delimiter;
-        // authors who want a literal `\::` at line-start can
-        // double-escape as `\\::` (and that only affects them if
-        // they later mutate the graph, which is a fine trade).
-        text: text.replace(/(^|\n)\\::/g, '$1::'),
-        tags: [],
-      }),
-    );
+    .map((text): TextContent => ({
+      // reverse the `\::` line-start escape the emitter
+      // writes. Without this, a genuine `::` paragraph starts
+      // gets a permanent leading backslash on every round-trip.
+      // Only strips the ONE backslash that guards the delimiter;
+      // authors who want a literal `\::` at line-start can
+      // double-escape as `\\::` (and that only affects them if
+      // they later mutate the graph, which is a fine trade).
+      text: text.replace(/(^|\n)\\::/g, '$1::'),
+      tags: [],
+    }));
 }
 
 export interface ParseTweeOptions {
