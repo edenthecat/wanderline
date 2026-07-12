@@ -12,7 +12,7 @@
     "test": "NODE_OPTIONS='--experimental-vm-modules' npx jest",
     "smoke": "tsx src/scripts/smoke-build.ts",
     "lint:openapi": "tsx src/scripts/lint-openapi.ts",
-    "migrate": "node-pg-migrate -d DATABASE_URL -m migrations -t pgmigrations",
+    "migrate": "node-pg-migrate -d DATABASE_URL -m migrations -t pgmigrations up",
     "migrate:create": "node-pg-migrate -d DATABASE_URL -m migrations create"
   },
   "dependencies": {
