@@ -98,8 +98,12 @@ export function buildPreviewCsp(nonce: string): string {
     // signed GCS URL when USE_SIGNED_URL_DOWNLOADS=true. CSP evaluates
     // media-src on the REDIRECT TARGET, not the initial URL, so
     // without this host <audio> silently fails to load, oncanplaythrough
-    // never fires, and the preloader stays stuck on "Preparing..." —
-    // DEV-169.
+    // doesn't fire on the successful path, and useAudioCache falls
+    // through to onerror + exponential backoff (~31s per file at
+    // MAX_RETRIES=5). Each preload eventually settles as `status: 'error'`
+    // and the preloader completes — but with every audio entry in the
+    // failed state, so the player lets the user in with no audio.
+    // That's DEV-169.
     "media-src 'self' blob: https://storage.googleapis.com",
     // renderThemeForPreview emits <link rel="preconnect"> to both
     // Google Fonts hosts — preconnect is governed by connect-src (not

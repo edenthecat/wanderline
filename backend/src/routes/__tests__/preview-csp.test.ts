@@ -96,9 +96,11 @@ describe('buildPreviewCsp', () => {
     // The preview-audio route 307-redirects to a signed
     // https://storage.googleapis.com/... URL when
     // USE_SIGNED_URL_DOWNLOADS=true. CSP evaluates media-src on the
-    // redirect target — without this the <audio> element silently
-    // fails to load, oncanplaythrough never fires, and the
-    // preloader stays stuck on "Preparing..." (DEV-169).
+    // redirect target — without this the <audio> element fails to
+    // load, useAudioCache retries with exponential backoff (~31s per
+    // file) then resolves each preload as `status: 'error'`. The
+    // preloader completes, but the player enters the story with all
+    // audio missing — DEV-169's observed behavior.
     const csp = buildPreviewCsp('N');
     expect(csp).toMatch(/media-src[^;]*'self'/);
     expect(csp).toMatch(/media-src[^;]*blob:/);
