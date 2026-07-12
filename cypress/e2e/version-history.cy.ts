@@ -50,9 +50,15 @@ describe('Version history', () => {
     cy.get('[data-testid="snapshot-row"]', { timeout: 5000 }).should('have.length.at.least', 2);
     cy.get('[data-testid="snapshot-row"]').first().should('contain.text', 'Before ink upload');
 
-    // Restore the manual "Pristine A" snapshot via direct API call —
-    // the UI restore button uses window.confirm which Cypress can
-    // auto-accept, but bypassing the dialog avoids the timing race.
+    // Intercept the restore POST so we can wait for it to actually
+    // land before asserting the story is restored. Without this, the
+    // follow-up GET fires while the restore is still in flight and
+    // sees STORY_B — a race that turned out to be intermittent
+    // enough to slip past several main-branch runs.
+    cy.intercept('POST', `**/api/projects/${projectId}/snapshots/*/restore`).as('restoreSnapshot');
+
+    // Restore the manual "Pristine A" snapshot. The UI uses
+    // window.confirm; stub it to auto-accept.
     cy.contains('[data-testid="snapshot-row"]', 'Pristine A')
       .find('[data-testid="snapshot-restore-btn"]')
       .then(($btn) => {
@@ -60,6 +66,8 @@ describe('Version history', () => {
         cy.stub(win, 'confirm').returns(true);
         cy.wrap($btn).click();
       });
+
+    cy.wait('@restoreSnapshot').its('response.statusCode').should('eq', 200);
 
     // After restore, the API should be returning STORY_A.
     cy.request('GET', `/api/projects/${projectId}`).then((resp) => {
