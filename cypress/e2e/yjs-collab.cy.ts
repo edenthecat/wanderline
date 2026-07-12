@@ -46,30 +46,40 @@ describe('Yjs text-field binding', () => {
     // mutation NOT originating from the bound input still
     // surfaces in the input. The backend collab tests already
     // verify the two-peer wire path.
-    cy.visit(`/projects/${projectId}?yjsDemo=1`);
-    cy.get('[data-testid="yjs-status"]', { timeout: 5000 }).should('have.text', 'connected');
+    //
+    // Use a fresh project — the previous test in this describe
+    // typed 'hello from cypress' into the shared Y.Text via the
+    // input, which the shadow-saver then persisted server-side.
+    // Re-using that projectId here means the local delete+insert
+    // races with a server-sync of the old state, and the input
+    // ends up as `'from peer' + 'hello from cypress'`.
+    cy.apiCreateProject('Yjs Peer Propagation Test').then((freshId) => {
+      cy.visit(`/projects/${freshId}?yjsDemo=1`);
+      cy.get('[data-testid="yjs-status"]', { timeout: 5000 }).should('have.text', 'connected');
 
-    cy.window().should('have.property', '__yjsDebug');
-    cy.window().then((win) => {
-      const debug = (win as unknown as { __yjsDebug: { doc: { getText: (k: string) => unknown } } })
-        .__yjsDebug;
-      const t = debug.doc.getText('demo:projectName') as {
-        length: number;
-        delete: (i: number, n: number) => void;
-        insert: (i: number, s: string) => void;
-      };
-      // Simulate a peer write: a transaction with a non-input
-      // origin (Yjs sees this just like a remote update).
-      (
-        debug.doc as unknown as {
-          transact: (fn: () => void, origin: string) => void;
-        }
-      ).transact(() => {
-        t.delete(0, t.length);
-        t.insert(0, 'from peer');
-      }, 'simulated-peer');
+      cy.window().should('have.property', '__yjsDebug');
+      cy.window().then((win) => {
+        const debug = (
+          win as unknown as { __yjsDebug: { doc: { getText: (k: string) => unknown } } }
+        ).__yjsDebug;
+        const t = debug.doc.getText('demo:projectName') as {
+          length: number;
+          delete: (i: number, n: number) => void;
+          insert: (i: number, s: string) => void;
+        };
+        // Simulate a peer write: a transaction with a non-input
+        // origin (Yjs sees this just like a remote update).
+        (
+          debug.doc as unknown as {
+            transact: (fn: () => void, origin: string) => void;
+          }
+        ).transact(() => {
+          t.delete(0, t.length);
+          t.insert(0, 'from peer');
+        }, 'simulated-peer');
+      });
+
+      cy.get('[data-testid="yjs-demo-input"]', { timeout: 5000 }).should('have.value', 'from peer');
     });
-
-    cy.get('[data-testid="yjs-demo-input"]', { timeout: 5000 }).should('have.value', 'from peer');
   });
 });
