@@ -23,12 +23,15 @@ link_shared_into() {
   fi
 }
 link_shared_into /app
-link_shared_into /player-app
 
-# Build player-app if dist doesn't exist (for preview serving)
+# Build player-app if dist doesn't exist (for preview serving).
+# Symlink shared AFTER npm install so the install doesn't wipe the
+# node_modules dir we just prepared.
 if [ -d /player-app ] && [ ! -d /player-app/dist ]; then
   echo "Building player-app..."
-  cd /player-app && npm install --silent --no-package-lock && npm run build
+  cd /player-app && npm install --silent --no-package-lock
+  link_shared_into /player-app
+  npm run build
   echo "Player-app built successfully"
   cd /app
 fi
