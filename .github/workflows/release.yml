@@ -145,19 +145,16 @@ jobs:
           done
           docker exec pg pg_isready -U wanderline
           # The backend image's WORKDIR is /app (Dockerfile.prod), but
-          # the `migrate` npm script lives in backend/package.json —
+          # the `migrate` npm script lives in backend/package.json — so
           # `npm run migrate` at /app fails with 'Missing script:
-          # migrate'. Also, node-pg-migrate now requires an explicit
-          # action arg (up|down|create|redo) — omitting it prints the
-          # help text and exits 1. Fix both: cd into /app/backend
-          # first, then pass `up` through npm's `--` passthrough.
-          # See instance-repo scripts/run-migrations.sh for the same
-          # fix on the deployment side.
+          # migrate'. cd into /app/backend first via a shell wrapper.
+          # The migrate script itself now bakes in the `up` action, so
+          # no `--` passthrough needed here.
           docker run --rm --network wanderline-smoke \
             -e DATABASE_URL='postgres://wanderline:wanderline@pg:5432/wanderline' \
             --entrypoint sh \
             ghcr.io/${{ github.repository_owner }}/wanderline-backend:${{ steps.version.outputs.version }} \
-            -c 'cd /app/backend && npm run migrate -- up'
+            -c 'cd /app/backend && npm run migrate'
           # Confirm the pgmigrations bookkeeping table shows a non-zero
           # migration count — proves node-pg-migrate actually ran.
           COUNT=$(docker exec pg psql -U wanderline -d wanderline -tAc 'SELECT count(*) FROM pgmigrations')
