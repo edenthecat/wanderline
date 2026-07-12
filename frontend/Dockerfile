@@ -19,6 +19,16 @@ RUN npm install
 COPY frontend/ ./
 COPY shared/ ../shared/
 
+# Make @wanderline/shared resolvable inside the container. Same
+# rationale as backend/start-dev.sh: this container installs from
+# frontend/package.json alone, no workspace context, so npm doesn't
+# know about the shared package unless we symlink it into place.
+# The bind mount at runtime replaces /shared with the host copy —
+# the symlink target still resolves so the dev flow keeps working.
+COPY frontend/docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+
 EXPOSE 3000
 
+ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["npm", "run", "dev"]
