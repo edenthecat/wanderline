@@ -20,6 +20,7 @@ import {
 import OrphanedAudioPanel from './OrphanedAudioPanel';
 import { useYjs } from '../hooks/useYjs';
 import { bumpLiveSignal, useLiveSignal } from '../hooks/useLiveSignal';
+import { useAudition } from '../hooks/useAudition';
 
 const AUDIO_ASSIGNMENTS_SIGNAL = 'audio-assignments';
 
@@ -36,6 +37,7 @@ interface Props {
 export default function AudioTab({ projectId, storyGraph }: Props) {
   const { doc: yDoc } = useYjs(projectId);
   const audioSignalTick = useLiveSignal(yDoc, AUDIO_ASSIGNMENTS_SIGNAL);
+  const { playingId, toggle: toggleAudition } = useAudition();
 
   const [audioFiles, setAudioFiles] = useState<AudioFile[]>([]);
   const [assignments, setAssignments] = useState<AudioAssignments>({});
@@ -814,13 +816,39 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
                                 </time>
                               </td>
                               <td>
-                                <button
-                                  className="btn btn-ghost btn-sm btn-danger"
-                                  onClick={() => handleDelete(f.id)}
-                                  aria-label={`Delete audio file ${f.original_name}`}
-                                >
-                                  Delete
-                                </button>
+                                {(() => {
+                                  const isPlaying = playingId === f.id;
+                                  return (
+                                    <>
+                                      <button
+                                        type="button"
+                                        className="btn btn-ghost btn-sm"
+                                        onClick={() =>
+                                          toggleAudition(
+                                            f.id,
+                                            `/api/projects/${projectId}/audio/file/${f.id}`,
+                                          )
+                                        }
+                                        aria-label={
+                                          isPlaying
+                                            ? `Stop previewing ${f.original_name}`
+                                            : `Preview ${f.original_name}`
+                                        }
+                                        aria-pressed={isPlaying}
+                                        data-testid="audio-preview-btn"
+                                      >
+                                        {isPlaying ? '■ Stop' : '▶ Play'}
+                                      </button>
+                                      <button
+                                        className="btn btn-ghost btn-sm btn-danger"
+                                        onClick={() => handleDelete(f.id)}
+                                        aria-label={`Delete audio file ${f.original_name}`}
+                                      >
+                                        Delete
+                                      </button>
+                                    </>
+                                  );
+                                })()}
                               </td>
                             </tr>
                             {isExpanded && isAssigned && (
