@@ -325,6 +325,16 @@ export function fetchAudioFiles(projectId: string): Promise<{ audioFiles: AudioF
   return request(`/projects/${projectId}/audio`);
 }
 
+/**
+ * URL to the raw audio stream for a single file. Used by inline
+ * audition and any other <audio src=…> consumer that doesn't go
+ * through the JSON request helper. Centralized here so a base-path
+ * change (e.g. an nginx prefix) only touches one place.
+ */
+export function audioFileUrl(projectId: string, audioId: string): string {
+  return `${API_BASE}/projects/${projectId}/audio/file/${audioId}`;
+}
+
 export async function uploadAudioFile(
   projectId: string,
   file: File,

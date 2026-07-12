@@ -10,6 +10,7 @@ import {
   fetchAudioCoverage,
   bulkUploadAudio,
   rematchUnassignedAudio,
+  audioFileUrl,
   type AudioFile,
   type AudioAssignments,
   type AudioCoverage,
@@ -20,6 +21,7 @@ import {
 import OrphanedAudioPanel from './OrphanedAudioPanel';
 import { useYjs } from '../hooks/useYjs';
 import { bumpLiveSignal, useLiveSignal } from '../hooks/useLiveSignal';
+import { useAudition } from '../hooks/useAudition';
 
 const AUDIO_ASSIGNMENTS_SIGNAL = 'audio-assignments';
 
@@ -36,6 +38,7 @@ interface Props {
 export default function AudioTab({ projectId, storyGraph }: Props) {
   const { doc: yDoc } = useYjs(projectId);
   const audioSignalTick = useLiveSignal(yDoc, AUDIO_ASSIGNMENTS_SIGNAL);
+  const { playingId, toggle: toggleAudition, stop: stopAudition } = useAudition();
 
   const [audioFiles, setAudioFiles] = useState<AudioFile[]>([]);
   const [assignments, setAssignments] = useState<AudioAssignments>({});
@@ -234,6 +237,10 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
 
   async function handleDelete(audioId: string) {
     if (!confirm('Delete this audio file?')) return;
+    // Stop the inline preview if this is the file currently playing —
+    // otherwise loadAll() removes the row (and its Stop button) while
+    // the audio keeps playing with no visible way to stop it.
+    if (playingId === audioId) stopAudition();
     try {
       await deleteAudioFile(projectId, audioId);
       await loadAll();
@@ -247,6 +254,7 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
   // there is explicitly scoped to "files you've already classified as
   // orphans", so a second native modal each click is just friction.
   async function handleOrphanDelete(audioId: string) {
+    if (playingId === audioId) stopAudition();
     try {
       await deleteAudioFile(projectId, audioId);
       await loadAll();
@@ -259,6 +267,7 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
   // Bulk variant: skip the per-file loadAll so OrphanedAudioPanel can
   // delete N files in N HTTP calls instead of N + (N × ~3 coverage GETs).
   async function handleOrphanDeleteSilent(audioId: string) {
+    if (playingId === audioId) stopAudition();
     try {
       await deleteAudioFile(projectId, audioId);
     } catch (err) {
@@ -763,6 +772,7 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
                         const usages = usagesByFileId.get(f.id) ?? [];
                         const isExpanded = expandedFileId === f.id;
                         const isAssigned = usages.length > 0;
+                        const isPlaying = playingId === f.id;
                         const replacementCandidates = audioFiles.filter(
                           (other) => other.id !== f.id,
                         );
@@ -815,6 +825,23 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
                               </td>
                               <td>
                                 <button
+                                  type="button"
+                                  className="btn btn-ghost btn-sm"
+                                  onClick={() =>
+                                    toggleAudition(f.id, audioFileUrl(projectId, f.id))
+                                  }
+                                  aria-label={
+                                    isPlaying
+                                      ? `Stop previewing ${f.original_name}`
+                                      : `Preview ${f.original_name}`
+                                  }
+                                  aria-pressed={isPlaying}
+                                  data-testid="audio-preview-btn"
+                                >
+                                  {isPlaying ? '■ Stop' : '▶ Play'}
+                                </button>
+                                <button
+                                  type="button"
                                   className="btn btn-ghost btn-sm btn-danger"
                                   onClick={() => handleDelete(f.id)}
                                   aria-label={`Delete audio file ${f.original_name}`}
