@@ -3,9 +3,11 @@
     "target": "ES2020",
     "lib": ["ES2020", "DOM", "DOM.Iterable"],
     "types": ["cypress"],
-    "moduleResolution": "node",
+    "module": "CommonJS",
+    "moduleResolution": "node10",
     "esModuleInterop": true,
-    "isolatedModules": false
+    "isolatedModules": false,
+    "ignoreDeprecations": "6.0"
   },
   "include": ["**/*.ts"]
 }
