@@ -360,20 +360,30 @@ export async function reconcileSoftDeletedBuilds(pool: Pool): Promise<void> {
  */
 export async function executeBuild(pool: Pool, projectId: string, buildId: string): Promise<void> {
   const outputPath = join(BUILDS_DIR, `${buildId}.zip`);
-
-  // Create the per-build workdir via mkdtempSync rather than joining
-  // BUILDS_DIR with a predictable buildId prefix. buildId itself is
-  // already unpredictable (UUID), but mkdtempSync makes the safe-
-  // temp-dir intent legible to static analysis (CodeQL's
-  // js/insecure-temporary-file rule) and also atomically fails if
-  // some other worker somehow won the same name — no theoretical
-  // symlink-preplant race on the parent dir. Nothing external
-  // references buildDir (the reconciler works off DB rows, and the
-  // artifact upload uses a separate storageKey derived from buildId).
-  mkdirSync(BUILDS_DIR, { recursive: true });
-  const buildDir = mkdtempSync(join(BUILDS_DIR, `build_${buildId}_`));
+  // Definite-assignment: buildDir is assigned inside the try block
+  // (via mkdtempSync) before any use in the happy path. The
+  // separate `buildDirCreated` flag lets the catch handler
+  // distinguish "mkdtempSync itself threw" from "assigned but
+  // later step failed" without an unsafe `buildDir!` in cleanup.
+  let buildDir!: string;
+  let buildDirCreated = false;
 
   try {
+    // Create the per-build workdir via mkdtempSync rather than joining
+    // BUILDS_DIR with a predictable buildId prefix. buildId itself is
+    // already unpredictable (UUID), but mkdtempSync makes the safe-
+    // temp-dir intent legible to static analysis (CodeQL's
+    // js/insecure-temporary-file rule) and also atomically fails if
+    // some other worker somehow won the same name. Kept inside the
+    // main try{} so disk-full / perms failures still hit the "mark
+    // build failed" path below; the catch guards on `buildDir` being
+    // assigned. Nothing external references buildDir — the
+    // reconciler works off DB rows, and the artifact upload uses a
+    // separate storageKey derived from buildId.
+    mkdirSync(BUILDS_DIR, { recursive: true });
+    buildDir = mkdtempSync(join(BUILDS_DIR, `build_${buildId}_`));
+    buildDirCreated = true;
+
     // increment attempt_count on each executeBuild kickoff.
     // Also gates the transition on the current status being one that
     // hasn't reached a terminal state — a cancelled row must not be
@@ -647,8 +657,9 @@ export async function executeBuild(pool: Pool, projectId: string, buildId: strin
       unlinkSync(outputPath);
     } catch {}
   } catch (error) {
-    // Cleanup on error
-    if (existsSync(buildDir)) {
+    // Cleanup on error. buildDir may be unset if mkdtempSync itself
+    // threw before assignment — buildDirCreated gates that case.
+    if (buildDirCreated && existsSync(buildDir)) {
       try {
         rmSync(buildDir, { recursive: true, force: true });
       } catch {}
