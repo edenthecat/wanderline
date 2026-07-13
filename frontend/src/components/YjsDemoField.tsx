@@ -4,11 +4,13 @@
 // text-field wired to a demo Y.Text to give the specs a visible
 // binding target.
 //
-// Guarded by import.meta.env.DEV: in production builds Vite dead-
-// codes the whole return, so this component ships as `return null`
-// only (~zero bytes past the module wrapper). The mount site in
-// ProjectDetailPage additionally gates on ?yjsDemo=1 so it doesn't
-// render during ordinary dev sessions.
+// The DEV check inside this component is a safety net: it stops the
+// demo hook + Y.Text binding from running if a caller renders us in
+// prod anyway. The actual bundle-size win comes from the guard at
+// the USE SITE (ProjectDetailPage.tsx) — Vite constant-folds
+// `import.meta.env.DEV ? … : null`, marks the import unused, and
+// tree-shakes this module + its transitive yjs imports out of the
+// prod bundle entirely.
 
 import { useEffect } from 'react';
 import * as Y from 'yjs';

@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@google-cloud/storage": "^7.21.0",
+    "@wanderline/shared": "*",
     "@sentry/node": "^10.65.0",
     "archiver": "^7.0.1",
     "bcrypt": "^6.0.0",

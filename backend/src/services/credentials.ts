@@ -16,12 +16,18 @@ export const BCRYPT_ROUNDS = 12;
  * Validate that a password is a string of the right length. Returns
  * the error message the caller should send back with HTTP 400, or
  * null if the password passes.
+ *
+ * The pre-consolidation routes (users PATCH, invitations accept)
+ * returned the same "between MIN and MAX characters" message for
+ * non-string inputs too, so we keep that behaviour to avoid a
+ * user-visible API change.
  */
 export function validatePassword(password: unknown): string | null {
-  if (typeof password !== 'string') {
-    return 'Password must be a string';
-  }
-  if (password.length < MIN_PASSWORD_LENGTH || password.length > MAX_PASSWORD_LENGTH) {
+  if (
+    typeof password !== 'string' ||
+    password.length < MIN_PASSWORD_LENGTH ||
+    password.length > MAX_PASSWORD_LENGTH
+  ) {
     return `Password must be between ${MIN_PASSWORD_LENGTH} and ${MAX_PASSWORD_LENGTH} characters`;
   }
   return null;
@@ -55,12 +61,19 @@ export interface CredentialsValidationError {
  * Email is lower-cased and trimmed on success so downstream inserts
  * hit the same canonicalization on every path.
  */
-export function validateCredentials(payload: {
-  email: unknown;
-  password: unknown;
-  displayName: unknown;
-}): CredentialsValidationOk | CredentialsValidationError {
-  const { email, password, displayName } = payload;
+export function validateCredentials(
+  payload: unknown,
+): CredentialsValidationOk | CredentialsValidationError {
+  // Guard against null / undefined / non-object bodies — a router
+  // catch-all can hand us anything the client posts.
+  if (!payload || typeof payload !== 'object') {
+    return { ok: false, error: 'Email, password, and display name must be strings' };
+  }
+  const { email, password, displayName } = payload as {
+    email?: unknown;
+    password?: unknown;
+    displayName?: unknown;
+  };
   if (
     typeof email !== 'string' ||
     typeof password !== 'string' ||

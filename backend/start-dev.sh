@@ -7,12 +7,16 @@ set -e
 # single workspace's package.json, no root-level install), so we
 # have to make the shared package resolvable by hand:
 #   1. Build shared/dist so consumers can import the compiled JS.
+#      Do NOT `npm install` inside /shared — it's a host bind
+#      mount, so the install would leave root-owned files on the
+#      host machine. The typescript toolchain is already installed
+#      under /app/node_modules from the backend image; invoke tsc
+#      directly against /shared/tsconfig.json.
 #   2. Symlink /shared into each consumer's node_modules under
 #      @wanderline/ so npm's module resolver finds it.
 if [ -d /shared ] && [ ! -d /shared/dist ]; then
   echo "Building shared..."
-  cd /shared && npm install --silent --no-package-lock && npm run build
-  cd /app
+  /app/node_modules/.bin/tsc -p /shared/tsconfig.json
 fi
 
 link_shared_into() {
