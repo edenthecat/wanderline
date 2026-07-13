@@ -15,7 +15,6 @@ import {
   copyFileSync,
 } from 'fs';
 import { join, dirname } from 'path';
-import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { pipeline } from 'stream/promises';
 import { buildStoryData } from './story-data-builder.js';
@@ -28,23 +27,15 @@ import { prepareDistHtml } from './build-html.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-// prefer the prebuilt player-app/dist baked into the image
-// over rebuilding the player per project-build. Falls back to the
-// repo-local dist for dev, and as a last resort the legacy
-// rebuild-from-source path (kept for back-compat with environments
-// where /player-app/dist hasn't been populated yet).
+// The player-app dist baked into the image. Every deploy target
+// (prod Dockerfile, dev docker-compose start-dev.sh) produces this
+// before the backend starts. Missing dist is a deployment-config
+// error, not a runtime fallback.
 const PLAYER_APP_DIST =
   process.env.PLAYER_APP_DIST ||
   (existsSync('/player-app/dist')
     ? '/player-app/dist'
     : join(__dirname, '..', '..', '..', 'player-app', 'dist'));
-// Legacy source path — still referenced by the rebuild-from-source
-// fallback below.
-const PLAYER_APP_SRC =
-  process.env.PLAYER_APP_SRC ||
-  (existsSync('/player-app/src')
-    ? '/player-app/src'
-    : join(__dirname, '..', '..', '..', 'player-app', 'src'));
 const BUILDS_DIR = process.env.BUILDS_DIR || '/tmp/wanderline-builds';
 
 /**
@@ -394,32 +385,23 @@ export async function executeBuild(pool: Pool, projectId: string, buildId: strin
       audioBaseUrl: './audio/',
     });
     const projectName = (project as Record<string, unknown>).name as string;
-    const safeName =
-      'wanderline-' +
-      projectName
-        .replace(/[^a-z0-9]/gi, '-')
-        .toLowerCase()
-        .replace(/^-+/, '')
-        .slice(0, 200);
 
     await pool.query(
       `UPDATE project_builds SET progress = 20, message = 'Processing audio files...' WHERE id = $1 AND status IN ('pending', 'processing')`,
       [buildId],
     );
 
-    // prefer copying the prebuilt player dist baked into the
-    // image over rebuilding the player per build. Falls back to the
-    // legacy npm-install-and-vite-build path when no dist is found
-    // (e.g. a dev environment that hasn't run `npm run build` on
-    // player-app).
-    const useDistPath = existsSync(join(PLAYER_APP_DIST, 'index.html'));
-    if (useDistPath) {
-      mkdirSync(join(buildDir, 'dist', 'audio'), { recursive: true });
-    } else {
-      // Legacy path — kept for back-compat.
-      mkdirSync(join(buildDir, 'src'), { recursive: true });
-      mkdirSync(join(buildDir, 'public', 'audio'), { recursive: true });
+    // Copy the prebuilt player dist baked into the image. Every
+    // deploy target (prod Dockerfile, dev docker-compose
+    // start-dev.sh) produces the dist before the backend starts;
+    // a missing dist is a deployment-config error, not a runtime
+    // fallback.
+    if (!existsSync(join(PLAYER_APP_DIST, 'index.html'))) {
+      throw new Error(
+        `Player-app dist not found at ${PLAYER_APP_DIST}. Build player-app before starting the backend (see backend/start-dev.sh / Dockerfile).`,
+      );
     }
+    mkdirSync(join(buildDir, 'dist', 'audio'), { recursive: true });
 
     // Process audio files (copy + convert WAV to MP3)
     const settings = (project as Record<string, unknown>).settings || {};
@@ -454,20 +436,10 @@ export async function executeBuild(pool: Pool, projectId: string, buildId: strin
     const processedAudio = processAudioForBuild(storyData, audioFiles, fileMap, usedFilenames, {
       projectAudioDir,
       tempConvertDir: join(buildDir, '_audio_temp'),
-      // The audio destination depends on which template path we're
-      // taking — see useDistPath above. In the prebuilt-dist path
-      // the audio goes straight into dist/; in the legacy path it
-      // goes into public/ and vite copies it to dist/ during build.
-      outputAudioDir: useDistPath
-        ? join(buildDir, 'dist', 'audio')
-        : join(buildDir, 'public', 'audio'),
+      outputAudioDir: join(buildDir, 'dist', 'audio'),
     });
 
-    // Write story.json (same template-path branching as audio).
-    writeFileSync(
-      useDistPath ? join(buildDir, 'dist', 'story.json') : join(buildDir, 'public', 'story.json'),
-      JSON.stringify(storyData, null, 2),
-    );
+    writeFileSync(join(buildDir, 'dist', 'story.json'), JSON.stringify(storyData, null, 2));
 
     await pool.query(
       `UPDATE project_builds SET progress = 40, message = 'Writing project files...' WHERE id = $1 AND status IN ('pending', 'processing')`,
@@ -476,131 +448,23 @@ export async function executeBuild(pool: Pool, projectId: string, buildId: strin
 
     const escapedName = escapeHtml(projectName);
 
-    if (useDistPath) {
-      // fast path: copy the prebuilt player dist. Skips npm
-      // install + vite build (which OOM-killed Cloud Run on 512Mi
-      // and added 60-90s of CPU/IO to every build).
-      await pool.query(
-        `UPDATE project_builds SET progress = 60, message = 'Copying player template...' WHERE id = $1 AND status IN ('pending', 'processing')`,
-        [buildId],
-      );
-      copyDirRecursive(PLAYER_APP_DIST, join(buildDir, 'dist'));
-    } else {
-      // Legacy rebuild-from-source path. Kept for back-compat with
-      // any environment where /player-app/dist hasn't been baked in
-      // yet. Future: delete this once all deployed images carry the
-      // prebuilt dist (the prod Dockerfile already does — see
-      // backend/Dockerfile.prod).
-      const requiredPlayerFiles = [
-        'App.tsx',
-        'main.tsx',
-        'index.css',
-        'save-slots.ts',
-        'theme-components.ts',
-        'theme-inspect.ts',
-      ];
-      const optionalPlayerFiles = ['types.ts', 'useClickDetection.ts'];
-
-      for (const file of requiredPlayerFiles) {
-        const srcFile = join(PLAYER_APP_SRC, file);
-        if (!existsSync(srcFile)) {
-          throw new Error(
-            `Required player source file missing: ${file} (looked in ${PLAYER_APP_SRC})`,
-          );
-        }
-        copyFileSync(srcFile, join(buildDir, 'src', file));
-      }
-      for (const file of optionalPlayerFiles) {
-        const srcFile = join(PLAYER_APP_SRC, file);
-        if (existsSync(srcFile)) {
-          copyFileSync(srcFile, join(buildDir, 'src', file));
-        }
-      }
-
-      writeFileSync(
-        join(buildDir, 'package.json'),
-        JSON.stringify(
-          {
-            name: safeName,
-            version: '1.0.0',
-            private: true,
-            type: 'module',
-            scripts: { dev: 'vite', build: 'vite build', preview: 'vite preview' },
-            dependencies: {
-              react: '^18.2.0',
-              'react-dom': '^18.2.0',
-              'iconoir-react': '^7.11.0',
-            },
-            devDependencies: {
-              '@types/react': '^18.2.43',
-              '@types/react-dom': '^18.2.17',
-              '@vitejs/plugin-react': '^4.2.1',
-              typescript: '^5.3.3',
-              vite: '^5.0.8',
-            },
-          },
-          null,
-          2,
-        ),
-      );
-
-      writeFileSync(
-        join(buildDir, 'vite.config.ts'),
-        `import { defineConfig } from 'vite'\nimport react from '@vitejs/plugin-react'\n\nexport default defineConfig({\n  plugins: [react()],\n  base: './',\n  build: {\n    rollupOptions: {\n      output: {\n        format: 'iife',\n        inlineDynamicImports: true,\n        entryFileNames: 'assets/[name]-[hash].js',\n      },\n    },\n    modulePreload: false,\n  },\n})\n`,
-      );
-
-      writeFileSync(
-        join(buildDir, 'tsconfig.json'),
-        JSON.stringify(
-          {
-            compilerOptions: {
-              target: 'ES2020',
-              useDefineForClassFields: true,
-              lib: ['ES2020', 'DOM', 'DOM.Iterable'],
-              module: 'ESNext',
-              skipLibCheck: true,
-              moduleResolution: 'bundler',
-              allowImportingTsExtensions: true,
-              resolveJsonModule: true,
-              isolatedModules: true,
-              noEmit: true,
-              jsx: 'react-jsx',
-              strict: true,
-            },
-            include: ['src'],
-          },
-          null,
-          2,
-        ),
-      );
-
-      writeFileSync(
-        join(buildDir, 'index.html'),
-        `<!DOCTYPE html>\n<html lang="en">\n  <head>\n    <meta charset="UTF-8" />\n    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n    <meta name="theme-color" content="#1a1a2e" />\n    <title>${escapedName}</title>\n  </head>\n  <body>\n    <div id="root"></div>\n    <script type="module" src="/src/main.tsx"></script>\n  </body>\n</html>\n`,
-      );
-
-      await pool.query(
-        `UPDATE project_builds SET progress = 50, message = 'Installing dependencies...' WHERE id = $1 AND status IN ('pending', 'processing')`,
-        [buildId],
-      );
-      execSync('npm install', { cwd: buildDir, stdio: 'ignore' });
-
-      await pool.query(
-        `UPDATE project_builds SET progress = 70, message = 'Building app...' WHERE id = $1 AND status IN ('pending', 'processing')`,
-        [buildId],
-      );
-      execSync('npm run build', { cwd: buildDir, stdio: 'ignore' });
-    }
+    // Copy the prebuilt player dist. Skips the old npm install +
+    // vite build (which OOM-killed Cloud Run on 512Mi and added
+    // 60-90s of CPU/IO to every build).
+    await pool.query(
+      `UPDATE project_builds SET progress = 60, message = 'Copying player template...' WHERE id = $1 AND status IN ('pending', 'processing')`,
+      [buildId],
+    );
+    copyDirRecursive(PLAYER_APP_DIST, join(buildDir, 'dist'));
 
     // Post-process index.html for file:// URL compatibility
     const distIndexPath = join(buildDir, 'dist', 'index.html');
     let distHtml = readFileSync(distIndexPath, 'utf-8');
-    distHtml = prepareDistHtml(
-      distHtml,
-      useDistPath
-        ? { rewriteForPrebuiltDist: true, title: escapedName, storyData }
-        : { rewriteForPrebuiltDist: false, storyData },
-    );
+    distHtml = prepareDistHtml(distHtml, {
+      rewriteForPrebuiltDist: true,
+      title: escapedName,
+      storyData,
+    });
 
     // bake the project's theme into the built bundle. Google
     // Fonts woff2 files (if any) are downloaded into public/fonts/
@@ -684,21 +548,11 @@ export async function executeBuild(pool: Pool, projectId: string, buildId: strin
     const nodeCount = Object.keys(storyData.nodes).length;
 
     // capture the player bundle identity the artifact shipped
-    // against. Two guards:
-    //   - Only read from PLAYER_APP_DIST when this build used the
-    //     prebuilt-dist path. The legacy rebuild-from-source path
-    //     produces its own bundle in `buildDir/dist/`, and that dist
-    //     doesn't run emit-bundle-info.mjs — reading the container's
-    //     PLAYER_APP_DIST/bundle-info.json anyway would record a
-    //     stale-but-plausible version that DOESN'T match the shipped
-    //     artifact. Null is honest; a lie in the audit column defeats
-    //     the whole point of the field.
-    //   - Missing / invalid bundle-info still yields null (best-effort).
-    //     We only warn in the useDistPath branch — the legacy path is
-    //     expected to lack the file and warning on it would just spam
-    //     dev + on-call logs every build.
-    const bundleInfo = useDistPath ? readPlayerBundleInfo() : null;
-    if (useDistPath && !bundleInfo) {
+    // against. Missing / invalid bundle-info yields null (best-
+    // effort) plus a warning — the field is an audit trail, not a
+    // build gate.
+    const bundleInfo = readPlayerBundleInfo();
+    if (!bundleInfo) {
       logger.warn(
         { buildId, playerAppDist: PLAYER_APP_DIST },
         ': bundle-info.json missing or invalid; player_bundle_version + sri unrecorded',
