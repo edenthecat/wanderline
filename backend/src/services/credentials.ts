@@ -18,7 +18,13 @@ export const BCRYPT_ROUNDS = 12;
 // deliverable addresses. This is a typo gate for the account-creation
 // flows so `not-an-email` doesn't land in the users table; final
 // deliverability is proven by the verification-mail round trip.
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+//
+// The middle class `[^\s@.]+` (not `[^\s@]+`) excludes `.` before the
+// literal `\.`, so the two halves of the domain have exactly one way
+// to align — otherwise the two overlapping `+` quantifiers create
+// polynomial backtracking on inputs like `!@!.!.!.!.!.!.!.!.!.` and
+// CodeQL flags a ReDoS.
+const EMAIL_REGEX = /^[^\s@]+@[^\s@.]+\.[^\s@]+$/;
 
 export type PasswordValidationResult =
   { ok: true; password: string } | { ok: false; error: string };

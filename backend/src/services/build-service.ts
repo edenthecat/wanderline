@@ -6,6 +6,7 @@ import {
   createWriteStream,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   rmSync,
   statSync,
   unlinkSync,
@@ -358,13 +359,21 @@ export async function reconcileSoftDeletedBuilds(pool: Pool): Promise<void> {
  * Updates the build record in the database as it progresses.
  */
 export async function executeBuild(pool: Pool, projectId: string, buildId: string): Promise<void> {
-  const buildDir = join(BUILDS_DIR, `build_${buildId}`);
   const outputPath = join(BUILDS_DIR, `${buildId}.zip`);
 
-  try {
-    // Ensure builds directory exists
-    mkdirSync(BUILDS_DIR, { recursive: true });
+  // Create the per-build workdir via mkdtempSync rather than joining
+  // BUILDS_DIR with a predictable buildId prefix. buildId itself is
+  // already unpredictable (UUID), but mkdtempSync makes the safe-
+  // temp-dir intent legible to static analysis (CodeQL's
+  // js/insecure-temporary-file rule) and also atomically fails if
+  // some other worker somehow won the same name — no theoretical
+  // symlink-preplant race on the parent dir. Nothing external
+  // references buildDir (the reconciler works off DB rows, and the
+  // artifact upload uses a separate storageKey derived from buildId).
+  mkdirSync(BUILDS_DIR, { recursive: true });
+  const buildDir = mkdtempSync(join(BUILDS_DIR, `build_${buildId}_`));
 
+  try {
     // increment attempt_count on each executeBuild kickoff.
     // Also gates the transition on the current status being one that
     // hasn't reached a terminal state — a cancelled row must not be
