@@ -66,6 +66,12 @@ export default function PreviewTab({ projectId, hasStory }: Props) {
           // sandbox keeps the iframe from navigating away or popping cookies
           // while still allowing scripts (the player needs them) and media.
           sandbox="allow-scripts allow-same-origin allow-popups"
+          // Permissions-Policy delegation. Without an explicit `allow`
+          // attribute, Chromium-family browsers intermittently block
+          // the child frame's autoplay + Media Session bindings —
+          // which is one of the plausible triggers for the
+          // "occasionally doesn't play when not focused" report.
+          allow="autoplay; encrypted-media"
         />
       </div>
     </div>

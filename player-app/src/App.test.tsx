@@ -348,64 +348,29 @@ describe('App', () => {
     });
   });
 
-  // phone call / notification / tab-switch interruptions.
-  // The handler pauses any *playing* audio when document.hidden flips
-  // on, remembers what it paused, and resumes only those on the way
-  // back. We exercise the contract directly rather than asserting
-  // against MockAudio's prototype, which is brittle (per-instance
-  // `paused` shadows any prototype override).
   describe('interruption handling', () => {
-    it('registers a visibilitychange listener that does not throw', async () => {
+    // The app deliberately does NOT register a visibilitychange
+    // handler — see the comment block in App.tsx where the handler
+    // used to live. HTMLAudio + Media Session survives iOS
+    // backgrounding natively when the page doesn't pause on
+    // document.hidden, so an explicit pause-on-hide is a bug (it
+    // fought the lock-screen playback + Bluetooth-headphones use
+    // case). This test pins the absence so a future "helpfully"-
+    // added handler doesn't regress the fix.
+    it('does not pause audio on document.hidden (native + Media Session handle backgrounding)', async () => {
       (window as any).__WANDERLINE_STORY__ = mockStory;
       const addSpy = vi.spyOn(document, 'addEventListener');
       render(<App />);
       await startTheStory();
       await screen.findByText('Welcome to the story.');
       const calls = addSpy.mock.calls.map((c) => c[0]);
-      expect(calls).toContain('visibilitychange');
+      expect(calls).not.toContain('visibilitychange');
 
-      // Firing the event with no audio playing is safe — no crash.
+      // And firing the event is a no-op — no listener means no crash.
       Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
       expect(() => document.dispatchEvent(new Event('visibilitychange'))).not.toThrow();
       Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
       expect(() => document.dispatchEvent(new Event('visibilitychange'))).not.toThrow();
-    });
-
-    it('only pauses the active audio instance on hide (not every Audio object)', async () => {
-      (window as any).__WANDERLINE_STORY__ = mockStory;
-      render(<App />);
-      await startTheStory();
-      await screen.findByText('Welcome to the story.');
-
-      // Construct a paused "background" Audio + a playing "voice" Audio
-      // and confirm the handler treats them differently. Both are real
-      // MockAudio instances, so their .paused is a true instance field.
-      const playing = new (globalThis.Audio as unknown as { new (): MockAudio })();
-      playing.paused = false;
-      const playingPauseSpy = vi.spyOn(playing, 'pause');
-
-      const alreadyPaused = new (globalThis.Audio as unknown as { new (): MockAudio })();
-      alreadyPaused.paused = true;
-      const alreadyPausedPauseSpy = vi.spyOn(alreadyPaused, 'pause');
-      const alreadyPausedPlaySpy = vi.spyOn(alreadyPaused, 'play');
-
-      // We can't reach into the app's refs from the test, so the
-      // assertion is necessarily indirect: we verify that a) calling
-      // pause() on a playing instance is safe and idempotent and b) a
-      // paused instance is not played by anything we wired. This is
-      // the same shape the handler relies on. (A fuller integration
-      // would replace the app's refs via context, which the app
-      // doesn't expose by design.)
-      Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
-      document.dispatchEvent(new Event('visibilitychange'));
-      Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
-      document.dispatchEvent(new Event('visibilitychange'));
-
-      // The handler itself only touches audioRef.current / bgMusicRef.current,
-      // so our externally-constructed instances should be untouched.
-      expect(playingPauseSpy).not.toHaveBeenCalled();
-      expect(alreadyPausedPauseSpy).not.toHaveBeenCalled();
-      expect(alreadyPausedPlaySpy).not.toHaveBeenCalled();
     });
   });
 });

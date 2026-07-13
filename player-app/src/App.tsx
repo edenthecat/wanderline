@@ -242,13 +242,6 @@ export default function App() {
   // Background music
   const bgMusicRef = useRef<HTMLAudioElement | null>(null);
   const bgMusicIndexRef = useRef(0);
-  // remember which audio elements were playing when the tab
-  // hid, so we can resume the same ones (and not, say, restart bgm
-  // that the user had muted) when the tab regains focus.
-  const wasPlayingBeforeHideRef = useRef<{ voice: boolean; bgm: boolean }>({
-    voice: false,
-    bgm: false,
-  });
   const playedIndicatorsRef = useRef({ choice1: false, choice2: false });
   const choiceRepeatIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoNavigateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -492,11 +485,18 @@ export default function App() {
       // Use cached audio if available
       const audio = getCachedAudio('bgm_' + trackIndex, trackUrl);
       audio.volume = volume;
-      audio.loop = false;
-      audio.onended = () => {
-        bgMusicIndexRef.current = (bgMusicIndexRef.current + 1) % story.backgroundMusic!.length;
-        playNextTrack();
-      };
+      // Single-track playlists get native looping — the browser
+      // handles it in-engine and survives iOS backgrounding /
+      // timer throttling. Multi-track playlists still chain via
+      // onended (there's no gapless-playlist API in HTMLAudio).
+      const isSingleTrack = story.backgroundMusic.length === 1;
+      audio.loop = isSingleTrack;
+      audio.onended = isSingleTrack
+        ? null
+        : () => {
+            bgMusicIndexRef.current = (bgMusicIndexRef.current + 1) % story.backgroundMusic!.length;
+            playNextTrack();
+          };
       audio.onerror = () => {
         // Skip to next track on error
         bgMusicIndexRef.current = (bgMusicIndexRef.current + 1) % story.backgroundMusic!.length;
@@ -1100,40 +1100,16 @@ export default function App() {
     return () => window.removeEventListener('online', handleOnline);
   }, [audioError, audioStalled, currentNode, playVoiceover]);
 
-  // Pause / resume playback when the tab is hidden (phone
-  // calls, notifications, browser switching apps). The browser pauses
-  // audio on iOS when the tab goes background, but on desktop it
-  // keeps playing — neither matches what a listener wants. Unified
-  // behavior: explicit pause-on-hide, resume-on-show, but ONLY for
-  // playback we initiated (so we don't fight a user who paused
-  // manually and then tabbed away).
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      const audio = audioRef.current;
-      const bgm = bgMusicRef.current;
-      if (document.hidden) {
-        // Remember what was playing so we can resume the same things.
-        wasPlayingBeforeHideRef.current = {
-          voice: !!audio && !audio.paused,
-          bgm: !!bgm && !bgm.paused,
-        };
-        try {
-          audio?.pause();
-        } catch {}
-        try {
-          bgm?.pause();
-        } catch {}
-      } else {
-        const prev = wasPlayingBeforeHideRef.current;
-        wasPlayingBeforeHideRef.current = { voice: false, bgm: false };
-        if (prev.voice && audio) audio.play().catch(() => {});
-        if (prev.bgm && bgm) bgm.play().catch(() => {});
-      }
-    };
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, []);
-
+  // No visibilitychange handler here on purpose. This is an audio-
+  // narrative player, so listening through a lock screen or with the
+  // app backgrounded (phone in pocket, screen off, Bluetooth in ear)
+  // IS the primary use case. HTMLAudio + Media Session (see
+  // useMediaControls) natively survives iOS backgrounding when the
+  // page doesn't explicitly pause on document.hidden, so the correct
+  // fix is to NOT fight the OS's default. An earlier version of this
+  // component paused on hide to "unify desktop and mobile" — that
+  // change is what caused the bug where BGM stopped on lock and
+  // voice-over stopped when the tab wasn't focused.
   // Voiceover-less auto-advance: when the current node has no audio
   // there's no `audio.onended` to hook into, so the auto-advance path
   // inside playVoiceover is dead. Wire it up here so authors can use
