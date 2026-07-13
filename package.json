@@ -20,6 +20,7 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "postinstall": "npm run build --workspace=@wanderline/shared",
     "prepare": "husky"
   },
   "keywords": [

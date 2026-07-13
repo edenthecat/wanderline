@@ -12,6 +12,7 @@ import { BUILDS_DIR } from '../services/build-service.js';
 import { validateProject } from '../services/project-validator.js';
 import { getStorage, audioKey, buildArtifactKey, isStorageKey } from '../services/storage.js';
 import type { RequireOwnerOrAdmin } from '../middleware/auth.js';
+import { UPLOAD_DIR } from '../config.js';
 
 export function createProjectsRouter(
   pool: Pool,
@@ -443,10 +444,9 @@ export function createProjectsRouter(
       // UPLOAD_DIR's parent.
       const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       if (UUID_RE.test(id)) {
-        const uploadDir = process.env.UPLOAD_DIR || '/tmp/wanderline-uploads';
-        const targetDir = resolve(uploadDir, id);
-        const rel = relative(resolve(uploadDir), targetDir);
-        if (!rel.startsWith('..') && targetDir !== resolve(uploadDir)) {
+        const targetDir = resolve(UPLOAD_DIR, id);
+        const rel = relative(resolve(UPLOAD_DIR), targetDir);
+        if (!rel.startsWith('..') && targetDir !== resolve(UPLOAD_DIR)) {
           rm(targetDir, { recursive: true, force: true }).catch((err) => {
             req.log.warn({ err, projectId: id }, 'Failed to remove project upload dir');
           });

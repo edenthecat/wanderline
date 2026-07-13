@@ -1,2 +1,3 @@
-export * from './types';
-export * from './string-diff';
+export * from './types.js';
+export * from './string-diff.js';
+export * from './theme-components.js';

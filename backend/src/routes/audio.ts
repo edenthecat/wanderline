@@ -9,6 +9,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { getStorage, audioKey } from '../services/storage.js';
 import { buildMatchTables, matchAudioFile } from '../services/audio-matcher.js';
+import { UPLOAD_DIR } from '../config.js';
 
 const execAsync = promisify(exec);
 
@@ -21,7 +22,6 @@ async function convertWavToMp3(inputPath: string, outputPath: string): Promise<v
 }
 
 // Configure multer for audio file uploads
-const UPLOAD_DIR = process.env.UPLOAD_DIR || '/tmp/wanderline-uploads';
 
 // Project ids in the URL are always UUIDs generated server-side. We
 // don't accept anything else — a bare `..` (or any other non-UUID

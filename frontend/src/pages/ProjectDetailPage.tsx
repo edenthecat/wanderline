@@ -323,8 +323,18 @@ export default function ProjectDetailPage() {
             </div>
           </header>
 
-          {/* phase 2 collab PoC; appears only on ?yjsDemo=1. */}
-          {typeof window !== 'undefined' &&
+          {/* Yjs collab test surface — only mounted in dev builds
+              when ?yjsDemo=1 is set. THIS use-site guard on
+              import.meta.env.DEV is what actually drops the
+              component (and its transitive imports of the demo
+              hook + yjs machinery) from the prod bundle: Vite
+              constant-folds the false branch, marks the import
+              unused, and tree-shakes it out. The DEV check inside
+              the component itself is a belt-and-braces safety net
+              for any future caller that forgets this guard.
+              Cypress collab specs pass ?yjsDemo=1 to opt in. */}
+          {import.meta.env.DEV &&
+            typeof window !== 'undefined' &&
             new URLSearchParams(window.location.search).get('yjsDemo') === '1' && (
               <YjsDemoField projectId={id} />
             )}

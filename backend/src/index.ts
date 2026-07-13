@@ -29,6 +29,7 @@ import {
   cleanupExpiredInvitations,
 } from './routes/invitations.js';
 import { createAuthMiddleware } from './middleware/auth.js';
+import { UPLOAD_DIR } from './config.js';
 import {
   apiLimiter,
   authLimiter,
@@ -390,8 +391,6 @@ app.use(
 // Admin: Delete all audio files across all projects
 app.delete('/api/admin/audio/all', requireAdmin, async (req, res) => {
   try {
-    const UPLOAD_DIR = process.env.UPLOAD_DIR || '/tmp/wanderline-uploads';
-
     // Get counts before deletion
     const countResult = await pool.query('SELECT COUNT(*) as count FROM audio_files');
     const totalFiles = parseInt(countResult.rows[0].count, 10);

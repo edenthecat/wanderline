@@ -10,7 +10,7 @@ import {
   type ComponentId,
   type ComponentSpec,
   type ComponentPropSpec,
-} from '../api/theme-components';
+} from '@wanderline/shared';
 import FontPicker from './FontPicker';
 
 interface Props {

@@ -4,8 +4,7 @@ import archiver from 'archiver';
 import { createReadStream, existsSync } from 'fs';
 import { join } from 'path';
 import { convertStoryGraphToInk as convertStoryGraphToInkService } from '../services/ink-converter.js';
-
-const UPLOAD_DIR = process.env.UPLOAD_DIR || '/tmp/wanderline-uploads';
+import { UPLOAD_DIR } from '../config.js';
 
 export function mountExportRoutes(router: Router, pool: Pool): void {
   /**
