@@ -979,8 +979,9 @@ export interface ThemeVariables {
 
 // per-component theming. Authors override individual surfaces
 // (story card, choice button, etc.) without touching the customCss
-// textarea. See frontend/src/api/theme-components.ts for the schema
-// the editor + player + backend share.
+// textarea. See shared/src/theme-components.ts (re-exported from
+// @wanderline/shared) for the schema the editor + player + backend
+// share.
 export type ComponentThemeMap = Partial<Record<string, Record<string, string | undefined>>>;
 
 export interface ProjectTheme {

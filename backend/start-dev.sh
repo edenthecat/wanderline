@@ -19,9 +19,23 @@ set -e
 #      anonymous volume `- /app/node_modules` in docker-compose.yml
 #      preserves it, but re-linking here is idempotent and covers
 #      an image built before the file: switch.
-if [ -d /shared ] && [ ! -d /shared/dist ]; then
+# Gate on a sentinel file (`dist/.built`) written AFTER tsc
+# returns, not on the existence of the dist directory. tsc creates
+# the directory before it finishes emitting files, so an
+# `[ ! -d dist ]` guard has a race where the frontend container
+# sees dist/ present, skips its own build, and starts Vite before
+# our tsc has written dist/index.js.
+if [ -d /shared ] && [ ! -f /shared/dist/.built ]; then
   echo "Building shared..."
   /app/node_modules/.bin/tsc -p /shared/tsconfig.json
+  touch /shared/dist/.built
+  # Chown to match /shared's host ownership. Alpine's `stat -c` on
+  # the bind-mount root reports the host UID/GID, and we run as
+  # root here, so this hands ownership of the emitted dist/ back to
+  # the host user. Without it, Linux hosts end up with root-owned
+  # shared/dist/ files that need `sudo rm -rf` to clean up (macOS
+  # Docker Desktop transparently remaps UIDs so it's a no-op there).
+  chown -R "$(stat -c '%u:%g' /shared)" /shared/dist
 fi
 
 link_shared_into() {

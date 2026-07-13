@@ -19,7 +19,6 @@ describe('prepareDistHtml', () => {
 
   it('strips type=module + crossorigin and adds defer for file:// compat', () => {
     const out = prepareDistHtml(baseHtml, {
-      rewriteForPrebuiltDist: true,
       title: 'Demo',
       storyData: storyData,
     });
@@ -28,9 +27,8 @@ describe('prepareDistHtml', () => {
     expect(out).toMatch(/<script defer /);
   });
 
-  it('replaces the prebuilt-dist default title when rewriteForPrebuiltDist is true', () => {
+  it('replaces the <title> with the project name', () => {
     const out = prepareDistHtml(baseHtml, {
-      rewriteForPrebuiltDist: true,
       title: 'Demo',
       storyData: storyData,
     });
@@ -38,21 +36,8 @@ describe('prepareDistHtml', () => {
     expect(out).not.toMatch(/Wanderline Player/);
   });
 
-  it('does NOT touch the title when rewriteForPrebuiltDist is false (legacy path)', () => {
-    const legacyHtml = baseHtml.replace(
-      '<title>Wanderline Player</title>',
-      '<title>My Game</title>',
-    );
-    const out = prepareDistHtml(legacyHtml, {
-      rewriteForPrebuiltDist: false,
-      storyData,
-    });
-    expect(out).toMatch(/<title>My Game<\/title>/);
-  });
-
-  it('rewrites absolute /assets/ paths to relative on the prebuilt-dist path', () => {
+  it('rewrites absolute /assets/ paths to relative', () => {
     const out = prepareDistHtml(baseHtml, {
-      rewriteForPrebuiltDist: true,
       title: 'X',
       storyData: storyData,
     });
@@ -67,7 +52,6 @@ describe('prepareDistHtml', () => {
       .replace('src="/assets/index-abc.js"', 'src="./assets/index-abc.js"')
       .replace('href="/assets/index-def.css"', 'href="./assets/index-def.css"');
     const out = prepareDistHtml(relativeHtml, {
-      rewriteForPrebuiltDist: true,
       title: 'X',
       storyData: storyData,
     });
@@ -82,7 +66,6 @@ describe('prepareDistHtml', () => {
     // "Foo $& Bar" expanded to the whole matched title, nesting itself.
     const tricky = 'Cost $50 & $&-rating $$ $1';
     const out = prepareDistHtml(baseHtml, {
-      rewriteForPrebuiltDist: true,
       title: tricky,
       storyData: storyData,
     });
@@ -97,7 +80,6 @@ describe('prepareDistHtml', () => {
       nodes: {},
     };
     const out = prepareDistHtml(baseHtml, {
-      rewriteForPrebuiltDist: true,
       title: 'X',
       storyData: malicious,
     });
@@ -114,7 +96,6 @@ describe('prepareDistHtml', () => {
   it('emits \\u2028 / \\u2029 escapes in the injected JSON', () => {
     const data = { lineSep: '\u2028', paraSep: '\u2029', nodes: {} };
     const out = prepareDistHtml(baseHtml, {
-      rewriteForPrebuiltDist: true,
       title: 'X',
       storyData: data,
     });
@@ -133,7 +114,6 @@ describe('prepareDistHtml', () => {
       nodes: {},
     };
     const out = prepareDistHtml(baseHtml, {
-      rewriteForPrebuiltDist: true,
       title: 'X',
       storyData: trickyStory,
     });
@@ -147,8 +127,6 @@ describe('prepareDistHtml', () => {
 
   it('throws when </head> is missing — without it we cannot inject the story script', () => {
     const broken = '<html><body>no head here</body></html>';
-    expect(() =>
-      prepareDistHtml(broken, { rewriteForPrebuiltDist: true, title: 'X', storyData }),
-    ).toThrow(/missing <\/head>/);
+    expect(() => prepareDistHtml(broken, { title: 'X', storyData })).toThrow(/missing <\/head>/);
   });
 });

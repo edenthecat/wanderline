@@ -460,11 +460,7 @@ export async function executeBuild(pool: Pool, projectId: string, buildId: strin
     // Post-process index.html for file:// URL compatibility
     const distIndexPath = join(buildDir, 'dist', 'index.html');
     let distHtml = readFileSync(distIndexPath, 'utf-8');
-    distHtml = prepareDistHtml(distHtml, {
-      rewriteForPrebuiltDist: true,
-      title: escapedName,
-      storyData,
-    });
+    distHtml = prepareDistHtml(distHtml, { title: escapedName, storyData });
 
     // bake the project's theme into the built bundle. Google
     // Fonts woff2 files (if any) are downloaded into public/fonts/
