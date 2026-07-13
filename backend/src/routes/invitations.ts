@@ -411,9 +411,9 @@ export function createPublicInvitationsRouter(
             .json({ error: `Display name must be ${MAX_DISPLAY_NAME_LENGTH} characters or fewer` });
           return;
         }
-        const passwordError = validatePassword(password);
-        if (passwordError) {
-          res.status(400).json({ error: passwordError });
+        const passwordResult = validatePassword(password);
+        if (!passwordResult.ok) {
+          res.status(400).json({ error: passwordResult.error });
           return;
         }
 
@@ -451,7 +451,7 @@ export function createPublicInvitationsRouter(
           return;
         }
 
-        const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+        const passwordHash = await bcrypt.hash(passwordResult.password, BCRYPT_ROUNDS);
         const userResult = await client.query(
           `INSERT INTO users (email, password_hash, display_name, role)
          VALUES ($1, $2, $3, $4)

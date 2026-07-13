@@ -1,21 +1,22 @@
 #!/bin/sh
 set -e
 
-# Build shared/dist if it hasn't been built yet — Vite dev needs the
-# compiled JS to resolve `@wanderline/shared` imports (the shared
-# package.json points main at dist/index.js).
-#
-# Use the container's own tsc rather than `npm install` inside
-# /shared: /shared is a host bind mount, so an install here would
-# leave root-owned files on the host. The frontend image already
-# has typescript installed under /app/node_modules.
+# frontend/package.json declares "@wanderline/shared": "file:../shared",
+# so the image's build-time `npm install` already resolved the dep
+# and created the /app/node_modules/@wanderline/shared symlink. This
+# entrypoint only handles the two things that install can't:
+#   1. Build /shared/dist so Vite dev can resolve the shared
+#      package's main entry (dist/index.js). Invoke tsc directly
+#      against /shared/tsconfig.json — do NOT `npm install` inside
+#      /shared, that's a host bind mount and would leave root-owned
+#      files on the host.
+#   2. Re-symlink /shared into /app/node_modules as a safety net.
+#      Idempotent, and covers an image built before the file: switch.
 if [ -d /shared ] && [ ! -d /shared/dist ]; then
   echo "Building shared..."
   /app/node_modules/.bin/tsc -p /shared/tsconfig.json
 fi
 
-# Symlink /shared into node_modules so npm's module resolver finds
-# @wanderline/shared. See the same block in backend/start-dev.sh.
 mkdir -p /app/node_modules/@wanderline
 ln -sfn /shared /app/node_modules/@wanderline/shared
 

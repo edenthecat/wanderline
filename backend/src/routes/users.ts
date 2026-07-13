@@ -201,13 +201,13 @@ export function createUsersRouter(pool: Pool): Router {
       }
 
       if (password !== undefined) {
-        const passwordError = validatePassword(password);
-        if (passwordError) {
-          res.status(400).json({ error: passwordError });
+        const passwordResult = validatePassword(password);
+        if (!passwordResult.ok) {
+          res.status(400).json({ error: passwordResult.error });
           return;
         }
         updates.push(`password_hash = $${paramIndex++}`);
-        values.push(await bcrypt.hash(password as string, BCRYPT_ROUNDS));
+        values.push(await bcrypt.hash(passwordResult.password, BCRYPT_ROUNDS));
       }
 
       // Role changes

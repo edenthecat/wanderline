@@ -12,25 +12,31 @@ export const MAX_DISPLAY_NAME_LENGTH = 255;
 /** bcrypt work factor. */
 export const BCRYPT_ROUNDS = 12;
 
+export type PasswordValidationResult =
+  { ok: true; password: string } | { ok: false; error: string };
+
 /**
- * Validate that a password is a string of the right length. Returns
- * the error message the caller should send back with HTTP 400, or
- * null if the password passes.
+ * Validate that a password is a string of the right length.
+ * Returns a discriminated union so callers get a typed `password:
+ * string` without an `as string` cast at the bcrypt.hash call site.
  *
  * The pre-consolidation routes (users PATCH, invitations accept)
  * returned the same "between MIN and MAX characters" message for
  * non-string inputs too, so we keep that behaviour to avoid a
  * user-visible API change.
  */
-export function validatePassword(password: unknown): string | null {
+export function validatePassword(password: unknown): PasswordValidationResult {
   if (
     typeof password !== 'string' ||
     password.length < MIN_PASSWORD_LENGTH ||
     password.length > MAX_PASSWORD_LENGTH
   ) {
-    return `Password must be between ${MIN_PASSWORD_LENGTH} and ${MAX_PASSWORD_LENGTH} characters`;
+    return {
+      ok: false,
+      error: `Password must be between ${MIN_PASSWORD_LENGTH} and ${MAX_PASSWORD_LENGTH} characters`,
+    };
   }
-  return null;
+  return { ok: true, password };
 }
 
 export interface CredentialsPayload {
@@ -92,9 +98,14 @@ export function validateCredentials(
       error: `Display name must be ${MAX_DISPLAY_NAME_LENGTH} characters or fewer`,
     };
   }
-  const passwordError = validatePassword(password);
-  if (passwordError) {
-    return { ok: false, error: passwordError };
+  const passwordResult = validatePassword(password);
+  if (!passwordResult.ok) {
+    return { ok: false, error: passwordResult.error };
   }
-  return { ok: true, email: trimmedEmail.toLowerCase(), password, displayName: trimmedName };
+  return {
+    ok: true,
+    email: trimmedEmail.toLowerCase(),
+    password: passwordResult.password,
+    displayName: trimmedName,
+  };
 }

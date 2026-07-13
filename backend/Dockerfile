@@ -8,7 +8,14 @@ RUN apk add --no-cache ffmpeg make g++ python3
 
 WORKDIR /app
 
-# Copy package files
+# Copy shared/ BEFORE running npm install. backend/package.json
+# declares "@wanderline/shared": "file:../shared", and this dev
+# image installs in isolation (no npm workspaces context), so the
+# file: path has to resolve locally at install time. From WORKDIR
+# /app, "../shared" = /shared. The runtime bind mount replaces
+# /shared with the host copy, so the resolved symlink under
+# node_modules keeps working.
+COPY shared/ /shared/
 COPY backend/package*.json ./
 
 # Install dependencies
@@ -16,7 +23,6 @@ RUN npm install
 
 # Copy source code
 COPY backend/ ./
-COPY shared/ ../shared/
 
 EXPOSE 3001
 

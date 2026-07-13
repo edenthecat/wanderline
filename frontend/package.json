@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@codemirror/commands": "^6.10.4",
-    "@wanderline/shared": "*",
+    "@wanderline/shared": "file:../shared",
     "@codemirror/language": "^6.12.4",
     "@codemirror/lint": "^6.9.7",
     "@codemirror/search": "^6.7.1",
