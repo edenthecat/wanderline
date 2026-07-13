@@ -12,6 +12,14 @@ export const MAX_DISPLAY_NAME_LENGTH = 255;
 /** bcrypt work factor. */
 export const BCRYPT_ROUNDS = 12;
 
+// Minimal email shape check: at least one `@`, at least one `.` in the
+// domain part, no whitespace anywhere. Deliberately NOT RFC-5322 —
+// full compliance requires a hundred-line regex and rejects valid
+// deliverable addresses. This is a typo gate for the account-creation
+// flows so `not-an-email` doesn't land in the users table; final
+// deliverability is proven by the verification-mail round trip.
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 export type PasswordValidationResult =
   { ok: true; password: string } | { ok: false; error: string };
 
@@ -91,6 +99,9 @@ export function validateCredentials(
   const trimmedName = displayName.trim();
   if (!trimmedEmail || !password || !trimmedName) {
     return { ok: false, error: 'Email, password, and display name are required' };
+  }
+  if (!EMAIL_REGEX.test(trimmedEmail)) {
+    return { ok: false, error: 'Email must be a valid address' };
   }
   if (trimmedName.length > MAX_DISPLAY_NAME_LENGTH) {
     return {

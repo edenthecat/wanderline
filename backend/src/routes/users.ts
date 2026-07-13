@@ -99,7 +99,21 @@ export function createUsersRouter(pool: Pool): Router {
       const { email, password, displayName: trimmedName } = creds;
       const { role } = req.body;
 
-      const userRole = role === 'admin' ? 'admin' : 'editor';
+      // Validate role explicitly rather than coercing unknown values
+      // to 'editor'. The OpenAPI schema declares role as an enum, so
+      // a client sending `{ role: 'Admin' }` (case) or `{ role:
+      // 'owner' }` (typo) should get a 400, not a silent downgrade
+      // to 'editor' — the sibling PATCH handler validates the same
+      // way.
+      let userRole: 'admin' | 'editor';
+      if (role === undefined) {
+        userRole = 'editor';
+      } else if (role === 'admin' || role === 'editor') {
+        userRole = role;
+      } else {
+        res.status(400).json({ error: 'Role must be "admin" or "editor"' });
+        return;
+      }
       const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
 
       const result = await pool.query(
