@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, RequestHandler, Response } from 'express';
 import { Pool } from 'pg';
 import { existsSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
@@ -535,24 +535,30 @@ export function mountPreviewRoutes(router: Router, pool: Pool): void {
   router.post('/:id/public-preview', async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
-      const existing = await pool.query('SELECT public_preview_token FROM projects WHERE id = $1', [
-        id,
-      ]);
-      if (existing.rows.length === 0) {
+      // Race-safe enable via COALESCE + RETURNING. A naive SELECT-
+      // then-UPDATE would let two concurrent Enable clicks (or a
+      // rapid double-tap) both see token=null, both mint DIFFERENT
+      // candidates, and both UPDATE: the client that got its
+      // response first walks away holding a token that the second
+      // UPDATE overwrote. With COALESCE the existing value always
+      // wins if there is one, so a truly-first enable stores the
+      // winner's candidate (by row lock) and any concurrent request
+      // reads that same value back through RETURNING. Both callers
+      // end up with the same URL.
+      const candidate = generatePublicPreviewToken();
+      const result = await pool.query(
+        `UPDATE projects
+         SET public_preview_enabled = true,
+             public_preview_token = COALESCE(public_preview_token, $2)
+         WHERE id = $1
+         RETURNING public_preview_token`,
+        [id, candidate],
+      );
+      if (result.rowCount === 0) {
         res.status(404).json({ error: 'Project not found' });
         return;
       }
-      let token: string | null = existing.rows[0].public_preview_token;
-      if (!token) {
-        token = generatePublicPreviewToken();
-      }
-      await pool.query(
-        `UPDATE projects
-         SET public_preview_enabled = true,
-             public_preview_token = $2
-         WHERE id = $1`,
-        [id, token],
-      );
+      const token: string = result.rows[0].public_preview_token;
       res.json({ enabled: true, token, url: `/public-preview/${token}` });
     } catch (error) {
       req.log.error({ err: error }, 'Failed to enable public preview');
@@ -609,9 +615,22 @@ export function mountPreviewRoutes(router: Router, pool: Pool): void {
  * request with a valid token maps to a specific project, and that
  * mapping is the only thing that decides which audio files a
  * request can reach.
+ *
+ * Per-route rate limiters (optional so tests can skip them) cap a
+ * leaked-token scraper before the author notices and disables.
+ * Sized in middleware/rate-limit.ts to sit well above any real
+ * listener session; runaway hammering fails closed with 429 while
+ * normal preload bursts pass through untouched.
  */
-export function mountPublicPreviewRoutes(router: Router, pool: Pool): void {
-  router.get('/:token', async (req: Request, res: Response) => {
+export function mountPublicPreviewRoutes(
+  router: Router,
+  pool: Pool,
+  opts: { htmlLimiter?: RequestHandler; audioLimiter?: RequestHandler } = {},
+): void {
+  const htmlChain = opts.htmlLimiter ? [opts.htmlLimiter] : [];
+  const audioChain = opts.audioLimiter ? [opts.audioLimiter] : [];
+
+  router.get('/:token', ...htmlChain, async (req: Request, res: Response) => {
     try {
       const { token } = req.params;
       const result = await pool.query(
@@ -640,7 +659,7 @@ export function mountPublicPreviewRoutes(router: Router, pool: Pool): void {
     }
   });
 
-  router.get('/:token/audio/:filename', async (req: Request, res: Response) => {
+  router.get('/:token/audio/:filename', ...audioChain, async (req: Request, res: Response) => {
     try {
       const { token, filename } = req.params;
       const result = await pool.query(

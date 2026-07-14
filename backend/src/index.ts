@@ -37,6 +37,8 @@ import {
   invitationCreateLimiter,
   invitationTokenLookupLimiter,
   invitationAcceptLimiter,
+  publicPreviewHtmlLimiter,
+  publicPreviewAudioLimiter,
   noopLimiter,
 } from './middleware/rate-limit.js';
 import {
@@ -331,7 +333,14 @@ app.use('/api/_player', (req, res, next) => {
 // session-auth path. The token in the URL is the sole access
 // control — see mountPublicPreviewRoutes for the lookup logic.
 const publicPreviewRouter = Router();
-mountPublicPreviewRoutes(publicPreviewRouter, pool);
+// Per-route rate limits sized in middleware/rate-limit.ts. Reuse
+// the same rateLimitDisabled flag the /api routes consult so
+// Cypress + jest environments (`RATE_LIMIT_DISABLED=1`) don't
+// have to reason about 429s.
+mountPublicPreviewRoutes(publicPreviewRouter, pool, {
+  htmlLimiter: rateLimitDisabled ? noopLimiter : publicPreviewHtmlLimiter,
+  audioLimiter: rateLimitDisabled ? noopLimiter : publicPreviewAudioLimiter,
+});
 app.use('/public-preview', publicPreviewRouter);
 
 app.use('/api/setup', authLim, createSetupRouter(pool));

@@ -84,12 +84,19 @@ describe('generatePublicPreviewToken', () => {
 });
 
 describe('POST /api/projects/:id/public-preview — enable', () => {
-  it('mints a fresh token when none exists and stores it', async () => {
+  it('mints a fresh token when none exists (returns whatever UPDATE stored)', async () => {
+    // Race-safe enable: the app passes a candidate token to
+    // UPDATE ... COALESCE(public_preview_token, $2) RETURNING, and
+    // whatever Postgres actually stored comes back via RETURNING.
+    // On a truly-first enable, the candidate wins and is returned.
+    let stored: string | null = null;
     const { pool, query } = makePool([
-      // SELECT public_preview_token
-      () => ({ rows: [{ public_preview_token: null }] }),
-      // UPDATE ... RETURNING nothing
-      () => ({ rows: [], rowCount: 1 }),
+      // UPDATE ... COALESCE ... RETURNING
+      (_sql, params) => {
+        const candidate = params[1] as string;
+        stored = stored ?? candidate;
+        return { rows: [{ public_preview_token: stored }], rowCount: 1 };
+      },
     ]);
     const app = express();
     attachLog(app);
@@ -104,17 +111,19 @@ describe('POST /api/projects/:id/public-preview — enable', () => {
     expect(res.body.token).toMatch(/^[A-Za-z0-9_-]{32}$/);
     expect(res.body.url).toBe(`/public-preview/${res.body.token}`);
 
-    // Update was called with the same token we returned.
-    const updateCall = query.mock.calls[1] as unknown[];
-    const updateParams = updateCall[1] as unknown[];
-    expect(updateParams[1]).toBe(res.body.token);
+    // Only one query fires now (the atomic UPDATE), no separate SELECT.
+    expect(query.mock.calls).toHaveLength(1);
+    const sql = (query.mock.calls[0] as unknown[])[0] as string;
+    expect(sql).toMatch(/COALESCE\(public_preview_token/);
+    expect(sql).toMatch(/RETURNING public_preview_token/);
   });
 
   it('reuses the existing token on re-enable (share once, keep sharing)', async () => {
     const stored = 'existing-token-preserved-across-cycles';
     const { pool } = makePool([
-      () => ({ rows: [{ public_preview_token: stored }] }),
-      () => ({ rows: [], rowCount: 1 }),
+      // UPDATE ... COALESCE returns the already-stored token even
+      // though a fresh candidate was passed as $2.
+      (_sql, _params) => ({ rows: [{ public_preview_token: stored }], rowCount: 1 }),
     ]);
     const app = express();
     attachLog(app);
@@ -129,8 +138,42 @@ describe('POST /api/projects/:id/public-preview — enable', () => {
     expect(res.body.url).toBe(`/public-preview/${stored}`);
   });
 
+  it('two concurrent enables converge on the same token', async () => {
+    // Simulate the race: both requests pass different candidates,
+    // but the DB row-lock semantics COALESCE folds the second
+    // caller's candidate away in favor of the first stored value.
+    // Both callers should read the same value back.
+    let stored: string | null = null;
+    const { pool } = makePool([
+      (_sql, params) => {
+        const candidate = params[1] as string;
+        stored = stored ?? candidate;
+        return { rows: [{ public_preview_token: stored }], rowCount: 1 };
+      },
+      (_sql, params) => {
+        const candidate = params[1] as string;
+        stored = stored ?? candidate;
+        return { rows: [{ public_preview_token: stored }], rowCount: 1 };
+      },
+    ]);
+    const app = express();
+    attachLog(app);
+    const router = express.Router();
+    mountPreviewRoutes(router, pool);
+    app.use('/api/projects', router);
+
+    const [resA, resB] = await Promise.all([
+      request(app).post('/api/projects/p1/public-preview'),
+      request(app).post('/api/projects/p1/public-preview'),
+    ]);
+
+    expect(resA.status).toBe(200);
+    expect(resB.status).toBe(200);
+    expect(resA.body.token).toBe(resB.body.token);
+  });
+
   it('404s when the project does not exist', async () => {
-    const { pool } = makePool([() => ({ rows: [] })]);
+    const { pool } = makePool([() => ({ rows: [], rowCount: 0 })]);
     const app = express();
     attachLog(app);
     const router = express.Router();
