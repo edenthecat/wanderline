@@ -19,7 +19,7 @@
     "@google-cloud/storage": "^7.21.0",
     "@wanderline/shared": "file:../shared",
     "@sentry/node": "^10.65.0",
-    "archiver": "^7.0.1",
+    "archiver": "^8.0.0",
     "bcrypt": "^6.0.0",
     "connect-pg-simple": "^10.0.0",
     "cors": "^2.8.6",
@@ -43,7 +43,7 @@
   "devDependencies": {
     "@stoplight/spectral-core": "^1.23.1",
     "@stoplight/spectral-rulesets": "^1.22.6",
-    "@types/archiver": "^7.0.0",
+    "@types/archiver": "^8.0.0",
     "@types/bcrypt": "^6.0.0",
     "@types/connect-pg-simple": "^7.0.3",
     "@types/cors": "^2.8.17",
