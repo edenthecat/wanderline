@@ -211,6 +211,37 @@ export function deleteProject(id: string): Promise<{ success: boolean }> {
   return request(`/projects/${id}`, { method: 'DELETE' });
 }
 
+// ── Public preview links ─────────────────────────────────────────────────
+
+export interface PublicPreviewState {
+  enabled: boolean;
+  /** Non-null once public preview has been enabled at least once. */
+  token: string | null;
+  /** Relative path (`/public-preview/<token>`); null when no token exists. */
+  url: string | null;
+}
+
+/** Fetch the current public-preview state for a project. */
+export function fetchPublicPreview(projectId: string): Promise<PublicPreviewState> {
+  return request(`/projects/${projectId}/public-preview`);
+}
+
+/**
+ * Turn on the shareable public-preview URL for a project. Idempotent
+ * on the server: preserves the token across on/off cycles so a link
+ * that a listener has already saved keeps working after re-enable.
+ * Returns the same `PublicPreviewState` shape as `fetchPublicPreview`
+ * so the two calls are interchangeable at the consumer.
+ */
+export function enablePublicPreview(projectId: string): Promise<PublicPreviewState> {
+  return request(`/projects/${projectId}/public-preview`, { method: 'POST' });
+}
+
+/** Disable the shareable public-preview URL (preserves the token). */
+export function disablePublicPreview(projectId: string): Promise<{ success: boolean }> {
+  return request(`/projects/${projectId}/public-preview`, { method: 'DELETE' });
+}
+
 // ── Story ───────────────────────────────────────────────────────────────
 
 export function uploadInk(

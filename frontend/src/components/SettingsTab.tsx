@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ApiError,
@@ -6,7 +6,11 @@ import {
   updateProjectSettings,
   deleteAllProjectAudio,
   deleteProject,
+  fetchPublicPreview,
+  enablePublicPreview,
+  disablePublicPreview,
   type ProjectSettings,
+  type PublicPreviewState,
 } from '../api/client';
 
 interface Props {
@@ -43,6 +47,19 @@ export default function SettingsTab({ projectId, projectName, onProjectDataInval
   const [projectDeleteName, setProjectDeleteName] = useState('');
   const [deletingProject, setDeletingProject] = useState(false);
   const [projectDeleteError, setProjectDeleteError] = useState<string | null>(null);
+  const [publicPreview, setPublicPreview] = useState<PublicPreviewState>({
+    enabled: false,
+    token: null,
+    url: null,
+  });
+  const [publicPreviewSaving, setPublicPreviewSaving] = useState(false);
+  const [publicPreviewError, setPublicPreviewError] = useState<string | null>(null);
+  const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
+  // Track the "Copied" affordance timer so we can clear it on
+  // subsequent copies + on unmount. Without this, a fast re-click
+  // or a route change during the 2s window can either double-schedule
+  // the reset or fire setCopyState after unmount.
+  const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     setError(null);
@@ -50,9 +67,88 @@ export default function SettingsTab({ projectId, projectName, onProjectDataInval
     setProjectDeleteOpen(false);
     setProjectDeleteName('');
     setProjectDeleteError(null);
+    setPublicPreviewError(null);
+    setCopyState('idle');
+    // Reset before the fetch so switching projects doesn't briefly
+    // render the previous project's link/toggle state while the
+    // load is in flight (or forever if the load errors).
+    setPublicPreview({ enabled: false, token: null, url: null });
     setLoading(true);
     loadSettings();
+    loadPublicPreview();
   }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Clear any pending copy-state reset on unmount to avoid the
+  // React "setState on unmounted component" warning + stale-timer
+  // races.
+  useEffect(() => {
+    return () => {
+      if (copyResetTimerRef.current !== null) {
+        clearTimeout(copyResetTimerRef.current);
+        copyResetTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  async function loadPublicPreview() {
+    // Set the same "saving" flag the toggle checks so the user
+    // can't click before the initial fetch resolves — otherwise a
+    // late GET response would clobber an already-in-flight
+    // POST/DELETE the user had triggered mid-load.
+    setPublicPreviewSaving(true);
+    try {
+      const state = await fetchPublicPreview(projectId);
+      setPublicPreview(state);
+    } catch (err) {
+      // Non-fatal; the settings page still renders, the Share row
+      // just shows an inline error.
+      setPublicPreviewError(err instanceof Error ? err.message : 'Failed to load share state');
+    } finally {
+      setPublicPreviewSaving(false);
+    }
+  }
+
+  async function handleTogglePublicPreview(next: boolean) {
+    setPublicPreviewSaving(true);
+    setPublicPreviewError(null);
+    setCopyState('idle');
+    try {
+      if (next) {
+        const state = await enablePublicPreview(projectId);
+        setPublicPreview(state);
+      } else {
+        await disablePublicPreview(projectId);
+        // Preserve the token client-side so the "off" state shows
+        // the URL will resume on re-enable; server preserves it too.
+        setPublicPreview((prev) => ({ ...prev, enabled: false }));
+      }
+    } catch (err) {
+      setPublicPreviewError(err instanceof Error ? err.message : 'Failed to update public preview');
+    } finally {
+      setPublicPreviewSaving(false);
+    }
+  }
+
+  async function handleCopyPublicPreview() {
+    if (!publicPreview.url) return;
+    const absoluteUrl = new URL(publicPreview.url, window.location.origin).toString();
+    try {
+      await navigator.clipboard.writeText(absoluteUrl);
+      setCopyState('copied');
+      // Cancel any in-flight reset from a prior copy so we don't
+      // race two timers ending on top of each other; unmount clears
+      // the same ref via the effect above.
+      if (copyResetTimerRef.current !== null) {
+        clearTimeout(copyResetTimerRef.current);
+      }
+      copyResetTimerRef.current = setTimeout(() => {
+        copyResetTimerRef.current = null;
+        setCopyState('idle');
+      }, 2000);
+    } catch {
+      setPublicPreviewError('Clipboard permission denied. Copy the URL manually.');
+    }
+  }
 
   async function loadSettings() {
     try {
@@ -186,6 +282,51 @@ export default function SettingsTab({ projectId, projectName, onProjectDataInval
           <p className="text-sm text-muted" style={{ marginTop: 8 }}>
             Password is currently set.
           </p>
+        )}
+      </section>
+
+      <section className="settings-section">
+        <h2>Share preview</h2>
+        <p className="text-muted">
+          Turn on a public link so anyone can hear the current draft in a browser without signing
+          in. Toggle off any time to revoke access; the link keeps working across on/off cycles so
+          you can share it once and re-enable later without re-sharing.
+        </p>
+        {publicPreviewError && (
+          <div className="alert alert-error" role="alert" style={{ marginBottom: 8 }}>
+            {publicPreviewError}
+          </div>
+        )}
+        <div className="settings-row">
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <input
+              type="checkbox"
+              checked={publicPreview.enabled}
+              onChange={(e) => handleTogglePublicPreview(e.target.checked)}
+              disabled={publicPreviewSaving}
+              aria-label="Public preview link"
+            />
+            Public preview link
+          </label>
+        </div>
+        {publicPreview.enabled && publicPreview.url && (
+          <div className="settings-row" style={{ marginTop: 8 }}>
+            <input
+              type="text"
+              readOnly
+              value={new URL(publicPreview.url, window.location.origin).toString()}
+              onFocus={(e) => e.currentTarget.select()}
+              aria-label="Public preview URL"
+              style={{ flex: 1, fontFamily: 'monospace' }}
+            />
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={handleCopyPublicPreview}
+              disabled={publicPreviewSaving}
+            >
+              {copyState === 'copied' ? 'Copied' : 'Copy'}
+            </button>
+          </div>
         )}
       </section>
 

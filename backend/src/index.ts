@@ -2,7 +2,7 @@
 // auto-instrumentation can patch http/express/pg. Keep this import first.
 import './instrument.js';
 
-import express from 'express';
+import express, { Router } from 'express';
 import { createServer } from 'http';
 import helmet from 'helmet';
 import cors from 'cors';
@@ -37,6 +37,8 @@ import {
   invitationCreateLimiter,
   invitationTokenLookupLimiter,
   invitationAcceptLimiter,
+  publicPreviewHtmlLimiter,
+  publicPreviewAudioLimiter,
   noopLimiter,
 } from './middleware/rate-limit.js';
 import {
@@ -45,7 +47,7 @@ import {
   reconcileSoftDeletedBuilds,
 } from './services/build-service.js';
 import { attachCollabServer } from './services/collab-server.js';
-import { getPlayerDist } from './routes/projects-preview.js';
+import { getPlayerDist, mountPublicPreviewRoutes } from './routes/projects-preview.js';
 import { logger } from './logger.js';
 import { join } from 'path';
 import swaggerUi from 'swagger-ui-express';
@@ -326,6 +328,21 @@ app.use('/api/_player', (req, res, next) => {
 });
 
 // Public auth routes (no auth required) — tighter rate limit to slow brute force
+// Anonymous public-preview routes. Mounted OUTSIDE /api/ and BEFORE
+// requireAuth so a listener with a shared link never touches the
+// session-auth path. The token in the URL is the sole access
+// control — see mountPublicPreviewRoutes for the lookup logic.
+const publicPreviewRouter = Router();
+// Per-route rate limits sized in middleware/rate-limit.ts. Reuse
+// the same rateLimitDisabled flag the /api routes consult so
+// Cypress + jest environments (`RATE_LIMIT_DISABLED=1`) don't
+// have to reason about 429s.
+mountPublicPreviewRoutes(publicPreviewRouter, pool, {
+  htmlLimiter: rateLimitDisabled ? noopLimiter : publicPreviewHtmlLimiter,
+  audioLimiter: rateLimitDisabled ? noopLimiter : publicPreviewAudioLimiter,
+});
+app.use('/public-preview', publicPreviewRouter);
+
 app.use('/api/setup', authLim, createSetupRouter(pool));
 app.use('/api/auth', authLim, createAuthRouter(pool));
 

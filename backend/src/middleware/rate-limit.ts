@@ -38,6 +38,35 @@ const baseOptions: Partial<Options> = {
   },
 };
 
+/**
+ * Anonymous public-preview HTML endpoint. Only one HTML fetch
+ * per listener session, so 60 / IP / minute is far more than any
+ * legitimate use ever needs; the ceiling exists so a leaked
+ * token can't be used to hammer the render path (which reissues
+ * SRI, rebuilds CSP nonces, and re-queries the full story graph
+ * every time).
+ */
+export const publicPreviewHtmlLimiter = rateLimit({
+  ...baseOptions,
+  windowMs: 60 * 1000,
+  limit: 60,
+});
+
+/**
+ * Anonymous public-preview audio endpoint. Sized to survive an
+ * aggressive story preload behind a shared NAT: a 50-audio story
+ * with a handful of concurrent listeners can easily burst to
+ * 10 requests / second in the first few seconds. 900 / IP / minute
+ * (~15 req/sec sustained) sits well above that headroom while
+ * still capping runaway scraping of a leaked token before the
+ * author notices and disables.
+ */
+export const publicPreviewAudioLimiter = rateLimit({
+  ...baseOptions,
+  windowMs: 60 * 1000,
+  limit: 900,
+});
+
 /** Generous limit on all /api/* traffic. */
 export const apiLimiter = rateLimit({
   ...baseOptions,
