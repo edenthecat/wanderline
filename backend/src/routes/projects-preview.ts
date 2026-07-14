@@ -583,7 +583,14 @@ export function mountPreviewRoutes(router: Router, pool: Pool): void {
    *         required: true
    *         schema: { type: string, format: uuid }
    *     responses:
-   *       204: { description: Public preview disabled. }
+   *       200:
+   *         description: Public preview disabled.
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 success: { type: boolean }
    *       404: { description: Project not found. }
    */
   router.delete('/:id/public-preview', async (req: Request, res: Response) => {
@@ -600,7 +607,11 @@ export function mountPreviewRoutes(router: Router, pool: Pool): void {
         res.status(404).json({ error: 'Project not found' });
         return;
       }
-      res.status(204).end();
+      // 200 + { success: true } (rather than a bare 204) matches
+      // the codebase convention for DELETE endpoints and lets the
+      // shared `request` helper JSON-parse the response without
+      // special-casing an empty body.
+      res.json({ success: true });
     } catch (error) {
       req.log.error({ err: error }, 'Failed to disable public preview');
       res.status(500).json({ error: 'Failed to disable public preview' });

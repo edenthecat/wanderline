@@ -238,8 +238,8 @@ export function enablePublicPreview(projectId: string): Promise<PublicPreviewSta
 }
 
 /** Disable the shareable public-preview URL (preserves the token). */
-export async function disablePublicPreview(projectId: string): Promise<void> {
-  await requestWithHeaders(`/projects/${projectId}/public-preview`, { method: 'DELETE' });
+export function disablePublicPreview(projectId: string): Promise<{ success: boolean }> {
+  return request(`/projects/${projectId}/public-preview`, { method: 'DELETE' });
 }
 
 // ── Story ───────────────────────────────────────────────────────────────

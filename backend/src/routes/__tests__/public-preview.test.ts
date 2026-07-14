@@ -255,7 +255,7 @@ describe('POST /api/projects/:id/public-preview — enable', () => {
 });
 
 describe('DELETE /api/projects/:id/public-preview — disable', () => {
-  it('flips the flag and returns 204 without touching the token', async () => {
+  it('flips the flag and returns { success: true } without touching the token', async () => {
     const { pool, query } = makePool([
       // UPDATE ... RETURNING id
       () => ({ rows: [{ id: 'p1' }], rowCount: 1 }),
@@ -267,7 +267,11 @@ describe('DELETE /api/projects/:id/public-preview — disable', () => {
     app.use('/api/projects', router);
 
     const res = await request(app).delete('/api/projects/p1/public-preview');
-    expect(res.status).toBe(204);
+    // 200 + { success: true } (rather than 204) matches the
+    // codebase's convention for DELETE endpoints so the shared
+    // `request` helper JSON-parses the body without a special case.
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true });
 
     const sql = (query.mock.calls[0] as unknown[])[0] as string;
     expect(sql).toMatch(/public_preview_enabled = false/);

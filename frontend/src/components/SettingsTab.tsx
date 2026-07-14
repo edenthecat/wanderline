@@ -91,6 +91,11 @@ export default function SettingsTab({ projectId, projectName, onProjectDataInval
   }, []);
 
   async function loadPublicPreview() {
+    // Set the same "saving" flag the toggle checks so the user
+    // can't click before the initial fetch resolves — otherwise a
+    // late GET response would clobber an already-in-flight
+    // POST/DELETE the user had triggered mid-load.
+    setPublicPreviewSaving(true);
     try {
       const state = await fetchPublicPreview(projectId);
       setPublicPreview(state);
@@ -98,6 +103,8 @@ export default function SettingsTab({ projectId, projectName, onProjectDataInval
       // Non-fatal; the settings page still renders, the Share row
       // just shows an inline error.
       setPublicPreviewError(err instanceof Error ? err.message : 'Failed to load share state');
+    } finally {
+      setPublicPreviewSaving(false);
     }
   }
 
