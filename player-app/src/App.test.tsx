@@ -355,9 +355,13 @@ describe('App', () => {
     // backgrounding natively when the page doesn't pause on
     // document.hidden, so an explicit pause-on-hide is a bug (it
     // fought the lock-screen playback + Bluetooth-headphones use
-    // case). This test pins the absence so a future "helpfully"-
-    // added handler doesn't regress the fix.
-    it('does not pause audio on document.hidden (native + Media Session handle backgrounding)', async () => {
+    // case). This test pins the absence structurally: any future
+    // visibilitychange registration fails the assertion, which is
+    // the earliest possible signal a "helpful" pause-on-hide has
+    // been reintroduced — no need to also assert the downstream
+    // behavior (audio.pause not called), which the previous
+    // ref-based attempt couldn't observe cleanly anyway.
+    it('registers no visibilitychange listener (any future one would risk pausing on lock)', async () => {
       (window as any).__WANDERLINE_STORY__ = mockStory;
       const addSpy = vi.spyOn(document, 'addEventListener');
       render(<App />);
