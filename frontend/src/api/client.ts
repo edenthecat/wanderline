@@ -230,10 +230,10 @@ export function fetchPublicPreview(projectId: string): Promise<PublicPreviewStat
  * Turn on the shareable public-preview URL for a project. Idempotent
  * on the server: preserves the token across on/off cycles so a link
  * that a listener has already saved keeps working after re-enable.
+ * Returns the same `PublicPreviewState` shape as `fetchPublicPreview`
+ * so the two calls are interchangeable at the consumer.
  */
-export function enablePublicPreview(
-  projectId: string,
-): Promise<{ enabled: boolean; token: string; url: string }> {
+export function enablePublicPreview(projectId: string): Promise<PublicPreviewState> {
   return request(`/projects/${projectId}/public-preview`, { method: 'POST' });
 }
 

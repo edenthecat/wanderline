@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ApiError,
@@ -55,6 +55,11 @@ export default function SettingsTab({ projectId, projectName, onProjectDataInval
   const [publicPreviewSaving, setPublicPreviewSaving] = useState(false);
   const [publicPreviewError, setPublicPreviewError] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
+  // Track the "Copied" affordance timer so we can clear it on
+  // subsequent copies + on unmount. Without this, a fast re-click
+  // or a route change during the 2s window can either double-schedule
+  // the reset or fire setCopyState after unmount.
+  const copyResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     setError(null);
@@ -64,10 +69,26 @@ export default function SettingsTab({ projectId, projectName, onProjectDataInval
     setProjectDeleteError(null);
     setPublicPreviewError(null);
     setCopyState('idle');
+    // Reset before the fetch so switching projects doesn't briefly
+    // render the previous project's link/toggle state while the
+    // load is in flight (or forever if the load errors).
+    setPublicPreview({ enabled: false, token: null, url: null });
     setLoading(true);
     loadSettings();
     loadPublicPreview();
   }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Clear any pending copy-state reset on unmount to avoid the
+  // React "setState on unmounted component" warning + stale-timer
+  // races.
+  useEffect(() => {
+    return () => {
+      if (copyResetTimerRef.current !== null) {
+        clearTimeout(copyResetTimerRef.current);
+        copyResetTimerRef.current = null;
+      }
+    };
+  }, []);
 
   async function loadPublicPreview() {
     try {
@@ -107,8 +128,16 @@ export default function SettingsTab({ projectId, projectName, onProjectDataInval
     try {
       await navigator.clipboard.writeText(absoluteUrl);
       setCopyState('copied');
-      // Reset the copied indicator so a second copy still gives feedback.
-      setTimeout(() => setCopyState('idle'), 2000);
+      // Cancel any in-flight reset from a prior copy so we don't
+      // race two timers ending on top of each other; unmount clears
+      // the same ref via the effect above.
+      if (copyResetTimerRef.current !== null) {
+        clearTimeout(copyResetTimerRef.current);
+      }
+      copyResetTimerRef.current = setTimeout(() => {
+        copyResetTimerRef.current = null;
+        setCopyState('idle');
+      }, 2000);
     } catch {
       setPublicPreviewError('Clipboard permission denied. Copy the URL manually.');
     }

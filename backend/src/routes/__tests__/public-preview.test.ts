@@ -83,6 +83,75 @@ describe('generatePublicPreviewToken', () => {
   });
 });
 
+describe('GET /api/projects/:id/public-preview — current state', () => {
+  it('returns { enabled: false, token: null, url: null } for a never-enabled project', async () => {
+    const { pool } = makePool([
+      () => ({ rows: [{ public_preview_enabled: false, public_preview_token: null }] }),
+    ]);
+    const app = express();
+    attachLog(app);
+    const router = express.Router();
+    mountPreviewRoutes(router, pool);
+    app.use('/api/projects', router);
+
+    const res = await request(app).get('/api/projects/p1/public-preview');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ enabled: false, token: null, url: null });
+  });
+
+  it('returns the stored token but enabled=false for a previously-enabled-now-disabled project', async () => {
+    const stored = 'preserved-token-across-disable-cycle';
+    const { pool } = makePool([
+      () => ({ rows: [{ public_preview_enabled: false, public_preview_token: stored }] }),
+    ]);
+    const app = express();
+    attachLog(app);
+    const router = express.Router();
+    mountPreviewRoutes(router, pool);
+    app.use('/api/projects', router);
+
+    const res = await request(app).get('/api/projects/p1/public-preview');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      enabled: false,
+      token: stored,
+      url: `/public-preview/${stored}`,
+    });
+  });
+
+  it('returns enabled=true + url for a currently-enabled project', async () => {
+    const stored = 'active-token';
+    const { pool } = makePool([
+      () => ({ rows: [{ public_preview_enabled: true, public_preview_token: stored }] }),
+    ]);
+    const app = express();
+    attachLog(app);
+    const router = express.Router();
+    mountPreviewRoutes(router, pool);
+    app.use('/api/projects', router);
+
+    const res = await request(app).get('/api/projects/p1/public-preview');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      enabled: true,
+      token: stored,
+      url: `/public-preview/${stored}`,
+    });
+  });
+
+  it('404s when the project does not exist', async () => {
+    const { pool } = makePool([() => ({ rows: [] })]);
+    const app = express();
+    attachLog(app);
+    const router = express.Router();
+    mountPreviewRoutes(router, pool);
+    app.use('/api/projects', router);
+
+    const res = await request(app).get('/api/projects/ghost/public-preview');
+    expect(res.status).toBe(404);
+  });
+});
+
 describe('POST /api/projects/:id/public-preview — enable', () => {
   it('mints a fresh token when none exists (returns whatever UPDATE stored)', async () => {
     // Race-safe enable: the app passes a candidate token to
@@ -271,6 +340,9 @@ describe('GET /public-preview/:token — anonymous HTML', () => {
 
     const res = await request(app).get('/public-preview/unknown-token');
     expect(res.status).toBe(404);
+    // no-store so a listener doesn't cache the negative response
+    // across an author's disable → re-enable cycle.
+    expect(res.headers['cache-control']).toBe('no-store');
   });
 
   it('404s when the token is known but public preview is disabled', async () => {
@@ -389,5 +461,6 @@ describe('GET /public-preview/:token/audio/:filename — anonymous audio', () =>
     const res = await request(app).get('/public-preview/unknown-token/audio/anything.mp3');
     expect(res.status).toBe(404);
     expect(storageTouched).toBe(false);
+    expect(res.headers['cache-control']).toBe('no-store');
   });
 });

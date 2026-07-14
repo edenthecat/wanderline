@@ -639,6 +639,13 @@ export function mountPublicPreviewRoutes(
         [token],
       );
       if (result.rows.length === 0) {
+        // no-store on the 404 too: an author's toggle can flip a
+        // token from disabled → enabled while a listener still
+        // holds a cached negative response. HTTP defaults let 404s
+        // sit in browser + proxy caches; without this header a
+        // listener sees "Not found" for the length of the shared
+        // cache TTL even after the author re-enables.
+        res.setHeader('Cache-Control', 'no-store');
         res.status(404).send('Not found');
         return;
       }
@@ -668,6 +675,10 @@ export function mountPublicPreviewRoutes(
         [token],
       );
       if (result.rows.length === 0) {
+        // Same rationale as the HTML 404 above: don't let a
+        // temporarily-disabled token get cached as a permanent
+        // negative in a browser or intermediary proxy.
+        res.setHeader('Cache-Control', 'no-store');
         res.status(404).json({ error: 'Not found' });
         return;
       }
