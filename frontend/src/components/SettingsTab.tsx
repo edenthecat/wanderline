@@ -6,7 +6,11 @@ import {
   updateProjectSettings,
   deleteAllProjectAudio,
   deleteProject,
+  fetchPublicPreview,
+  enablePublicPreview,
+  disablePublicPreview,
   type ProjectSettings,
+  type PublicPreviewState,
 } from '../api/client';
 
 interface Props {
@@ -43,6 +47,14 @@ export default function SettingsTab({ projectId, projectName, onProjectDataInval
   const [projectDeleteName, setProjectDeleteName] = useState('');
   const [deletingProject, setDeletingProject] = useState(false);
   const [projectDeleteError, setProjectDeleteError] = useState<string | null>(null);
+  const [publicPreview, setPublicPreview] = useState<PublicPreviewState>({
+    enabled: false,
+    token: null,
+    url: null,
+  });
+  const [publicPreviewSaving, setPublicPreviewSaving] = useState(false);
+  const [publicPreviewError, setPublicPreviewError] = useState<string | null>(null);
+  const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
 
   useEffect(() => {
     setError(null);
@@ -50,9 +62,57 @@ export default function SettingsTab({ projectId, projectName, onProjectDataInval
     setProjectDeleteOpen(false);
     setProjectDeleteName('');
     setProjectDeleteError(null);
+    setPublicPreviewError(null);
+    setCopyState('idle');
     setLoading(true);
     loadSettings();
+    loadPublicPreview();
   }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function loadPublicPreview() {
+    try {
+      const state = await fetchPublicPreview(projectId);
+      setPublicPreview(state);
+    } catch (err) {
+      // Non-fatal; the settings page still renders, the Share row
+      // just shows an inline error.
+      setPublicPreviewError(err instanceof Error ? err.message : 'Failed to load share state');
+    }
+  }
+
+  async function handleTogglePublicPreview(next: boolean) {
+    setPublicPreviewSaving(true);
+    setPublicPreviewError(null);
+    setCopyState('idle');
+    try {
+      if (next) {
+        const state = await enablePublicPreview(projectId);
+        setPublicPreview(state);
+      } else {
+        await disablePublicPreview(projectId);
+        // Preserve the token client-side so the "off" state shows
+        // the URL will resume on re-enable; server preserves it too.
+        setPublicPreview((prev) => ({ ...prev, enabled: false }));
+      }
+    } catch (err) {
+      setPublicPreviewError(err instanceof Error ? err.message : 'Failed to update public preview');
+    } finally {
+      setPublicPreviewSaving(false);
+    }
+  }
+
+  async function handleCopyPublicPreview() {
+    if (!publicPreview.url) return;
+    const absoluteUrl = new URL(publicPreview.url, window.location.origin).toString();
+    try {
+      await navigator.clipboard.writeText(absoluteUrl);
+      setCopyState('copied');
+      // Reset the copied indicator so a second copy still gives feedback.
+      setTimeout(() => setCopyState('idle'), 2000);
+    } catch {
+      setPublicPreviewError('Clipboard permission denied. Copy the URL manually.');
+    }
+  }
 
   async function loadSettings() {
     try {
@@ -186,6 +246,51 @@ export default function SettingsTab({ projectId, projectName, onProjectDataInval
           <p className="text-sm text-muted" style={{ marginTop: 8 }}>
             Password is currently set.
           </p>
+        )}
+      </section>
+
+      <section className="settings-section">
+        <h2>Share preview</h2>
+        <p className="text-muted">
+          Turn on a public link so anyone can hear the current draft in a browser without signing
+          in. Toggle off any time to revoke access; the link keeps working across on/off cycles so
+          you can share it once and re-enable later without re-sharing.
+        </p>
+        {publicPreviewError && (
+          <div className="alert alert-error" role="alert" style={{ marginBottom: 8 }}>
+            {publicPreviewError}
+          </div>
+        )}
+        <div className="settings-row">
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <input
+              type="checkbox"
+              checked={publicPreview.enabled}
+              onChange={(e) => handleTogglePublicPreview(e.target.checked)}
+              disabled={publicPreviewSaving}
+              aria-label="Public preview link"
+            />
+            Public preview link
+          </label>
+        </div>
+        {publicPreview.enabled && publicPreview.url && (
+          <div className="settings-row" style={{ marginTop: 8 }}>
+            <input
+              type="text"
+              readOnly
+              value={new URL(publicPreview.url, window.location.origin).toString()}
+              onFocus={(e) => e.currentTarget.select()}
+              aria-label="Public preview URL"
+              style={{ flex: 1, fontFamily: 'monospace' }}
+            />
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={handleCopyPublicPreview}
+              disabled={publicPreviewSaving}
+            >
+              {copyState === 'copied' ? 'Copied' : 'Copy'}
+            </button>
+          </div>
         )}
       </section>
 
