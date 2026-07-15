@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { ApiError, fetchMe } from '../api/client';
 
 interface Props {
@@ -23,7 +24,13 @@ export default function PreviewTab({ projectId, hasStory }: Props) {
   // body inside the iframe as raw text with no indication of what
   // went wrong, so we pre-check auth on mount and show a "please
   // log in again" affordance instead.
+  //
+  // Kept separate from iframeKey on purpose: iframeKey re-mounts
+  // the iframe (Restart button) and shouldn't spend a round-trip
+  // re-checking auth we already know is good. authAttempt is bumped
+  // only by the Retry button in the error state.
   const [authStatus, setAuthStatus] = useState<'checking' | 'ok' | 'expired' | 'error'>('checking');
+  const [authAttempt, setAuthAttempt] = useState(0);
   useEffect(() => {
     let cancelled = false;
     setAuthStatus('checking');
@@ -42,7 +49,7 @@ export default function PreviewTab({ projectId, hasStory }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [projectId, iframeKey]);
+  }, [projectId, authAttempt]);
 
   if (!hasStory) {
     return (
@@ -66,9 +73,9 @@ export default function PreviewTab({ projectId, hasStory }: Props) {
         <div className="empty-state">
           <p>Your session has expired. Please log in again to load the preview.</p>
           <p>
-            <a className="btn btn-primary btn-sm" href="/login">
+            <Link className="btn btn-primary btn-sm" to="/login">
               Log in again
-            </a>
+            </Link>
           </p>
         </div>
       </div>
@@ -87,7 +94,7 @@ export default function PreviewTab({ projectId, hasStory }: Props) {
             <button
               type="button"
               className="btn btn-primary btn-sm"
-              onClick={() => setIframeKey((k) => k + 1)}
+              onClick={() => setAuthAttempt((n) => n + 1)}
             >
               Retry
             </button>

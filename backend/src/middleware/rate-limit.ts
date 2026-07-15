@@ -143,12 +143,12 @@ export const buildEnqueueLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 10,
   // The IP-fallback branch runs `ipKeyGenerator` on `req.ip` so
-  // multiple clients on the same IPv6 /64 subnet get grouped
-  // together, matching how express-rate-limit's default key
-  // generator handles v6. Without this, IPv6 users can trivially
-  // bypass the limit by cycling their address inside their /64
-  // (which most residential ISPs hand out), and express-rate-limit
-  // v8 logs a startup ValidationError telling us so.
+  // IPv6 clients get grouped by the library's default /56 subnet,
+  // matching how express-rate-limit's built-in key generator
+  // handles v6. Without this, IPv6 users could cycle their address
+  // inside a /64 (which most residential ISPs allocate) to slip
+  // past the limit, and express-rate-limit v8 logs a startup
+  // ValidationError telling us so.
   keyGenerator: (req) => {
     const userId = (req as { session?: { userId?: string } }).session?.userId;
     if (userId) return `user:${userId}`;
