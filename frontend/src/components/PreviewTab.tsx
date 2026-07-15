@@ -18,11 +18,11 @@ export default function PreviewTab({ projectId, hasStory }: Props) {
   const [iframeKey, setIframeKey] = useState(0);
   const previewUrl = `/api/projects/${projectId}/preview`;
 
-  // Session gate. The preview endpoint sits behind requireAuth, and
-  // an expired session returns 401. Browsers render that 401 body
-  // inside the iframe as raw text with no indication of what went
-  // wrong, so we pre-check auth on mount and show a "please log in
-  // again" affordance instead. See DEV-174.
+  // Session gate. The preview endpoint sits behind requireAuth,
+  // and an expired session returns 401. Browsers render that 401
+  // body inside the iframe as raw text with no indication of what
+  // went wrong, so we pre-check auth on mount and show a "please
+  // log in again" affordance instead.
   const [authStatus, setAuthStatus] = useState<'checking' | 'ok' | 'expired' | 'error'>('checking');
   useEffect(() => {
     let cancelled = false;
