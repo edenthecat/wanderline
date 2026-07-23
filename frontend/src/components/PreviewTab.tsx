@@ -32,6 +32,10 @@ export default function PreviewTab({ projectId, hasStory }: Props) {
   const [authStatus, setAuthStatus] = useState<'checking' | 'ok' | 'expired' | 'error'>('checking');
   const [authAttempt, setAuthAttempt] = useState(0);
   useEffect(() => {
+    // Skip the auth ping when the empty-state ("Upload a story
+    // file") is going to render anyway. Saves an /api/auth/me
+    // round trip for every visit to a fresh project.
+    if (!hasStory) return;
     let cancelled = false;
     setAuthStatus('checking');
     fetchMe()
@@ -49,7 +53,7 @@ export default function PreviewTab({ projectId, hasStory }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [projectId, authAttempt]);
+  }, [projectId, authAttempt, hasStory]);
 
   if (!hasStory) {
     return (
