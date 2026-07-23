@@ -1,4 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { ApiError, fetchMe } from '../api/client';
 
 interface Props {
   projectId: string;
@@ -17,6 +19,42 @@ export default function PreviewTab({ projectId, hasStory }: Props) {
   const [iframeKey, setIframeKey] = useState(0);
   const previewUrl = `/api/projects/${projectId}/preview`;
 
+  // Session gate. The preview endpoint sits behind requireAuth,
+  // and an expired session returns 401. Browsers render that 401
+  // body inside the iframe as raw text with no indication of what
+  // went wrong, so we pre-check auth on mount and show a "please
+  // log in again" affordance instead.
+  //
+  // Kept separate from iframeKey on purpose: iframeKey re-mounts
+  // the iframe (Restart button) and shouldn't spend a round-trip
+  // re-checking auth we already know is good. authAttempt is bumped
+  // only by the Retry button in the error state.
+  const [authStatus, setAuthStatus] = useState<'checking' | 'ok' | 'expired' | 'error'>('checking');
+  const [authAttempt, setAuthAttempt] = useState(0);
+  useEffect(() => {
+    // Skip the auth ping when the empty-state ("Upload a story
+    // file") is going to render anyway. Saves an /api/auth/me
+    // round trip for every visit to a fresh project.
+    if (!hasStory) return;
+    let cancelled = false;
+    setAuthStatus('checking');
+    fetchMe()
+      .then(() => {
+        if (!cancelled) setAuthStatus('ok');
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        if (err instanceof ApiError && err.status === 401) {
+          setAuthStatus('expired');
+        } else {
+          setAuthStatus('error');
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, authAttempt, hasStory]);
+
   if (!hasStory) {
     return (
       <div className="tab-panel">
@@ -25,6 +63,59 @@ export default function PreviewTab({ projectId, hasStory }: Props) {
         </div>
         <div className="empty-state">
           <p>Upload a story file before previewing.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (authStatus === 'expired') {
+    return (
+      <div className="tab-panel">
+        <div className="section-header">
+          <h2>Preview</h2>
+        </div>
+        <div className="empty-state">
+          <p>Your session has expired. Please log in again to load the preview.</p>
+          <p>
+            <Link className="btn btn-primary btn-sm" to="/login">
+              Log in again
+            </Link>
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (authStatus === 'error') {
+    return (
+      <div className="tab-panel">
+        <div className="section-header">
+          <h2>Preview</h2>
+        </div>
+        <div className="empty-state">
+          <p>Couldn&apos;t reach the server. Retry once you have a connection.</p>
+          <p>
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={() => setAuthAttempt((n) => n + 1)}
+            >
+              Retry
+            </button>
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (authStatus === 'checking') {
+    return (
+      <div className="tab-panel">
+        <div className="section-header">
+          <h2>Preview</h2>
+        </div>
+        <div className="empty-state">
+          <p>Loading preview...</p>
         </div>
       </div>
     );
