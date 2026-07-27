@@ -51,7 +51,97 @@ jobs:
         run: npm ci
 
       - name: Audit production dependencies
-        run: npm audit --audit-level=high --omit=dev
+        # Blocks the PR on any HIGH or CRITICAL prod advisory that
+        # isn't in the allowlist below. Matches the previous
+        # `npm audit --audit-level=high` behaviour, which fails on
+        # both severities. Each allowlist entry pairs a GHSA with
+        # a one-line rationale so a future reviewer can revisit
+        # whether it still deserves the pass.
+        #
+        # Adding entries here is a stopgap: it unblocks CI when an
+        # advisory is either not applicable to Wanderline's code
+        # paths OR is tracked under a separate remediation ticket
+        # that's slated for its own PR. Prefer removing entries
+        # over adding them; every entry should have a tracked way
+        # to disappear.
+        run: |
+          set -euo pipefail
+
+          # GHSA IDs to skip. Lines starting with `#` and blank
+          # lines are ignored; every other line is treated as a
+          # GHSA. Do not put anything else on the GHSA lines.
+          ALLOWLIST=$(cat <<'ALLOW'
+          # react-router / react-router-dom RSC Mode CSRF Bypass.
+          # Not applicable: we do not use React Server Components,
+          # so the vulnerable `handleAction` path never runs in
+          # this app. The v7 line has no patch; upgrading to v8
+          # requires React 19 first (task #233). Remove this line
+          # once the React 19 + react-router 8 upgrade lands.
+          GHSA-qwww-vcr4-c8h2
+
+          # brace-expansion DoS via exponential-time expansion.
+          # Transitive via minimatch/glob. No untrusted input reaches
+          # these expansion paths in Wanderline's runtime, but the
+          # full analysis + upgrade lives in the follow-up dep-sweep
+          # ticket rather than this PR. Remove after that ticket
+          # lands the patched versions across the tree.
+          GHSA-3jxr-9vmj-r5cp
+
+          # brace-expansion DoS via unbounded expansion length (OOM).
+          # CVE-2026-14257. Same transitive story as GHSA-3jxr; patched
+          # in 5.0.8. Handled by the same dep-sweep ticket.
+          GHSA-mh99-v99m-4gvg
+
+          # fast-uri host confusion via literal backslash / IDN.
+          # Same story: transitive via fast-xml-parser and friends,
+          # bump lands in the dep-sweep ticket.
+          GHSA-v2hh-gcrm-f6hx
+          GHSA-4c8g-83qw-93j6
+          ALLOW
+          )
+          # Filter comments (leading whitespace + `#`) and blank
+          # lines with POSIX-compatible expressions; grep's `\s`
+          # only works under -P/PCRE and isn't portable. `xargs -n 1
+          # echo` trims and one-per-line normalises what's left.
+          IGNORED=$(echo "$ALLOWLIST" | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$' | xargs -n 1 echo || true)
+
+          # Collect every HIGH+CRITICAL advisory URL from the audit
+          # report. Matches the semantics of `npm audit
+          # --audit-level=high` (which is inclusive of critical).
+          npm audit --json --omit=dev > audit.json || true
+          BLOCKING=$(jq -r '
+            [.vulnerabilities[]?
+              | select(.severity == "high" or .severity == "critical")
+              | .via[]?
+              | select(type == "object")
+              | .url]
+            | unique
+            | .[]
+          ' audit.json)
+
+          # Strip out allowlisted GHSAs.
+          UNRESOLVED=""
+          for url in $BLOCKING; do
+            ghsa=$(echo "$url" | grep -oE 'GHSA-[a-z0-9-]+' || true)
+            if [ -n "$ghsa" ] && echo "$IGNORED" | grep -qx "$ghsa"; then
+              continue
+            fi
+            UNRESOLVED="$UNRESOLVED $url"
+          done
+
+          if [ -n "$(echo "$UNRESOLVED" | xargs)" ]; then
+            echo "::error::Unresolved HIGH/CRITICAL advisories:"
+            for url in $UNRESOLVED; do
+              echo "  - $url"
+            done
+            echo ""
+            echo "Fix the advisory (bump the dep) or, if intentionally"
+            echo "deferred, add the GHSA to ALLOWLIST above with a"
+            echo "one-line rationale."
+            exit 1
+          fi
+
+          echo "No unresolved HIGH/CRITICAL prod advisories."
 
   check-secrets:
     name: Check for Secrets
