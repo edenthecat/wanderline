@@ -87,13 +87,16 @@ export default function PreviewTab({ projectId, hasStory }: Props) {
   }
 
   if (authStatus === 'error') {
+    // Catches network failures AND non-401 API errors (5xx, DNS,
+    // timeouts). Wording covers both without pretending to know
+    // which one hit.
     return (
       <div className="tab-panel">
         <div className="section-header">
           <h2>Preview</h2>
         </div>
         <div className="empty-state">
-          <p>Couldn&apos;t reach the server. Retry once you have a connection.</p>
+          <p>Something went wrong loading the preview. Retry, or try again in a minute.</p>
           <p>
             <button
               type="button"
