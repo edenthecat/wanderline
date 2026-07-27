@@ -51,9 +51,11 @@ jobs:
         run: npm ci
 
       - name: Audit production dependencies
-        # Blocks the PR on any HIGH-severity prod advisory that isn't
-        # in the allowlist below. Each allowlist entry pairs a GHSA
-        # with a one-line rationale so a future reviewer can revisit
+        # Blocks the PR on any HIGH or CRITICAL prod advisory that
+        # isn't in the allowlist below. Matches the previous
+        # `npm audit --audit-level=high` behaviour, which fails on
+        # both severities. Each allowlist entry pairs a GHSA with
+        # a one-line rationale so a future reviewer can revisit
         # whether it still deserves the pass.
         #
         # Adding entries here is a stopgap: it unblocks CI when an
@@ -65,8 +67,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          # GHSA IDs to skip. Format: one GHSA-... per line; anything
-          # else (comments starting with #, blank lines) is ignored.
+          # GHSA IDs to skip. Lines starting with `#` and blank
+          # lines are ignored; every other line is treated as a
+          # GHSA. Do not put anything else on the GHSA lines.
           ALLOWLIST=$(cat <<'ALLOW'
           # react-router / react-router-dom RSC Mode CSRF Bypass.
           # Not applicable: we do not use React Server Components,
@@ -96,13 +99,19 @@ jobs:
           GHSA-4c8g-83qw-93j6
           ALLOW
           )
-          IGNORED=$(echo "$ALLOWLIST" | grep -v '^\s*#' | grep -v '^\s*$' | xargs -n 1 echo || true)
+          # Filter comments (leading whitespace + `#`) and blank
+          # lines with POSIX-compatible expressions; grep's `\s`
+          # only works under -P/PCRE and isn't portable. `xargs -n 1
+          # echo` trims and one-per-line normalises what's left.
+          IGNORED=$(echo "$ALLOWLIST" | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$' | xargs -n 1 echo || true)
 
-          # Collect every HIGH advisory URL from the audit report.
+          # Collect every HIGH+CRITICAL advisory URL from the audit
+          # report. Matches the semantics of `npm audit
+          # --audit-level=high` (which is inclusive of critical).
           npm audit --json --omit=dev > audit.json || true
           BLOCKING=$(jq -r '
             [.vulnerabilities[]?
-              | select(.severity == "high")
+              | select(.severity == "high" or .severity == "critical")
               | .via[]?
               | select(type == "object")
               | .url]
@@ -121,7 +130,7 @@ jobs:
           done
 
           if [ -n "$(echo "$UNRESOLVED" | xargs)" ]; then
-            echo "::error::Unresolved HIGH-severity advisories:"
+            echo "::error::Unresolved HIGH/CRITICAL advisories:"
             for url in $UNRESOLVED; do
               echo "  - $url"
             done
@@ -132,7 +141,7 @@ jobs:
             exit 1
           fi
 
-          echo "No unresolved HIGH-severity prod advisories."
+          echo "No unresolved HIGH/CRITICAL prod advisories."
 
   check-secrets:
     name: Check for Secrets
