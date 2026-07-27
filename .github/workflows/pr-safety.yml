@@ -84,6 +84,11 @@ jobs:
           # lands the patched versions across the tree.
           GHSA-3jxr-9vmj-r5cp
 
+          # brace-expansion DoS via unbounded expansion length (OOM).
+          # CVE-2026-14257. Same transitive story as GHSA-3jxr; patched
+          # in 5.0.8. Handled by the same dep-sweep ticket.
+          GHSA-mh99-v99m-4gvg
+
           # fast-uri host confusion via literal backslash / IDN.
           # Same story: transitive via fast-xml-parser and friends,
           # bump lands in the dep-sweep ticket.
