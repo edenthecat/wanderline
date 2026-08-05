@@ -211,9 +211,10 @@ export default function App() {
   // toggle got turned off almost immediately when listeners noticed
   // it. Default is now off and the UI surface is removed. The
   // state + auto-navigate branch stay so a future re-enable (or
-  // per-project override) is a small change.
-  const [autoContinue, _setAutoContinue] = useState(false);
-  void _setAutoContinue;
+  // per-project override) is a small change: reintroduce the
+  // setter here via `const [autoContinue, setAutoContinue] =
+  // useState(...)` and wire a new UI surface / prop.
+  const [autoContinue] = useState(false);
   const [reachedEnding, setReachedEnding] = useState(false);
   // multi-slot save state. `saveSlots` is sourced from
   // localStorage on story load (with legacy single-slot migration).
