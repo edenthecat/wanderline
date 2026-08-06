@@ -77,6 +77,14 @@ function fontWeightsParam(weights: string[] | undefined): string {
   return `:wght@${valid.join(';')}`;
 }
 
+// Pick the first numeric weight from the author's list. Order in
+// the array is the author's editable "primary" choice.
+function primaryFontWeight(weights: string[] | undefined): string | null {
+  if (!weights || weights.length === 0) return null;
+  const valid = weights.filter((w) => /^\d+$/.test(String(w)));
+  return valid.length > 0 ? valid[0] : null;
+}
+
 // Build the Google Fonts CSS URL for the configured fonts. Returns
 // null when no fonts are set, in which case the caller skips the link.
 export function googleFontsLinkUrl(theme: ThemeConfig | undefined): string | null {
@@ -114,6 +122,18 @@ export function renderThemeCss(theme: ThemeConfig | undefined): string {
   const headingFamily = theme.headingFont ? fontFamilyValue(theme.headingFont) : '';
   if (bodyFamily) variableLines.push(`  --wl-font-body: ${bodyFamily};`);
   if (headingFamily) variableLines.push(`  --wl-font-heading: ${headingFamily};`);
+
+  // Weight variables. Google Fonts loads every weight in the array
+  // (see fontWeightsParam above) so authors can override per element
+  // via customCss, but the player also needs a "primary" weight per
+  // family to actually apply as the default. Pick the first valid
+  // weight from the array. Author-controllable via the theme editor
+  // by reordering; if the author cleared the list, we don't emit
+  // anything and the player falls back to its hardcoded defaults.
+  const bodyWeight = primaryFontWeight(theme.bodyFontWeights);
+  const headingWeight = primaryFontWeight(theme.headingFontWeights);
+  if (bodyWeight) variableLines.push(`  --wl-font-body-weight: ${bodyWeight};`);
+  if (headingWeight) variableLines.push(`  --wl-font-heading-weight: ${headingWeight};`);
 
   // per-component overrides. For each component in
   // COMPONENT_SPECS, emit `--wl-<componentId>-<prop>` if the author
