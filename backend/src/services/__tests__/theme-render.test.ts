@@ -94,6 +94,38 @@ describe('renderThemeCss', () => {
     expect(css).toContain("--wl-font-heading: 'Playfair Display';");
   });
 
+  it('emits font-weight variables from the first entry in each weights array', () => {
+    const css = renderThemeCss({
+      bodyFont: 'Inter',
+      bodyFontWeights: ['400', '700', '900'],
+      headingFont: 'Inter',
+      headingFontWeights: ['800', '400'],
+    });
+    // Primary body weight = first numeric entry in the array.
+    expect(css).toContain('--wl-font-body-weight: 400;');
+    // Primary heading weight also = first numeric entry.
+    expect(css).toContain('--wl-font-heading-weight: 800;');
+  });
+
+  it('skips font-weight variables when weight lists are empty or missing', () => {
+    const css = renderThemeCss({
+      bodyFont: 'Inter',
+      headingFont: 'Inter',
+      // no bodyFontWeights, no headingFontWeights
+    });
+    expect(css).not.toContain('--wl-font-body-weight');
+    expect(css).not.toContain('--wl-font-heading-weight');
+  });
+
+  it('ignores non-numeric weight strings when picking the primary weight', () => {
+    const css = renderThemeCss({
+      bodyFont: 'Inter',
+      bodyFontWeights: ['bold', '600', '900'],
+    });
+    // 'bold' is dropped by the numeric filter, so 600 is primary.
+    expect(css).toContain('--wl-font-body-weight: 600;');
+  });
+
   it('appends customCss after the :root block', () => {
     const css = renderThemeCss({
       variables: { pageBackground: '#000' },

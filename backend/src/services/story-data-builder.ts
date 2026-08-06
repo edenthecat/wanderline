@@ -1,5 +1,27 @@
 import { Pool } from 'pg';
 
+/**
+ * Pick the title the player renders. Prefer the story-graph
+ * title (set by the author via `StoryTitle` in Twee or `//title:`
+ * in Ink) when it looks author-set; fall back to the project's
+ * Wanderline-facing name when the graph title matches a known
+ * parser default (`Untitled` / `Untitled Story`). This means an
+ * uploaded source that forgot to set a title still renders the
+ * project name in the `<h1>` instead of the literal word
+ * "Untitled".
+ *
+ * Exported so the fallback logic is unit-testable in isolation
+ * from the full DB-backed `buildStoryData` flow.
+ */
+export function resolveStoryTitle(rawTitle: unknown, projectName: unknown): string {
+  const graphTitle = typeof rawTitle === 'string' ? rawTitle : '';
+  const looksLikeParserDefault =
+    !graphTitle || graphTitle === 'Untitled' || graphTitle === 'Untitled Story';
+  if (!looksLikeParserDefault) return graphTitle;
+  const fallback = typeof projectName === 'string' ? projectName.trim() : '';
+  return fallback || graphTitle;
+}
+
 export class StoryDataError extends Error {
   constructor(
     message: string,
@@ -224,10 +246,15 @@ export async function buildStoryData(
     )
     .map((f: { filename: string }) => f.filename);
 
+  // Prefer the story-graph title, fall back to the project name
+  // when the graph title looks like a parser default. See
+  // resolveStoryTitle for the reasoning + exact cases.
+  const resolvedTitle = resolveStoryTitle(project.story_graph.title, project.name);
+
   // Create story data for the app
   const storyData: StoryData = {
     id: project.story_graph.id,
-    title: project.story_graph.title,
+    title: resolvedTitle,
     audioBaseUrl: options.audioBaseUrl,
     startNode: project.story_graph.startNode,
     nodes: {},

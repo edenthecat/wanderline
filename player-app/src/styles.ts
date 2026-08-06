@@ -94,7 +94,11 @@ export const styles: Record<string, React.CSSProperties> = {
   headerBtnGroup: { display: 'flex', gap: '0.5rem' },
   title: {
     fontSize: '1.5rem',
-    fontWeight: 600,
+    // Cascade: per-component override → global heading weight from
+    // the theme editor → hardcoded 600. Same shape as fontFamily
+    // right below.
+    fontWeight:
+      'var(--wl-header-fontWeight, var(--wl-font-heading-weight, 600))' as React.CSSProperties['fontWeight'],
     margin: 0,
     fontFamily: 'var(--wl-header-fontFamily, var(--wl-font-heading))',
     color: 'var(--wl-header-textColor, var(--wl-heading))',
@@ -127,7 +131,14 @@ export const styles: Record<string, React.CSSProperties> = {
     boxShadow: 'var(--wl-storyCard-boxShadow, none)',
     lineHeight: 'var(--wl-storyCard-lineHeight, 1.6)' as React.CSSProperties['lineHeight'],
   },
-  text: { fontSize: '1.1rem', lineHeight: 1.6, marginBottom: '1rem' },
+  text: {
+    fontSize: '1.1rem',
+    lineHeight: 1.6,
+    marginBottom: '1rem',
+    // Global body weight from the theme editor; browser default
+    // (usually 400) when the author hasn't picked one.
+    fontWeight: 'var(--wl-font-body-weight, normal)' as React.CSSProperties['fontWeight'],
+  },
   player: {
     display: 'flex',
     alignItems: 'center',
