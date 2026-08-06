@@ -204,7 +204,17 @@ export default function App() {
   const [voiceoverVolume, setVoiceoverVolume] = useState(100);
   const [userIndicatorVolume, setUserIndicatorVolume] = useState(50);
   const [userBgMusicVolume, setUserBgMusicVolume] = useState(100);
-  const [autoContinue, setAutoContinue] = useState(true);
+  // Auto-continue used to be surfaced as a listener-facing toggle
+  // (pre-start settings + in-story cog panel). Author feedback was
+  // that most listeners want the paced audio-drama experience and
+  // that skipping past single-choice nodes breaks the beat; the
+  // toggle got turned off almost immediately when listeners noticed
+  // it. Default is now off and the UI surface is removed. The
+  // state + auto-navigate branch stay so a future re-enable (or
+  // per-project override) is a small change: reintroduce the
+  // setter here via `const [autoContinue, setAutoContinue] =
+  // useState(...)` and wire a new UI surface / prop.
+  const [autoContinue] = useState(false);
   const [reachedEnding, setReachedEnding] = useState(false);
   // multi-slot save state. `saveSlots` is sourced from
   // localStorage on story load (with legacy single-slot migration).
@@ -1613,21 +1623,6 @@ export default function App() {
                 </span>{' '}
                 You can also adjust these mid-story via the cog icon
               </p>
-              <div style={styles.introSettingsDivider} />
-              <label style={styles.introCheckboxRow}>
-                <input
-                  type="checkbox"
-                  checked={autoContinue}
-                  onChange={(e) => setAutoContinue(e.target.checked)}
-                  style={styles.introCheckbox}
-                />
-                <div>
-                  <span style={styles.introCheckboxLabel}>Auto-continue</span>
-                  <p style={styles.introCheckboxHint}>
-                    Automatically proceed when there&apos;s only one choice
-                  </p>
-                </div>
-              </label>
             </div>
 
             {/*: resume picker. Surfaces any save slot (autosave
@@ -1860,18 +1855,6 @@ export default function App() {
               {userBgMusicVolume}%
             </span>
           </div>
-          <div style={styles.settingsDivider} />
-          <label style={styles.settingsCheckboxRow}>
-            <input
-              type="checkbox"
-              checked={autoContinue}
-              onChange={(e) => setAutoContinue(e.target.checked)}
-              style={styles.settingsCheckbox}
-            />
-            <span style={styles.settingsCheckboxLabel}>Auto-continue</span>
-            <span style={styles.settingsCheckboxHint}>Skip choice audio when only one option</span>
-          </label>
-
           {/*: save slot management */}
           <div style={styles.settingsDivider} />
           <div style={styles.saveSlotsHeader}>

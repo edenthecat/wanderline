@@ -97,6 +97,33 @@ jobs:
           # bump lands in the dep-sweep ticket.
           GHSA-v2hh-gcrm-f6hx
           GHSA-4c8g-83qw-93j6
+
+          # fast-uri host confusion via backslash authority
+          # introducer. Third fast-uri advisory in the same family;
+          # same transitive scope, same dep-sweep ticket.
+          GHSA-7p8r-x3mc-p8w7
+
+          # brace-expansion DoS via unbounded intermediate arrays
+          # (bypasses the CVE-2026-14257 mitigation we already
+          # allowlisted). Same transitive story as the earlier
+          # brace-expansion entries; patched across all four
+          # majors and lands with the dep-sweep ticket.
+          GHSA-rgw5-rvv9-x895
+
+          # ip-address advisories (three of them). Reaches us
+          # transitively via express-rate-limit, which uses
+          # ip-address ONLY to normalise IPv6 clients for
+          # rate-limit key bucketing. It does not take user-
+          # supplied URLs / hostnames and dereference them, so
+          # the SSRF and trust-boundary bypass scenarios in these
+          # advisories are not reachable through Wanderline's
+          # code paths. Bump piggybacks on the dep-sweep ticket.
+          # - GHSA-22jq-vg5j-6vgg: NAT64 misclassification (10.2.1)
+          # - GHSA-4xrf-jv44-h6hh: CIDR suffix bypass (10.2.2)
+          # - GHSA-mwp4-54f8-5fhr: octal-vs-decimal leading zeros (10.3.1)
+          GHSA-22jq-vg5j-6vgg
+          GHSA-4xrf-jv44-h6hh
+          GHSA-mwp4-54f8-5fhr
           ALLOW
           )
           # Filter comments (leading whitespace + `#`) and blank

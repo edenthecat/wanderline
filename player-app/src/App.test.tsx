@@ -346,6 +346,27 @@ describe('App', () => {
       expect(screen.queryByText('Go left')).not.toBeInTheDocument();
       expect(screen.queryByText('Go right')).not.toBeInTheDocument();
     });
+
+    // The listener-facing "Auto-continue" toggle was removed on
+    // purpose — see the comment where the state is declared in
+    // App.tsx. The state and the auto-navigate branch stay so a
+    // future re-enable is a small change, but neither UI surface
+    // (pre-start settings panel or in-story cog) should render the
+    // control. Pin the absence at both call sites so a future
+    // helpful contributor doesn't restore it.
+    it('does not render the Auto-continue toggle on the intro settings panel', () => {
+      (window as any).__WANDERLINE_STORY__ = mockStory;
+      render(<App />);
+      expect(screen.queryByText(/auto[- ]continue/i)).not.toBeInTheDocument();
+    });
+
+    it('does not render the Auto-continue toggle in the in-story settings panel', async () => {
+      (window as any).__WANDERLINE_STORY__ = mockStory;
+      render(<App />);
+      await startTheStory();
+      await screen.findByText('Welcome to the story.');
+      expect(screen.queryByText(/auto[- ]continue/i)).not.toBeInTheDocument();
+    });
   });
 
   describe('interruption handling', () => {
