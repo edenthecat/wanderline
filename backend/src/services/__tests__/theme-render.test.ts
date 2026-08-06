@@ -1,4 +1,5 @@
 import { googleFontsLinkUrl, renderThemeCss, renderThemeForPreview } from '../theme-render.js';
+import { COMPONENT_SPECS, type ComponentId } from '@wanderline/shared';
 
 // theme rendering. Pure-string helpers — no network, no
 // filesystem. The font-bundling path (bundleGoogleFonts) is covered
@@ -259,6 +260,154 @@ describe('renderThemeCss — per-component overrides', () => {
     });
     expect(css).toContain('--wl-choiceButton-background: #000;');
     expect(css).not.toContain('ghostComponent');
+  });
+});
+
+// End-to-end enumeration of every knob the author can set.
+// Belt-and-braces coverage: the individual tests above cover
+// behaviour + edge cases; these prove that no field silently stops
+// emitting when someone renames a map key or adds a new spec entry
+// without wiring it into the emitter. If either list grows, jest
+// picks the new entries up automatically — no test edit required.
+
+describe('renderThemeCss — exhaustive global variable enumeration', () => {
+  // Keep aligned with VARIABLE_PROPERTY_MAP in theme-render.ts. A
+  // new global variable requires an entry here; the test fails loud
+  // if the map and this list disagree.
+  const GLOBALS: Array<[string, string]> = [
+    ['pageBackground', '--wl-page-bg'],
+    ['cardBackground', '--wl-card-bg'],
+    ['textColor', '--wl-text'],
+    ['accentColor', '--wl-accent'],
+    ['headingColor', '--wl-heading'],
+    ['chromeColor', '--wl-chrome'],
+    ['iconColor', '--wl-icon-color'],
+  ];
+
+  it.each(GLOBALS)('emits variables.%s → %s', (field, varName) => {
+    const marker = `TEST-${field}-VALUE`;
+    const css = renderThemeCss({ variables: { [field]: marker } });
+    expect(css).toContain(`${varName}: ${marker};`);
+  });
+
+  it('emits every declared global at once when they all have values', () => {
+    const variables = Object.fromEntries(
+      GLOBALS.map(([field]) => [field, `TEST-${field}`]),
+    ) as Record<string, string>;
+    const css = renderThemeCss({ variables });
+    for (const [field, varName] of GLOBALS) {
+      expect(css).toContain(`${varName}: TEST-${field};`);
+    }
+  });
+});
+
+describe('renderThemeCss — exhaustive font enumeration', () => {
+  it('emits every font-related variable when all four fields are set', () => {
+    const css = renderThemeCss({
+      bodyFont: 'Inter',
+      bodyFontWeights: ['300', '600'],
+      headingFont: 'Playfair Display',
+      headingFontWeights: ['700', '900'],
+    });
+    expect(css).toContain('--wl-font-body: Inter;');
+    expect(css).toContain("--wl-font-heading: 'Playfair Display';");
+    expect(css).toContain('--wl-font-body-weight: 300;');
+    expect(css).toContain('--wl-font-heading-weight: 700;');
+  });
+});
+
+describe('renderThemeCss — exhaustive per-component enumeration', () => {
+  // For each component in COMPONENT_SPECS, prove every declared
+  // prop key is emitted with the correct --wl-<component>-<key>
+  // variable name. Adding a new prop to any spec automatically
+  // grows this suite — no code change needed here.
+  for (const spec of COMPONENT_SPECS) {
+    describe(spec.id, () => {
+      it.each(spec.props.map((p) => [p.key]))(
+        `emits --wl-${spec.id}-%s when set`,
+        (propKey: string) => {
+          const marker = `TEST-${spec.id}-${propKey}`;
+          const css = renderThemeCss({
+            components: {
+              [spec.id]: { [propKey]: marker },
+            } as Partial<Record<ComponentId, Record<string, string>>>,
+          });
+          expect(css).toContain(`--wl-${spec.id}-${propKey}: ${marker};`);
+        },
+      );
+    });
+  }
+
+  it('emits every prop of every component in one pass', () => {
+    // Build a theme with every knob set to a distinct marker,
+    // render once, assert all variables land.
+    const components: Partial<Record<ComponentId, Record<string, string>>> = {};
+    for (const spec of COMPONENT_SPECS) {
+      components[spec.id] = Object.fromEntries(
+        spec.props.map((p) => [p.key, `TEST-${spec.id}-${p.key}`]),
+      );
+    }
+    const css = renderThemeCss({ components });
+    for (const spec of COMPONENT_SPECS) {
+      for (const prop of spec.props) {
+        expect(css).toContain(`--wl-${spec.id}-${prop.key}: TEST-${spec.id}-${prop.key};`);
+      }
+    }
+  });
+});
+
+describe('renderThemeCss — full-theme integration', () => {
+  // One representative render exercising every author-facing input:
+  // globals, fonts + weights, per-component overrides, customCss.
+  // Regression net for "someone deleted a whole feature path".
+  it('composes globals + fonts + components + customCss into a single :root block', () => {
+    const components: Partial<Record<ComponentId, Record<string, string>>> = {};
+    for (const spec of COMPONENT_SPECS) {
+      components[spec.id] = Object.fromEntries(spec.props.map((p) => [p.key, `full-${p.key}`]));
+    }
+    const css = renderThemeCss({
+      variables: {
+        pageBackground: '#000000',
+        cardBackground: '#111111',
+        textColor: '#eeeeee',
+        accentColor: '#4ecdc4',
+        headingColor: '#ffffff',
+        chromeColor: '#888888',
+        iconColor: '#cccccc',
+      },
+      bodyFont: 'Inter',
+      bodyFontWeights: ['400', '700'],
+      headingFont: 'Playfair Display',
+      headingFontWeights: ['700'],
+      customCss: '.wl-preview-banner { display: none; }',
+      components,
+    });
+
+    // Exactly one :root block; customCss appended AFTER the block.
+    expect(css.match(/:root \{/g)?.length).toBe(1);
+    expect(css.indexOf(':root {')).toBeLessThan(css.indexOf('.wl-preview-banner'));
+
+    // Every global.
+    expect(css).toContain('--wl-page-bg: #000000;');
+    expect(css).toContain('--wl-card-bg: #111111;');
+    expect(css).toContain('--wl-text: #eeeeee;');
+    expect(css).toContain('--wl-accent: #4ecdc4;');
+    expect(css).toContain('--wl-heading: #ffffff;');
+    expect(css).toContain('--wl-chrome: #888888;');
+    expect(css).toContain('--wl-icon-color: #cccccc;');
+
+    // Every font var.
+    expect(css).toContain('--wl-font-body: Inter;');
+    expect(css).toContain("--wl-font-heading: 'Playfair Display';");
+    expect(css).toContain('--wl-font-body-weight: 400;');
+    expect(css).toContain('--wl-font-heading-weight: 700;');
+
+    // Every component × prop.
+    for (const spec of COMPONENT_SPECS) {
+      for (const prop of spec.props) {
+        expect(css).toContain(`--wl-${spec.id}-${prop.key}: full-${prop.key};`);
+      }
+    }
   });
 });
 
