@@ -4,6 +4,11 @@ import { Pool } from 'pg';
 declare module 'express-session' {
   interface SessionData {
     userId?: string;
+    // Public-preview tokens this listener has entered the correct story
+    // password for. Anonymous listeners never set userId, so this is the
+    // only thing on their session; `saveUninitialized: false` means a
+    // session row is only written once someone actually verifies.
+    verifiedPreviewTokens?: string[];
   }
 }
 

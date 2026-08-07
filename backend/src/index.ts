@@ -39,6 +39,7 @@ import {
   invitationAcceptLimiter,
   publicPreviewHtmlLimiter,
   publicPreviewAudioLimiter,
+  publicPreviewVerifyLimiter,
   noopLimiter,
 } from './middleware/rate-limit.js';
 import {
@@ -340,6 +341,7 @@ const publicPreviewRouter = Router();
 mountPublicPreviewRoutes(publicPreviewRouter, pool, {
   htmlLimiter: rateLimitDisabled ? noopLimiter : publicPreviewHtmlLimiter,
   audioLimiter: rateLimitDisabled ? noopLimiter : publicPreviewAudioLimiter,
+  verifyLimiter: rateLimitDisabled ? noopLimiter : publicPreviewVerifyLimiter,
 });
 app.use('/public-preview', publicPreviewRouter);
 

@@ -7,7 +7,20 @@
 import { mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { logger } from '../logger.js';
-import { COMPONENT_SPECS, componentVarName, type ComponentTheming } from '@wanderline/shared';
+import {
+  COMPONENT_SPECS,
+  componentVarName,
+  fontFamilyValue,
+  googleFontsLinkUrl,
+  primaryFontWeight,
+  type ComponentTheming,
+} from '@wanderline/shared';
+
+// Re-exported so existing importers (and the theme-render tests) keep
+// their import path. The implementation lives in @wanderline/shared
+// because the player's live-preview listener has to produce the same
+// URL for unsaved edits.
+export { googleFontsLinkUrl };
 
 export interface ThemeVariables {
   pageBackground?: string;
@@ -55,52 +68,6 @@ function escapeCssValue(raw: string): string {
   // suppress the eslint rule that flags any regex containing it.
   // eslint-disable-next-line no-control-regex
   return raw.replace(/[\u0000-\u001f]/g, '').replace(/[<>]/g, '');
-}
-
-function escapeFontFamily(name: string): string {
-  // Family names go into a Google Fonts URL + a CSS string. Strip
-  // everything but letters / digits / spaces / common punctuation.
-  return name.replace(/[^A-Za-z0-9 +\-_]/g, '').trim();
-}
-
-function fontFamilyValue(name: string): string {
-  // Quote names containing spaces so they parse as a single token.
-  const clean = escapeFontFamily(name);
-  if (!clean) return '';
-  return /\s/.test(clean) ? `'${clean}'` : clean;
-}
-
-function fontWeightsParam(weights: string[] | undefined): string {
-  if (!weights || weights.length === 0) return '';
-  const valid = weights.filter((w) => /^\d+$/.test(String(w)));
-  if (valid.length === 0) return '';
-  return `:wght@${valid.join(';')}`;
-}
-
-// Pick the first numeric weight from the author's list. Order in
-// the array is the author's editable "primary" choice.
-function primaryFontWeight(weights: string[] | undefined): string | null {
-  if (!weights || weights.length === 0) return null;
-  const valid = weights.filter((w) => /^\d+$/.test(String(w)));
-  return valid.length > 0 ? valid[0] : null;
-}
-
-// Build the Google Fonts CSS URL for the configured fonts. Returns
-// null when no fonts are set, in which case the caller skips the link.
-export function googleFontsLinkUrl(theme: ThemeConfig | undefined): string | null {
-  if (!theme) return null;
-  const families: string[] = [];
-  if (theme.bodyFont) {
-    const name = escapeFontFamily(theme.bodyFont);
-    if (name) families.push(`${name.replace(/ /g, '+')}${fontWeightsParam(theme.bodyFontWeights)}`);
-  }
-  if (theme.headingFont && theme.headingFont !== theme.bodyFont) {
-    const name = escapeFontFamily(theme.headingFont);
-    if (name)
-      families.push(`${name.replace(/ /g, '+')}${fontWeightsParam(theme.headingFontWeights)}`);
-  }
-  if (families.length === 0) return null;
-  return `https://fonts.googleapis.com/css2?${families.map((f) => `family=${f}`).join('&')}&display=swap`;
 }
 
 // Generate the inline CSS payload the preview / build injects after

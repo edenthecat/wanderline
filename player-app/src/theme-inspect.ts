@@ -9,11 +9,127 @@
 // Module-level guard so multiple calls (HMR in dev) don't stack
 // listeners.
 
-import { COMPONENT_SPEC_BY_ID, componentVarName, type ComponentId } from '@wanderline/shared';
+import {
+  COMPONENT_SPEC_BY_ID,
+  componentVarName,
+  googleFontsLinkUrl,
+  primaryFontWeight,
+  type ComponentId,
+  type ThemeFontConfig,
+} from '@wanderline/shared';
 
 const HOVER_OUTLINE = '0 0 0 2px var(--wl-accent, #4ecdc4)';
 
 let installed = false;
+
+/**
+ * A stylesheet we can rewrite on every theme edit.
+ *
+ * CSP note: the preview is served under `style-src 'self' 'nonce-<n>'`
+ * with no `'unsafe-inline'` (see buildPreviewCsp in
+ * backend/src/routes/projects-preview.ts). A <style> element created by
+ * script does NOT inherit the document's nonce, so appending one is
+ * blocked outright. Constructed stylesheets go through CSSOM rather
+ * than the inline-style path and CSP does not gate them, so that is the
+ * primary route here. The <style> fallback exists only for engines
+ * without constructable stylesheets (and for jsdom under test), where
+ * it is no worse than what we did before.
+ */
+interface ManagedSheet {
+  apply(css: string): void;
+}
+
+function createManagedSheet(marker: string): ManagedSheet {
+  let constructed: CSSStyleSheet | null = null;
+  let fallbackEl: HTMLStyleElement | null = null;
+
+  try {
+    const sheet = new CSSStyleSheet();
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+    constructed = sheet;
+  } catch {
+    constructed = null;
+  }
+
+  return {
+    apply(css: string) {
+      if (constructed) {
+        constructed.replaceSync(css);
+        return;
+      }
+      if (!fallbackEl) {
+        fallbackEl = document.createElement('style');
+        fallbackEl.setAttribute(marker, '');
+        document.head.appendChild(fallbackEl);
+      }
+      fallbackEl.textContent = css;
+    },
+  };
+}
+
+// Lazily created so nothing touches CSSOM until inspect mode installs.
+let customCssSheet: ManagedSheet | null = null;
+
+/**
+ * Apply the author's raw customCss for unsaved edits.
+ *
+ * A full server render appends customCss last (renderThemeCss), after
+ * the variable block, so author rules can override the generated
+ * variables. We keep that ordering by calling this last in the message
+ * handler and by writing to a sheet that is adopted after the
+ * document's own <style>.
+ */
+function applyCustomCss(css: string | undefined): void {
+  if (!customCssSheet) customCssSheet = createManagedSheet('data-wanderline-live-css');
+  customCssSheet.apply(typeof css === 'string' ? css : '');
+}
+
+/**
+ * Mirror the backend's `--wl-font-*-weight` emission for unsaved edits.
+ *
+ * Uses the shared primaryFontWeight so the live preview and a saved
+ * render can't disagree about which entry in the array wins.
+ */
+function applyFontWeights(theme: ThemeFontConfig | undefined): void {
+  const root = document.documentElement;
+  root.style.removeProperty('--wl-font-body-weight');
+  root.style.removeProperty('--wl-font-heading-weight');
+  if (!theme) return;
+  const body = primaryFontWeight(theme.bodyFontWeights);
+  if (body) root.style.setProperty('--wl-font-body-weight', body);
+  const heading = primaryFontWeight(theme.headingFontWeights);
+  if (heading) root.style.setProperty('--wl-font-heading-weight', heading);
+}
+
+// The <link> carrying the Google Fonts stylesheet for live edits.
+let fontLinkEl: HTMLLinkElement | null = null;
+
+/**
+ * Load the font families the author just picked.
+ *
+ * Setting --wl-font-body alone is not enough: if the family has never
+ * been fetched, the browser has no face to render and silently falls
+ * back, which reads to the author as "picking a font did nothing".
+ * A full render emits this <link> server-side; for unsaved edits we
+ * maintain the equivalent one ourselves. An external stylesheet is
+ * governed by the style-src host allowlist (which already includes
+ * fonts.googleapis.com) rather than by the nonce, so no nonce needed.
+ */
+function applyGoogleFonts(theme: ThemeFontConfig | undefined): void {
+  const url = googleFontsLinkUrl(theme);
+  if (!url) {
+    fontLinkEl?.remove();
+    fontLinkEl = null;
+    return;
+  }
+  if (!fontLinkEl) {
+    fontLinkEl = document.createElement('link');
+    fontLinkEl.rel = 'stylesheet';
+    fontLinkEl.setAttribute('data-wanderline-live-fonts', '');
+    document.head.appendChild(fontLinkEl);
+  }
+  if (fontLinkEl.getAttribute('href') !== url) fontLinkEl.setAttribute('href', url);
+}
 
 function isInspectModeRequested(): boolean {
   try {
@@ -108,12 +224,16 @@ export function installThemeInspect(): void {
 
   document.documentElement.setAttribute('data-theme-inspect', '1');
 
-  // Inject an outline-on-hover stylesheet so authors can see what
-  // they're about to click. Keeping this in a <style> tag (rather
-  // than per-element inline styles) means it doesn't pollute the
-  // build / preview HTML for non-inspect callers.
-  const css = document.createElement('style');
-  css.textContent = `
+  // Outline-on-hover so authors can see what they're about to click.
+  // Kept out of the preview/build HTML for non-inspect callers.
+  //
+  // This used to append a bare <style> element, which the preview's
+  // nonce-based style-src blocks (a script-created <style> does not
+  // inherit the document nonce), so the hover affordance never
+  // actually rendered inside the editor. Routed through the same
+  // constructed-stylesheet helper as live customCss, which CSP does
+  // not gate.
+  createManagedSheet('data-wanderline-inspect-css').apply(`
     [data-theme-inspect="1"] [data-theme-component]:hover {
       box-shadow: ${HOVER_OUTLINE};
       cursor: pointer !important;
@@ -121,8 +241,7 @@ export function installThemeInspect(): void {
     [data-theme-inspect="1"] [data-theme-component] {
       transition: box-shadow 120ms ease-in-out;
     }
-  `;
-  document.head.appendChild(css);
+  `);
 
   // Capture clicks. We use the capture phase + stopPropagation so the
   // player's own click handlers (start story, navigate, etc.) don't
@@ -151,9 +270,22 @@ export function installThemeInspect(): void {
     if (!event.data || typeof event.data !== 'object') return;
     if (event.data.type !== 'wanderline:theme-update') return;
     const theme = event.data.theme ?? {};
+    const fontConfig: ThemeFontConfig = {
+      bodyFont: theme.bodyFont,
+      bodyFontWeights: theme.bodyFontWeights,
+      headingFont: theme.headingFont,
+      headingFontWeights: theme.headingFontWeights,
+    };
     applyVariables(theme.variables);
     applyFonts({ bodyFont: theme.bodyFont, headingFont: theme.headingFont });
+    applyFontWeights(fontConfig);
+    // Fetch the families before the component pass so the faces are in
+    // flight while the rest of the variables settle.
+    applyGoogleFonts(fontConfig);
     applyComponentTheme(theme.components);
+    // Last, so author rules win over everything generated above —
+    // same precedence a full server render produces.
+    applyCustomCss(theme.customCss);
   });
 
   // Tell the parent we're alive so the editor can show "inspector

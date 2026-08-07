@@ -67,6 +67,24 @@ export const publicPreviewAudioLimiter = rateLimit({
   limit: 900,
 });
 
+/**
+ * Anonymous public-preview password submission. This is the one
+ * anonymous endpoint that accepts a guessable secret, so it gets the
+ * tightest ceiling of the three. Story passwords are author-chosen and
+ * typically far weaker than an account password, which makes the
+ * offline-guessing budget the thing worth capping.
+ *
+ * `skipSuccessfulRequests` mirrors authLimiter: a listener who types
+ * the password correctly, or a household sharing an IP, is never
+ * penalised. Only wrong guesses burn the budget.
+ */
+export const publicPreviewVerifyLimiter = rateLimit({
+  ...baseOptions,
+  windowMs: 5 * 60 * 1000,
+  limit: 10,
+  skipSuccessfulRequests: true,
+});
+
 /** Generous limit on all /api/* traffic. */
 export const apiLimiter = rateLimit({
   ...baseOptions,
