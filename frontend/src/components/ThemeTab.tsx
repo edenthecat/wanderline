@@ -5,6 +5,7 @@ import {
   type ProjectTheme,
   type ThemeVariables,
 } from '../api/client';
+import { promoteWeight, toggleWeight } from '../lib/font-weights';
 import {
   COMPONENT_SPECS,
   type ComponentId,
@@ -150,6 +151,49 @@ function ComponentPropEditor({
   );
 }
 
+/**
+ * Lets the author choose which of the selected weights is primary.
+ *
+ * Google Fonts loads every checked weight, but only one can be the
+ * default the player applies (--wl-font-*-weight), and that is the
+ * first entry in the array. Hidden below two selections because a
+ * single checked weight is primary by definition.
+ */
+function PrimaryWeightPicker({
+  weights,
+  groupName,
+  label,
+  onPromote,
+}: {
+  weights: string[];
+  groupName: string;
+  label: string;
+  onPromote: (weight: string) => void;
+}) {
+  if (weights.length < 2) return null;
+  return (
+    <div
+      className="text-sm text-muted"
+      style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6, marginLeft: 'auto' }}
+      data-testid={`${groupName}-primary`}
+    >
+      <span>Primary:</span>
+      {weights.map((w) => (
+        <label key={w} style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+          <input
+            type="radio"
+            name={groupName}
+            checked={weights[0] === w}
+            onChange={() => onPromote(w)}
+            aria-label={`Use ${w} as the primary ${label} weight`}
+          />
+          {w}
+        </label>
+      ))}
+    </div>
+  );
+}
+
 export default function ThemeTab({ projectId }: Props) {
   const [theme, setTheme] = useState<ProjectTheme>({});
   const [loading, setLoading] = useState(true);
@@ -249,13 +293,6 @@ export default function ThemeTab({ projectId }: Props) {
       else components[id] = existing;
       return { ...prev, components };
     });
-  }
-
-  function toggleWeight(weights: string[] | undefined, weight: string): string[] {
-    const set = new Set(weights ?? []);
-    if (set.has(weight)) set.delete(weight);
-    else set.add(weight);
-    return [...set].sort();
   }
 
   async function handleSave() {
@@ -402,6 +439,17 @@ export default function ThemeTab({ projectId }: Props) {
                     </label>
                   ))}
                 </div>
+                <PrimaryWeightPicker
+                  weights={theme.bodyFontWeights ?? []}
+                  groupName="theme-body-weight"
+                  label="body"
+                  onPromote={(w) =>
+                    setTheme((p) => ({
+                      ...p,
+                      bodyFontWeights: promoteWeight(p.bodyFontWeights, w),
+                    }))
+                  }
+                />
               </li>
               <li className="ui-option">
                 <label className="bluetooth-option">
@@ -437,6 +485,17 @@ export default function ThemeTab({ projectId }: Props) {
                     </label>
                   ))}
                 </div>
+                <PrimaryWeightPicker
+                  weights={theme.headingFontWeights ?? []}
+                  groupName="theme-heading-weight"
+                  label="heading"
+                  onPromote={(w) =>
+                    setTheme((p) => ({
+                      ...p,
+                      headingFontWeights: promoteWeight(p.headingFontWeights, w),
+                    }))
+                  }
+                />
               </li>
             </ul>
           </section>

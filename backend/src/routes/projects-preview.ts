@@ -1,9 +1,9 @@
-import { Router, Request, RequestHandler, Response } from 'express';
+import express, { Router, Request, RequestHandler, Response } from 'express';
 import { Pool } from 'pg';
 import { existsSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { buildStoryData, StoryDataError } from '../services/story-data-builder.js';
 import { readPlayerBundleInfo } from '../services/build-service.js';
 import {
@@ -310,6 +310,15 @@ export async function respondWithPreviewHtml(
   try {
     const { storyData, project } = await buildStoryData(pool, projectId, {
       audioBaseUrl: opts.audioBaseUrl,
+      // Never ship the story password to a browser. The authed route is
+      // already behind requireAuth, and the public route is gated
+      // server-side before we get here, so by this point the caller is
+      // entitled to the story and the password would only be a leak.
+      // This is also what removes the gate from the editor preview:
+      // with no password in the payload the player renders the story
+      // directly instead of walling the author out of their own theme
+      // editor.
+      passwordExposure: 'omit',
     });
     const projectName = (project as Record<string, unknown>).name as string;
     const nonce = generatePreviewNonce();
@@ -633,23 +642,238 @@ export function mountPreviewRoutes(router: Router, pool: Pool): void {
  * listener session; runaway hammering fails closed with 429 while
  * normal preload bursts pass through untouched.
  */
+/**
+ * CSP for the password prompt page.
+ *
+ * Deliberately NOT buildPreviewCsp: that policy sets `form-action 'none'`
+ * (correct for the player, which has no forms), and serving the prompt
+ * under it means the browser blocks the password submission outright —
+ * the button appears to do nothing. This policy is the preview's minus
+ * the directives a static form page has no use for: no script, no
+ * media, no fonts, no framing, and `form-action 'self'` so the POST to
+ * our own verify route is actually allowed.
+ */
+export function buildPasswordPromptCsp(nonce: string): string {
+  return [
+    "default-src 'none'",
+    `style-src 'nonce-${nonce}'`,
+    "form-action 'self'",
+    "frame-ancestors 'self'",
+    "base-uri 'none'",
+    "object-src 'none'",
+  ].join('; ');
+}
+
+/** Response headers for the password prompt: prompt CSP + the usual framing/referrer guards. */
+function applyPasswordPromptHeaders(res: Response, nonce: string): void {
+  res.setHeader('Content-Security-Policy', buildPasswordPromptCsp(nonce));
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  // Never let a prompt (or a 401) sit in a cache in front of the real
+  // story: the same URL serves different bytes once verified.
+  res.setHeader('Cache-Control', 'no-store');
+}
+
+/**
+ * Resolve a public-preview token to its project and, if the author set
+ * one, the story password guarding it.
+ *
+ * Returns null for an unknown or disabled token so callers can 404
+ * without distinguishing "no such link" from "link turned off".
+ */
+export async function lookupPublicPreview(
+  pool: Pool,
+  token: string,
+): Promise<{ projectId: string; password: string | null } | null> {
+  const result = await pool.query(
+    `SELECT p.id, pset.settings
+     FROM projects p
+     LEFT JOIN project_settings pset ON p.id = pset.project_id
+     WHERE p.public_preview_token = $1 AND p.public_preview_enabled = true`,
+    [token],
+  );
+  if (result.rows.length === 0) return null;
+  const row = result.rows[0];
+  const settings = (row.settings ?? {}) as Record<string, unknown>;
+  const raw = settings.password;
+  // Treat empty string as "no password" so clearing the field in the
+  // settings UI actually unlocks the link instead of creating a gate
+  // nobody can satisfy.
+  const password = typeof raw === 'string' && raw.length > 0 ? raw : null;
+  return { projectId: row.id, password };
+}
+
+/**
+ * Compare a submitted password against the stored one in constant time.
+ *
+ * timingSafeEqual requires equal-length buffers, so both sides are copied
+ * into zero-padded buffers of the same length and the real lengths are
+ * compared separately. The content comparison never short-circuits, which
+ * is the property that matters: a guess sharing a prefix with the real
+ * password must not take measurably longer than one that doesn't.
+ *
+ * An earlier version hashed both sides with SHA-256 to normalise length.
+ * That worked, but CodeQL reads "value named password flows into a fast
+ * hash" as password-hashing-at-rest (js/insufficient-password-hash) and
+ * flags it high severity. The padding approach avoids hashing entirely,
+ * so the rule no longer misfires and the comparison is unchanged in
+ * substance.
+ *
+ * Worth being straight about the limits: this compares against a password
+ * the project stores in plaintext in its settings JSONB, so it is a gate
+ * on the request path, not protection at rest. Hashing story passwords at
+ * rest is a real improvement but it is entangled with the static export
+ * path, which needs the plaintext to embed in story.json.
+ */
+export function passwordMatches(expected: string, provided: string): boolean {
+  const a = Buffer.from(expected, 'utf8');
+  const b = Buffer.from(provided, 'utf8');
+  const width = Math.max(a.length, b.length);
+  const paddedA = Buffer.alloc(width);
+  const paddedB = Buffer.alloc(width);
+  a.copy(paddedA);
+  b.copy(paddedB);
+  // Both operands are evaluated: timingSafeEqual runs over the full
+  // padded width regardless, and the length check only then rules out
+  // the zero-padding collision ("abc" vs "abc\0").
+  const sameContent = timingSafeEqual(paddedA, paddedB);
+  return sameContent && a.length === b.length;
+}
+
+/** Has this session already cleared the gate for this token? */
+export function hasVerifiedToken(req: Request, token: string): boolean {
+  return req.session?.verifiedPreviewTokens?.includes(token) ?? false;
+}
+
+/**
+ * The password prompt shown in place of the story.
+ *
+ * Deliberately a plain server-rendered form with no JavaScript and no
+ * story content: it is what an unverified listener gets *instead of*
+ * the payload, so there is nothing here worth reading in view-source.
+ * The one <style> block carries the request nonce to satisfy the same
+ * CSP the preview runs under.
+ */
+export function renderPasswordPromptHtml(
+  nonce: string,
+  opts: { token: string; error: boolean },
+): string {
+  const action = `/public-preview/${encodeURIComponent(opts.token)}/verify`;
+  const errorBlock = opts.error ? '<p class="err" role="alert">Incorrect password</p>' : '';
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Password required</title>
+    <style nonce="${nonce}">
+      body { margin: 0; min-height: 100vh; display: flex; align-items: center;
+             justify-content: center; background: #1a1a1a; color: #f5f5f5;
+             font-family: system-ui, -apple-system, sans-serif; }
+      .card { width: min(360px, 90vw); padding: 2rem; background: #242424;
+              border-radius: 12px; text-align: center; }
+      h1 { font-size: 1.25rem; margin: 0 0 0.5rem; }
+      p { margin: 0 0 1.25rem; color: #b0b0b0; font-size: 0.9rem; }
+      .err { color: #ff6b6b; }
+      input, button { width: 100%; box-sizing: border-box; padding: 0.6rem 0.75rem;
+                      border-radius: 8px; font-size: 1rem; }
+      input { border: 1px solid #444; background: #1a1a1a; color: #f5f5f5;
+              margin-bottom: 0.75rem; }
+      button { border: 0; background: #4ecdc4; color: #10312e; font-weight: 600;
+               cursor: pointer; }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <h1>This story is password protected</h1>
+      <p>Enter the password the author shared with you.</p>
+      ${errorBlock}
+      <form method="POST" action="${action}">
+        <input type="password" name="password" aria-label="Password"
+               placeholder="Password" autocomplete="current-password" autofocus />
+        <button type="submit">Unlock</button>
+      </form>
+    </main>
+  </body>
+</html>`;
+}
+
 export function mountPublicPreviewRoutes(
   router: Router,
   pool: Pool,
-  opts: { htmlLimiter?: RequestHandler; audioLimiter?: RequestHandler } = {},
+  opts: {
+    htmlLimiter?: RequestHandler;
+    audioLimiter?: RequestHandler;
+    verifyLimiter?: RequestHandler;
+  } = {},
 ): void {
   const htmlChain = opts.htmlLimiter ? [opts.htmlLimiter] : [];
   const audioChain = opts.audioLimiter ? [opts.audioLimiter] : [];
+  const verifyChain = opts.verifyLimiter ? [opts.verifyLimiter] : [];
+
+  /**
+   * Handle the password prompt for a protected token.
+   *
+   * POSTs the password as a normal form submission so the prompt page
+   * needs no JavaScript at all, which keeps it inside the same
+   * `script-src 'self' 'nonce-…'` CSP the preview uses.
+   */
+  router.post(
+    '/:token/verify',
+    ...verifyChain,
+    express.urlencoded({ extended: false, limit: '4kb' }),
+    async (req: Request, res: Response) => {
+      try {
+        const { token } = req.params;
+        const found = await lookupPublicPreview(pool, token);
+        // Same 404 as an unknown token. A protected project and a
+        // non-existent one are indistinguishable from outside.
+        if (!found) {
+          res.setHeader('Cache-Control', 'no-store');
+          res.status(404).send('Not found');
+          return;
+        }
+        if (!found.password) {
+          // Nothing to verify; send them to the story.
+          res.redirect(303, `/public-preview/${encodeURIComponent(token)}`);
+          return;
+        }
+        const submitted = typeof req.body?.password === 'string' ? req.body.password : '';
+        if (!passwordMatches(found.password, submitted)) {
+          const nonce = generatePreviewNonce();
+          applyPasswordPromptHeaders(res, nonce);
+          res.status(401).send(renderPasswordPromptHtml(nonce, { token, error: true }));
+          return;
+        }
+        // Record the grant on the session rather than a bearer value in
+        // the page, so nothing the listener can read lets them re-mint
+        // access for a different token.
+        const verified = new Set(req.session?.verifiedPreviewTokens ?? []);
+        verified.add(token);
+        req.session.verifiedPreviewTokens = [...verified];
+        req.session.save((err) => {
+          if (err) {
+            req.log.error({ err }, 'Failed to persist public-preview verification');
+            res.status(500).send('Failed to verify password');
+            return;
+          }
+          res.redirect(303, `/public-preview/${encodeURIComponent(token)}`);
+        });
+      } catch (error) {
+        req.log.error({ err: error }, 'Failed to verify public preview password');
+        res.status(500).send('Failed to verify password');
+      }
+    },
+  );
 
   router.get('/:token', ...htmlChain, async (req: Request, res: Response) => {
     try {
       const { token } = req.params;
-      const result = await pool.query(
-        `SELECT id FROM projects
-         WHERE public_preview_token = $1 AND public_preview_enabled = true`,
-        [token],
-      );
-      if (result.rows.length === 0) {
+      // Single lookup for both the project id and the password, so the
+      // gate costs no extra round trip.
+      const protection = await lookupPublicPreview(pool, token);
+      if (!protection) {
         // no-store on the 404 too: an author's toggle can flip a
         // token from disabled → enabled while a listener still
         // holds a cached negative response. HTTP defaults let 404s
@@ -660,7 +884,21 @@ export function mountPublicPreviewRoutes(
         res.status(404).send('Not found');
         return;
       }
-      const projectId: string = result.rows[0].id;
+      const projectId: string = protection.projectId;
+
+      // Password gate. This has to happen BEFORE respondWithPreviewHtml,
+      // not inside the player: the rendered page embeds the entire story
+      // graph as JSON, so a client-side gate left the whole story (and,
+      // previously, the password itself) sitting in view-source for
+      // anyone holding the link. Returning the prompt instead means an
+      // unverified listener never receives the story at all.
+      if (protection.password && !hasVerifiedToken(req, token)) {
+        const nonce = generatePreviewNonce();
+        applyPasswordPromptHeaders(res, nonce);
+        res.status(401).send(renderPasswordPromptHtml(nonce, { token, error: false }));
+        return;
+      }
+
       await respondWithPreviewHtml(
         pool,
         projectId,
@@ -680,12 +918,8 @@ export function mountPublicPreviewRoutes(
   router.get('/:token/audio/:filename', ...audioChain, async (req: Request, res: Response) => {
     try {
       const { token, filename } = req.params;
-      const result = await pool.query(
-        `SELECT id FROM projects
-         WHERE public_preview_token = $1 AND public_preview_enabled = true`,
-        [token],
-      );
-      if (result.rows.length === 0) {
+      const protection = await lookupPublicPreview(pool, token);
+      if (!protection) {
         // Same rationale as the HTML 404 above: don't let a
         // temporarily-disabled token get cached as a permanent
         // negative in a browser or intermediary proxy.
@@ -693,7 +927,19 @@ export function mountPublicPreviewRoutes(
         res.status(404).json({ error: 'Not found' });
         return;
       }
-      const projectId: string = result.rows[0].id;
+      const projectId: string = protection.projectId;
+
+      // Gate audio on the same session grant as the HTML. Without this
+      // the password would only protect the text: audio filenames are
+      // guessable enough (and, for anyone who saw the story once,
+      // already known), so an unverified listener could stream the
+      // whole narration straight from this route.
+      if (protection.password && !hasVerifiedToken(req, token)) {
+        res.setHeader('Cache-Control', 'no-store');
+        res.status(401).json({ error: 'Password required' });
+        return;
+      }
+
       await respondWithPreviewAudio(pool, projectId, filename, req, res);
     } catch (error) {
       req.log.error({ err: error }, 'Failed to serve public preview audio');

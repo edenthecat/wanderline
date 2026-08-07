@@ -117,8 +117,28 @@ export interface BuildStoryDataResult {
   project: Record<string, unknown>;
 }
 
+/**
+ * How the project's story password should be represented in the
+ * payload we hand the client.
+ *
+ * - `embed` puts the plaintext password in `settings.password` and
+ *   relies on the player comparing it in the browser. This is only
+ *   sound for the static export path, where there is no server at
+ *   request time to compare against; the exported bundle is a pile of
+ *   files and anyone holding it can read story.json regardless. Do not
+ *   use it for anything served over HTTP.
+ * - `omit` strips the password entirely. Every server-served route uses
+ *   this: the authed editor preview has already passed requireAuth, and
+ *   the public preview is gated server-side before the story data is
+ *   ever rendered (see mountPublicPreviewRoutes). Shipping the password
+ *   to those clients made the gate decorative, because the value sat in
+ *   view-source next to the story it was protecting.
+ */
+export type PasswordExposure = 'embed' | 'omit';
+
 export interface BuildStoryDataOptions {
   audioBaseUrl: string;
+  passwordExposure?: PasswordExposure;
 }
 
 /**
@@ -263,7 +283,10 @@ export async function buildStoryData(
       choice2: choice2IndicatorFile,
     },
     settings: {
-      password: settings.password,
+      // Defaults to 'embed' so the build pipeline (the only caller that
+      // legitimately needs the plaintext) keeps working untouched. Every
+      // HTTP-served caller passes 'omit' explicitly.
+      password: options.passwordExposure === 'omit' ? undefined : settings.password,
       voiceoverVolume: settings.voiceoverVolume,
       backgroundMusicVolume: settings.backgroundMusicVolume,
       indicatorVolume: settings.indicatorVolume,
