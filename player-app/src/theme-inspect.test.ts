@@ -169,6 +169,50 @@ describe('live font families', () => {
     postTheme({ bodyFont: 'Inter' });
     expect(cssVar('--wl-font-body')).toBe('Inter');
   });
+
+  // FontPicker takes free-typed input, so the live path has to escape
+  // family names the same way a server render does. A local
+  // trim-and-quote let a name containing a quote or semicolon through,
+  // which both diverged from the saved result and could terminate the
+  // declaration.
+  describe('family sanitisation matches a server render', () => {
+    it('strips characters that could break out of the declaration', () => {
+      postTheme({ bodyFont: 'Inter; color: red' });
+      const value = cssVar('--wl-font-body');
+      expect(value).not.toContain(';');
+      expect(value).not.toContain(':');
+    });
+
+    it('strips quotes from a free-typed family', () => {
+      postTheme({ bodyFont: "Inter' , x" });
+      expect(cssVar('--wl-font-body')).not.toContain("',");
+    });
+
+    it('quotes a multi-word family exactly once', () => {
+      postTheme({ headingFont: 'Playfair Display' });
+      expect(cssVar('--wl-font-heading')).toBe("'Playfair Display'");
+    });
+
+    it('emits nothing when the name is entirely stripped', () => {
+      postTheme({ bodyFont: '!!!' });
+      expect(cssVar('--wl-font-body')).toBe('');
+    });
+  });
+});
+
+describe('resilience of the live handler', () => {
+  // Whatever the author is mid-typing, the rest of the theme still has
+  // to apply. If one field could wedge the handler the author would be
+  // back to changes appearing to do nothing.
+  it.each([
+    ['unclosed brace', '.a { color: red;'],
+    ['garbage', 'not css at all !!!'],
+    ['half-typed property', '.a { colo'],
+    ['an @import', "@import url('https://example.com/x.css'); .a { color: red; }"],
+  ])('applies the rest of the theme despite %s in customCss', (_label, css) => {
+    expect(() => postTheme({ customCss: css, bodyFontWeights: ['700'] })).not.toThrow();
+    expect(cssVar('--wl-font-body-weight')).toBe('700');
+  });
 });
 
 describe('message source and origin guards', () => {

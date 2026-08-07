@@ -12,6 +12,7 @@
 import {
   COMPONENT_SPEC_BY_ID,
   componentVarName,
+  fontFamilyValue,
   googleFontsLinkUrl,
   primaryFontWeight,
   type ComponentId,
@@ -53,9 +54,25 @@ function createManagedSheet(marker: string): ManagedSheet {
 
   return {
     apply(css: string) {
-      if (constructed) {
-        constructed.replaceSync(css);
-        return;
+      // Guarded because this runs inside the message handler, which
+      // applies six things in sequence: one throw here would silently
+      // stop the rest of the theme from being applied and the author
+      // would be back to "my change did nothing".
+      //
+      // CSS parsing is error-tolerant, so half-typed customCss does not
+      // actually throw: unclosed braces, garbage and partial properties
+      // all parse to zero or more valid rules, and an @import is dropped
+      // per spec rather than raising. replaceSync throws only for a
+      // non-constructed sheet. The catch is cheap insurance, not a
+      // workaround for a reproducible failure.
+      try {
+        if (constructed) {
+          constructed.replaceSync(css);
+          return;
+        }
+      } catch {
+        // Fall through to the <style> element below.
+        constructed = null;
       }
       if (!fallbackEl) {
         fallbackEl = document.createElement('style');
@@ -201,18 +218,30 @@ function applyVariables(vars: Record<string, unknown> | undefined) {
   }
 }
 
-function applyFonts(theme: { bodyFont?: string; headingFont?: string } | undefined) {
+/**
+ * Set the family variables for unsaved edits.
+ *
+ * Uses the shared fontFamilyValue rather than a local trim-and-quote so
+ * the live preview agrees with a saved render character for character.
+ * FontPicker accepts free-typed input, and the local version quoted the
+ * raw string without the escaping the backend applies, so a family
+ * containing quotes or a semicolon rendered differently live than after
+ * save (and could terminate the declaration). Two implementations of the
+ * same rule drifting apart is the whole reason these helpers moved into
+ * @wanderline/shared.
+ */
+function applyFonts(theme: ThemeFontConfig | undefined) {
   const root = document.documentElement;
   root.style.removeProperty('--wl-font-body');
   root.style.removeProperty('--wl-font-heading');
   if (!theme) return;
   if (theme.bodyFont) {
-    const name = theme.bodyFont.trim();
-    if (name) root.style.setProperty('--wl-font-body', /\s/.test(name) ? `'${name}'` : name);
+    const value = fontFamilyValue(theme.bodyFont);
+    if (value) root.style.setProperty('--wl-font-body', value);
   }
   if (theme.headingFont) {
-    const name = theme.headingFont.trim();
-    if (name) root.style.setProperty('--wl-font-heading', /\s/.test(name) ? `'${name}'` : name);
+    const value = fontFamilyValue(theme.headingFont);
+    if (value) root.style.setProperty('--wl-font-heading', value);
   }
 }
 
