@@ -188,7 +188,22 @@ export const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
   },
   choiceSelected: {
-    background: 'var(--wl-choiceButton-hoverBackground, var(--wl-accent, rgba(78,205,196,0.2)))',
+    // The selected choice is meant to be a faint wash of the accent
+    // behind the normal body text, with the accent itself carried by the
+    // border. The old fallback chain reached for `--wl-accent` directly,
+    // so the moment an author set an accent colour the wash became a
+    // SOLID fill while the label stayed `var(--wl-text, #eee)`. On the
+    // default teal that measures 1.67:1, well under WCAG AA's 4.5, while
+    // the start button escaped it only by hardcoding dark text (8.8:1 on
+    // the same fill). Every themed project hit this, not just one.
+    //
+    // color-mix keeps the tint derived from whatever accent the author
+    // picked, so the wash tracks their palette instead of being pinned
+    // to teal. With no accent set this resolves to the same
+    // rgba(78,205,196,0.2) as before, so unthemed projects are
+    // pixel-identical.
+    background:
+      'var(--wl-choiceButton-hoverBackground, color-mix(in srgb, var(--wl-accent, #4ecdc4) 20%, transparent))',
     borderColor: 'var(--wl-accent, #4ecdc4)',
   },
   continueBtn: {
