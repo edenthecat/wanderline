@@ -63,11 +63,16 @@ body {
 }
 
 #root {
-  /* Follows html/body off `height: 100%`. A percentage `height` against
-     a now-auto-height parent would resolve to `auto` anyway; the
-     viewport fill that matters is carried by the app container's
-     `min-height: 100vh` (see styles.ts), which is unchanged. */
-  min-height: 100%;
+  /* No height here on purpose. This used to be `height: 100%`, which
+     only worked because html/body had a definite height; now that they
+     grow with the content, any percentage height or min-height resolves
+     against an auto-height parent and computes to 0. Measured: with
+     `min-height: 100%` the computed value is `0px` and the layout is
+     identical to declaring nothing, so the declaration was decoration.
+
+     The viewport fill the layout actually depends on is the app
+     container's `min-height: 100vh` (see styles.ts), which is
+     unchanged. */
   display: flex;
   flex-direction: column;
 }

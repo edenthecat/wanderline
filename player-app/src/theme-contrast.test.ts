@@ -118,10 +118,15 @@ describe('page background does not tile', () => {
     expect(body).not.toMatch(/^\s*height:\s*100%/m);
   });
 
-  it('keeps #root off a percentage height that would resolve to auto', () => {
+  // Any percentage height on #root now resolves against an auto-height
+  // parent and computes to 0, so declaring one is decoration that reads
+  // as though it were load-bearing. Covers min-height too, not just
+  // height, since both resolve the same way.
+  it('declares no percentage height on #root at all', () => {
     const rule = indexCss.match(/#root\s*\{[\s\S]*?\}/);
     expect(rule).not.toBeNull();
-    expect(rule![0]).not.toMatch(/^\s*height:\s*100%/m);
+    const declarations = rule![0].replace(/\/\*[\s\S]*?\*\//g, '');
+    expect(declarations).not.toMatch(/(^|[\s;])(min-)?height:\s*\d+%/);
   });
 
   // The viewport fill the layout actually depends on lives here, so if
