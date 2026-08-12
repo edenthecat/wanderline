@@ -134,6 +134,13 @@ const THEME_COLORS: Record<string, { bg: string; border: string; text: string; a
 // Click detection for headphone controls
 const CLICK_TIMEOUT = 400;
 
+// Background music play() retries. Sized for transient rejections (an
+// autoplay policy, or an element still settling after the tab was
+// backgrounded) rather than a genuinely missing file, which onerror
+// already handles by skipping to the next track.
+const BGM_PLAY_MAX_RETRIES = 3;
+const BGM_RETRY_BASE_MS = 1000;
+
 interface ClickDetectionState {
   clickCount: number;
   lastClickTime: number;
@@ -252,9 +259,18 @@ export default function App() {
   // Background music
   const bgMusicRef = useRef<HTMLAudioElement | null>(null);
   const bgMusicIndexRef = useRef(0);
+  const bgmRetryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const playedIndicatorsRef = useRef({ choice1: false, choice2: false });
   const choiceRepeatIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoNavigateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Bumped by every playVoiceover call so async work started by an
+  // earlier call can tell it has been superseded, including when the
+  // listener restarts the SAME node. See playVoiceover for why node id
+  // alone was not enough.
+  const playbackEpochRef = useRef(0);
+  // Last position reported by ontimeupdate, so a retry after a stall can
+  // pick up where the narration actually stopped instead of restarting.
+  const lastPositionRef = useRef(0);
   const choice1AudioRef = useRef<HTMLAudioElement | null>(null);
   const choice2AudioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -512,8 +528,25 @@ export default function App() {
         bgMusicIndexRef.current = (bgMusicIndexRef.current + 1) % story.backgroundMusic!.length;
         setTimeout(playNextTrack, 1000);
       };
-      audio.play().catch(() => {});
+      // A rejected play() used to be swallowed outright, which is the
+      // one failure mode that stops the music with no error, no ended
+      // event and nothing to chain from: it simply never starts again.
+      // Transient rejections here are common (a resume racing an
+      // autoplay policy, or an element still settling after the tab was
+      // backgrounded), so retry a few times with backoff before giving
+      // up. Bail out if a later call has taken over the ref, so a
+      // retry cannot resurrect a track the player has moved on from.
+      let attempt = 0;
+      const attemptPlay = () => {
+        audio.play().catch(() => {
+          if (bgMusicRef.current !== audio) return;
+          if (attempt >= BGM_PLAY_MAX_RETRIES) return;
+          attempt += 1;
+          bgmRetryTimeoutRef.current = setTimeout(attemptPlay, BGM_RETRY_BASE_MS * attempt);
+        });
+      };
       bgMusicRef.current = audio;
+      attemptPlay();
     };
 
     playNextTrack();
@@ -522,6 +555,10 @@ export default function App() {
   // Cleanup background music on unmount
   useEffect(() => {
     return () => {
+      if (bgmRetryTimeoutRef.current) {
+        clearTimeout(bgmRetryTimeoutRef.current);
+        bgmRetryTimeoutRef.current = null;
+      }
       if (bgMusicRef.current) {
         bgMusicRef.current.pause();
         bgMusicRef.current = null;
@@ -809,6 +846,26 @@ export default function App() {
     setAudioStalled(false);
     setRetryingAudio(false);
 
+    // Every call to playVoiceover supersedes the one before it. The
+    // async work started below (the looping choice sequence, retry
+    // timers, auto-navigate) used to check only the captured node id,
+    // which catches navigating AWAY but not starting over on the SAME
+    // node. Re-entering the same node is the common case:
+    // the on-screen play button did it on every tap, and every stall
+    // retry does it too. The previous sequence sailed through its
+    // guards and kept looping alongside the new one, each re-fetching
+    // audio (getCachedAudio hands back a fresh element rather than
+    // stomping a busy one), so listeners heard two or three files at
+    // once and saw the story advance on its own from a stale timer.
+    const epoch = ++playbackEpochRef.current;
+    const isStale = () =>
+      playbackEpochRef.current !== epoch || currentNodeIdRef.current !== currentNodeId;
+
+    // A fresh start on this node begins at the beginning; only a retry
+    // resumes. Without this reset, arriving at a new node would seek to
+    // wherever the previous node happened to stall.
+    if (audioRetryCountRef.current === 0) lastPositionRef.current = 0;
+
     // Clear any pending retry or pre-roll timeout from a prior call to
     // playVoiceover so they can't race with the new audio element.
     if (audioRetryTimeoutRef.current) {
@@ -819,6 +876,14 @@ export default function App() {
       clearTimeout(prerollTimeoutRef.current);
       prerollTimeoutRef.current = null;
     }
+    // A pending auto-navigate from the previous attempt has to go too.
+    // It was the one timer playVoiceover never cleared, so a retry part
+    // way through a passage could still fire the old jump and move the
+    // listener on without input.
+    if (autoNavigateTimeoutRef.current) {
+      clearTimeout(autoNavigateTimeoutRef.current);
+      autoNavigateTimeoutRef.current = null;
+    }
 
     if (audioRef.current) audioRef.current.pause();
 
@@ -826,6 +891,19 @@ export default function App() {
     if (choiceRepeatIntervalRef.current) {
       clearTimeout(choiceRepeatIntervalRef.current);
       choiceRepeatIntervalRef.current = null;
+    }
+
+    // Stop choice + indicator audio before re-fetching it below.
+    // getCachedAudio clones any element that is mid-playback instead of
+    // interrupting it, so without this the outgoing sequence's clips
+    // keep sounding underneath the new ones.
+    for (const ref of [
+      choice1AudioRef,
+      choice2AudioRef,
+      choice1IndicatorRef,
+      choice2IndicatorRef,
+    ]) {
+      ref.current?.pause();
     }
 
     // Reset played indicators state
@@ -855,14 +933,14 @@ export default function App() {
       choice2AudioRef.current = getCachedAudio('c2_' + currentNodeId, url);
     }
 
-    // Capture the nodeId at audio creation time to handle stale callbacks
-    const audioNodeId = currentNodeId;
+    // Stale callbacks are handled by isStale() above, which covers both
+    // the captured node id and the playback epoch.
     const audioUrl = story.audioBaseUrl + currentNode.audio.voiceover;
     // Use cached voiceover audio if available
     const audio = getCachedAudio('vo_' + currentNodeId, audioUrl);
     audio.volume = voiceoverVolume / 100;
     audio.onloadstart = () => {
-      if (currentNodeIdRef.current === audioNodeId) setPlayerState('loading');
+      if (!isStale()) setPlayerState('loading');
     };
     audio.oncanplay = () => {
       // Don't flip the player state to 'playing' while a delayBeforeMs
@@ -870,20 +948,20 @@ export default function App() {
       // cached audio element is ready, well before we actually call
       // .play(). Without this guard, the UI would claim "playing"
       // during the silent pre-roll.
-      if (currentNodeIdRef.current === audioNodeId && !prerollTimeoutRef.current) {
+      if (!isStale() && !prerollTimeoutRef.current) {
         setPlayerState('playing');
         setAudioError(null);
       }
     };
     audio.onplay = () => {
-      if (currentNodeIdRef.current === audioNodeId) setPlayerState('playing');
+      if (!isStale()) setPlayerState('playing');
     };
     audio.onpause = () => {
-      if (currentNodeIdRef.current === audioNodeId) setPlayerState('paused');
+      if (!isStale()) setPlayerState('paused');
     };
     audio.onended = () => {
       // Check if we're still on the same node - if not, ignore this callback
-      if (currentNodeIdRef.current !== audioNodeId) return;
+      if (isStale()) return;
       setPlayerState('ended');
 
       // Auto-continue: if only one choice and autoContinue enabled, navigate automatically
@@ -929,21 +1007,21 @@ export default function App() {
           new Promise((resolve) => setTimeout(resolve, ms));
 
         const runChoiceSequence = async () => {
-          if (currentNodeIdRef.current !== audioNodeId) return;
+          if (isStale()) return;
           // Wait before starting choice audio (default 3 seconds)
           await delay(story.settings?.choiceAudioDelayMs ?? 3000);
-          if (currentNodeIdRef.current !== audioNodeId) return;
+          if (isStale()) return;
           // Choice 1: indicator then audio
           await playAudio(choice1IndicatorRef.current);
-          if (currentNodeIdRef.current !== audioNodeId) return;
+          if (isStale()) return;
           await playAudio(choice1AudioRef.current);
-          if (currentNodeIdRef.current !== audioNodeId) return;
+          if (isStale()) return;
           // Choice 2: indicator then audio (if exists)
           if (choice2AudioRef.current || choice2IndicatorRef.current) {
             await playAudio(choice2IndicatorRef.current);
-            if (currentNodeIdRef.current !== audioNodeId) return;
+            if (isStale()) return;
             await playAudio(choice2AudioRef.current);
-            if (currentNodeIdRef.current !== audioNodeId) return;
+            if (isStale()) return;
           }
           // Wait 2 seconds then repeat
           choiceRepeatIntervalRef.current = setTimeout(runChoiceSequence, 2000);
@@ -975,6 +1053,11 @@ export default function App() {
     audio.ontimeupdate = () => {
       setAudioProgress(audio.currentTime);
       setAudioDuration(audio.duration || 0);
+      // Remember how far the narration actually got. A retry rebuilds
+      // the element through getCachedAudio, which rewinds to 0, so
+      // without this a stall part way through a passage restarted it
+      // from the top and the listener heard the opening again.
+      lastPositionRef.current = audio.currentTime;
 
       // Play choice indicator audio at specified timestamps
       const currentTimeMs = audio.currentTime * 1000;
@@ -992,11 +1075,11 @@ export default function App() {
     };
     // Stall detection - audio is buffering
     audio.onwaiting = () => {
-      if (currentNodeIdRef.current !== audioNodeId) return;
+      if (isStale()) return;
       setAudioStalled(true);
     };
     audio.onplaying = () => {
-      if (currentNodeIdRef.current !== audioNodeId) return;
+      if (isStale()) return;
       setAudioStalled(false);
       setRetryingAudio(false);
       audioRetryCountRef.current = 0;
@@ -1004,7 +1087,7 @@ export default function App() {
 
     audio.onerror = () => {
       // Check if we're still on the same node
-      if (currentNodeIdRef.current !== audioNodeId) return;
+      if (isStale()) return;
 
       // Auto-retry up to 3 times before showing error
       if (audioRetryCountRef.current < 3) {
@@ -1013,7 +1096,7 @@ export default function App() {
         setAudioStalled(false);
         const retryDelay = 1000 * audioRetryCountRef.current; // 1s, 2s, 3s
         audioRetryTimeoutRef.current = setTimeout(() => {
-          if (currentNodeIdRef.current === audioNodeId) {
+          if (!isStale()) {
             playVoiceover();
           }
         }, retryDelay);
@@ -1034,10 +1117,23 @@ export default function App() {
       prerollTimeoutRef.current = null;
       // Bail if the user navigated away before our pre-roll delay
       // elapsed.
-      if (currentNodeIdRef.current !== audioNodeId) return;
+      if (isStale()) return;
+      // Pick up where the narration stopped. getCachedAudio rewinds
+      // every element it hands back, so a retry would otherwise replay
+      // the passage from the top: buffer part way through a long
+      // passage and you hear the opening seconds again. Only on a
+      // retry; a fresh visit to a node should start at the beginning.
+      if (audioRetryCountRef.current > 0 && lastPositionRef.current > 0) {
+        try {
+          audio.currentTime = lastPositionRef.current;
+        } catch {
+          // Seeking can throw if the buffer was evicted. Starting over
+          // is worse than nothing but still plays the passage.
+        }
+      }
       audio.play().catch((err) => {
         // Check if we're still on the same node
-        if (currentNodeIdRef.current !== audioNodeId) return;
+        if (isStale()) return;
 
         // Auto-retry on play failure (often happens with network issues)
         if (audioRetryCountRef.current < 3) {
@@ -1045,7 +1141,7 @@ export default function App() {
           setRetryingAudio(true);
           const retryDelay = 1000 * audioRetryCountRef.current;
           audioRetryTimeoutRef.current = setTimeout(() => {
-            if (currentNodeIdRef.current === audioNodeId) {
+            if (!isStale()) {
               playVoiceover();
             }
           }, retryDelay);
@@ -1305,15 +1401,30 @@ export default function App() {
   }, [currentNodeId, showInstructions, currentNode, playerState, playVoiceover]);
 
   // Click handlers for headphone controls
+  /**
+   * The one place that decides what play/pause means.
+   *
+   * Pausing and resuming keeps the narration where it is; only a state
+   * that has no live element to resume (loading, ended, errored) starts
+   * the passage over. The headphone and keyboard paths went through
+   * this logic while the on-screen button had its own two-way version
+   * that called playVoiceover() whenever it was not already playing, so
+   * the same pause resumed from the headphones and restarted from the
+   * button. Sharing one callback means the two cannot drift again.
+   */
+  const togglePlayback = useCallback(() => {
+    if (playerState === 'playing') audioRef.current?.pause();
+    else if (playerState === 'paused') audioRef.current?.play().catch(() => {});
+    else playVoiceover();
+  }, [playerState, playVoiceover]);
+
   const handleSingleClick = useCallback(() => {
     if (showInstructions) {
       startStory();
       return;
     }
-    if (playerState === 'playing') audioRef.current?.pause();
-    else if (playerState === 'paused') audioRef.current?.play();
-    else playVoiceover();
-  }, [showInstructions, startStory, playerState, playVoiceover]);
+    togglePlayback();
+  }, [showInstructions, startStory, togglePlayback]);
 
   const handleDoubleClick = useCallback(() => {
     if (!story || !currentNode) return;
@@ -1361,9 +1472,7 @@ export default function App() {
       switch (e.key) {
         case ' ':
           e.preventDefault();
-          if (playerState === 'playing') audioRef.current?.pause();
-          else if (playerState === 'paused') audioRef.current?.play();
-          else playVoiceover();
+          togglePlayback();
           break;
         case 'ArrowUp':
           e.preventDefault();
@@ -1427,7 +1536,7 @@ export default function App() {
     selectedChoice,
     history,
     audioError,
-    playVoiceover,
+    togglePlayback,
     navigateToNode,
     skipAudio,
     goBack,
@@ -1981,7 +2090,7 @@ export default function App() {
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                playerState === 'playing' ? audioRef.current?.pause() : playVoiceover();
+                togglePlayback();
               }}
               style={styles.playBtn}
               aria-label={
