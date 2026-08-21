@@ -12,6 +12,12 @@ const ALLOWED_TOP_LEVEL_KEYS = new Set([
   'backgroundMusicVolume',
   'indicatorVolume',
   'defaultIndicatorAudioId',
+  // Per-choice indicator sounds. story-data-builder has read
+  // settings.choiceIndicatorAudio.{choice1FileId,choice2FileId} and the
+  // player has honoured them for a while, but the key was never on this
+  // list, so any attempt to set it was silently dropped here and the
+  // feature was unreachable outside a direct DB edit.
+  'choiceIndicatorAudio',
   'choiceAudioDelayMs',
   'captionsDefault',
   'showProgressBar',
@@ -27,9 +33,12 @@ const ALLOWED_TOP_LEVEL_KEYS = new Set([
 // value rather than replaced wholesale. A partial patch like
 // { bluetoothControls: { nextTrack: 'confirm' } } previously wiped
 // previousTrack via the `||` shallow merge.
-const NESTED_MERGE_KEYS = new Set(['bluetoothControls', 'theme']);
+const NESTED_MERGE_KEYS = new Set(['bluetoothControls', 'theme', 'choiceIndicatorAudio']);
 
-function mergeSettingsObject(
+// Exported for tests: this function is where both halves of the
+// settings contract live (which keys survive, and which merge nested
+// rather than replacing), and both are easy to break silently.
+export function mergeSettingsObject(
   existing: Record<string, unknown>,
   patch: Record<string, unknown>,
 ): Record<string, unknown> {

@@ -1025,6 +1025,19 @@ export interface ProjectTheme {
   components?: ComponentThemeMap;
 }
 
+/**
+ * Distinct indicator cues for the first and second choice.
+ *
+ * Stored per project and merged key-by-key, so setting one does not
+ * clear the other. An unset side falls back to
+ * `defaultIndicatorAudioId`; both unset means the default is used for
+ * every choice, which is the behaviour every existing project has.
+ */
+export interface ChoiceIndicatorAudio {
+  choice1FileId?: string | null;
+  choice2FileId?: string | null;
+}
+
 export interface ProjectSettings {
   password?: string;
   // Default playback volumes (0-100) baked into the generated app
@@ -1037,6 +1050,10 @@ export interface ProjectSettings {
   // the generated app plays for choice/transition cues. Null/unset
   // means silent.
   defaultIndicatorAudioId?: string | null;
+  // Optional per-choice overrides. When set, the generated app plays a
+  // distinct cue for the first and second choice instead of the single
+  // default above; either may be left unset to fall back to it.
+  choiceIndicatorAudio?: ChoiceIndicatorAudio;
   choiceAudioDelayMs?: number;
   // UI options for the generated player. All default to true / "on"
   // when unset — see player-app/src/App.tsx for the resolution.
