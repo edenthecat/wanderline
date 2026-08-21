@@ -35,7 +35,19 @@
 
 html,
 body {
-  height: 100%;
+  /* `min-height`, not `height`. With `height: 100%` these boxes are
+     exactly one viewport tall, which is the *positioning area* for the
+     page background. `--wl-page-bg` defaults to a gradient and
+     `background-repeat` defaults to `repeat`, so on any passage longer
+     than the viewport the gradient tiled and left a hard seam every
+     screenful: at 783px, 1566px, 2349px and so on for an 800px window.
+     Authors saw it as "the background colour changes partway down the
+     page". Letting the box grow with the content gives the gradient the
+     whole document to span, so there is nothing left to tile into.
+
+     A solid `--wl-page-bg` tiles invisibly, which is why this only ever
+     showed up on the default (gradient) theme. */
+  min-height: 100%;
   font-family: var(--wl-page-fontFamily, var(--wl-font-body));
   /* `background` is the shorthand; default lives in `--wl-page-bg`
      (a gradient). `--wl-page-backgroundImage` is an *opt-in*
@@ -51,7 +63,16 @@ body {
 }
 
 #root {
-  height: 100%;
+  /* No height here on purpose. This used to be `height: 100%`, which
+     only worked because html/body had a definite height; now that they
+     grow with the content, any percentage height or min-height resolves
+     against an auto-height parent and computes to 0. Measured: with
+     `min-height: 100%` the computed value is `0px` and the layout is
+     identical to declaring nothing, so the declaration was decoration.
+
+     The viewport fill the layout actually depends on is the app
+     container's `min-height: 100vh` (see styles.ts), which is
+     unchanged. */
   display: flex;
   flex-direction: column;
 }
