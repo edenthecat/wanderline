@@ -70,12 +70,11 @@ export default function SystemSoundsTab({ projectId }: Props) {
    * sending the whole object would clear the other side on every edit.
    */
   function updateChoiceIndicator(key: keyof ChoiceIndicatorAudio, next: string | null) {
-    // Built as a declared ChoiceIndicatorAudio rather than
-    // `{ [key]: next } as ChoiceIndicatorAudio`. A computed key widens
-    // to an index signature, so the assertion needed to get it back to
-    // this type would also swallow a real mismatch: rename a field or
-    // change one to a non-string and the assertion still compiles.
-    // Assigning into a declared object keeps that checked.
+    // Declared up front and assigned into, rather than built as an
+    // object literal with a computed key. A computed key widens to an
+    // index signature, and casting that back to this type silences the
+    // write site: change a field's type and the cast still compiles
+    // while the assignment below would not.
     const patch: ChoiceIndicatorAudio = {};
     patch[key] = next;
     return updateOne('choiceIndicatorAudio', patch);
