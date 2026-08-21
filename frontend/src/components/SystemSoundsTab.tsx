@@ -70,7 +70,15 @@ export default function SystemSoundsTab({ projectId }: Props) {
    * sending the whole object would clear the other side on every edit.
    */
   function updateChoiceIndicator(key: keyof ChoiceIndicatorAudio, next: string | null) {
-    return updateOne('choiceIndicatorAudio', { [key]: next } as ChoiceIndicatorAudio);
+    // Built as a declared ChoiceIndicatorAudio rather than
+    // `{ [key]: next } as ChoiceIndicatorAudio`. A computed key widens
+    // to an index signature, so the assertion needed to get it back to
+    // this type would also swallow a real mismatch: rename a field or
+    // change one to a non-string and the assertion still compiles.
+    // Assigning into a declared object keeps that checked.
+    const patch: ChoiceIndicatorAudio = {};
+    patch[key] = next;
+    return updateOne('choiceIndicatorAudio', patch);
   }
 
   if (loading) return <div className="page-loader">Loading sounds...</div>;
