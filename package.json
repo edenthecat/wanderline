@@ -1,6 +1,6 @@
 {
   "name": "wanderline",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "private": true,
   "description": "Audio-narrative generation pipeline for Ink files with Bluetooth-navigation support",
   "workspaces": [
