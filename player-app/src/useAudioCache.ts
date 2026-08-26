@@ -101,23 +101,29 @@ export function evictAudioCacheIfFull(cache: Map<string, AudioCacheEntry>): void
   }
 }
 
+// Session-scoped latch. Set once we learn that this deployment serves
+// audio via a redirect whose bytes nothing retains, at which point
+// every further warm is a pure waste of transfer. Costs us one
+// redundant file before it trips, rather than one per file.
+let warmingIsWasteful = false;
+
+/** Exported for tests; resets the session latch between cases. */
+export function resetWarmHeuristicForTests(): void {
+  warmingIsWasteful = false;
+}
+
 /**
- * Pull an audio URL through fetch() so the bytes land in the HTTP
- * cache — and, where one is installed, the service worker's audio
- * cache — before any media element asks for them.
+ * Pull an audio URL through fetch() so the bytes are already local
+ * before any media element asks for them.
  *
  * This exists for iOS. Safari there will not buffer a media element
- * that no user gesture has touched, so `canplaythrough` never fires
- * on a cold preload and the element alone can never "download" a
- * story ahead of playback. fetch() has no such restriction.
+ * that no user gesture has touched, so `canplaythrough` never fires on
+ * a cold preload and the element alone can never download a story
+ * ahead of playback. fetch() has no such restriction.
  *
- * Deliberately forgiving: every failure resolves `false` rather than
- * rejecting. A cross-origin redirect without CORS headers — exactly
- * what a signed-GCS-URL deployment serves — rejects here, and that
- * must not stop the media element from trying the same URL and
- * succeeding.
- *
- * @returns true only when the bytes were actually read.
+ * @returns true only when the bytes were both read AND retained
+ * somewhere the element will subsequently read from. Returning false
+ * means the caller must let the element do the transfer itself.
  */
 async function warmAudioUrl(url: string): Promise<boolean> {
   if (typeof fetch !== 'function') return false;
@@ -126,16 +132,37 @@ async function warmAudioUrl(url: string): Promise<boolean> {
   try {
     const response = await fetch(url, { credentials: 'same-origin', signal: controller?.signal });
     // An opaque response means we crossed an origin we can't read:
-    // status is 0 and the body is sealed, so nothing was cached and
-    // this is not a success.
+    // status 0, body sealed, nothing cached.
     if (!response.ok || response.type === 'opaque') return false;
     // Drain the body — without this the transfer may never complete
-    // and nothing reaches the cache.
+    // and nothing reaches any cache.
     await response.arrayBuffer();
-    return true;
+
+    if (!response.redirected) {
+      // A direct same-origin response: an exported build on static
+      // hosting, or the backend streaming audio itself. Both send
+      // ordinary cache headers, so the HTTP cache now holds this and
+      // the element will be served from it.
+      return true;
+    }
+
+    // Redirected means the signed-URL path, whose 307 is marked
+    // `Cache-Control: no-store` precisely because a signed URL expires
+    // and must not be replayed. The HTTP cache keeps nothing, so the
+    // only thing that can retain these bytes is the service worker's
+    // audio cache — and only when a worker is actually controlling
+    // this page.
+    if (navigator.serviceWorker?.controller) return true;
+
+    // Nothing kept it. Stop warming for the rest of the session so we
+    // don't pay this twice on every remaining file; see the runbook
+    // note about signed URLs existing to keep GCS egress off Cloud
+    // Run's meter.
+    warmingIsWasteful = true;
+    return false;
   } catch {
-    // Offline, CORS-blocked, or aborted. The element path decides
-    // the real outcome for this file.
+    // Offline, CORS-blocked, or aborted. The element decides the real
+    // outcome for this file.
     return false;
   } finally {
     if (timer) clearTimeout(timer);
@@ -293,34 +320,35 @@ export function useAudioCache(): UseAudioCacheResult {
         // Warming with fetch() is what makes a cold preload possible on
         // iOS, where Safari refuses to buffer an element no user
         // gesture has touched and `canplaythrough` therefore never
-        // arrives. But it's only worth doing when a service worker is
-        // controlling the page and can retain the bytes:
+        // arrives.
         //
-        // With USE_SIGNED_URL_DOWNLOADS the audio route answers with a
-        // 307 marked `Cache-Control: no-store` (see
-        // backend/src/routes/projects-preview.ts). Nothing about that
-        // response is reusable by the HTTP cache, so an unsupervised
-        // warm would transfer the whole file, throw it away, and leave
-        // the element to fetch it a second time — doubling GCS egress
-        // on a deployment whose whole reason for using signed URLs is
-        // to keep egress down (see the instance's gcp-cost-runbook).
+        // Whether it's worth doing depends on how this build is
+        // served, which we can't know until we've tried once:
         //
-        // With a controller, the warm goes through the SW's audio
-        // cache and the element is then served from it: one transfer,
-        // and the file is available offline afterwards.
-        if (navigator.serviceWorker?.controller) {
-          void warmAudioUrl(url).then((warmed) => {
+        //  - An exported build on static hosting serves ./audio/*
+        //    directly with ordinary cache headers. Warming is free and
+        //    the element is then served from the HTTP cache.
+        //  - The hosted signed-URL path 307s to storage with
+        //    `Cache-Control: no-store`, so unless a service worker
+        //    catches the bytes they're discarded and the element has to
+        //    transfer the file a second time.
+        //
+        // warmAudioUrl decides from the actual response and latches
+        // `warmingIsWasteful` when it finds the second shape with no
+        // worker, so at most one file pays for the discovery.
+        if (!warmingIsWasteful) {
+          void warmAudioUrl(url).then((retained) => {
             if (attemptDone) return;
-            if (warmed) {
-              // Bytes are in the SW cache. The element hasn't fetched
-              // anything and doesn't need to — playback will read
-              // straight from that cache.
+            if (retained) {
+              // Bytes are local. The element hasn't transferred
+              // anything and doesn't need to — playback reads from
+              // whichever cache holds them.
               succeed();
               return;
             }
-            // Warm failed (offline, or CORS-blocked by a bucket with no
-            // policy). Media elements aren't subject to CORS, so let
-            // the element try the same URL — it will usually succeed.
+            // Not retained (offline, CORS-blocked, or a no-store
+            // redirect). Media elements aren't subject to CORS, so let
+            // the element try the same URL — it usually succeeds.
             startElementLoad();
           });
         } else {

@@ -1,6 +1,11 @@
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { evictAudioCacheIfFull, useAudioCache, type AudioCacheEntry } from './useAudioCache';
+import {
+  evictAudioCacheIfFull,
+  resetWarmHeuristicForTests,
+  useAudioCache,
+  type AudioCacheEntry,
+} from './useAudioCache';
 
 // coverage for the audio-cache layer. Real
 // HTMLAudioElement loading requires network + a codec-capable jsdom;
@@ -50,6 +55,7 @@ class FakeAudio {
 beforeEach(() => {
   audioStubs.length = 0;
   vi.stubGlobal('Audio', FakeAudio);
+  resetWarmHeuristicForTests();
 });
 
 afterEach(() => {
@@ -372,54 +378,92 @@ describe('useAudioCache — transfer economy', () => {
     });
   };
 
-  // With USE_SIGNED_URL_DOWNLOADS the audio route 307s to a signed URL
-  // marked `Cache-Control: no-store`, so nothing the HTTP cache can
-  // reuse comes back. Warming without a service worker to hold the
-  // bytes would transfer each file twice — once discarded, once by the
-  // element — doubling GCS egress. Pin that we don't.
-  it('does not fetch when no service worker can retain the bytes', async () => {
-    setServiceWorkerController(false);
-    const fetchSpy = vi.fn(async () => ({ ok: true, type: 'basic' }));
-    vi.stubGlobal('fetch', fetchSpy);
-    try {
-      const { result } = renderHook(() => useAudioCache());
-      let p!: Promise<void>;
-      act(() => {
-        p = result.current.preloadAudio('http://example.com/a.mp3', 'a');
-      });
-      await act(async () => {
-        audioStubs[audioStubs.length - 1].fireCanPlayThrough();
-        await p;
-      });
-      expect(fetchSpy).not.toHaveBeenCalled();
-      expect(result.current.preloadProgress.loaded).toBe(1);
-    } finally {
-      vi.unstubAllGlobals();
-      vi.stubGlobal('Audio', FakeAudio);
-    }
+  const okResponse = (redirected: boolean) => ({
+    ok: true,
+    type: 'basic',
+    redirected,
+    arrayBuffer: async () => new ArrayBuffer(8),
   });
 
-  // The other half of the same guarantee: when the warm succeeds, the
-  // element must not then go and fetch the file again.
-  it('does not start an element transfer when the warm already cached it', async () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.stubGlobal('Audio', FakeAudio);
+  });
+
+  // An exported build on Netlify serves ./audio/* as ordinary static
+  // files: no redirect, normal cache headers. Warming is free there and
+  // is the only way iOS can preload, so it must happen even with no
+  // service worker controlling the page.
+  it('warms a static build even without a service worker', async () => {
+    setServiceWorkerController(false);
+    const fetchSpy = vi.fn(async () => okResponse(false));
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const { result } = renderHook(() => useAudioCache());
+    await act(async () => {
+      await result.current.preloadAudio('./audio/a.mp3', 'a');
+    });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(result.current.preloadProgress.loaded).toBe(1);
+    // The element never transferred: the HTTP cache has the bytes.
+    const element = audioStubs[audioStubs.length - 1];
+    expect(element.preload).toBe('none');
+    expect(element.loadCalls).toBe(0);
+  });
+
+  // The signed-URL path 307s to storage with Cache-Control: no-store.
+  // With a worker to catch the bytes, one transfer serves both.
+  it('warms a redirecting deployment when a service worker can retain it', async () => {
     setServiceWorkerController(true);
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({ ok: true, type: 'basic', arrayBuffer: async () => new ArrayBuffer(8) })),
-    );
-    try {
-      const { result } = renderHook(() => useAudioCache());
-      await act(async () => {
-        await result.current.preloadAudio('http://example.com/b.mp3', 'b');
-      });
-      const element = audioStubs[audioStubs.length - 1];
-      // preload stays 'none' and load() is never invoked, so the
-      // element issues no request of its own.
-      expect(element.preload).toBe('none');
-      expect(element.loadCalls).toBe(0);
-    } finally {
-      vi.unstubAllGlobals();
-      vi.stubGlobal('Audio', FakeAudio);
-    }
+    const fetchSpy = vi.fn(async () => okResponse(true));
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const { result } = renderHook(() => useAudioCache());
+    await act(async () => {
+      await result.current.preloadAudio('/api/projects/p/preview/audio/a.mp3', 'a');
+    });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(audioStubs[audioStubs.length - 1].loadCalls).toBe(0);
+  });
+
+  // Same path with nothing retaining the bytes: the first file pays for
+  // the discovery, then warming switches off so the rest of the story
+  // doesn't transfer twice. This is the GCS egress guarantee.
+  it('stops warming after finding a no-store redirect with no worker', async () => {
+    setServiceWorkerController(false);
+    const fetchSpy = vi.fn(async () => okResponse(true));
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const { result } = renderHook(() => useAudioCache());
+
+    // File 1: warms, discovers the bytes went nowhere, falls back to
+    // the element.
+    let first!: Promise<void>;
+    act(() => {
+      first = result.current.preloadAudio('/api/projects/p/preview/audio/a.mp3', 'a');
+    });
+    await act(async () => {
+      // The warm chain is fetch -> arrayBuffer -> then, so a couple of
+      // microtask ticks isn't enough; yield to the macrotask queue.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      audioStubs[audioStubs.length - 1].fireCanPlayThrough();
+      await first;
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(audioStubs[audioStubs.length - 1].loadCalls).toBe(1);
+
+    // Files 2+: no further warming, element only.
+    let second!: Promise<void>;
+    act(() => {
+      second = result.current.preloadAudio('/api/projects/p/preview/audio/b.mp3', 'b');
+    });
+    await act(async () => {
+      audioStubs[audioStubs.length - 1].fireCanPlayThrough();
+      await second;
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(audioStubs[audioStubs.length - 1].loadCalls).toBe(1);
   });
 });
