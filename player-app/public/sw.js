@@ -234,6 +234,19 @@ async function buildRangeResponse(cached, rangeHeader) {
 // content (or exfiltrating cross-origin endpoints into the cache).
 self.addEventListener('message', (event) => {
   const data = event.data;
+
+  // Status query: how much of this story is actually on the device?
+  // Answered from the cache itself rather than from a counter the page
+  // kept, because the page's counter dies with the tab and the whole
+  // point is telling someone on a platform at 8am whether last night's
+  // download is still there.
+  if (data && data.type === 'CHECK_AUDIO_CACHE') {
+    const src = event.source;
+    if (!src || src.url == null || new URL(src.url).origin !== self.location.origin) return;
+    event.waitUntil(reportAudioCacheStatus(Array.isArray(data.urls) ? data.urls : []));
+    return;
+  }
+
   if (!data || data.type !== 'PRECACHE_AUDIO') return;
   // Only accept messages from same-origin window clients.
   const src = event.source;
@@ -330,6 +343,36 @@ async function precacheAudio(urls) {
   // completion from a tally — covers the case where a single message
   // in the middle was dropped and the tally never lined up.
   await broadcastComplete(done, failed, total, quotaExceeded, corsBlocked);
+}
+
+async function reportAudioCacheStatus(urls) {
+  const cache = await caches.open(AUDIO_CACHE);
+  let cached = 0;
+  let bytes = 0;
+  for (const url of urls) {
+    if (typeof url !== 'string') continue;
+    try {
+      const hit = await cache.match(url);
+      if (!hit) continue;
+      cached++;
+      // Read the declared length rather than the body: summing
+      // arrayBuffer() over a whole story would pull every file back
+      // through memory just to draw a label.
+      const len = Number(hit.headers.get('content-length'));
+      if (Number.isFinite(len) && len > 0) bytes += len;
+    } catch {
+      // A single unreadable entry shouldn't sink the whole report.
+    }
+  }
+  const clients = await self.clients.matchAll({ type: 'window' });
+  for (const client of clients) {
+    client.postMessage({
+      type: 'AUDIO_CACHE_STATUS',
+      cached,
+      total: urls.length,
+      bytes,
+    });
+  }
 }
 
 async function broadcastProgress(loaded, failed, total, quotaExceeded, corsBlocked) {

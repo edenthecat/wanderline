@@ -179,6 +179,21 @@ button:disabled {
    offline pills: it's a multi-line explanation, and at the top it
    covered the story card on small phones. Sits above the tap-to-advance
    layer, so it needs its own pointer-events. */
+/* Partial-download pill. Amber rather than the green of a complete
+   save: someone glancing at this before losing signal needs the two
+   states to be distinguishable at a glance, not just by reading the
+   number. */
+.wl-offline-partial {
+  background: rgba(217, 119, 6, 0.75);
+  color: #fff;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 11px;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  white-space: nowrap;
+}
+
 .wl-install-guidance {
   position: fixed;
   left: 50%;

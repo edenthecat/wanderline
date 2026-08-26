@@ -48,12 +48,26 @@ interface BeforeInstallPromptEvent extends Event {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
 }
 
+/** What's actually on the device right now, read from the cache. */
+export interface AudioCacheStatus {
+  cached: number;
+  total: number;
+  /** Summed content-length of cached files; 0 when unknown. */
+  bytes: number;
+  /** False until the service worker has answered at least once. */
+  checked: boolean;
+}
+
 export interface OfflineSupport {
   online: boolean;
   swReady: boolean;
   precacheStatus: PrecacheStatus;
   precacheProgress: PrecacheProgress;
   installPrompt: BeforeInstallPromptEvent | null;
+  /** Ground truth for "is this story playable offline right now?". */
+  cacheStatus: AudioCacheStatus;
+  /** Ask the worker to re-read the cache. Safe to call repeatedly. */
+  refreshCacheStatus: (urls: string[]) => void;
   downloadForOffline: (urls: string[]) => Promise<void>;
   showInstallPrompt: () => Promise<void>;
 }
@@ -70,6 +84,19 @@ export interface OfflineSupport {
 // still running. Sized instead for the worst realistic single-file
 // fetch.
 export const WATCHDOG_MS = 120_000;
+
+/**
+ * Ask the controlling worker for a cache report. Fire-and-forget: the
+ * answer arrives as an AUDIO_CACHE_STATUS message. No-op without a
+ * controller, which is the honest outcome — with nothing controlling
+ * the page there is no cache to report on.
+ */
+function postCacheQuery(urls: string[]): void {
+  if (urls.length === 0) return;
+  const controller = navigator.serviceWorker?.controller;
+  if (!controller) return;
+  controller.postMessage({ type: 'CHECK_AUDIO_CACHE', urls });
+}
 
 function readNonNegativeInt(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0;
@@ -89,6 +116,15 @@ export function useOfflineSupport(): OfflineSupport {
     corsBlocked: 0,
   });
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [cacheStatus, setCacheStatus] = useState<AudioCacheStatus>({
+    cached: 0,
+    total: 0,
+    bytes: 0,
+    checked: false,
+  });
+  // Held so a PRECACHE_COMPLETE can re-query without the caller having
+  // to hand us the URL list a second time.
+  const lastQueriedUrlsRef = useRef<string[]>([]);
   const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Online / offline events.
@@ -125,6 +161,15 @@ export function useOfflineSupport(): OfflineSupport {
     const onMessage = (event: MessageEvent) => {
       const data = event.data;
       if (!data || typeof data !== 'object') return;
+      if (data.type === 'AUDIO_CACHE_STATUS') {
+        setCacheStatus({
+          cached: readNonNegativeInt(data.cached),
+          total: readNonNegativeInt(data.total),
+          bytes: readNonNegativeInt(data.bytes),
+          checked: true,
+        });
+        return;
+      }
       if (data.type === 'PRECACHE_PROGRESS' || data.type === 'PRECACHE_COMPLETE') {
         const loaded = readNonNegativeInt(data.loaded);
         const failed = readNonNegativeInt(data.failed);
@@ -148,6 +193,9 @@ export function useOfflineSupport(): OfflineSupport {
         }));
         if (data.type === 'PRECACHE_COMPLETE') {
           if (watchdogRef.current) clearTimeout(watchdogRef.current);
+          // Re-read the cache so the readiness figure reflects what
+          // landed, including a partial run that failed part-way.
+          postCacheQuery(lastQueriedUrlsRef.current);
           // The SW's terminal message is the source of truth. If
           // any failures or quota issues, surface 'error' so the
           // UI can offer a retry.
@@ -182,7 +230,13 @@ export function useOfflineSupport(): OfflineSupport {
     };
   }, []);
 
+  const refreshCacheStatus = useCallback((urls: string[]) => {
+    lastQueriedUrlsRef.current = urls;
+    postCacheQuery(urls);
+  }, []);
+
   const downloadForOffline = useCallback(async (urls: string[]) => {
+    lastQueriedUrlsRef.current = urls;
     if (!navigator.serviceWorker) {
       setPrecacheStatus('error');
       return;
@@ -227,6 +281,8 @@ export function useOfflineSupport(): OfflineSupport {
     precacheStatus,
     precacheProgress,
     installPrompt,
+    cacheStatus,
+    refreshCacheStatus,
     downloadForOffline,
     showInstallPrompt,
   };

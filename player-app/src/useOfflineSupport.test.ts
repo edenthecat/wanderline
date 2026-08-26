@@ -370,3 +370,54 @@ describe('useOfflineSupport — install prompt', () => {
     expect(result.current.installPrompt).toBeNull();
   });
 });
+
+describe('useOfflineSupport — cache status', () => {
+  // The whole point of reading the cache rather than trusting a
+  // session counter: someone who downloaded last night and opens the
+  // story on the subway must see what's actually on their device.
+  it('reports cache contents from an AUDIO_CACHE_STATUS message', async () => {
+    const sw = installServiceWorkerStub();
+    const { result } = renderHook(() => useOfflineSupport());
+    expect(result.current.cacheStatus.checked).toBe(false);
+
+    act(() => {
+      sw.fire({ type: 'AUDIO_CACHE_STATUS', cached: 48, total: 60, bytes: 41_943_040 });
+    });
+
+    expect(result.current.cacheStatus).toEqual({
+      cached: 48,
+      total: 60,
+      bytes: 41_943_040,
+      checked: true,
+    });
+  });
+
+  it('coerces malformed counts rather than rendering NaN', async () => {
+    const sw = installServiceWorkerStub();
+    const { result } = renderHook(() => useOfflineSupport());
+    act(() => {
+      sw.fire({ type: 'AUDIO_CACHE_STATUS', cached: -3, total: 'nope', bytes: null });
+    });
+    expect(result.current.cacheStatus).toEqual({
+      cached: 0,
+      total: 0,
+      bytes: 0,
+      checked: true,
+    });
+  });
+
+  // A status message must not disturb an in-flight download's tally.
+  it('leaves precache progress untouched', async () => {
+    const sw = installServiceWorkerStub();
+    const { result } = renderHook(() => useOfflineSupport());
+    await act(async () => {
+      await result.current.downloadForOffline(['./audio/a.mp3']);
+    });
+    act(() => {
+      sw.fire({ type: 'PRECACHE_PROGRESS', loaded: 1, failed: 0, total: 2 });
+      sw.fire({ type: 'AUDIO_CACHE_STATUS', cached: 1, total: 2, bytes: 100 });
+    });
+    expect(result.current.precacheStatus).toBe('downloading');
+    expect(result.current.precacheProgress.loaded).toBe(1);
+  });
+});
