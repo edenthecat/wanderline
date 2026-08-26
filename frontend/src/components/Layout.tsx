@@ -1,5 +1,6 @@
 import { Outlet, Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import VersionBadge from './VersionBadge';
 
 export default function Layout() {
   const { user, logout } = useAuth();
@@ -17,6 +18,7 @@ export default function Layout() {
           <Link to="/" className="header-logo">
             Wanderline
           </Link>
+          <VersionBadge />
           {user?.role === 'admin' && (
             <Link to="/users" className="header-nav-link">
               Users

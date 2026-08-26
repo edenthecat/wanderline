@@ -1,6 +1,11 @@
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { evictAudioCacheIfFull, useAudioCache, type AudioCacheEntry } from './useAudioCache';
+import {
+  evictAudioCacheIfFull,
+  resetWarmHeuristicForTests,
+  useAudioCache,
+  type AudioCacheEntry,
+} from './useAudioCache';
 
 // coverage for the audio-cache layer. Real
 // HTMLAudioElement loading requires network + a codec-capable jsdom;
@@ -24,8 +29,11 @@ class FakeAudio {
     if (url) this.src = url;
     audioStubs.push(this);
   }
+  loadCalls = 0;
   load() {
     // no-op — tests drive `oncanplaythrough` / `onerror` themselves.
+    // Counted so tests can assert the element never transferred.
+    this.loadCalls++;
   }
   pause() {
     this.paused = true;
@@ -47,6 +55,7 @@ class FakeAudio {
 beforeEach(() => {
   audioStubs.length = 0;
   vi.stubGlobal('Audio', FakeAudio);
+  resetWarmHeuristicForTests();
 });
 
 afterEach(() => {
@@ -223,5 +232,238 @@ describe('useAudioCache — resetPreloadProgress', () => {
     const { result } = renderHook(() => useAudioCache());
     act(() => result.current.resetPreloadProgress(42));
     expect(result.current.preloadProgress).toEqual({ loaded: 0, total: 42, failed: 0 });
+  });
+});
+
+describe('useAudioCache — preload resilience', () => {
+  // Warming is gated on an active service-worker controller, because
+  // that's the only context where the fetched bytes are retained. See
+  // the comment in preloadAudio for why an unsupervised warm would
+  // double GCS egress.
+  const setServiceWorkerController = (present: boolean) => {
+    Object.defineProperty(navigator, 'serviceWorker', {
+      value: present ? { controller: {} } : undefined,
+      configurable: true,
+    });
+  };
+
+  // A connection that stops delivering bytes fires neither
+  // `canplaythrough` nor `error`. Before the stall timeout existed
+  // these preloads never settled, leaving the caller awaiting a
+  // promise that could not resolve and the UI spinning forever.
+  it('settles a silent stall instead of hanging forever', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => new Promise(() => {})),
+    );
+    try {
+      const { result } = renderHook(() => useAudioCache());
+      let settled = false;
+      let p!: Promise<void>;
+      act(() => {
+        p = result.current.preloadAudio('http://example.com/stall.mp3', 'stall');
+        void p.then(() => {
+          settled = true;
+        });
+      });
+
+      // Never fire canplaythrough or error — just let time pass
+      // through the whole retry ladder (20s stall x 6 attempts plus
+      // 1+2+4+8+16s of backoff).
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20_000 * 6 + 31_000);
+      });
+
+      expect(settled).toBe(true);
+      expect(result.current.preloadProgress.failed).toBe(1);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+      vi.stubGlobal('Audio', FakeAudio);
+    }
+  });
+
+  // iOS Safari refuses to buffer an element no user gesture has
+  // touched, so `canplaythrough` never arrives on a cold preload.
+  // A successful fetch has to be able to complete the preload on its
+  // own or iPhone readers can never download a story.
+  it('completes on a successful fetch even when canplaythrough never fires', async () => {
+    setServiceWorkerController(true);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, type: 'basic', arrayBuffer: async () => new ArrayBuffer(8) })),
+    );
+    try {
+      const { result } = renderHook(() => useAudioCache());
+      await act(async () => {
+        await result.current.preloadAudio('http://example.com/ios.mp3', 'ios');
+      });
+      expect(result.current.preloadProgress.loaded).toBe(1);
+      expect(result.current.isCached('ios')).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.stubGlobal('Audio', FakeAudio);
+    }
+  });
+
+  // A cross-origin redirect with no CORS headers rejects the fetch.
+  // Media elements aren't subject to CORS, so the element must still
+  // be allowed to decide the outcome.
+  it('falls back to the element when the warm fetch is CORS-blocked', async () => {
+    setServiceWorkerController(true);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('Failed to fetch');
+      }),
+    );
+    try {
+      const { result } = renderHook(() => useAudioCache());
+      let p!: Promise<void>;
+      act(() => {
+        p = result.current.preloadAudio('http://example.com/cors.mp3', 'cors');
+      });
+      await act(async () => {
+        // Let the rejected fetch settle, then let the element win.
+        await Promise.resolve();
+        audioStubs[audioStubs.length - 1].fireCanPlayThrough();
+        await p;
+      });
+      expect(result.current.preloadProgress.loaded).toBe(1);
+      expect(result.current.preloadProgress.failed).toBe(0);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.stubGlobal('Audio', FakeAudio);
+    }
+  });
+
+  // evictAudioCacheIfFull walks insertion order and doesn't skip
+  // entries still loading, so a preload can find its own entry gone
+  // when it settles. It must still resolve — a caller awaiting
+  // Promise.all over a preload sweep would otherwise hang.
+  it('resolves even when its entry is evicted mid-flight', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, type: 'basic' })),
+    );
+    try {
+      const { result } = renderHook(() => useAudioCache());
+      let p!: Promise<void>;
+      act(() => {
+        p = result.current.preloadAudio('http://example.com/evicted.mp3', 'evicted');
+      });
+      act(() => {
+        result.current.cacheRef.current.delete('evicted');
+      });
+      await act(async () => {
+        audioStubs[audioStubs.length - 1].fireCanPlayThrough();
+        await p;
+      });
+      // Resolved without throwing; the vanished entry is simply not
+      // resurrected.
+      expect(result.current.isCached('evicted')).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.stubGlobal('Audio', FakeAudio);
+    }
+  });
+});
+
+describe('useAudioCache — transfer economy', () => {
+  const setServiceWorkerController = (present: boolean) => {
+    Object.defineProperty(navigator, 'serviceWorker', {
+      value: present ? { controller: {} } : undefined,
+      configurable: true,
+    });
+  };
+
+  const okResponse = (redirected: boolean) => ({
+    ok: true,
+    type: 'basic',
+    redirected,
+    arrayBuffer: async () => new ArrayBuffer(8),
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.stubGlobal('Audio', FakeAudio);
+  });
+
+  // An exported build on Netlify serves ./audio/* as ordinary static
+  // files: no redirect, normal cache headers. Warming is free there and
+  // is the only way iOS can preload, so it must happen even with no
+  // service worker controlling the page.
+  it('warms a static build even without a service worker', async () => {
+    setServiceWorkerController(false);
+    const fetchSpy = vi.fn(async () => okResponse(false));
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const { result } = renderHook(() => useAudioCache());
+    await act(async () => {
+      await result.current.preloadAudio('./audio/a.mp3', 'a');
+    });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(result.current.preloadProgress.loaded).toBe(1);
+    // The element never transferred: the HTTP cache has the bytes.
+    const element = audioStubs[audioStubs.length - 1];
+    expect(element.preload).toBe('none');
+    expect(element.loadCalls).toBe(0);
+  });
+
+  // The signed-URL path 307s to storage with Cache-Control: no-store.
+  // With a worker to catch the bytes, one transfer serves both.
+  it('warms a redirecting deployment when a service worker can retain it', async () => {
+    setServiceWorkerController(true);
+    const fetchSpy = vi.fn(async () => okResponse(true));
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const { result } = renderHook(() => useAudioCache());
+    await act(async () => {
+      await result.current.preloadAudio('/api/projects/p/preview/audio/a.mp3', 'a');
+    });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(audioStubs[audioStubs.length - 1].loadCalls).toBe(0);
+  });
+
+  // Same path with nothing retaining the bytes: the first file pays for
+  // the discovery, then warming switches off so the rest of the story
+  // doesn't transfer twice. This is the GCS egress guarantee.
+  it('stops warming after finding a no-store redirect with no worker', async () => {
+    setServiceWorkerController(false);
+    const fetchSpy = vi.fn(async () => okResponse(true));
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const { result } = renderHook(() => useAudioCache());
+
+    // File 1: warms, discovers the bytes went nowhere, falls back to
+    // the element.
+    let first!: Promise<void>;
+    act(() => {
+      first = result.current.preloadAudio('/api/projects/p/preview/audio/a.mp3', 'a');
+    });
+    await act(async () => {
+      // The warm chain is fetch -> arrayBuffer -> then, so a couple of
+      // microtask ticks isn't enough; yield to the macrotask queue.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      audioStubs[audioStubs.length - 1].fireCanPlayThrough();
+      await first;
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(audioStubs[audioStubs.length - 1].loadCalls).toBe(1);
+
+    // Files 2+: no further warming, element only.
+    let second!: Promise<void>;
+    act(() => {
+      second = result.current.preloadAudio('/api/projects/p/preview/audio/b.mp3', 'b');
+    });
+    await act(async () => {
+      audioStubs[audioStubs.length - 1].fireCanPlayThrough();
+      await second;
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(audioStubs[audioStubs.length - 1].loadCalls).toBe(1);
   });
 });

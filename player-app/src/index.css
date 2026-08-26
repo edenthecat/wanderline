@@ -173,3 +173,75 @@ button:disabled {
 .wl-offline-banner ~ .wl-offline-controls {
   top: 48px;
 }
+
+/* Install-as-an-app guidance.
+   Anchored bottom-centre rather than in the top-right stack with the
+   offline pills: it's a multi-line explanation, and at the top it
+   covered the story card on small phones. Sits above the tap-to-advance
+   layer, so it needs its own pointer-events. */
+/* Partial-download pill. Amber rather than the green of a complete
+   save: someone glancing at this before losing signal needs the two
+   states to be distinguishable at a glance, not just by reading the
+   number. */
+.wl-offline-partial {
+  background: rgba(217, 119, 6, 0.75);
+  color: #fff;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 11px;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  white-space: nowrap;
+}
+
+.wl-install-guidance {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  z-index: 48;
+  width: min(420px, calc(100vw - 24px));
+  box-sizing: border-box;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: #fff;
+  pointer-events: auto;
+  text-align: left;
+}
+.wl-install-guidance p {
+  margin: 0 0 6px;
+}
+.wl-install-guidance-lead {
+  font-size: 14px;
+  font-weight: 600;
+}
+.wl-install-guidance-steps {
+  font-size: 13px;
+}
+.wl-install-guidance-why,
+.wl-install-guidance-note {
+  font-size: 12px;
+  opacity: 0.75;
+}
+.wl-install-guidance-dismiss {
+  margin-top: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  padding: 7px 16px;
+  border-radius: 999px;
+  font-size: 12px;
+  min-height: 36px; /* tap-target */
+}
+
+/* Respect a story whose theme sets a light surface: the translucent
+   dark panel above is unreadable against it. */
+@media (prefers-color-scheme: light) {
+  .wl-install-guidance {
+    background: rgba(20, 20, 30, 0.88);
+  }
+}

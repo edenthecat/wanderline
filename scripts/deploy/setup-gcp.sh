@@ -142,6 +142,24 @@ else
     --uniform-bucket-level-access
 fi
 
+# CORS on the bucket. Required whenever USE_SIGNED_URL_DOWNLOADS=true,
+# because the player's service worker precaches audio with fetch() and
+# the signed URLs it follows are cross-origin. Without this, offline
+# download fails for every file while streaming playback still works —
+# a failure mode with no server-side symptom at all.
+#
+# At first run the Cloud Run URLs don't exist yet, so there's nothing
+# to allow; deploy-frontend.sh applies the real policy once it knows
+# the deployed URL. Set CORS_ORIGINS here to pre-seed it (e.g. when you
+# already know the custom domain).
+if [ -n "${CORS_ORIGINS:-}" ]; then
+  # shellcheck disable=SC2086  # deliberate word-splitting: space-separated origins
+  GCS_BUCKET="$GCS_BUCKET" "$(dirname "$0")/configure-bucket-cors.sh" $CORS_ORIGINS
+else
+  echo "Skipping bucket CORS for now — deploy-frontend.sh will apply it once the"
+  echo "frontend URL exists. To pre-seed it: CORS_ORIGINS='https://your.domain' $0"
+fi
+
 echo
 echo "=== Granting Cloud Run service account access to secrets ==="
 PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')

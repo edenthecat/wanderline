@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
-import { useOfflineSupport } from './useOfflineSupport';
+import { useOfflineSupport, WATCHDOG_MS } from './useOfflineSupport';
 
 // ---- Service-worker stub --------------------------------------------------
 //
@@ -155,7 +155,7 @@ describe('useOfflineSupport — precache lifecycle', () => {
     expect(result.current.precacheStatus).toBe('error');
   });
 
-  it('flips to "error" after the watchdog if no progress arrives within 30s', async () => {
+  it('flips to "error" after the watchdog if no progress arrives', async () => {
     installServiceWorkerStub();
     const { result } = renderHook(() => useOfflineSupport());
     await act(async () => {
@@ -164,7 +164,7 @@ describe('useOfflineSupport — precache lifecycle', () => {
     expect(result.current.precacheStatus).toBe('downloading');
     // Advance time but don't fire any messages.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(31_000);
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS + 1_000);
     });
     expect(result.current.precacheStatus).toBe('error');
   });
@@ -175,21 +175,23 @@ describe('useOfflineSupport — precache lifecycle', () => {
     await act(async () => {
       await result.current.downloadForOffline(['./audio/a.mp3']);
     });
-    // 20s in: still downloading because hook keeps re-arming on
-    // each PRECACHE_PROGRESS.
+    // Just under the watchdog: still downloading. Then a progress
+    // message re-arms it, and another almost-full window passes
+    // without tripping — total elapsed is now well past a single
+    // watchdog period, which is the point of the test.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(20_000);
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS - 1_000);
     });
     act(() => {
       sw.fire({ type: 'PRECACHE_PROGRESS', loaded: 0, failed: 0, total: 1 });
     });
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(20_000);
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS - 1_000);
     });
     expect(result.current.precacheStatus).toBe('downloading');
-    // Now go silent for >30s.
+    // Now go silent for a full window.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(31_000);
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS + 1_000);
     });
     expect(result.current.precacheStatus).toBe('error');
   });
@@ -251,7 +253,7 @@ describe('useOfflineSupport — precache lifecycle', () => {
     expect(result.current.precacheStatus).toBe('done');
     // Advance well past the watchdog window — status must stay 'done'.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(31_000);
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS + 1_000);
     });
     expect(result.current.precacheStatus).toBe('done');
   });
@@ -366,5 +368,56 @@ describe('useOfflineSupport — install prompt', () => {
       window.dispatchEvent(new Event('appinstalled'));
     });
     expect(result.current.installPrompt).toBeNull();
+  });
+});
+
+describe('useOfflineSupport — cache status', () => {
+  // The whole point of reading the cache rather than trusting a
+  // session counter: someone who downloaded last night and opens the
+  // story on the subway must see what's actually on their device.
+  it('reports cache contents from an AUDIO_CACHE_STATUS message', async () => {
+    const sw = installServiceWorkerStub();
+    const { result } = renderHook(() => useOfflineSupport());
+    expect(result.current.cacheStatus.checked).toBe(false);
+
+    act(() => {
+      sw.fire({ type: 'AUDIO_CACHE_STATUS', cached: 48, total: 60, bytes: 41_943_040 });
+    });
+
+    expect(result.current.cacheStatus).toEqual({
+      cached: 48,
+      total: 60,
+      bytes: 41_943_040,
+      checked: true,
+    });
+  });
+
+  it('coerces malformed counts rather than rendering NaN', async () => {
+    const sw = installServiceWorkerStub();
+    const { result } = renderHook(() => useOfflineSupport());
+    act(() => {
+      sw.fire({ type: 'AUDIO_CACHE_STATUS', cached: -3, total: 'nope', bytes: null });
+    });
+    expect(result.current.cacheStatus).toEqual({
+      cached: 0,
+      total: 0,
+      bytes: 0,
+      checked: true,
+    });
+  });
+
+  // A status message must not disturb an in-flight download's tally.
+  it('leaves precache progress untouched', async () => {
+    const sw = installServiceWorkerStub();
+    const { result } = renderHook(() => useOfflineSupport());
+    await act(async () => {
+      await result.current.downloadForOffline(['./audio/a.mp3']);
+    });
+    act(() => {
+      sw.fire({ type: 'PRECACHE_PROGRESS', loaded: 1, failed: 0, total: 2 });
+      sw.fire({ type: 'AUDIO_CACHE_STATUS', cached: 1, total: 2, bytes: 100 });
+    });
+    expect(result.current.precacheStatus).toBe('downloading');
+    expect(result.current.precacheProgress.loaded).toBe(1);
   });
 });

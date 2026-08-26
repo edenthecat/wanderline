@@ -40,6 +40,35 @@ The setup script provisions the bucket and grants the Cloud Run service account
 Local development uses the filesystem (under `/tmp/wanderline-storage` by
 default, override with `STORAGE_ROOT`). Switch with `STORAGE_BACKEND=local|gcs`.
 
+### Bucket CORS (required for offline download)
+
+When `USE_SIGNED_URL_DOWNLOADS=true`, the backend 307-redirects
+`/audio/*` to a signed `storage.googleapis.com` URL. `<audio>` elements
+follow that redirect without needing CORS, so **streaming playback works
+whether or not the bucket has a CORS policy**. The player's service
+worker, however, precaches audio with `fetch()`, which _is_ subject to
+CORS — with no policy, every offline download fails while playback looks
+perfectly healthy, and nothing is logged server-side because the browser
+rejects the response before the page sees it.
+
+`deploy-frontend.sh` applies the policy automatically for the URL it
+deploys. To set or extend it by hand:
+
+```
+GCS_BUCKET=<project-id>-wanderline-uploads \
+  ./scripts/deploy/configure-bucket-cors.sh https://your-frontend-url
+```
+
+The policy is replaced wholesale on each run, so pass **every** origin
+that should be allowed, not just the new one.
+
+> **Cloud Run serves two URL formats** for the same service —
+> `<service>-<project-number>.<region>.run.app` and the older
+> `<service>-<hash>-<abbrev>.a.run.app` — and both stay live. The browser
+> sends whichever one the listener actually loaded. If readers can reach
+> either, list both here **and** in the backend's `CORS_ORIGIN`
+> (comma-separated), or API calls fail for whichever half you left out.
+
 ## Logging
 
 The backend uses [pino](https://getpino.io) for structured logging. In
@@ -219,6 +248,11 @@ To redeploy after code changes:
 ./scripts/deploy/deploy-backend.sh    # if backend changed
 ./scripts/deploy/deploy-frontend.sh   # if frontend changed
 ```
+
+`deploy-frontend.sh` re-applies the bucket CORS policy for the URL it
+deploys on every run. If you've added origins by hand (a custom domain,
+the second Cloud Run URL format), re-add them afterwards — the policy is
+replaced, not merged.
 
 Each deploy creates a new revision tagged with the current git SHA. Cloud Run keeps older revisions for instant rollback. Each push also publishes `:<package.json version>` and `:latest` tags in Artifact Registry, but Cloud Run is always pinned to the SHA tag (immutable) so a rollback or redeploy points at exactly the image that built from that commit.
 

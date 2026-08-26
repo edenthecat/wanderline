@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useOfflineSupport } from './useOfflineSupport';
 import { useMediaControls } from './useMediaControls';
 import { useAudioCache } from './useAudioCache';
+import { orderAudioUrlsForDownload } from './audio-download-order';
 import OfflineControls from './OfflineControls';
 import { styles } from './styles';
 import {
@@ -604,23 +605,9 @@ export default function App() {
   // and indicators can repeat across many nodes. audioBaseUrl is
   // normalized to have exactly one trailing slash; the backend
   // emits both forms over the years.
-  const allAudioUrls = useMemo<string[]>(() => {
-    if (!story) return [];
-    const urls = new Set<string>();
-    const base = story.audioBaseUrl.replace(/\/?$/, '/');
-    for (const file of story.backgroundMusic ?? []) urls.add(base + file);
-    if (story.indicatorAudio?.choice1) urls.add(base + story.indicatorAudio.choice1);
-    if (story.indicatorAudio?.choice2) urls.add(base + story.indicatorAudio.choice2);
-    for (const node of Object.values(story.nodes)) {
-      const a = node.audio;
-      if (!a) continue;
-      if (a.voiceover) urls.add(base + a.voiceover);
-      if (a.choice1) urls.add(base + a.choice1);
-      if (a.choice2) urls.add(base + a.choice2);
-      if (a.ambience) urls.add(base + a.ambience);
-    }
-    return [...urls];
-  }, [story]);
+  // Ordered so an interrupted download leaves a playable prefix rather
+  // than a random scattering of the story. See audio-download-order.ts.
+  const allAudioUrls = useMemo<string[]>(() => orderAudioUrlsForDownload(story), [story]);
 
   // Keep MediaSession refs in sync with current state — handlers
   // installed once per story-id read these instead of closing over

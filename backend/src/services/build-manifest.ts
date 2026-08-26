@@ -1,0 +1,152 @@
+// Per-project PWA manifest for generated builds.
+//
+// player-app ships a static manifest.webmanifest naming the app
+// "Wanderline" with the placeholder W icons. That's right for the
+// editor's preview, but every generated build is somebody else's
+// story: installed to a home screen it should carry the story's name
+// and the author's artwork, not ours. So the build pipeline overwrites
+// dist/manifest.webmanifest with the document rendered here.
+//
+// Icons are resized with ffmpeg, which is already a hard dependency of
+// the audio pipeline — cheaper than adding an image library for two
+// thumbnails. Resizing is best-effort: a build must not fail because
+// an icon didn't scale, since the manifest is still valid (and
+// installable) with the default icons.
+
+import { execFileSync } from 'child_process';
+import { copyFileSync, existsSync } from 'fs';
+import { join } from 'path';
+
+export interface AppIconSettings {
+  /** Filename of the uploaded icon within the project's icon storage. */
+  filename?: string | null;
+  /** Splash-screen background. Defaults to the player's dark surface. */
+  backgroundColor?: string | null;
+  /** Browser/OS chrome colour. Defaults to backgroundColor. */
+  themeColor?: string | null;
+}
+
+// Matches the player's own default surface (see manifest.webmanifest).
+const DEFAULT_COLOR = '#1a1a2e';
+
+// Only these land in the manifest; anything else is dropped rather
+// than passed through, because the manifest is served to the OS and a
+// malformed colour makes some Android launchers refuse the install
+// outright.
+const CSS_HEX = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
+function safeColor(value: string | null | undefined, fallback: string): string {
+  return typeof value === 'string' && CSS_HEX.test(value.trim()) ? value.trim() : fallback;
+}
+
+export interface ManifestContext {
+  storyTitle: string;
+  icon?: AppIconSettings;
+  /** True when stageAppIcon actually produced custom icon files. */
+  hasCustomIcon: boolean;
+}
+
+/**
+ * Render the manifest for a generated build. `short_name` is capped at
+ * 12 characters because that is roughly where Android and iOS start
+ * truncating a home-screen label; letting a long story title through
+ * produces "The Long Sto…" on the device instead of something the
+ * author chose.
+ */
+export function renderManifest({ storyTitle, icon, hasCustomIcon }: ManifestContext): string {
+  const background = safeColor(icon?.backgroundColor, DEFAULT_COLOR);
+  const theme = safeColor(icon?.themeColor, background);
+  const name = storyTitle.trim() || 'Audio narrative';
+  const shortName = name.length > 12 ? `${name.slice(0, 11).trimEnd()}…` : name;
+  const iconBase = hasCustomIcon ? './icons/app' : './icon';
+
+  return `${JSON.stringify(
+    {
+      name,
+      short_name: shortName,
+      description: `${name} — an audio narrative.`,
+      lang: 'en',
+      start_url: './',
+      scope: './',
+      display: 'standalone',
+      display_override: ['standalone', 'minimal-ui'],
+      orientation: 'portrait',
+      background_color: background,
+      theme_color: theme,
+      icons: [
+        {
+          src: `${iconBase}-192.png`,
+          sizes: '192x192',
+          type: 'image/png',
+          purpose: 'any',
+        },
+        {
+          src: `${iconBase}-512.png`,
+          sizes: '512x512',
+          type: 'image/png',
+          purpose: 'any',
+        },
+        // A maskable copy so Android can crop to the launcher's shape
+        // instead of drawing the icon in a white circle.
+        {
+          src: `${iconBase}-512.png`,
+          sizes: '512x512',
+          type: 'image/png',
+          purpose: 'maskable',
+        },
+      ],
+    },
+    null,
+    2,
+  )}\n`;
+}
+
+/**
+ * Scale the author's icon into the two sizes the manifest references.
+ *
+ * Letterboxes rather than crops (`force_original_aspect_ratio=decrease`
+ * + `pad`) so a non-square upload keeps all of its artwork; cropping an
+ * icon usually beheads whatever the author centred in it.
+ *
+ * @returns true when both sizes were written and the manifest should
+ * point at them. Any failure returns false, leaving the build to fall
+ * back to the player's default icons.
+ */
+export function stageAppIcon(
+  sourcePath: string,
+  outputDir: string,
+  icon: AppIconSettings | undefined,
+): boolean {
+  if (!existsSync(sourcePath)) return false;
+  const background = safeColor(icon?.backgroundColor, DEFAULT_COLOR);
+  try {
+    for (const size of [192, 512]) {
+      execFileSync(
+        'ffmpeg',
+        [
+          '-y',
+          '-i',
+          sourcePath,
+          '-vf',
+          `scale=${size}:${size}:force_original_aspect_ratio=decrease,` +
+            `pad=${size}:${size}:(ow-iw)/2:(oh-ih)/2:color=${background}`,
+          '-frames:v',
+          '1',
+          join(outputDir, `app-${size}.png`),
+        ],
+        { stdio: 'pipe' },
+      );
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Copy the player's default icons alongside a build that has no custom art. */
+export function copyDefaultIcons(playerDistDir: string, outputDir: string): void {
+  for (const size of [192, 512]) {
+    const src = join(playerDistDir, `icon-${size}.png`);
+    if (existsSync(src)) copyFileSync(src, join(outputDir, `icon-${size}.png`));
+  }
+}

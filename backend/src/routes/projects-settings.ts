@@ -27,13 +27,25 @@ const ALLOWED_TOP_LEVEL_KEYS = new Set([
   // vocab-skin preference. Silently dropping this would have
   // made the Settings > Nomenclature radio a no-op.
   'nomenclature',
+  // Author-supplied README for the exported build. Empty / absent
+  // falls back to the default template in build-readme.ts.
+  'exportReadme',
+  // PWA identity for the generated player: { fileId, backgroundColor,
+  // themeColor }. Nested-merged so setting a colour doesn't drop the
+  // uploaded icon.
+  'appIcon',
 ]);
 
 // Nested objects that get merged key-by-key with the existing stored
 // value rather than replaced wholesale. A partial patch like
 // { bluetoothControls: { nextTrack: 'confirm' } } previously wiped
 // previousTrack via the `||` shallow merge.
-const NESTED_MERGE_KEYS = new Set(['bluetoothControls', 'theme', 'choiceIndicatorAudio']);
+const NESTED_MERGE_KEYS = new Set([
+  'bluetoothControls',
+  'theme',
+  'choiceIndicatorAudio',
+  'appIcon',
+]);
 
 // Exported for tests: this function is where both halves of the
 // settings contract live (which keys survive, and which merge nested

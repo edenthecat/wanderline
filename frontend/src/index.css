@@ -3255,3 +3255,41 @@ details[open] > .audio-section-summary {
     font-weight: 500;
   }
 }
+
+/* Export tab: README editor.
+   Monospace + resize:vertical because this is a Markdown document the
+   author may paste a long draft into, not a one-line field. */
+.settings-readme-input {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 10px 12px;
+  resize: vertical;
+  min-height: 160px;
+}
+
+/* Running-version badge in the header.
+   Deliberately quiet — it's diagnostic information, not navigation, so
+   it sits next to the logo without competing with it. Full detail
+   (commit, environment) is in the title attribute. */
+.version-badge {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-text-muted, #888);
+  letter-spacing: 0.02em;
+  padding: 2px 6px;
+  border: 1px solid var(--color-border, #333);
+  border-radius: 999px;
+  white-space: nowrap;
+  cursor: default;
+}
+
+/* Anything that isn't production gets called out inline: mistaking a
+   staging tab for production is its own class of incident. */
+.version-badge-env {
+  color: var(--color-warning, #d08770);
+  text-transform: uppercase;
+  font-weight: 600;
+}

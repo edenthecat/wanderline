@@ -48,6 +48,35 @@ const PINNED_CACHE_KEYS = new Set<string>(['ind_c1', 'ind_c2']);
 const MAX_RETRIES = 5;
 const RETRY_BASE_DELAY_MS = 1000;
 
+// A media element that stops receiving bytes mid-fetch fires NEITHER
+// `canplaythrough` NOR `error` — it just sits in readyState 0/1
+// forever. Before this timeout existed, a dropped connection or a
+// captive portal left the preload promise permanently unsettled, the
+// entry stuck at status:'loading', and the caller's spinner spinning
+// for the rest of the session. Bound every attempt so a stall is
+// converted into a normal retry.
+//
+// 20s is comfortably past a slow-3G fetch of a typical voiceover clip
+// while still leaving the 5-step backoff ladder inside a listener's
+// patience.
+const STALL_TIMEOUT_MS = 20_000;
+
+// iOS Safari refuses to buffer a media element that no user gesture
+// has touched: `preload='auto'` is downgraded and `canplaythrough`
+// never fires, no matter how long we wait. So we don't rely on the
+// element to do the downloading — we pull the bytes with fetch()
+// first (not gesture-gated, and it populates the service-worker
+// audio cache on the way past), then hand the element a URL that is
+// already warm. The element load becomes a formality that resolves
+// from cache.
+//
+// If the fetch can't be used — cross-origin redirect without CORS,
+// no service worker, a browser that rejects the request — we fall
+// back to the original element-driven path, which still works
+// everywhere except iOS. Degrading to "no worse than before" matters
+// more here than purity: this runs for every audio file in a story.
+const FETCH_WARM_TIMEOUT_MS = 20_000;
+
 /**
  * Drop the oldest non-pinned entries until the cache is below the
  * bound. Pinned keys (indicators) survive eviction because they're
@@ -69,6 +98,74 @@ export function evictAudioCacheIfFull(cache: Map<string, AudioCacheEntry>): void
     }
     cache.delete(key);
     if (cache.size < AUDIO_CACHE_MAX_ENTRIES) return;
+  }
+}
+
+// Session-scoped latch. Set once we learn that this deployment serves
+// audio via a redirect whose bytes nothing retains, at which point
+// every further warm is a pure waste of transfer. Costs us one
+// redundant file before it trips, rather than one per file.
+let warmingIsWasteful = false;
+
+/** Exported for tests; resets the session latch between cases. */
+export function resetWarmHeuristicForTests(): void {
+  warmingIsWasteful = false;
+}
+
+/**
+ * Pull an audio URL through fetch() so the bytes are already local
+ * before any media element asks for them.
+ *
+ * This exists for iOS. Safari there will not buffer a media element
+ * that no user gesture has touched, so `canplaythrough` never fires on
+ * a cold preload and the element alone can never download a story
+ * ahead of playback. fetch() has no such restriction.
+ *
+ * @returns true only when the bytes were both read AND retained
+ * somewhere the element will subsequently read from. Returning false
+ * means the caller must let the element do the transfer itself.
+ */
+async function warmAudioUrl(url: string): Promise<boolean> {
+  if (typeof fetch !== 'function') return false;
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), FETCH_WARM_TIMEOUT_MS) : null;
+  try {
+    const response = await fetch(url, { credentials: 'same-origin', signal: controller?.signal });
+    // An opaque response means we crossed an origin we can't read:
+    // status 0, body sealed, nothing cached.
+    if (!response.ok || response.type === 'opaque') return false;
+    // Drain the body — without this the transfer may never complete
+    // and nothing reaches any cache.
+    await response.arrayBuffer();
+
+    if (!response.redirected) {
+      // A direct same-origin response: an exported build on static
+      // hosting, or the backend streaming audio itself. Both send
+      // ordinary cache headers, so the HTTP cache now holds this and
+      // the element will be served from it.
+      return true;
+    }
+
+    // Redirected means the signed-URL path, whose 307 is marked
+    // `Cache-Control: no-store` precisely because a signed URL expires
+    // and must not be replayed. The HTTP cache keeps nothing, so the
+    // only thing that can retain these bytes is the service worker's
+    // audio cache — and only when a worker is actually controlling
+    // this page.
+    if (navigator.serviceWorker?.controller) return true;
+
+    // Nothing kept it. Stop warming for the rest of the session so we
+    // don't pay this twice on every remaining file; see the runbook
+    // note about signed URLs existing to keep GCS egress off Cloud
+    // Run's meter.
+    warmingIsWasteful = true;
+    return false;
+  } catch {
+    // Offline, CORS-blocked, or aborted. The element decides the real
+    // outcome for this file.
+    return false;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -126,51 +223,140 @@ export function useAudioCache(): UseAudioCacheResult {
       const entry: AudioCacheEntry = {
         status: 'loading',
         audio: null,
-        retryCount: existing?.retryCount ?? 0,
+        // Start a fresh ladder rather than inheriting a spent count.
+        // Seeding attemptLoad() with an exhausted retryCount (5) made
+        // it fall straight to the failure branch without issuing a
+        // single network request. App.tsx gates re-preloads on
+        // isCached(), so a genuinely-failed entry stays in the map and
+        // isn't re-attempted through here anyway; retryFailedAudio()
+        // is the explicit way back in.
+        retryCount: 0,
       };
       cache.set(key, entry);
+
+      let settled = false;
+
+      // The entry can be evicted while its load is still in flight —
+      // evictAudioCacheIfFull walks insertion order and doesn't skip
+      // status:'loading'. So re-read from the map on settle rather
+      // than closing over `entry`, and resolve unconditionally: a
+      // vanished entry must not hang the caller's Promise.all.
+      const finish = (apply: (current: AudioCacheEntry) => void, ok: boolean) => {
+        if (settled) return;
+        settled = true;
+        const current = cache.get(key);
+        if (current) apply(current);
+        setPreloadProgress((prev) =>
+          ok ? { ...prev, loaded: prev.loaded + 1 } : { ...prev, failed: prev.failed + 1 },
+        );
+        resolve();
+      };
 
       const attemptLoad = (retryNum: number) => {
         const audio = new Audio();
         audio.preload = 'auto';
 
-        audio.oncanplaythrough = () => {
-          const current = cache.get(key);
-          if (current) {
+        let stallTimer: ReturnType<typeof setTimeout> | null = null;
+        let attemptDone = false;
+
+        const teardown = () => {
+          if (stallTimer) clearTimeout(stallTimer);
+          stallTimer = null;
+          audio.oncanplaythrough = null;
+          audio.onerror = null;
+        };
+
+        const succeed = () => {
+          if (attemptDone) return;
+          attemptDone = true;
+          teardown();
+          finish((current) => {
             current.status = 'loaded';
             current.audio = audio;
             current.retryCount = retryNum;
-          }
-          setPreloadProgress((prev) => ({ ...prev, loaded: prev.loaded + 1 }));
-          resolve();
+          }, true);
         };
 
-        audio.onerror = () => {
+        // Both failure modes — the error event and the stall timeout —
+        // funnel here so the retry ladder behaves identically for a
+        // hard 404 and a connection that simply stopped delivering.
+        const giveUpOrRetry = (reason: string) => {
+          if (attemptDone) return;
+          attemptDone = true;
+          teardown();
           if (retryNum < MAX_RETRIES) {
             // Exponential backoff: 1s, 2s, 4s, 8s, 16s
             const delay = RETRY_BASE_DELAY_MS * Math.pow(2, retryNum);
             setTimeout(() => attemptLoad(retryNum + 1), delay);
-          } else {
-            const current = cache.get(key);
-            if (current) {
-              current.status = 'error';
-              current.lastError = 'Failed to load after ' + MAX_RETRIES + ' attempts';
-            }
-            setPreloadProgress((prev) => ({ ...prev, failed: prev.failed + 1 }));
-            resolve(); // Resolve anyway so we don't block everything
+            return;
           }
+          finish((current) => {
+            current.status = 'error';
+            current.lastError = `Failed to load after ${MAX_RETRIES} attempts (${reason})`;
+          }, false);
         };
 
+        audio.oncanplaythrough = succeed;
+        audio.onerror = () => giveUpOrRetry('error');
+        stallTimer = setTimeout(() => giveUpOrRetry('stalled'), STALL_TIMEOUT_MS);
+
+        // preload='none' up front so assigning src does NOT start a
+        // network fetch. The URL still lands on the element
+        // immediately, which getCachedAudio relies on to detect drift;
+        // only the transfer is deferred.
+        audio.preload = 'none';
         audio.src = url;
-        // Explicit load() so the browser starts fetching immediately
-        // after the src assignment — some engines defer the fetch
-        // until an event listener is attached, which we don't do
-        // here (the oncanplaythrough / onerror pattern above is the
-        // only signal we need).
-        audio.load();
+
+        const startElementLoad = () => {
+          if (attemptDone) return;
+          audio.preload = 'auto';
+          // Explicit load() so the browser starts fetching immediately
+          // — some engines defer until an event listener is attached,
+          // which we don't do here (the oncanplaythrough / onerror
+          // pattern above is the only signal we need).
+          audio.load();
+        };
+
+        // Warming with fetch() is what makes a cold preload possible on
+        // iOS, where Safari refuses to buffer an element no user
+        // gesture has touched and `canplaythrough` therefore never
+        // arrives.
+        //
+        // Whether it's worth doing depends on how this build is
+        // served, which we can't know until we've tried once:
+        //
+        //  - An exported build on static hosting serves ./audio/*
+        //    directly with ordinary cache headers. Warming is free and
+        //    the element is then served from the HTTP cache.
+        //  - The hosted signed-URL path 307s to storage with
+        //    `Cache-Control: no-store`, so unless a service worker
+        //    catches the bytes they're discarded and the element has to
+        //    transfer the file a second time.
+        //
+        // warmAudioUrl decides from the actual response and latches
+        // `warmingIsWasteful` when it finds the second shape with no
+        // worker, so at most one file pays for the discovery.
+        if (!warmingIsWasteful) {
+          void warmAudioUrl(url).then((retained) => {
+            if (attemptDone) return;
+            if (retained) {
+              // Bytes are local. The element hasn't transferred
+              // anything and doesn't need to — playback reads from
+              // whichever cache holds them.
+              succeed();
+              return;
+            }
+            // Not retained (offline, CORS-blocked, or a no-store
+            // redirect). Media elements aren't subject to CORS, so let
+            // the element try the same URL — it usually succeeds.
+            startElementLoad();
+          });
+        } else {
+          startElementLoad();
+        }
       };
 
-      attemptLoad(entry.retryCount);
+      attemptLoad(0);
     });
   }, []);
 

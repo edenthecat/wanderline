@@ -36,11 +36,26 @@ export interface PrecacheProgress {
   failed: number;
   total: number;
   quotaExceeded: boolean;
+  /** Files the service worker could not read because the request
+   * crossed an origin without CORS headers. Separate from `failed`
+   * because the fix is a server-side bucket policy, not a retry —
+   * a retry loop will fail identically forever. */
+  corsBlocked: number;
 }
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
+}
+
+/** What's actually on the device right now, read from the cache. */
+export interface AudioCacheStatus {
+  cached: number;
+  total: number;
+  /** Summed content-length of cached files; 0 when unknown. */
+  bytes: number;
+  /** False until the service worker has answered at least once. */
+  checked: boolean;
 }
 
 export interface OfflineSupport {
@@ -49,6 +64,10 @@ export interface OfflineSupport {
   precacheStatus: PrecacheStatus;
   precacheProgress: PrecacheProgress;
   installPrompt: BeforeInstallPromptEvent | null;
+  /** Ground truth for "is this story playable offline right now?". */
+  cacheStatus: AudioCacheStatus;
+  /** Ask the worker to re-read the cache. Safe to call repeatedly. */
+  refreshCacheStatus: (urls: string[]) => void;
   downloadForOffline: (urls: string[]) => Promise<void>;
   showInstallPrompt: () => Promise<void>;
 }
@@ -56,7 +75,28 @@ export interface OfflineSupport {
 // If no progress for this long, declare the precache stuck. Browsers
 // can suspend service workers idle in the background, particularly
 // on Android — the user shouldn't see a stuck spinner forever.
-const WATCHDOG_MS = 30_000;
+//
+// This is a gap-between-messages budget, not a total one: the SW
+// broadcasts after every file, so it only trips when nothing at all
+// has landed for the whole window. 30s was too tight — a single large
+// voiceover on mobile data routinely takes longer than that, and the
+// watchdog would report a failure while the download was healthy and
+// still running. Sized instead for the worst realistic single-file
+// fetch.
+export const WATCHDOG_MS = 120_000;
+
+/**
+ * Ask the controlling worker for a cache report. Fire-and-forget: the
+ * answer arrives as an AUDIO_CACHE_STATUS message. No-op without a
+ * controller, which is the honest outcome — with nothing controlling
+ * the page there is no cache to report on.
+ */
+function postCacheQuery(urls: string[]): void {
+  if (urls.length === 0) return;
+  const controller = navigator.serviceWorker?.controller;
+  if (!controller) return;
+  controller.postMessage({ type: 'CHECK_AUDIO_CACHE', urls });
+}
 
 function readNonNegativeInt(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0;
@@ -73,8 +113,18 @@ export function useOfflineSupport(): OfflineSupport {
     failed: 0,
     total: 0,
     quotaExceeded: false,
+    corsBlocked: 0,
   });
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [cacheStatus, setCacheStatus] = useState<AudioCacheStatus>({
+    cached: 0,
+    total: 0,
+    bytes: 0,
+    checked: false,
+  });
+  // Held so a PRECACHE_COMPLETE can re-query without the caller having
+  // to hand us the URL list a second time.
+  const lastQueriedUrlsRef = useRef<string[]>([]);
   const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Online / offline events.
@@ -111,11 +161,21 @@ export function useOfflineSupport(): OfflineSupport {
     const onMessage = (event: MessageEvent) => {
       const data = event.data;
       if (!data || typeof data !== 'object') return;
+      if (data.type === 'AUDIO_CACHE_STATUS') {
+        setCacheStatus({
+          cached: readNonNegativeInt(data.cached),
+          total: readNonNegativeInt(data.total),
+          bytes: readNonNegativeInt(data.bytes),
+          checked: true,
+        });
+        return;
+      }
       if (data.type === 'PRECACHE_PROGRESS' || data.type === 'PRECACHE_COMPLETE') {
         const loaded = readNonNegativeInt(data.loaded);
         const failed = readNonNegativeInt(data.failed);
         const total = readNonNegativeInt(data.total);
         const quotaExceeded = Boolean(data.quotaExceeded);
+        const corsBlocked = readNonNegativeInt(data.corsBlocked);
         // quotaExceeded is sticky on the consumer side: once we've
         // hit storage exhaustion in this precache run, downstream
         // messages can't accidentally clear the flag. The SW
@@ -126,9 +186,16 @@ export function useOfflineSupport(): OfflineSupport {
           failed,
           total,
           quotaExceeded: quotaExceeded || prev.quotaExceeded,
+          // Sticky for the same reason as quotaExceeded: once this
+          // run has hit a CORS wall, a later message must not clear
+          // the only signal that explains the failure.
+          corsBlocked: Math.max(corsBlocked, prev.corsBlocked),
         }));
         if (data.type === 'PRECACHE_COMPLETE') {
           if (watchdogRef.current) clearTimeout(watchdogRef.current);
+          // Re-read the cache so the readiness figure reflects what
+          // landed, including a partial run that failed part-way.
+          postCacheQuery(lastQueriedUrlsRef.current);
           // The SW's terminal message is the source of truth. If
           // any failures or quota issues, surface 'error' so the
           // UI can offer a retry.
@@ -163,7 +230,13 @@ export function useOfflineSupport(): OfflineSupport {
     };
   }, []);
 
+  const refreshCacheStatus = useCallback((urls: string[]) => {
+    lastQueriedUrlsRef.current = urls;
+    postCacheQuery(urls);
+  }, []);
+
   const downloadForOffline = useCallback(async (urls: string[]) => {
+    lastQueriedUrlsRef.current = urls;
     if (!navigator.serviceWorker) {
       setPrecacheStatus('error');
       return;
@@ -173,7 +246,13 @@ export function useOfflineSupport(): OfflineSupport {
       setPrecacheStatus('error');
       return;
     }
-    setPrecacheProgress({ loaded: 0, failed: 0, total: urls.length, quotaExceeded: false });
+    setPrecacheProgress({
+      loaded: 0,
+      failed: 0,
+      total: urls.length,
+      quotaExceeded: false,
+      corsBlocked: 0,
+    });
     setPrecacheStatus('downloading');
     if (watchdogRef.current) clearTimeout(watchdogRef.current);
     watchdogRef.current = setTimeout(() => {
@@ -202,6 +281,8 @@ export function useOfflineSupport(): OfflineSupport {
     precacheStatus,
     precacheProgress,
     installPrompt,
+    cacheStatus,
+    refreshCacheStatus,
     downloadForOffline,
     showInstallPrompt,
   };
