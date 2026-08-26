@@ -17,8 +17,12 @@
 # Usage:
 #   GCS_BUCKET=my-bucket ./scripts/deploy/configure-bucket-cors.sh https://a.example https://b.example
 #
-# Safe to re-run: the policy is replaced wholesale each time, so pass
-# every origin that should be allowed, not just the new one.
+# Merges by default: existing origins are preserved and the ones passed
+# here are added. This matters because deploy-frontend.sh calls it with
+# only the URL it just deployed — with replace semantics, every frontend
+# deploy silently narrowed the policy to a single origin and broke
+# offline download for anyone using the other one. Set CORS_REPLACE=true
+# to write exactly what's passed and drop everything else.
 
 set -euo pipefail
 
@@ -53,6 +57,19 @@ for origin in "$@"; do
     origins="$origins, \"$origin\""
   fi
 done
+
+# Union with whatever is already configured, unless explicitly replacing.
+if [ "${CORS_REPLACE:-false}" != "true" ]; then
+  existing=$(gcloud storage buckets describe "gs://$GCS_BUCKET" \
+    --format='value(cors_config)' 2>/dev/null \
+    | grep -oE "https://[A-Za-z0-9.-]+" || true)
+  for origin in $existing; do
+    case ",$origins," in
+      *"\"$origin\""*) ;;                       # already listed
+      *) origins="$origins, \"$origin\"" ;;
+    esac
+  done
+fi
 
 CORS_FILE=$(mktemp)
 trap 'rm -f "$CORS_FILE"' EXIT
