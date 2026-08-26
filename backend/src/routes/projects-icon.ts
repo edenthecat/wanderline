@@ -2,7 +2,6 @@ import { Router, Request, Response } from 'express';
 import { Pool } from 'pg';
 import multer from 'multer';
 import { randomUUID } from 'crypto';
-import { join } from 'path';
 import { unlink } from 'fs/promises';
 import { getStorage, iconKey } from '../services/storage.js';
 import { UPLOAD_DIR } from '../config.js';
@@ -154,7 +153,12 @@ export function mountIconRoutes(router: Router, pool: Pool): void {
       } finally {
         // The temp upload is always disposable — it's been copied into
         // durable storage or the request failed outright.
-        await unlink(join(file.destination, file.filename)).catch(() => undefined);
+        //
+        // Use multer's own `file.path` rather than rejoining destination
+        // and filename: it's the exact path multer wrote, so there's no
+        // way for the two to be recombined into something else, and
+        // nothing derived from the request reaches a path expression.
+        await unlink(file.path).catch(() => undefined);
       }
     });
   });
