@@ -16,6 +16,9 @@ set -euo pipefail
 : "${SERVICE_NAME:=wanderline-frontend}"
 : "${BACKEND_SERVICE:=wanderline-backend}"
 : "${REPO_NAME:=wanderline}"
+# Same default as setup-gcp.sh / deploy-backend.sh so the bucket CORS
+# step below finds the right bucket without extra configuration.
+: "${GCS_BUCKET:=${PROJECT_ID}-wanderline-uploads}"
 
 # Resolve the backend URL automatically
 BACKEND_URL=$(gcloud run services describe "$BACKEND_SERVICE" \
@@ -84,6 +87,27 @@ URL=$(gcloud run services describe "$SERVICE_NAME" \
 echo
 echo "=== Frontend deployed ==="
 echo "URL: $URL"
+
+# Allow the freshly-deployed frontend to read signed audio URLs out of
+# the uploads bucket. Skipped rather than fatal: a CORS failure here
+# costs offline downloads, not playback, and shouldn't fail a deploy
+# that otherwise succeeded.
+if [ -n "${GCS_BUCKET:-}" ]; then
+  GCS_BUCKET="$GCS_BUCKET" "$(dirname "$0")/configure-bucket-cors.sh" "$URL" || {
+    echo "WARNING: could not apply bucket CORS. Offline download will fail for"
+    echo "listeners until it's set: GCS_BUCKET=$GCS_BUCKET $(dirname "$0")/configure-bucket-cors.sh $URL"
+  }
+else
+  echo "GCS_BUCKET unset — skipping bucket CORS. Offline download will fail unless"
+  echo "the bucket already allows $URL."
+fi
+
 echo
 echo "Now update the backend's CORS_ORIGIN to allow this URL:"
 echo "  gcloud run services update $BACKEND_SERVICE --region=$REGION --update-env-vars=CORS_ORIGIN=$URL"
+echo
+echo "NOTE: Cloud Run serves BOTH URL formats for a service"
+echo "  (<service>-<project-number>.<region>.run.app and <service>-<hash>-<abbrev>.a.run.app)"
+echo "and a browser sends whichever the listener actually loaded. If readers may"
+echo "reach either, pass both to CORS_ORIGIN (comma-separated) and to"
+echo "configure-bucket-cors.sh, or API calls silently fail for half of them."
