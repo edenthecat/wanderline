@@ -24,8 +24,11 @@ class FakeAudio {
     if (url) this.src = url;
     audioStubs.push(this);
   }
+  loadCalls = 0;
   load() {
     // no-op — tests drive `oncanplaythrough` / `onerror` themselves.
+    // Counted so tests can assert the element never transferred.
+    this.loadCalls++;
   }
   pause() {
     this.paused = true;
@@ -227,6 +230,17 @@ describe('useAudioCache — resetPreloadProgress', () => {
 });
 
 describe('useAudioCache — preload resilience', () => {
+  // Warming is gated on an active service-worker controller, because
+  // that's the only context where the fetched bytes are retained. See
+  // the comment in preloadAudio for why an unsupervised warm would
+  // double GCS egress.
+  const setServiceWorkerController = (present: boolean) => {
+    Object.defineProperty(navigator, 'serviceWorker', {
+      value: present ? { controller: {} } : undefined,
+      configurable: true,
+    });
+  };
+
   // A connection that stops delivering bytes fires neither
   // `canplaythrough` nor `error`. Before the stall timeout existed
   // these preloads never settled, leaving the caller awaiting a
@@ -269,6 +283,7 @@ describe('useAudioCache — preload resilience', () => {
   // A successful fetch has to be able to complete the preload on its
   // own or iPhone readers can never download a story.
   it('completes on a successful fetch even when canplaythrough never fires', async () => {
+    setServiceWorkerController(true);
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => ({ ok: true, type: 'basic', arrayBuffer: async () => new ArrayBuffer(8) })),
@@ -290,6 +305,7 @@ describe('useAudioCache — preload resilience', () => {
   // Media elements aren't subject to CORS, so the element must still
   // be allowed to decide the outcome.
   it('falls back to the element when the warm fetch is CORS-blocked', async () => {
+    setServiceWorkerController(true);
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => {
@@ -341,6 +357,66 @@ describe('useAudioCache — preload resilience', () => {
       // Resolved without throwing; the vanished entry is simply not
       // resurrected.
       expect(result.current.isCached('evicted')).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.stubGlobal('Audio', FakeAudio);
+    }
+  });
+});
+
+describe('useAudioCache — transfer economy', () => {
+  const setServiceWorkerController = (present: boolean) => {
+    Object.defineProperty(navigator, 'serviceWorker', {
+      value: present ? { controller: {} } : undefined,
+      configurable: true,
+    });
+  };
+
+  // With USE_SIGNED_URL_DOWNLOADS the audio route 307s to a signed URL
+  // marked `Cache-Control: no-store`, so nothing the HTTP cache can
+  // reuse comes back. Warming without a service worker to hold the
+  // bytes would transfer each file twice — once discarded, once by the
+  // element — doubling GCS egress. Pin that we don't.
+  it('does not fetch when no service worker can retain the bytes', async () => {
+    setServiceWorkerController(false);
+    const fetchSpy = vi.fn(async () => ({ ok: true, type: 'basic' }));
+    vi.stubGlobal('fetch', fetchSpy);
+    try {
+      const { result } = renderHook(() => useAudioCache());
+      let p!: Promise<void>;
+      act(() => {
+        p = result.current.preloadAudio('http://example.com/a.mp3', 'a');
+      });
+      await act(async () => {
+        audioStubs[audioStubs.length - 1].fireCanPlayThrough();
+        await p;
+      });
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(result.current.preloadProgress.loaded).toBe(1);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.stubGlobal('Audio', FakeAudio);
+    }
+  });
+
+  // The other half of the same guarantee: when the warm succeeds, the
+  // element must not then go and fetch the file again.
+  it('does not start an element transfer when the warm already cached it', async () => {
+    setServiceWorkerController(true);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, type: 'basic', arrayBuffer: async () => new ArrayBuffer(8) })),
+    );
+    try {
+      const { result } = renderHook(() => useAudioCache());
+      await act(async () => {
+        await result.current.preloadAudio('http://example.com/b.mp3', 'b');
+      });
+      const element = audioStubs[audioStubs.length - 1];
+      // preload stays 'none' and load() is never invoked, so the
+      // element issues no request of its own.
+      expect(element.preload).toBe('none');
+      expect(element.loadCalls).toBe(0);
     } finally {
       vi.unstubAllGlobals();
       vi.stubGlobal('Audio', FakeAudio);

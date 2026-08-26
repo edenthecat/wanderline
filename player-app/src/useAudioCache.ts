@@ -273,31 +273,59 @@ export function useAudioCache(): UseAudioCacheResult {
         audio.onerror = () => giveUpOrRetry('error');
         stallTimer = setTimeout(() => giveUpOrRetry('stalled'), STALL_TIMEOUT_MS);
 
+        // preload='none' up front so assigning src does NOT start a
+        // network fetch. The URL still lands on the element
+        // immediately, which getCachedAudio relies on to detect drift;
+        // only the transfer is deferred.
+        audio.preload = 'none';
         audio.src = url;
-        // Explicit load() so the browser starts fetching immediately
-        // after the src assignment — some engines defer the fetch
-        // until an event listener is attached, which we don't do
-        // here (the oncanplaythrough / onerror pattern above is the
-        // only signal we need).
-        audio.load();
 
-        // Second, independent success signal, and the only one that
-        // works on iOS: Safari there won't buffer an element no user
-        // gesture has touched, so `canplaythrough` never arrives and
-        // the element alone can never complete a cold preload. fetch()
-        // has no such restriction, and the bytes it pulls land in the
-        // HTTP / service-worker cache that this element will play
-        // from. Whichever signal lands first wins — succeed() is
-        // idempotent.
+        const startElementLoad = () => {
+          if (attemptDone) return;
+          audio.preload = 'auto';
+          // Explicit load() so the browser starts fetching immediately
+          // — some engines defer until an event listener is attached,
+          // which we don't do here (the oncanplaythrough / onerror
+          // pattern above is the only signal we need).
+          audio.load();
+        };
+
+        // Warming with fetch() is what makes a cold preload possible on
+        // iOS, where Safari refuses to buffer an element no user
+        // gesture has touched and `canplaythrough` therefore never
+        // arrives. But it's only worth doing when a service worker is
+        // controlling the page and can retain the bytes:
         //
-        // A failed warm is not a failure of the preload: fetch() is
-        // subject to CORS and media elements are not, so a
-        // cross-origin redirect (a signed-storage-URL deployment)
-        // rejects here while the element streams the same file
-        // perfectly well. Let the element decide the outcome.
-        void warmAudioUrl(url).then((warmed) => {
-          if (warmed) succeed();
-        });
+        // With USE_SIGNED_URL_DOWNLOADS the audio route answers with a
+        // 307 marked `Cache-Control: no-store` (see
+        // backend/src/routes/projects-preview.ts). Nothing about that
+        // response is reusable by the HTTP cache, so an unsupervised
+        // warm would transfer the whole file, throw it away, and leave
+        // the element to fetch it a second time — doubling GCS egress
+        // on a deployment whose whole reason for using signed URLs is
+        // to keep egress down (see the instance's gcp-cost-runbook).
+        //
+        // With a controller, the warm goes through the SW's audio
+        // cache and the element is then served from it: one transfer,
+        // and the file is available offline afterwards.
+        if (navigator.serviceWorker?.controller) {
+          void warmAudioUrl(url).then((warmed) => {
+            if (attemptDone) return;
+            if (warmed) {
+              // Bytes are in the SW cache. The element hasn't fetched
+              // anything and doesn't need to — playback will read
+              // straight from that cache.
+              succeed();
+              return;
+            }
+            // Warm failed (offline, or CORS-blocked by a bucket with no
+            // policy). Media elements aren't subject to CORS, so let
+            // the element try the same URL — it will usually succeed.
+            startElementLoad();
+          });
+        } else {
+          startElementLoad();
+        }
       };
 
       attemptLoad(0);
