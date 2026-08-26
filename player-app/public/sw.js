@@ -232,30 +232,16 @@ async function buildRangeResponse(cached, rangeHeader) {
 // same-origin + path-prefixed under /audio/ so a hostile
 // in-page script can't trick the SW into caching arbitrary
 // content (or exfiltrating cross-origin endpoints into the cache).
-self.addEventListener('message', (event) => {
-  const data = event.data;
-
-  // Status query: how much of this story is actually on the device?
-  // Answered from the cache itself rather than from a counter the page
-  // kept, because the page's counter dies with the tab and the whole
-  // point is telling someone on a platform at 8am whether last night's
-  // download is still there.
-  if (data && data.type === 'CHECK_AUDIO_CACHE') {
-    const src = event.source;
-    if (!src || src.url == null || new URL(src.url).origin !== self.location.origin) return;
-    event.waitUntil(reportAudioCacheStatus(Array.isArray(data.urls) ? data.urls : []));
-    return;
-  }
-
-  if (!data || data.type !== 'PRECACHE_AUDIO') return;
-  // Only accept messages from same-origin window clients.
-  const src = event.source;
-  if (!src || src.url == null || new URL(src.url).origin !== self.location.origin) {
-    console.warn('[sw] rejecting PRECACHE_AUDIO from non-window or cross-origin source');
-    return;
-  }
-  const rawUrls = Array.isArray(data.urls) ? data.urls : [];
-  const validUrls = rawUrls.filter((u) => {
+// Shared gate for every message that names URLs. Both entry points
+// need it for the same reason: the page's script is the only thing
+// that can post here, but a compromised or injected script on the page
+// shouldn't be able to steer the worker at arbitrary URLs — into
+// caching content of its choosing, or reading back what a listener has
+// stored. Same-origin plus an /audio/ path segment is the whole
+// contract, and it is cheap enough to apply twice.
+function sameOriginAudioUrls(rawUrls) {
+  if (!Array.isArray(rawUrls)) return [];
+  return rawUrls.filter((u) => {
     if (typeof u !== 'string') return false;
     try {
       const parsed = new URL(u, self.location.href);
@@ -264,7 +250,42 @@ self.addEventListener('message', (event) => {
       return false;
     }
   });
-  event.waitUntil(precacheAudio(validUrls));
+}
+
+/** Messages are only honoured from same-origin window clients. */
+function isSameOriginClient(source) {
+  if (!source || source.url == null) return false;
+  try {
+    return new URL(source.url).origin === self.location.origin;
+  } catch {
+    return false;
+  }
+}
+
+self.addEventListener('message', (event) => {
+  const data = event.data;
+  if (!data) return;
+
+  // Status query: how much of this story is actually on the device?
+  // Answered from the cache itself rather than from a counter the page
+  // kept, because the page's counter dies with the tab and the whole
+  // point is telling someone on a platform at 8am whether last night's
+  // download is still there.
+  if (data.type === 'CHECK_AUDIO_CACHE') {
+    if (!isSameOriginClient(event.source)) {
+      console.warn('[sw] rejecting CHECK_AUDIO_CACHE from non-window or cross-origin source');
+      return;
+    }
+    event.waitUntil(reportAudioCacheStatus(sameOriginAudioUrls(data.urls)));
+    return;
+  }
+
+  if (data.type !== 'PRECACHE_AUDIO') return;
+  if (!isSameOriginClient(event.source)) {
+    console.warn('[sw] rejecting PRECACHE_AUDIO from non-window or cross-origin source');
+    return;
+  }
+  event.waitUntil(precacheAudio(sameOriginAudioUrls(data.urls)));
 });
 
 // How many audio files to pull at once. The original sequential loop

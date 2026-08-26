@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { Pool } from 'pg';
 import multer from 'multer';
 import { randomUUID } from 'crypto';
-import { extname, join } from 'path';
+import { join } from 'path';
 import { unlink } from 'fs/promises';
 import { getStorage, iconKey } from '../services/storage.js';
 import { UPLOAD_DIR } from '../config.js';
@@ -18,6 +18,48 @@ const MAX_ICON_BYTES = 5 * 1024 * 1024;
 // message the author can act on.
 const ALLOWED_ICON_MIME = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const ALLOWED_ICON_EXT = /\.(png|jpe?g|webp)$/i;
+
+// Project ids in the URL are always UUIDs generated server-side. Match
+// audio.ts: requireProjectAccess doesn't validate id shape, so an admin
+// could push a bare `..` through it, and the id becomes part of the
+// storage key below — which the local storage backend resolves to a
+// real filesystem path.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Extension for the stored object, derived from the type we already
+ * validated rather than from the uploaded filename. `extname` can't
+ * emit a separator, but taking arbitrary user text into a storage key
+ * is how the next bug gets written; the type is a closed set, so use
+ * it. Falls back through the filename with the same alphanumeric-only
+ * sanitising audio.ts applies.
+ */
+const EXT_BY_MIME: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+};
+
+export function safeIconExtension(mimetype: string, originalname: string): string {
+  const byMime = EXT_BY_MIME[mimetype];
+  if (byMime) return byMime;
+  // Reduce to a basename first, then take the segment after the last
+  // dot within it. Going straight for the last dot in the whole string
+  // finds the one in "../.." and yields "etcpassw" for
+  // "../../etc/passwd" — safe, but nonsense. And split('.').pop() on a
+  // name with no dot at all returns the whole name, so "noextension"
+  // would become the extension "noextens". Both separators, because an
+  // originalname arrives from the client and may be a Windows path.
+  const base = originalname.split(/[/\\]/).pop() || '';
+  const dot = base.lastIndexOf('.');
+  const raw = dot > 0 ? base.slice(dot + 1) : '';
+  return (
+    raw
+      .replace(/[^a-zA-Z0-9]/g, '')
+      .slice(0, 8)
+      .toLowerCase() || 'png'
+  );
+}
 
 const upload = multer({
   dest: UPLOAD_DIR,
@@ -79,11 +121,14 @@ export function mountIconRoutes(router: Router, pool: Pool): void {
       }
 
       const projectId = req.params.id;
+      if (!UUID_RE.test(projectId)) {
+        res.status(400).json({ error: 'Invalid project id' });
+        return;
+      }
       // multer's `dest` mode names the temp file with its own random
       // id and no extension; give the stored object a real one so
       // ffmpeg can sniff the format from the path at build time.
-      const ext = extname(file.originalname).toLowerCase() || '.png';
-      const filename = `${randomUUID()}${ext}`;
+      const filename = `${randomUUID()}.${safeIconExtension(file.mimetype, file.originalname)}`;
 
       try {
         await getStorage().uploadFile(iconKey(projectId, filename), file.path, file.mimetype);
