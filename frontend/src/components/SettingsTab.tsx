@@ -12,6 +12,7 @@ import {
   type ProjectSettings,
   type PublicPreviewState,
 } from '../api/client';
+import ExportSettings from './ExportSettings';
 
 interface Props {
   projectId: string;
@@ -390,6 +391,18 @@ export default function SettingsTab({ projectId, projectName, onProjectDataInval
           })}
         </div>
       </section>
+
+      {settings && (
+        <ExportSettings
+          projectId={projectId}
+          settings={settings}
+          onSave={async (patch) => {
+            const { settings: updated } = await updateProjectSettings(projectId, patch);
+            setSettings(updated);
+            return updated;
+          }}
+        />
+      )}
 
       <section className="settings-section settings-danger">
         <h2>Danger zone</h2>

@@ -20,8 +20,15 @@ import { fileURLToPath } from 'url';
 import { pipeline } from 'stream/promises';
 import { buildStoryData } from './story-data-builder.js';
 import { collectUsedAudioFilenames, processAudioForBuild } from './audio-processor.js';
-import { getStorage, audioKey, buildArtifactKey, isStorageKey } from './storage.js';
+import { getStorage, audioKey, buildArtifactKey, iconKey, isStorageKey } from './storage.js';
 import { deleteBuildPreviewCache } from './build-preview-audio.js';
+import { renderBuildReadme } from './build-readme.js';
+import {
+  renderManifest,
+  stageAppIcon,
+  copyDefaultIcons,
+  type AppIconSettings,
+} from './build-manifest.js';
 import { storyHash } from './story-hash.js';
 import { bundleGoogleFonts, renderThemeCss, type ThemeConfig } from './theme-render.js';
 import { prepareDistHtml } from './build-html.js';
@@ -355,6 +362,16 @@ export async function reconcileSoftDeletedBuilds(pool: Pool): Promise<void> {
 }
 
 /**
+ * Reject a stored filename that could escape the directory it's being
+ * staged into. Filenames written by the upload routes are UUID-derived
+ * and already safe; this guards the path where a hand-edited or
+ * migrated DB row reaches the filesystem.
+ */
+function isPathSafeFilename(filename: string): boolean {
+  return !filename.includes('/') && !filename.includes('\\') && !filename.includes('..');
+}
+
+/**
  * Execute the build pipeline for a project.
  * Updates the build record in the database as it progresses.
  */
@@ -424,6 +441,14 @@ export async function executeBuild(pool: Pool, projectId: string, buildId: strin
 
     // Process audio files (copy + convert WAV to MP3)
     const settings = (project as Record<string, unknown>).settings || {};
+
+    // Export-only settings. Deliberately read from the raw settings
+    // JSONB rather than storyData.settings: story-data-builder
+    // allowlists what reaches the player payload, and neither of these
+    // belongs in story.json — the README isn't runtime data, and the
+    // icon is referenced by the manifest, not the player code.
+    const readmeTemplate = (settings as Record<string, unknown>).exportReadme as string | undefined;
+    const appIcon = (settings as Record<string, unknown>).appIcon as AppIconSettings | undefined;
     const usedFilenames = collectUsedAudioFilenames(
       storyData,
       settings as Record<string, unknown>,
@@ -440,7 +465,7 @@ export async function executeBuild(pool: Pool, projectId: string, buildId: strin
       // Defensive: filenames in audio_files should be UUID-derived (sanitized
       // by the upload route), but reject path separators here too so a bad
       // row can't escape projectAudioDir.
-      if (filename.includes('/') || filename.includes('\\') || filename.includes('..')) {
+      if (!isPathSafeFilename(filename)) {
         logger.warn({ filename }, 'Build: skipping audio file with unsafe name');
         continue;
       }
@@ -512,6 +537,39 @@ export async function executeBuild(pool: Pool, projectId: string, buildId: strin
     const smokeHtml = renderSmokeHtml(storyData);
     writeFileSync(join(buildDir, 'dist', 'smoke.html'), smokeHtml);
 
+    // Per-project PWA identity. The player's static manifest names the
+    // app "Wanderline"; a generated build is the author's story and
+    // should install under its own name and artwork.
+    const iconsDir = join(buildDir, 'dist', 'icons');
+    mkdirSync(iconsDir, { recursive: true });
+    let hasCustomIcon = false;
+    if (appIcon?.filename && isPathSafeFilename(appIcon.filename)) {
+      const iconSrc = join(buildDir, '_icon_src');
+      try {
+        mkdirSync(iconSrc, { recursive: true });
+        const localIcon = join(iconSrc, appIcon.filename);
+        const stream = await getStorage().downloadStream(iconKey(projectId, appIcon.filename));
+        await pipeline(stream, createWriteStream(localIcon));
+        hasCustomIcon = stageAppIcon(localIcon, iconsDir, appIcon);
+        if (!hasCustomIcon) {
+          logger.warn(
+            { buildId, projectId },
+            'Build: app icon could not be resized; using defaults',
+          );
+        }
+      } catch (err) {
+        // A missing or unreadable icon must not fail the build — the
+        // manifest is still valid with the player's default artwork.
+        logger.warn({ err, buildId, projectId }, 'Build: app icon unavailable; using defaults');
+      }
+    }
+    if (!hasCustomIcon) copyDefaultIcons(PLAYER_APP_DIST, join(buildDir, 'dist'));
+
+    writeFileSync(
+      join(buildDir, 'dist', 'manifest.webmanifest'),
+      renderManifest({ storyTitle: storyData.title, icon: appIcon, hasCustomIcon }),
+    );
+
     await pool.query(
       `UPDATE project_builds SET progress = 90, message = 'Creating archive...' WHERE id = $1 AND status IN ('pending', 'processing')`,
       [buildId],
@@ -542,9 +600,14 @@ export async function executeBuild(pool: Pool, projectId: string, buildId: strin
       };
       addDirToArchive(distDir);
 
-      // Add README
+      // Add README. Authors can replace the whole document from
+      // Settings -> Export; renderBuildReadme falls back to the
+      // default template when they haven't.
       archive.append(
-        `# ${projectName}\n\nA Wanderline audio narrative.\n\n## Run Locally\n\nThis app needs a web server to run. Open a terminal in this folder and run:\n\n\`\`\`\nnpx serve\n\`\`\`\n\nThen open http://localhost:3000 in your browser.\n\n## Deploy Online\n\nUpload this entire folder to any static hosting service:\n- **Netlify**: Drag & drop at netlify.com/drop\n- **GitHub Pages**: Push to a repo and enable Pages\n\nNo build step required - these files are ready to serve!\n`,
+        renderBuildReadme({
+          projectName,
+          template: readmeTemplate,
+        }),
         { name: 'README.md' },
       );
 

@@ -1038,6 +1038,15 @@ export interface ChoiceIndicatorAudio {
   choice2FileId?: string | null;
 }
 
+export interface AppIconSettings {
+  /** Stored filename, set by uploadProjectIcon. Read-only from the UI. */
+  filename?: string | null;
+  /** Splash background, `#rgb` or `#rrggbb`. Invalid values are dropped server-side. */
+  backgroundColor?: string | null;
+  /** OS chrome colour; defaults to backgroundColor when unset. */
+  themeColor?: string | null;
+}
+
 export interface ProjectSettings {
   password?: string;
   // Default playback volumes (0-100) baked into the generated app
@@ -1067,6 +1076,13 @@ export interface ProjectSettings {
   // per-project theme — CSS variables, Google Fonts choices,
   // and a free-form customCss escape hatch.
   theme?: ProjectTheme;
+  // Author's README for the exported build. Unset / empty falls back
+  // to the default template (which includes the install-as-an-app
+  // instructions) — see backend/src/services/build-readme.ts.
+  exportReadme?: string;
+  // PWA identity for the generated player: home-screen name comes from
+  // the story title, artwork and colours from here.
+  appIcon?: AppIconSettings;
   // per-project nomenclature preference. 'auto' means the
   // vocab follows project_stories.source_language; 'ink' / 'twee'
   // locks the vocab regardless of the current source language.
@@ -1086,6 +1102,32 @@ export function updateProjectSettings(
     method: 'PATCH',
     body: JSON.stringify({ settings }),
   });
+}
+
+/**
+ * Upload the PWA icon used by generated builds. Replaces any existing
+ * icon; the server records the stored filename at
+ * `settings.appIcon.filename` and the build pipeline resizes it.
+ */
+export async function uploadProjectIcon(
+  projectId: string,
+  file: File,
+): Promise<{ filename: string }> {
+  const formData = new FormData();
+  formData.append('icon', file);
+
+  const res = await fetch(`${API_BASE}/projects/${projectId}/icon`, {
+    method: 'POST',
+    credentials: 'include',
+    body: formData,
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    throw new ApiError(res.status, body.error || res.statusText);
+  }
+
+  return res.json();
 }
 
 export function deleteAllProjectAudio(projectId: string): Promise<{ success: boolean }> {

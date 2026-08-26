@@ -321,6 +321,12 @@ export const audioKey = (projectId: string, filename: string): string =>
 
 export const buildArtifactKey = (buildId: string): string => `builds/${buildId}.zip`;
 
+/** Storage key for a project's PWA icon. One per project — uploading a
+ * new icon replaces the old one rather than accumulating versions,
+ * since only the current icon is ever referenced. */
+export const iconKey = (projectId: string, filename: string): string =>
+  `icons/${projectId}/${filename}`;
+
 /**
  * Cache-Control value for audio/asset responses keyed on a content-
  * addressed filename. `private` (not `public`) because the responses

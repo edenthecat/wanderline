@@ -36,6 +36,11 @@ export interface PrecacheProgress {
   failed: number;
   total: number;
   quotaExceeded: boolean;
+  /** Files the service worker could not read because the request
+   * crossed an origin without CORS headers. Separate from `failed`
+   * because the fix is a server-side bucket policy, not a retry —
+   * a retry loop will fail identically forever. */
+  corsBlocked: number;
 }
 
 interface BeforeInstallPromptEvent extends Event {
@@ -56,7 +61,15 @@ export interface OfflineSupport {
 // If no progress for this long, declare the precache stuck. Browsers
 // can suspend service workers idle in the background, particularly
 // on Android — the user shouldn't see a stuck spinner forever.
-const WATCHDOG_MS = 30_000;
+//
+// This is a gap-between-messages budget, not a total one: the SW
+// broadcasts after every file, so it only trips when nothing at all
+// has landed for the whole window. 30s was too tight — a single large
+// voiceover on mobile data routinely takes longer than that, and the
+// watchdog would report a failure while the download was healthy and
+// still running. Sized instead for the worst realistic single-file
+// fetch.
+export const WATCHDOG_MS = 120_000;
 
 function readNonNegativeInt(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0;
@@ -73,6 +86,7 @@ export function useOfflineSupport(): OfflineSupport {
     failed: 0,
     total: 0,
     quotaExceeded: false,
+    corsBlocked: 0,
   });
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -116,6 +130,7 @@ export function useOfflineSupport(): OfflineSupport {
         const failed = readNonNegativeInt(data.failed);
         const total = readNonNegativeInt(data.total);
         const quotaExceeded = Boolean(data.quotaExceeded);
+        const corsBlocked = readNonNegativeInt(data.corsBlocked);
         // quotaExceeded is sticky on the consumer side: once we've
         // hit storage exhaustion in this precache run, downstream
         // messages can't accidentally clear the flag. The SW
@@ -126,6 +141,10 @@ export function useOfflineSupport(): OfflineSupport {
           failed,
           total,
           quotaExceeded: quotaExceeded || prev.quotaExceeded,
+          // Sticky for the same reason as quotaExceeded: once this
+          // run has hit a CORS wall, a later message must not clear
+          // the only signal that explains the failure.
+          corsBlocked: Math.max(corsBlocked, prev.corsBlocked),
         }));
         if (data.type === 'PRECACHE_COMPLETE') {
           if (watchdogRef.current) clearTimeout(watchdogRef.current);
@@ -173,7 +192,13 @@ export function useOfflineSupport(): OfflineSupport {
       setPrecacheStatus('error');
       return;
     }
-    setPrecacheProgress({ loaded: 0, failed: 0, total: urls.length, quotaExceeded: false });
+    setPrecacheProgress({
+      loaded: 0,
+      failed: 0,
+      total: urls.length,
+      quotaExceeded: false,
+      corsBlocked: 0,
+    });
     setPrecacheStatus('downloading');
     if (watchdogRef.current) clearTimeout(watchdogRef.current);
     watchdogRef.current = setTimeout(() => {

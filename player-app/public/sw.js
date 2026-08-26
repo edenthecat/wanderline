@@ -22,7 +22,7 @@
 // skipped — but the zip already has every audio file alongside
 // the HTML, so the offline story works without us doing anything.
 
-const CACHE_VERSION = 'v2';
+const CACHE_VERSION = 'v3';
 const SHELL_CACHE = `wl-shell-${CACHE_VERSION}`;
 const AUDIO_CACHE = 'wl-audio'; // unversioned: filenames are UUIDs, so contents never change
 
@@ -158,10 +158,20 @@ self.addEventListener('fetch', (event) => {
     (async () => {
       const cache = await caches.open(AUDIO_CACHE);
       const cached = await cache.match(event.request);
-      if (cached) return cached;
+      if (cached) {
+        // Safari issues a Range request for every <audio> source and
+        // refuses a bare 200 in reply: the element errors and the
+        // story goes silent even though the bytes are sitting right
+        // here in the cache. Serve the slice it actually asked for.
+        const range = event.request.headers.get('range');
+        if (range) return buildRangeResponse(cached, range);
+        return cached;
+      }
       try {
         const response = await fetch(event.request);
-        if (response.ok) {
+        // Cache.put() rejects outright on a 206, and a partial body is
+        // useless as a whole-file entry, so only store complete ones.
+        if (response.ok && response.status !== 206) {
           event.waitUntil(cache.put(event.request, response.clone()).catch(() => undefined));
         }
         return response;
@@ -171,6 +181,51 @@ self.addEventListener('fetch', (event) => {
     })(),
   );
 });
+
+// Turn a complete cached response into the 206 slice a Range request
+// asked for. Only the single-range `bytes=start-end` form is handled
+// (including the open-ended and suffix variants) — that is what
+// browser media elements actually send; anything exotic falls back to
+// the full body, which is still better than erroring.
+async function buildRangeResponse(cached, rangeHeader) {
+  const match = /^bytes=(\d*)-(\d*)$/.exec(String(rangeHeader).trim());
+  if (!match) return cached;
+  const buffer = await cached.arrayBuffer();
+  const size = buffer.byteLength;
+  const hasStart = match[1] !== '';
+  const hasEnd = match[2] !== '';
+  if (!hasStart && !hasEnd) return cached;
+
+  let start;
+  let end;
+  if (!hasStart) {
+    // Suffix form `bytes=-N`: the last N bytes.
+    const suffix = parseInt(match[2], 10);
+    start = Math.max(0, size - suffix);
+    end = size - 1;
+  } else {
+    start = parseInt(match[1], 10);
+    end = hasEnd ? Math.min(parseInt(match[2], 10), size - 1) : size - 1;
+  }
+
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start >= size) {
+    return new Response('', {
+      status: 416,
+      statusText: 'Range Not Satisfiable',
+      headers: { 'Content-Range': `bytes */${size}` },
+    });
+  }
+
+  const headers = new Headers(cached.headers);
+  headers.set('Content-Range', `bytes ${start}-${end}/${size}`);
+  headers.set('Content-Length', String(end - start + 1));
+  headers.set('Accept-Ranges', 'bytes');
+  return new Response(buffer.slice(start, end + 1), {
+    status: 206,
+    statusText: 'Partial Content',
+    headers,
+  });
+}
 
 // Opt-in bulk precache. The page sends a PRECACHE_AUDIO message
 // with a list of URLs to download. We validate each URL is
@@ -199,51 +254,85 @@ self.addEventListener('message', (event) => {
   event.waitUntil(precacheAudio(validUrls));
 });
 
+// How many audio files to pull at once. The original sequential loop
+// was correct but pathologically slow on a long story over mobile
+// data — slow enough that the page's stall watchdog fired and
+// reported a failure while the precache was still working fine.
+const PRECACHE_CONCURRENCY = 4;
+
 async function precacheAudio(urls) {
   const cache = await caches.open(AUDIO_CACHE);
   const total = urls.length;
   let done = 0;
   let failed = 0;
+  // Tracked separately from `failed` because it has a completely
+  // different remedy. A deployment that 307s /audio/* to a signed
+  // cross-origin storage URL will fail EVERY file here unless that
+  // bucket sends CORS headers — media elements don't care, but
+  // fetch() does. Reported as a generic failure it looks like a flaky
+  // network; named, it points straight at the bucket's CORS policy.
+  let corsBlocked = 0;
   let quotaExceeded = false;
-  for (const url of urls) {
+  let aborted = false;
+
+  const fetchOne = async (url) => {
+    const cached = await cache.match(url);
+    if (cached) {
+      done++;
+      return;
+    }
+    const response = await fetch(url, { cache: 'reload' });
+    if (!response.ok) {
+      // An opaque response means the request crossed an origin we
+      // aren't allowed to read — status is 0 and the body is sealed.
+      if (response.type === 'opaque' || response.type === 'opaqueredirect') corsBlocked++;
+      failed++;
+      return;
+    }
+    // Cache.put() rejects on 206 and a partial body is useless as a
+    // whole-file entry.
+    if (response.status === 206) {
+      failed++;
+      return;
+    }
     try {
-      const cached = await cache.match(url);
-      if (cached) {
-        done++;
-      } else {
-        const response = await fetch(url, { cache: 'reload' });
-        if (response.ok) {
-          try {
-            await cache.put(url, response.clone());
-            done++;
-          } catch (err) {
-            if (err && err.name === 'QuotaExceededError') {
-              quotaExceeded = true;
-              failed++;
-              // Bail out of the loop — every subsequent put will
-              // fail too. Surface a distinct signal to the page.
-              await broadcastProgress(done, failed, total, true);
-              await broadcastComplete(done, failed, total, true);
-              return;
-            }
-            failed++;
-          }
-        } else {
-          failed++;
-        }
+      await cache.put(url, response.clone());
+      done++;
+    } catch (err) {
+      if (err && err.name === 'QuotaExceededError') {
+        // Every subsequent put would fail too — stop the workers.
+        quotaExceeded = true;
+        aborted = true;
       }
-    } catch {
       failed++;
     }
-    await broadcastProgress(done, failed, total, quotaExceeded);
-  }
+  };
+
+  let index = 0;
+  const worker = async () => {
+    while (index < urls.length && !aborted) {
+      const url = urls[index++];
+      try {
+        await fetchOne(url);
+      } catch (err) {
+        // A cross-origin redirect with no CORS headers rejects the
+        // fetch outright rather than returning an opaque response.
+        if (err && err.name === 'TypeError') corsBlocked++;
+        failed++;
+      }
+      await broadcastProgress(done, failed, total, quotaExceeded, corsBlocked);
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(PRECACHE_CONCURRENCY, total) }, worker));
+
   // Explicit terminal message so the page doesn't have to infer
-  // completion from a tally — covers the case where a single
-  // message in the middle was dropped and the tally never lined up.
-  await broadcastComplete(done, failed, total, quotaExceeded);
+  // completion from a tally — covers the case where a single message
+  // in the middle was dropped and the tally never lined up.
+  await broadcastComplete(done, failed, total, quotaExceeded, corsBlocked);
 }
 
-async function broadcastProgress(loaded, failed, total, quotaExceeded) {
+async function broadcastProgress(loaded, failed, total, quotaExceeded, corsBlocked) {
   const clients = await self.clients.matchAll({ type: 'window' });
   for (const client of clients) {
     client.postMessage({
@@ -252,11 +341,12 @@ async function broadcastProgress(loaded, failed, total, quotaExceeded) {
       failed,
       total,
       quotaExceeded: !!quotaExceeded,
+      corsBlocked: corsBlocked || 0,
     });
   }
 }
 
-async function broadcastComplete(loaded, failed, total, quotaExceeded) {
+async function broadcastComplete(loaded, failed, total, quotaExceeded, corsBlocked) {
   const clients = await self.clients.matchAll({ type: 'window' });
   for (const client of clients) {
     client.postMessage({
@@ -265,6 +355,7 @@ async function broadcastComplete(loaded, failed, total, quotaExceeded) {
       failed,
       total,
       quotaExceeded: !!quotaExceeded,
+      corsBlocked: corsBlocked || 0,
     });
   }
 }
