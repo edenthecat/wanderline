@@ -3269,3 +3269,27 @@ details[open] > .audio-section-summary {
   resize: vertical;
   min-height: 160px;
 }
+
+/* Running-version badge in the header.
+   Deliberately quiet — it's diagnostic information, not navigation, so
+   it sits next to the logo without competing with it. Full detail
+   (commit, environment) is in the title attribute. */
+.version-badge {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-text-muted, #888);
+  letter-spacing: 0.02em;
+  padding: 2px 6px;
+  border: 1px solid var(--color-border, #333);
+  border-radius: 999px;
+  white-space: nowrap;
+  cursor: default;
+}
+
+/* Anything that isn't production gets called out inline: mistaking a
+   staging tab for production is its own class of incident. */
+.version-badge-env {
+  color: var(--color-warning, #d08770);
+  text-transform: uppercase;
+  font-weight: 600;
+}

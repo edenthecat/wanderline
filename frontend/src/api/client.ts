@@ -1047,6 +1047,19 @@ export interface AppIconSettings {
   themeColor?: string | null;
 }
 
+export interface AppVersion {
+  /** Semver of the running backend, or 'unknown' if it couldn't be read. */
+  version: string;
+  /** Short git SHA the image was built from; null outside script deploys. */
+  commit: string | null;
+  environment: string;
+}
+
+/** Which Wanderline build the backend is running. */
+export function fetchAppVersion(): Promise<AppVersion> {
+  return request('/version');
+}
+
 export interface ProjectSettings {
   password?: string;
   // Default playback volumes (0-100) baked into the generated app

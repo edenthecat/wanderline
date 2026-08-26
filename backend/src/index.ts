@@ -15,6 +15,7 @@ import { parseInk } from './services/ink-parser.js';
 import { parseInkJson } from './services/ink-json-parser.js';
 import { randomUUID } from 'crypto';
 import { initializeDatabase } from './db/init.js';
+import { getAppVersion } from './services/app-version.js';
 import { createProjectsRouter } from './routes/projects.js';
 import { createAudioRouter } from './routes/audio.js';
 import { createMetadataRouter } from './routes/metadata.js';
@@ -270,12 +271,42 @@ const inviteAcceptLim = rateLimitDisabled ? noopLimiter : invitationAcceptLimite
 const buildEnqueueLim = rateLimitDisabled ? noopLimiter : buildEnqueueLimiter;
 app.use('/api', apiLim);
 
+/**
+ * @openapi
+ * /version:
+ *   get:
+ *     summary: Which Wanderline build this process is running.
+ *     description: |
+ *       Reported so an operator can confirm what's actually deployed
+ *       without diffing the live API surface against a checkout.
+ *       `commit` is the short SHA the image was built from and is null
+ *       when the process wasn't deployed by the deploy scripts.
+ *     tags: [System]
+ *     responses:
+ *       200:
+ *         description: Running version.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 version: { type: string }
+ *                 commit: { type: string, nullable: true }
+ *                 environment: { type: string }
+ */
+app.get('/api/version', (req, res) => {
+  res.json(getAppVersion());
+});
+
 // API info
 app.get('/api', (req, res) => {
   res.json({
     message: 'Wanderline API',
-    version: '0.1.0',
+    // Was hardcoded '0.1.0', which stayed wrong through every release
+    // since — reported 0.1.0 while production served 1.4.0.
+    version: getAppVersion().version,
     endpoints: {
+      'GET /api/version': 'Running Wanderline version + commit',
       'GET /api/projects': 'List all projects',
       'POST /api/projects': 'Create a new project',
       'GET /api/projects/:id': 'Get a project',
