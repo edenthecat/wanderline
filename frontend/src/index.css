@@ -3384,3 +3384,26 @@ details[open] > .audio-section-summary {
   display: inline-block;
   border: 1px solid rgba(0, 0, 0, 0.15);
 }
+
+/* Character badge on a collapsed story row, and its counterpart chip on
+   a graph card. Both carry the character's own colour inline, so the
+   text has to hold contrast against an arbitrary author-chosen hue —
+   white with a shadow reads on every swatch in the picker's palette. */
+.node-character-badge,
+.graph-node-character {
+  color: #fff;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.45);
+  border: none;
+}
+.graph-node-character {
+  font-size: 9px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 999px;
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-left: auto;
+  margin-right: 6px;
+}
