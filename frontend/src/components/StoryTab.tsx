@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback, type ChangeEvent } from 'react';
+import { FLAG_REASON_LABELS } from './flagLabels';
 import {
   uploadInk,
   uploadInkJson,
@@ -195,6 +196,8 @@ export default function StoryTab({
     audioByNode,
     audioNames,
     characters,
+    flagsByNode,
+    refreshFlags,
     metadataError,
     retryMetadata,
     nodeIdSet,
@@ -626,6 +629,17 @@ export default function StoryTab({
                       />
                     )}
                     {hasAudio(node) && <span className="badge badge-green">audio</span>}
+                    {flagsByNode[node.id]?.length > 0 && (
+                      <span
+                        className="badge badge-red node-flag-badge"
+                        title={flagsByNode[node.id]
+                          .map((f) => FLAG_REASON_LABELS[f.reason] ?? f.reason)
+                          .join(', ')}
+                      >
+                        {flagsByNode[node.id].length} flag
+                        {flagsByNode[node.id].length === 1 ? '' : 's'}
+                      </span>
+                    )}
                     {characterByNode[node.id] && (
                       <span
                         className="badge node-character-badge"
@@ -652,6 +666,8 @@ export default function StoryTab({
                     metadata={metadata[node.id]}
                     projectId={projectId}
                     nodeAudio={audioByNode[node.id]}
+                    flags={flagsByNode[node.id]}
+                    onFlagsChanged={refreshFlags}
                     audioNames={audioNames}
                     characters={characters}
                     metadataLoaded={metadataLoaded}
@@ -694,6 +710,17 @@ export default function StoryTab({
                       <span className="node-type badge badge-blue">knot</span>
                       <span className="node-name">{knot.id}</span>
                       {hasAudio(knot) && <span className="badge badge-green">audio</span>}
+                      {flagsByNode[knot.id]?.length > 0 && (
+                        <span
+                          className="badge badge-red node-flag-badge"
+                          title={flagsByNode[knot.id]
+                            .map((f) => FLAG_REASON_LABELS[f.reason] ?? f.reason)
+                            .join(', ')}
+                        >
+                          {flagsByNode[knot.id].length} flag
+                          {flagsByNode[knot.id].length === 1 ? '' : 's'}
+                        </span>
+                      )}
                       {characterByNode[knot.id] && (
                         <span
                           className="badge node-character-badge"
@@ -761,6 +788,8 @@ export default function StoryTab({
                           metadata={metadata[knot.id]}
                           projectId={projectId}
                           nodeAudio={audioByNode[knot.id]}
+                          flags={flagsByNode[knot.id]}
+                          onFlagsChanged={refreshFlags}
                           audioNames={audioNames}
                           characters={characters}
                           metadataLoaded={metadataLoaded}
@@ -787,6 +816,17 @@ export default function StoryTab({
                               <span className="node-type badge badge-gray">{child.type}</span>
                               <span className="node-name">{child.id.split('.').pop()}</span>
                               {hasAudio(child) && <span className="badge badge-green">audio</span>}
+                              {flagsByNode[child.id]?.length > 0 && (
+                                <span
+                                  className="badge badge-red node-flag-badge"
+                                  title={flagsByNode[child.id]
+                                    .map((f) => FLAG_REASON_LABELS[f.reason] ?? f.reason)
+                                    .join(', ')}
+                                >
+                                  {flagsByNode[child.id].length} flag
+                                  {flagsByNode[child.id].length === 1 ? '' : 's'}
+                                </span>
+                              )}
                               {characterByNode[child.id] && (
                                 <span
                                   className="badge node-character-badge"
@@ -807,6 +847,8 @@ export default function StoryTab({
                               metadata={metadata[child.id]}
                               projectId={projectId}
                               nodeAudio={audioByNode[child.id]}
+                              flags={flagsByNode[child.id]}
+                              onFlagsChanged={refreshFlags}
                               audioNames={audioNames}
                               characters={characters}
                               metadataLoaded={metadataLoaded}

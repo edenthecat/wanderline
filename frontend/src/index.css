@@ -3407,3 +3407,117 @@ details[open] > .audio-section-summary {
   margin-left: auto;
   margin-right: 6px;
 }
+
+/* Flag markers. Red because these are someone saying a passage is
+   wrong — louder than the character chip beside them, which is
+   context rather than a problem. */
+.node-flag-badge {
+  font-weight: 600;
+}
+.graph-node-flag {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #dc2626;
+  color: #fff;
+  white-space: nowrap;
+  margin-left: auto;
+  margin-right: 4px;
+}
+/* The chip and the character label both want the right-hand end of the
+   header; when both are present the flag takes it and the character
+   sits inboard. */
+.graph-node-flag + .graph-node-character {
+  margin-left: 0;
+}
+
+/* Flag list in the node panel. Sits above the character picker and the
+   override editor: someone reporting the passage is wrong outranks
+   configuring it. */
+.node-flags {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  background: #fef2f2;
+}
+.node-flags-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #991b1b;
+  margin: 0 0 8px;
+}
+.node-flags-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.node-flag {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.node-flag-body {
+  min-width: 0;
+}
+.node-flag-note {
+  margin: 2px 0;
+  font-size: 13px;
+  /* A reviewer's note is free text and may be pasted; wrap rather than
+     stretch the panel. */
+  overflow-wrap: anywhere;
+}
+
+/* Flag control in the preview toolbar. */
+.flag-control {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.flag-control-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  width: 300px;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 8px 24px -12px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.flag-control-reasons {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.flag-control-reason {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+.flag-control-note {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 13px;
+  resize: vertical;
+}
+.flag-control-actions {
+  display: flex;
+  gap: 8px;
+}

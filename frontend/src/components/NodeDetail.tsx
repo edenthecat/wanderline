@@ -12,10 +12,13 @@ import * as Y from 'yjs';
 import {
   audioFileUrl,
   type AudioAssignments,
+  resolveNodeFlag,
   type Character,
+  type NodeFlag,
   type NodeMetadata,
 } from '../api/client';
 import { useAudition } from '../hooks/useAudition';
+import { FLAG_REASON_LABELS } from './flagLabels';
 import AuditionButton from './AuditionButton';
 import CollabChoiceTextInput from './CollabChoiceTextInput';
 import CollabContentTextarea from './CollabContentTextarea';
@@ -101,6 +104,10 @@ export interface NodeDetailProps {
   projectId: string;
   /** Characters available to attach to this node. */
   characters?: Character[];
+  /** Open flags raised against this passage from the preview. */
+  flags?: NodeFlag[];
+  /** Called after a flag is resolved so the badges refresh. */
+  onFlagsChanged?: () => void;
   /** Clips attached to this node, if any. */
   nodeAudio?: AudioAssignments[string];
   /** audio_file_id -> uploaded name, for labelling the play rows. */
@@ -137,6 +144,8 @@ export default function NodeDetail({
   onMetadataSave,
   projectId,
   characters,
+  flags,
+  onFlagsChanged,
   nodeAudio,
   audioNames,
   reachableFrom,
@@ -349,6 +358,8 @@ export default function NodeDetail({
           ))}
         </div>
       )}
+
+      <NodeFlagList projectId={projectId} flags={flags} onResolved={onFlagsChanged} />
 
       <NodeCharacterPicker
         nodeId={nodeId}
@@ -817,6 +828,78 @@ function NodeCharacterPicker({
         ))}
       </select>
       {saving && <span className="text-muted text-sm">Saving…</span>}
+      {err && (
+        <div className="alert alert-error" role="alert">
+          {err}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Open flags raised against this passage from the preview.
+//
+// Raising a flag and acting on it happen in different places — the
+// reviewer is listening, the author is editing — so the report has to
+// land where the work happens. Resolving marks it dealt with rather
+// than deleting it: a passage that was questioned before is worth
+// knowing about when it's questioned again.
+function NodeFlagList({
+  projectId,
+  flags,
+  onResolved,
+}: {
+  projectId: string;
+  flags?: NodeFlag[];
+  onResolved?: () => void;
+}) {
+  const [resolving, setResolving] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  if (!flags || flags.length === 0) return null;
+
+  async function resolve(flagId: string) {
+    setResolving(flagId);
+    setErr(null);
+    try {
+      await resolveNodeFlag(projectId, flagId);
+      onResolved?.();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Could not resolve');
+    } finally {
+      setResolving(null);
+    }
+  }
+
+  return (
+    <div className="node-flags">
+      <h4 className="node-flags-title">
+        Flagged
+        <span className="badge badge-red">{flags.length}</span>
+      </h4>
+      <ul className="node-flags-list">
+        {flags.map((f) => (
+          <li key={f.id} className="node-flag">
+            <div className="node-flag-body">
+              <strong>{FLAG_REASON_LABELS[f.reason] ?? f.reason}</strong>
+              {f.note && <p className="node-flag-note">{f.note}</p>}
+              <p className="text-sm text-muted">
+                {f.createdByName ? `${f.createdByName} · ` : ''}
+                {new Date(f.createdAt).toLocaleDateString()}
+              </p>
+            </div>
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost"
+              onClick={() => void resolve(f.id)}
+              disabled={resolving === f.id}
+              aria-label={`Mark "${FLAG_REASON_LABELS[f.reason] ?? f.reason}" resolved`}
+            >
+              {resolving === f.id ? 'Saving…' : 'Resolve'}
+            </button>
+          </li>
+        ))}
+      </ul>
       {err && (
         <div className="alert alert-error" role="alert">
           {err}

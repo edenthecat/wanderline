@@ -22,6 +22,7 @@ import {
   deleteChoice,
   fetchAudioAssignments,
   fetchCharacters,
+  fetchNodeFlags,
   fetchMetadata,
   renameNode,
   swapChoices,
@@ -32,6 +33,7 @@ import {
   updateNodeMetadata,
   type AudioAssignments,
   type Character,
+  type NodeFlag,
   type NodeMetadata,
   type StoryGraph,
 } from '../api/client';
@@ -63,6 +65,10 @@ export interface UseNodeEditorResult {
   /** Characters defined on this project, for the per-node picker.
    * Empty if the lookup failed — the picker then doesn't render. */
   characters: Character[];
+  /** Open flags grouped by the passage they were raised against. */
+  flagsByNode: Record<string, NodeFlag[]>;
+  /** Re-read flags, e.g. after one is raised from the preview. */
+  refreshFlags: () => void;
   /** Manually retry the bulk metadata fetch after a transient failure. */
   retryMetadata: () => void;
   /** Set of every node id that exists in the current storyGraph. */
@@ -112,6 +118,12 @@ export function useNodeEditor({
   // the player's per-character theming have all existed since the
   // baseline migration; only the editor control was missing.
   const [characters, setCharacters] = useState<Character[]>([]);
+  // Open flags, grouped by node. Reviewing happens in the preview but
+  // acting on it happens here, so the story and graph views have to
+  // show which passages someone has questioned.
+  const [flagsByNode, setFlagsByNode] = useState<Record<string, NodeFlag[]>>({});
+  const [flagsNonce, setFlagsNonce] = useState(0);
+  const refreshFlags = useCallback(() => setFlagsNonce((n) => n + 1), []);
   const [metadataError, setMetadataError] = useState<string | null>(null);
   const [editorError, setEditorError] = useState<string | null>(null);
   // Bumped by retryMetadata + by the cross-tab signal so peer saves
@@ -149,6 +161,7 @@ export function useNodeEditor({
     setAudioByNode({});
     setAudioNames({});
     setCharacters([]);
+    setFlagsByNode({});
     dirtyKeysRef.current = new Set();
   }, [projectId]);
 
@@ -193,6 +206,28 @@ export function useNodeEditor({
       cancelled = true;
     };
   }, [projectId]);
+
+  // Open flags. Silent on failure like the other two lookups: a badge
+  // that fails to appear is a smaller problem than a panel that
+  // refuses to render because a secondary fetch fell over.
+  useEffect(() => {
+    let cancelled = false;
+    fetchNodeFlags(projectId)
+      .then((res) => {
+        if (cancelled) return;
+        const grouped: Record<string, NodeFlag[]> = {};
+        for (const flag of res.flags ?? []) {
+          (grouped[flag.nodeId] ??= []).push(flag);
+        }
+        setFlagsByNode(grouped);
+      })
+      .catch(() => {
+        if (!cancelled) setFlagsByNode({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, flagsNonce]);
 
   // Bulk-fetch per-node metadata so individual NodeDetail components
   // don't each fire their own request.
@@ -445,6 +480,8 @@ export function useNodeEditor({
     audioByNode,
     audioNames,
     characters,
+    flagsByNode,
+    refreshFlags,
     metadataError,
     retryMetadata,
     nodeIdSet,

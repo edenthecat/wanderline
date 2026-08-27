@@ -66,6 +66,8 @@ interface StoryCardData {
   /** Who speaks this passage, for an at-a-glance read across the
    * canvas. Null when unassigned or the character list didn't load. */
   character: { name: string; color: string } | null;
+  /** Count of open flags raised against this passage. */
+  flagCount: number;
   choices: { text: string; target: string }[];
   hasDivert: boolean;
   preview: string;
@@ -112,6 +114,18 @@ const StoryCardNode = memo(function StoryCardNode({ data, selected }: NodeProps)
         <span className="graph-node-chip" data-kind={d.storyNode.type}>
           {d.isStart ? 'start' : d.isEnding ? 'ending' : d.storyNode.type}
         </span>
+        {/* Flags outrank the character chip for attention: one is
+            context, the other is someone saying this passage is
+            wrong. */}
+        {d.flagCount > 0 && (
+          <span
+            className="graph-node-flag"
+            title={`${d.flagCount} open flag${d.flagCount === 1 ? '' : 's'}`}
+            aria-label={`${d.flagCount} open flag${d.flagCount === 1 ? '' : 's'}`}
+          >
+            ⚑ {d.flagCount}
+          </span>
+        )}
         {d.character && (
           <span
             className="graph-node-character"
@@ -270,6 +284,8 @@ function buildLayout(
   /** Resolves a node's character for the card chip. Passed in because
    * this is a pure layout function with no access to editor state. */
   characterFor: (nodeId: string) => { name: string; color: string } | null = () => null,
+  /** Open-flag count per node, for the card's flag chip. */
+  flagCountFor: (nodeId: string) => number = () => 0,
 ): { nodes: RFNode[]; edges: RFEdge[] } {
   // Bucket validation messages by nodeId so each rendered node can pick
   // up the strongest severity referencing it. An error trumps a warning.
@@ -397,6 +413,7 @@ function buildLayout(
         severity: severityByNode.get(id) ?? null,
         hasAudio: hasAudio(sn),
         character: characterFor(id),
+        flagCount: flagCountFor(id),
         choices: (sn.choices ?? []).map((c) => ({ text: c.text, target: c.target })),
         hasDivert: !!sn.divert,
         preview,
@@ -562,13 +579,18 @@ function GraphTabInner({
     [editor.metadata, editor.characters],
   );
 
+  const flagCountFor = useCallback(
+    (nodeId: string) => editor.flagsByNode[nodeId]?.length ?? 0,
+    [editor.flagsByNode],
+  );
+
   const { nodes: initialNodes, edges: initialEdges } = useMemo(() => {
     if (!storyGraph) return { nodes: [], edges: [] };
-    return buildLayout(storyGraph, rankdir, characterFor);
+    return buildLayout(storyGraph, rankdir, characterFor, flagCountFor);
     // layoutNonce is intentionally a dep — its only purpose is to
     // re-run dagre on demand. eslint sees it as unused.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storyGraph, rankdir, layoutNonce, characterFor]);
+  }, [storyGraph, rankdir, layoutNonce, characterFor, flagCountFor]);
 
   // Reachable set + #ending set, used to overlay dim / on-path
   // styling without re-running dagre.
@@ -1176,6 +1198,8 @@ function GraphTabInner({
               projectId={projectId}
               nodeAudio={editor.audioByNode[selectedNodeId]}
               audioNames={editor.audioNames}
+              flags={editor.flagsByNode[selectedNodeId]}
+              onFlagsChanged={editor.refreshFlags}
               characters={editor.characters}
               nodeIdSet={editor.nodeIdSet}
               nodeIdOptions={editor.nodeIdOptions}

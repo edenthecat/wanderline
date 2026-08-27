@@ -676,6 +676,28 @@ export default function App() {
   playerStateRef.current = playerState;
   currentNodeRef.current = currentNode;
 
+  // Tell an embedding editor which passage is on screen, so it can
+  // offer to flag THIS one. The reviewer is listening, not reading the
+  // node list, and asking them to remember an id and go find it later
+  // is how a noticed problem turns into a forgotten one.
+  //
+  // Same-origin only: the preview iframe is served from this app, so
+  // the parent origin is ours and there's no reason to broadcast the
+  // reader's position to an arbitrary embedder.
+  useEffect(() => {
+    if (typeof window === 'undefined' || window.parent === window) return;
+    if (!currentNodeId) return;
+    try {
+      window.parent.postMessage(
+        { type: 'wanderline:node', nodeId: currentNodeId },
+        window.location.origin,
+      );
+    } catch {
+      // A cross-origin embed rejects the targeted post. Nothing to do:
+      // this is an editor convenience, not part of playback.
+    }
+  }, [currentNodeId]);
+
   // Clear the multi-click tally on every node change. Without this,
   // `lastClickTime` survived the navigation and a press on the new
   // passage combined with one from the old.
