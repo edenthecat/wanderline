@@ -85,6 +85,11 @@ export function parseInk(source: string, storyId: string, title?: string): Story
     nodes[id] = node;
   });
 
+  // Qualify bare stitch targets now that every node is known. Has to
+  // be a second pass: a choice can point at a stitch declared further
+  // down the file, so this can't be decided while parsing.
+  resolveBareStitchTargets(nodes);
+
   // Determine start node
   const startNode = findStartNode(nodes);
 
@@ -240,6 +245,52 @@ function parseLine(line: string, state: ParserState, allLines: string[], lineInd
 
   // Regular content line
   parseContent(trimmed, state);
+}
+
+/**
+ * Rewrite bare targets that name a stitch inside the referring node's
+ * own knot.
+ *
+ * Ink scopes a bare `-> read_email_5` inside a knot to that knot's
+ * stitch, but resolveDivertTarget only handled the explicit dot form
+ * (`-> .read_email_5`). Everything else kept the bare name while the
+ * node itself is `<knot>.read_email_5`, so the two never matched. The
+ * editor's target dropdown showed "(missing)", reachability never
+ * walked into the stitch — reporting a whole run of passages as
+ * unreachable — and audio coverage, which keys on node ids, treated
+ * them as having none.
+ *
+ * The player masked all of it: navigateToTarget does this same
+ * qualification at runtime, so the story played while the editor
+ * insisted it was broken.
+ *
+ * Resolution order is deliberately EXACT MATCH FIRST, then the local
+ * stitch. Strict Ink prefers the local stitch, but preferring the
+ * exact match leaves every target that resolves today resolving to the
+ * same node — this only touches targets that currently resolve to
+ * nothing, so it can't change a working story.
+ */
+const TERMINAL_TARGETS = new Set(['END', 'DONE']);
+
+function resolveBareStitchTargets(nodes: Record<string, StoryNode>): void {
+  const resolve = (target: string, fromNodeId: string): string => {
+    if (!target || TERMINAL_TARGETS.has(target)) return target;
+    // Already points at a real node — including a knot that shares its
+    // name with a stitch. Leave it exactly as it is.
+    if (nodes[target]) return target;
+    // The referring node's knot: its own id for a knot, the part
+    // before the first dot for a stitch.
+    const knot = fromNodeId.split('.')[0];
+    const qualified = `${knot}.${target}`;
+    return nodes[qualified] ? qualified : target;
+  };
+
+  for (const [nodeId, node] of Object.entries(nodes)) {
+    for (const choice of node.choices ?? []) {
+      choice.target = resolve(choice.target, nodeId);
+    }
+    if (node.divert) node.divert = resolve(node.divert, nodeId);
+  }
 }
 
 /**
