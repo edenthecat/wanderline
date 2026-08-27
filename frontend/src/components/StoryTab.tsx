@@ -194,6 +194,7 @@ export default function StoryTab({
     metadataLoaded,
     audioByNode,
     audioNames,
+    characters,
     metadataError,
     retryMetadata,
     nodeIdSet,
@@ -210,6 +211,20 @@ export default function StoryTab({
     handleMetadataSave,
     editorError,
   } = useNodeEditor({ projectId, storyGraph, onStoryUpdated, yDoc });
+
+  // node id -> character, for the collapsed-row badge. Story view is
+  // scanned top-to-bottom to find a passage; who speaks it belongs in
+  // that scan, not only inside the expanded panel. Built once rather
+  // than searched per row.
+  const characterByNode = useMemo(() => {
+    const byId = new Map(characters.map((c) => [c.id, c]));
+    const out: Record<string, (typeof characters)[number]> = {};
+    for (const [nodeId, m] of Object.entries(metadata)) {
+      const c = m?.characterId ? byId.get(m.characterId) : undefined;
+      if (c) out[nodeId] = c;
+    }
+    return out;
+  }, [metadata, characters]);
 
   // Clear our presence-published editing node on project change so a
   // leftover nodeId from project A isn't broadcast into project B.
@@ -611,6 +626,15 @@ export default function StoryTab({
                       />
                     )}
                     {hasAudio(node) && <span className="badge badge-green">audio</span>}
+                    {characterByNode[node.id] && (
+                      <span
+                        className="badge node-character-badge"
+                        style={{ background: characterByNode[node.id].color }}
+                        title={`Character: ${characterByNode[node.id].name}`}
+                      >
+                        {characterByNode[node.id].name}
+                      </span>
+                    )}
                     {hasCustomTiming(metadata[node.id]) && (
                       <span className="badge badge-gray">timing</span>
                     )}
@@ -629,6 +653,7 @@ export default function StoryTab({
                     projectId={projectId}
                     nodeAudio={audioByNode[node.id]}
                     audioNames={audioNames}
+                    characters={characters}
                     metadataLoaded={metadataLoaded}
                     nodeIdSet={nodeIdSet}
                     nodeIdOptions={nodeIdOptions}
@@ -669,6 +694,15 @@ export default function StoryTab({
                       <span className="node-type badge badge-blue">knot</span>
                       <span className="node-name">{knot.id}</span>
                       {hasAudio(knot) && <span className="badge badge-green">audio</span>}
+                      {characterByNode[knot.id] && (
+                        <span
+                          className="badge node-character-badge"
+                          style={{ background: characterByNode[knot.id].color }}
+                          title={`Character: ${characterByNode[knot.id].name}`}
+                        >
+                          {characterByNode[knot.id].name}
+                        </span>
+                      )}
                       {hasCustomTiming(metadata[knot.id]) && (
                         <span className="badge badge-gray">timing</span>
                       )}
@@ -728,6 +762,7 @@ export default function StoryTab({
                           projectId={projectId}
                           nodeAudio={audioByNode[knot.id]}
                           audioNames={audioNames}
+                          characters={characters}
                           metadataLoaded={metadataLoaded}
                           nodeIdSet={nodeIdSet}
                           nodeIdOptions={nodeIdOptions}
@@ -752,6 +787,15 @@ export default function StoryTab({
                               <span className="node-type badge badge-gray">{child.type}</span>
                               <span className="node-name">{child.id.split('.').pop()}</span>
                               {hasAudio(child) && <span className="badge badge-green">audio</span>}
+                              {characterByNode[child.id] && (
+                                <span
+                                  className="badge node-character-badge"
+                                  style={{ background: characterByNode[child.id].color }}
+                                  title={`Character: ${characterByNode[child.id].name}`}
+                                >
+                                  {characterByNode[child.id].name}
+                                </span>
+                              )}
                               {hasCustomTiming(metadata[child.id]) && (
                                 <span className="badge badge-gray">timing</span>
                               )}
@@ -764,6 +808,7 @@ export default function StoryTab({
                               projectId={projectId}
                               nodeAudio={audioByNode[child.id]}
                               audioNames={audioNames}
+                              characters={characters}
                               metadataLoaded={metadataLoaded}
                               nodeIdSet={nodeIdSet}
                               nodeIdOptions={nodeIdOptions}

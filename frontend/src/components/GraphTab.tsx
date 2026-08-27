@@ -63,6 +63,9 @@ interface StoryCardData {
   isEnding: boolean;
   severity: 'error' | 'warning' | null;
   hasAudio: boolean;
+  /** Who speaks this passage, for an at-a-glance read across the
+   * canvas. Null when unassigned or the character list didn't load. */
+  character: { name: string; color: string } | null;
   choices: { text: string; target: string }[];
   hasDivert: boolean;
   preview: string;
@@ -109,6 +112,16 @@ const StoryCardNode = memo(function StoryCardNode({ data, selected }: NodeProps)
         <span className="graph-node-chip" data-kind={d.storyNode.type}>
           {d.isStart ? 'start' : d.isEnding ? 'ending' : d.storyNode.type}
         </span>
+        {d.character && (
+          <span
+            className="graph-node-character"
+            style={{ background: d.character.color }}
+            title={`Character: ${d.character.name}`}
+            aria-label={`Character: ${d.character.name}`}
+          >
+            {d.character.name}
+          </span>
+        )}
         <span
           className={`graph-node-dot ${d.hasAudio ? 'is-on' : 'is-off'}`}
           aria-label={d.hasAudio ? 'has audio' : 'no audio assigned'}
@@ -254,6 +267,9 @@ function isEnding(node: StoryNode): boolean {
 function buildLayout(
   storyGraph: StoryGraph,
   rankdir: 'TB' | 'LR' = 'TB',
+  /** Resolves a node's character for the card chip. Passed in because
+   * this is a pure layout function with no access to editor state. */
+  characterFor: (nodeId: string) => { name: string; color: string } | null = () => null,
 ): { nodes: RFNode[]; edges: RFEdge[] } {
   // Bucket validation messages by nodeId so each rendered node can pick
   // up the strongest severity referencing it. An error trumps a warning.
@@ -380,6 +396,7 @@ function buildLayout(
         isEnding: ending,
         severity: severityByNode.get(id) ?? null,
         hasAudio: hasAudio(sn),
+        character: characterFor(id),
         choices: (sn.choices ?? []).map((c) => ({ text: c.text, target: c.target })),
         hasDivert: !!sn.divert,
         preview,
@@ -533,13 +550,25 @@ function GraphTabInner({
   // structure is unchanged (otherwise dragged positions stick).
   const [layoutNonce, setLayoutNonce] = useState(0);
 
+  // node id -> character, for the card chip. Memoised on the two inputs
+  // so the layout doesn't re-run on unrelated editor state changes.
+  const characterFor = useCallback(
+    (nodeId: string) => {
+      const id = editor.metadata[nodeId]?.characterId;
+      if (!id) return null;
+      const c = editor.characters.find((ch) => ch.id === id);
+      return c ? { name: c.name, color: c.color } : null;
+    },
+    [editor.metadata, editor.characters],
+  );
+
   const { nodes: initialNodes, edges: initialEdges } = useMemo(() => {
     if (!storyGraph) return { nodes: [], edges: [] };
-    return buildLayout(storyGraph, rankdir);
+    return buildLayout(storyGraph, rankdir, characterFor);
     // layoutNonce is intentionally a dep — its only purpose is to
     // re-run dagre on demand. eslint sees it as unused.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storyGraph, rankdir, layoutNonce]);
+  }, [storyGraph, rankdir, layoutNonce, characterFor]);
 
   // Reachable set + #ending set, used to overlay dim / on-path
   // styling without re-running dagre.
@@ -1147,6 +1176,7 @@ function GraphTabInner({
               projectId={projectId}
               nodeAudio={editor.audioByNode[selectedNodeId]}
               audioNames={editor.audioNames}
+              characters={editor.characters}
               nodeIdSet={editor.nodeIdSet}
               nodeIdOptions={editor.nodeIdOptions}
               onChoiceTextEdit={(ci, text) => editor.handleChoiceTextEdit(selectedNodeId, ci, text)}

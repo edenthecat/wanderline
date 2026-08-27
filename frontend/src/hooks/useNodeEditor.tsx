@@ -21,6 +21,7 @@ import {
   addChoice,
   deleteChoice,
   fetchAudioAssignments,
+  fetchCharacters,
   fetchMetadata,
   renameNode,
   swapChoices,
@@ -30,6 +31,7 @@ import {
   updateNodeContentText,
   updateNodeMetadata,
   type AudioAssignments,
+  type Character,
   type NodeMetadata,
   type StoryGraph,
 } from '../api/client';
@@ -58,6 +60,9 @@ export interface UseNodeEditorResult {
   audioByNode: AudioAssignments;
   /** audio_file_id -> the name the author uploaded, for labelling. */
   audioNames: Record<string, string>;
+  /** Characters defined on this project, for the per-node picker.
+   * Empty if the lookup failed — the picker then doesn't render. */
+  characters: Character[];
   /** Manually retry the bulk metadata fetch after a transient failure. */
   retryMetadata: () => void;
   /** Set of every node id that exists in the current storyGraph. */
@@ -103,6 +108,10 @@ export function useNodeEditor({
   const [audioByNode, setAudioByNode] = useState<AudioAssignments>({});
   // audio_file_id -> the name the author uploaded, for labelling.
   const [audioNames, setAudioNames] = useState<Record<string, string>>({});
+  // Characters available to assign to a node. The column, the API and
+  // the player's per-character theming have all existed since the
+  // baseline migration; only the editor control was missing.
+  const [characters, setCharacters] = useState<Character[]>([]);
   const [metadataError, setMetadataError] = useState<string | null>(null);
   const [editorError, setEditorError] = useState<string | null>(null);
   // Bumped by retryMetadata + by the cross-tab signal so peer saves
@@ -139,6 +148,7 @@ export function useNodeEditor({
     setMetadataError(null);
     setAudioByNode({});
     setAudioNames({});
+    setCharacters([]);
     dirtyKeysRef.current = new Set();
   }, [projectId]);
 
@@ -166,6 +176,23 @@ export function useNodeEditor({
       cancelled = true;
     };
   }, [projectId, audioSignal]);
+
+  // Character list for the per-node picker. Silent on failure for the
+  // same reason as the audio lookup: the control is an affordance, not
+  // a precondition for editing.
+  useEffect(() => {
+    let cancelled = false;
+    fetchCharacters(projectId)
+      .then((res) => {
+        if (!cancelled) setCharacters(res.characters ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setCharacters([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
 
   // Bulk-fetch per-node metadata so individual NodeDetail components
   // don't each fire their own request.
@@ -417,6 +444,7 @@ export function useNodeEditor({
     metadataLoaded,
     audioByNode,
     audioNames,
+    characters,
     metadataError,
     retryMetadata,
     nodeIdSet,

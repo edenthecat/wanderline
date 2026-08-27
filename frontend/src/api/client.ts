@@ -859,7 +859,9 @@ export interface NodeMetadata {
   choice1TimestampMs?: number;
   choice2TimestampMs?: number;
   noInlineChoiceAudio?: boolean;
-  characterId?: string;
+  // `null` clears the assignment; omitting the key leaves it alone.
+  // The API distinguishes the two — see backend/src/routes/metadata.ts.
+  characterId?: string | null;
 }
 
 export function fetchMetadata(
