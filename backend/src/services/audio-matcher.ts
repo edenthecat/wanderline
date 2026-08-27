@@ -45,21 +45,64 @@ export function buildMatchTables(nodes: Record<string, StoryNodeForMatching>): C
   const choiceMatchMap = new Map<string, { nodeId: string; choiceIndex: number }>();
   const nodeIds = Object.keys(nodes);
 
+  // Pass 1: fully-qualified ids, in all three separator spellings.
+  // These are unique by construction and must never be displaced by a
+  // weaker match, so they go down first and later passes refuse to
+  // overwrite them.
   for (const nodeId of nodeIds) {
     matchMap.set(nodeId.toLowerCase(), nodeId);
     matchMap.set(nodeId.toLowerCase().replace(/\./g, '_'), nodeId);
     matchMap.set(nodeId.toLowerCase().replace(/\./g, '-'), nodeId);
+  }
+
+  // Pass 2: bare stitch names ("intro" for "chapter1.intro").
+  //
+  // These are a convenience, and they are NOT unique: reusing a stitch
+  // name across knots is idiomatic Ink — namespacing them under a knot
+  // is the whole point of the feature. Previously this did an
+  // unguarded `set`, which produced two silent mis-assignments:
+  //
+  //   - A stitch's bare name overwrote a same-named KNOT's exact id,
+  //     so audio named "intro.mp3" attached to "chapter1.intro"
+  //     instead of the knot "intro".
+  //   - Two stitches sharing a name resolved to whichever was parsed
+  //     last, arbitrarily.
+  //
+  // So: collect first, then only register names that identify exactly
+  // one node and don't collide with a qualified id. An ambiguous name
+  // is left unmatched deliberately — an author who sees audio go
+  // unassigned will go and look, whereas one whose audio was attached
+  // to a plausible-but-wrong passage may never notice.
+  const bareNameOwners = new Map<string, string[]>();
+  for (const nodeId of nodeIds) {
     const parts = nodeId.split('.');
-    if (parts.length > 1) {
-      matchMap.set(parts[parts.length - 1].toLowerCase(), nodeId);
+    if (parts.length < 2) continue;
+    const bare = parts[parts.length - 1].toLowerCase();
+    const owners = bareNameOwners.get(bare);
+    if (owners) owners.push(nodeId);
+    else bareNameOwners.set(bare, [nodeId]);
+  }
+  const ambiguousBareNames = new Set<string>();
+  for (const [bare, owners] of bareNameOwners) {
+    if (owners.length > 1) {
+      ambiguousBareNames.add(bare);
+      continue;
     }
+    if (matchMap.has(bare)) continue; // a qualified id already claims it
+    matchMap.set(bare, owners[0]);
+  }
+
+  // Pass 3: tags. Weakest signal, so it yields to everything above —
+  // including a bare name we deliberately refused to register, since
+  // that name is ambiguous and a tag pointing at one of the candidates
+  // would reintroduce the same guesswork.
+  for (const nodeId of nodeIds) {
     const node = nodes[nodeId];
-    if (node?.tags) {
-      for (const tag of node.tags) {
-        if (!matchMap.has(tag.toLowerCase())) {
-          matchMap.set(tag.toLowerCase(), nodeId);
-        }
-      }
+    if (!node?.tags) continue;
+    for (const tag of node.tags) {
+      const key = tag.toLowerCase();
+      if (matchMap.has(key) || ambiguousBareNames.has(key)) continue;
+      matchMap.set(key, nodeId);
     }
   }
 

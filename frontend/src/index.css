@@ -3407,3 +3407,44 @@ details[open] > .audio-section-summary {
   margin-left: auto;
   margin-right: 6px;
 }
+
+/* Assignment audit report. Filenames and node ids are both long and
+   both need to stay readable, so the table scrolls rather than the
+   page. */
+.audit-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  min-width: 32rem;
+}
+.audit-table th,
+.audit-table td {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: top;
+}
+.audit-table th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #475569;
+  white-space: nowrap;
+}
+.audit-table code {
+  word-break: break-all;
+}
+
+/* Screen-reader-only text. Used for column headers that carry no
+   visible label but still need one announced. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
