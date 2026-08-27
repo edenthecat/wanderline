@@ -1,5 +1,12 @@
 import { useEffect, useState } from 'react';
-import { fetchAudioFiles, type AudioFile, type ChoiceIndicatorAudio } from '../api/client';
+import {
+  audioFileUrl,
+  fetchAudioFiles,
+  type AudioFile,
+  type ChoiceIndicatorAudio,
+} from '../api/client';
+import { useAudition } from '../hooks/useAudition';
+import AuditionButton from './AuditionButton';
 import { useProjectSettings } from '../hooks/useProjectSettings';
 
 interface Props {
@@ -19,12 +26,18 @@ function IndicatorPicker({
   options,
   emptyLabel,
   onChange,
+  projectId,
+  playingId,
+  toggle,
 }: {
   label: string;
   value: string;
   options: AudioFile[];
   emptyLabel: string;
   onChange: (next: string | null) => void;
+  projectId: string;
+  playingId: string | null;
+  toggle: (id: string, url: string) => void;
 }) {
   return (
     <div className="settings-row">
@@ -46,6 +59,17 @@ function IndicatorPicker({
           ))}
         </select>
       </label>
+      {/* Picking a cue from a list of filenames is guesswork without
+          this — the whole point of an indicator sound is how it sounds. */}
+      {value && (
+        <AuditionButton
+          id={`${label}:${value}`}
+          url={audioFileUrl(projectId, value)}
+          label={label}
+          playingId={playingId}
+          toggle={toggle}
+        />
+      )}
     </div>
   );
 }
@@ -53,6 +77,7 @@ function IndicatorPicker({
 export default function SystemSoundsTab({ projectId }: Props) {
   const { settings, loading, error, updateOne } = useProjectSettings(projectId);
   const [indicatorAudio, setIndicatorAudio] = useState<AudioFile[]>([]);
+  const { playingId, toggle } = useAudition();
 
   useEffect(() => {
     fetchAudioFiles(projectId)
@@ -100,6 +125,9 @@ export default function SystemSoundsTab({ projectId }: Props) {
         </p>
         <IndicatorPicker
           label="Default indicator sound"
+          projectId={projectId}
+          playingId={playingId}
+          toggle={toggle}
           value={settings?.defaultIndicatorAudioId ?? ''}
           options={indicatorAudio}
           emptyLabel="(none — silent)"
@@ -119,6 +147,9 @@ export default function SystemSoundsTab({ projectId }: Props) {
         </p>
         <IndicatorPicker
           label="Choice 1 sound"
+          projectId={projectId}
+          playingId={playingId}
+          toggle={toggle}
           value={settings?.choiceIndicatorAudio?.choice1FileId ?? ''}
           options={indicatorAudio}
           emptyLabel="(same as default)"
@@ -126,6 +157,9 @@ export default function SystemSoundsTab({ projectId }: Props) {
         />
         <IndicatorPicker
           label="Choice 2 sound"
+          projectId={projectId}
+          playingId={playingId}
+          toggle={toggle}
           value={settings?.choiceIndicatorAudio?.choice2FileId ?? ''}
           options={indicatorAudio}
           emptyLabel="(same as default)"

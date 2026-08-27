@@ -11,7 +11,15 @@
 // per-track loop / volume controls.
 
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react';
-import { fetchAudioFiles, uploadAudioFile, deleteAudioFile, type AudioFile } from '../api/client';
+import {
+  audioFileUrl,
+  fetchAudioFiles,
+  uploadAudioFile,
+  deleteAudioFile,
+  type AudioFile,
+} from '../api/client';
+import { useAudition } from '../hooks/useAudition';
+import AuditionButton from './AuditionButton';
 
 interface Props {
   projectId: string;
@@ -25,6 +33,7 @@ function formatBytes(n: number): string {
 
 export default function MusicTab({ projectId }: Props) {
   const [tracks, setTracks] = useState<AudioFile[]>([]);
+  const { playingId, toggle } = useAudition();
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -122,6 +131,13 @@ export default function MusicTab({ projectId }: Props) {
         <ul className="music-list" data-testid="music-list">
           {tracks.map((track) => (
             <li key={track.id} className="music-item" data-testid="music-row">
+              <AuditionButton
+                id={track.id}
+                url={audioFileUrl(projectId, track.id)}
+                label={track.original_name}
+                playingId={playingId}
+                toggle={toggle}
+              />
               <div className="music-item-meta">
                 <strong>{track.original_name}</strong>
                 <span className="text-muted text-sm">{formatBytes(track.size_bytes)}</span>

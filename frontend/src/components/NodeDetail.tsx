@@ -11,6 +11,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNod
 import * as Y from 'yjs';
 import { audioFileUrl, type AudioAssignments, type NodeMetadata } from '../api/client';
 import { useAudition } from '../hooks/useAudition';
+import AuditionButton from './AuditionButton';
 import CollabChoiceTextInput from './CollabChoiceTextInput';
 import CollabContentTextarea from './CollabContentTextarea';
 import { getChoiceText, getContentText } from '../hooks/useStoryYDoc';
@@ -725,23 +726,19 @@ function NodeAudioPreview({
   const sfx = nodeAudio.sfx ?? [];
   if (rows.length === 0 && sfx.length === 0) return null;
 
-  const renderRow = (id: string, fileId: string, label: string) => {
-    const playing = playingId === id;
-    return (
-      <li key={id} className="node-audio-row">
-        <button
-          type="button"
-          className="btn btn-sm node-audio-play"
-          onClick={() => toggle(id, audioFileUrl(projectId, fileId))}
-          aria-label={`${playing ? 'Stop' : 'Play'} ${label}`}
-        >
-          {playing ? '\u25a0' : '\u25b6'}
-        </button>
-        <span className="node-audio-label">{label}</span>
-        <span className="node-audio-file text-muted">{audioNames?.[fileId] ?? fileId}</span>
-      </li>
-    );
-  };
+  const renderRow = (id: string, fileId: string, label: string) => (
+    <li key={id} className="node-audio-row">
+      <AuditionButton
+        id={id}
+        url={audioFileUrl(projectId, fileId)}
+        label={label}
+        playingId={playingId}
+        toggle={toggle}
+      />
+      <span className="node-audio-label">{label}</span>
+      <span className="node-audio-file text-muted">{audioNames?.[fileId] ?? fileId}</span>
+    </li>
+  );
 
   return (
     <div className="node-audio-preview">

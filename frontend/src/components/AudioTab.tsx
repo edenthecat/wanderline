@@ -457,6 +457,9 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
 
       {coverage && (
         <OrphanedAudioPanel
+          projectId={projectId}
+          playingId={playingId}
+          toggle={toggleAudition}
           files={coverage.orphanedAudioFiles}
           onDelete={handleOrphanDelete}
           onDeleteSilent={handleOrphanDeleteSilent}

@@ -3324,14 +3324,6 @@ details[open] > .audio-section-summary {
   gap: 8px;
   min-width: 0;
 }
-.node-audio-play {
-  flex: none;
-  width: 28px;
-  min-height: 28px;
-  padding: 0;
-  font-size: 11px;
-  line-height: 1;
-}
 .node-audio-label {
   font-size: 13px;
   font-weight: 500;
@@ -3345,4 +3337,21 @@ details[open] > .audio-section-summary {
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+}
+
+/* Shared audition control. Fixed square so rows with and without one
+   still line up, and consistent wherever a clip is named. */
+.audition-btn {
+  flex: none;
+  width: 28px;
+  min-height: 28px;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1;
+}
+.music-item .audition-btn {
+  margin-right: 10px;
+}
+.orphan-actions .audition-btn {
+  margin-right: 6px;
 }

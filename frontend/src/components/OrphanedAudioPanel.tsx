@@ -1,8 +1,14 @@
 import { useState } from 'react';
-import type { OrphanedAudioFile } from '../api/client';
+import { audioFileUrl, type OrphanedAudioFile } from '../api/client';
+import AuditionButton from './AuditionButton';
 
 interface Props {
   files: OrphanedAudioFile[];
+  projectId: string;
+  /* Audition state is owned by AudioTab so one clip plays at a time
+     across the whole tab, rather than this panel racing the main list. */
+  playingId: string | null;
+  toggle: (id: string, url: string) => void;
   // Single-file delete (parent refetches afterwards).
   onDelete: (id: string) => Promise<void>;
   // Bulk delete without per-file refetch — parent refetches once after
@@ -43,6 +49,9 @@ function formatDate(iso: string | undefined): string {
  */
 export default function OrphanedAudioPanel({
   files,
+  projectId,
+  playingId,
+  toggle,
   onDelete,
   onDeleteSilent,
   onBulkComplete,
@@ -112,6 +121,15 @@ export default function OrphanedAudioPanel({
               <td className="text-muted">{formatBytes(f.sizeBytes)}</td>
               <td className="text-muted">{formatDate(f.createdAt)}</td>
               <td className="orphan-actions">
+                {/* Hear it before deciding it's junk — a filename alone
+                    is a poor basis for deleting someone's recording. */}
+                <AuditionButton
+                  id={f.id}
+                  url={audioFileUrl(projectId, f.id)}
+                  label={f.name}
+                  playingId={playingId}
+                  toggle={toggle}
+                />
                 <button
                   type="button"
                   className="btn btn-ghost btn-sm btn-danger"
