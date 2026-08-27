@@ -211,7 +211,14 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [voiceoverVolume, setVoiceoverVolume] = useState(100);
   const [userIndicatorVolume, setUserIndicatorVolume] = useState(50);
-  const [userBgMusicVolume, setUserBgMusicVolume] = useState(100);
+  // Fallbacks are the last link in the resolution chain below, so they
+  // must match the editor's own defaults (frontend VolumesTab): 100 /
+  // 30 / 50. This one said 100, and only looked right because the
+  // apply sites were multiplying by the project setting a second time.
+  const [userBgMusicVolume, setUserBgMusicVolume] = useState(30);
+  // False until the story's volume settings and any per-device override
+  // have been resolved. Guards the persist effect above.
+  const volumesHydratedRef = useRef(false);
   // Auto-continue used to be surfaced as a listener-facing toggle
   // (pre-start settings + in-story cog panel). Author feedback was
   // that most listeners want the paced audio-drama experience and
@@ -337,6 +344,13 @@ export default function App() {
         // wins (the listener set it explicitly), otherwise the
         // project's author-chosen default from settings, otherwise
         // the hardcoded fallback.
+        //
+        // The state these seed IS the effective volume — apply it as
+        // `state / 100` and nothing else. The apply sites used to
+        // multiply by story.settings a second time, squaring the
+        // author's choice: a 30% music default played at 9%, a 50%
+        // indicator default at 25%. Voiceover escaped only because
+        // its default is 100 and 1 x 1 = 1.
         const s = (data.settings ?? {}) as {
           voiceoverVolume?: number;
           backgroundMusicVolume?: number;
@@ -355,6 +369,9 @@ export default function App() {
             if (volumes.bgMusic !== undefined) setUserBgMusicVolume(volumes.bgMusic);
           } catch {}
         }
+        // Resolution is complete; the listener's own changes from here
+        // on are theirs to keep.
+        volumesHydratedRef.current = true;
         setPlayerState('ready');
       })
       .catch(() => {
@@ -506,8 +523,7 @@ export default function App() {
 
       const trackIndex = bgMusicIndexRef.current % story.backgroundMusic.length;
       const trackUrl = story.audioBaseUrl + story.backgroundMusic[trackIndex];
-      const volume =
-        (userBgMusicVolume / 100) * ((story.settings?.backgroundMusicVolume ?? 30) / 100);
+      const volume = userBgMusicVolume / 100;
 
       // Use cached audio if available
       const audio = getCachedAudio('bgm_' + trackIndex, trackUrl);
@@ -567,35 +583,35 @@ export default function App() {
     };
   }, []);
 
-  // Save and apply volume settings
+  // Save and apply volume settings.
+  //
+  // Persisting is gated on the resolution chain having run. This effect
+  // fires on mount too, and it used to write the component's initial
+  // state (100 / 50 / 30) to localStorage before the story had loaded.
+  // The load handler then read those back as a per-device override and
+  // clobbered the author's chosen defaults with them — so on a first
+  // ever visit the author's settings could never win. It went unnoticed
+  // because it only shows when a default differs from the initial: a
+  // 60% voiceover played at 100%, while a 50% indicator (matching the
+  // initial) looked perfectly correct.
   useEffect(() => {
-    safeSetItem(
-      localStorage,
-      STORAGE_PREFIX + 'volumes',
-      JSON.stringify({
-        voiceover: voiceoverVolume,
-        indicator: userIndicatorVolume,
-        bgMusic: userBgMusicVolume,
-      }),
-    );
+    if (volumesHydratedRef.current) {
+      safeSetItem(
+        localStorage,
+        STORAGE_PREFIX + 'volumes',
+        JSON.stringify({
+          voiceover: voiceoverVolume,
+          indicator: userIndicatorVolume,
+          bgMusic: userBgMusicVolume,
+        }),
+      );
+    }
     // Apply to currently playing audio
     if (audioRef.current) audioRef.current.volume = voiceoverVolume / 100;
-    if (choice1IndicatorRef.current)
-      choice1IndicatorRef.current.volume =
-        (userIndicatorVolume / 100) * ((story?.settings?.indicatorVolume ?? 100) / 100);
-    if (choice2IndicatorRef.current)
-      choice2IndicatorRef.current.volume =
-        (userIndicatorVolume / 100) * ((story?.settings?.indicatorVolume ?? 100) / 100);
-    if (bgMusicRef.current)
-      bgMusicRef.current.volume =
-        (userBgMusicVolume / 100) * ((story?.settings?.backgroundMusicVolume ?? 30) / 100);
-  }, [
-    voiceoverVolume,
-    userIndicatorVolume,
-    userBgMusicVolume,
-    story?.settings?.indicatorVolume,
-    story?.settings?.backgroundMusicVolume,
-  ]);
+    if (choice1IndicatorRef.current) choice1IndicatorRef.current.volume = userIndicatorVolume / 100;
+    if (choice2IndicatorRef.current) choice2IndicatorRef.current.volume = userIndicatorVolume / 100;
+    if (bgMusicRef.current) bgMusicRef.current.volume = userBgMusicVolume / 100;
+  }, [voiceoverVolume, userIndicatorVolume, userBgMusicVolume]);
 
   const currentNode = story && currentNodeId ? story.nodes[currentNodeId] : null;
 
@@ -897,8 +913,7 @@ export default function App() {
     playedIndicatorsRef.current = { choice1: false, choice2: false };
 
     // Use cached indicator audio elements if available
-    const indicatorVol =
-      (userIndicatorVolume / 100) * ((story.settings?.indicatorVolume ?? 100) / 100);
+    const indicatorVol = userIndicatorVolume / 100;
     if (story.indicatorAudio?.choice1) {
       const url = story.audioBaseUrl + story.indicatorAudio.choice1;
       choice1IndicatorRef.current = getCachedAudio('ind_c1', url);
