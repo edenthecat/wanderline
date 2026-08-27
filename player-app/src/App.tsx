@@ -1081,10 +1081,14 @@ export default function App() {
           // without this, a single-choice passage that happens to have
           // a choice cue would never advance at all.
           const onward = autoAdvanceTarget(currentNode, story.settings);
-          if (onward && story.nodes[onward]) {
+          if (onward) {
+            // Same hold as the no-cue branch below, so two passages
+            // configured identically pace identically whether or not
+            // one happens to have a cue file.
             autoNavigateTimeoutRef.current = setTimeout(
-              () => navigateToNode(onward),
-              story.settings?.choiceAudioDelayMs ?? 2000,
+              () => navigateToTargetRef.current?.(onward),
+              (currentNode.metadata?.delayAfterMs ?? 0) +
+                (currentNode.metadata?.autoAdvanceDelayMs ?? 2000),
             );
             return;
           }
@@ -1095,10 +1099,7 @@ export default function App() {
 
         // Start the sequence
         runChoiceSequence();
-      } else if (
-        autoAdvanceTarget(currentNode, story.settings) &&
-        story.nodes[autoAdvanceTarget(currentNode, story.settings)!]
-      ) {
+      } else if (autoAdvanceTarget(currentNode, story.settings)) {
         const target = autoAdvanceTarget(currentNode, story.settings)!;
         // Total post-audio hold = the per-node delayAfterMs (a generic
         // "wait after audio finishes" hint) plus the dedicated
@@ -1107,7 +1108,10 @@ export default function App() {
         const postAudioHoldMs =
           (currentNode.metadata?.delayAfterMs ?? 0) +
           (currentNode.metadata?.autoAdvanceDelayMs ?? 2000);
-        autoNavigateTimeoutRef.current = setTimeout(() => navigateToNode(target), postAudioHoldMs);
+        autoNavigateTimeoutRef.current = setTimeout(
+          () => navigateToTargetRef.current?.(target),
+          postAudioHoldMs,
+        );
       }
     };
     audio.ontimeupdate = () => {
@@ -1284,7 +1288,7 @@ export default function App() {
     if (!story || !currentNode || !isAuthenticated || showInstructions) return;
     if (currentNode.audio?.voiceover) return; // handled by playVoiceover's audio.onended
     const target = autoAdvanceTarget(currentNode, story?.settings);
-    if (!target || !story.nodes[target]) return;
+    if (!target) return;
     // Compose: pre-roll → (no audio) → post-audio hold → onward.
     const totalDelay =
       (currentNode.metadata?.delayBeforeMs ?? 0) +
@@ -1292,7 +1296,12 @@ export default function App() {
       (currentNode.metadata?.autoAdvanceDelayMs ?? 2000);
     const t = setTimeout(() => {
       if (currentNodeIdRef.current !== currentNode.id) return;
-      navigateToNode(target);
+      // navigateToTarget, not navigateToNode: a choice target may be
+      // END/DONE (the parser's default when a choice has no divert) or
+      // a bare stitch name needing knot qualification. navigateToNode
+      // requires an exact id and silently does nothing otherwise, which
+      // would leave the passage stalled with no timer to retry it.
+      navigateToTargetRef.current?.(target);
     }, totalDelay);
     return () => clearTimeout(t);
   }, [story, currentNode, navigateToNode, isAuthenticated, showInstructions]);
