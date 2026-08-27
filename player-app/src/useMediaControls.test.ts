@@ -314,3 +314,127 @@ describe('useMediaControls — keydown fallback', () => {
     expect(spies.onHeadphoneButtonPress).not.toHaveBeenCalled();
   });
 });
+
+// Coverage for three transport faults reported against Bluetooth
+// headphones, where the only symptom available to a listener is
+// "nothing happened".
+describe('useMediaControls — Bluetooth transport faults', () => {
+  const twoChoiceNode = {
+    id: 'home',
+    content: [{ text: 'Hi.' }],
+    choices: [{ target: 'kitchen' }, { target: 'garden' }],
+    divert: null,
+  };
+  const linearNode = {
+    id: 'hall',
+    content: [{ text: 'A corridor.' }],
+    choices: [],
+    divert: null,
+  };
+
+  function running(overrides: Record<string, unknown> = {}) {
+    return harnessHooks({
+      story: runningStory,
+      currentNode: twoChoiceNode,
+      showInstructions: false,
+      isAuthenticated: true,
+      playerState: 'playing',
+      ...overrides,
+    });
+  }
+
+  // The media session used to report 'none' for four of the six player
+  // states — including 'ended', which is where the player sits for the
+  // whole choice-prompt phase. 'none' tells the OS there is no session,
+  // so it stops routing next/previous to the headset and only play/pause
+  // survives. That is the entire reported symptom.
+  describe('the media session stays live while a story is loaded', () => {
+    it.each([
+      ['playing', 'playing'],
+      ['ended', 'playing'],
+      ['paused', 'paused'],
+      ['loading', 'paused'],
+      ['ready', 'paused'],
+      ['error', 'paused'],
+    ])('maps playerState %p to playbackState %p', (playerState, expected) => {
+      running({ playerState });
+      expect(navigator.mediaSession.playbackState).toBe(expected);
+    });
+
+    it('reports none only when there is genuinely no story', () => {
+      harnessHooks({ story: null, playerState: 'loading' });
+      expect(navigator.mediaSession.playbackState).toBe('none');
+    });
+  });
+
+  // A single 75ms timestamp shared by every transport meant two
+  // different actions arriving together lost one of them: a gesture
+  // emitting play+nexttrack had whichever landed first win, so pressing
+  // skip toggled play/pause instead.
+  describe('transports dedupe independently of one another', () => {
+    it('lets a different action through inside the dedupe window', () => {
+      const { spies } = running();
+      act(() => {
+        mediaSessionHandlers.get('play')?.({} as MediaSessionActionDetails);
+        mediaSessionHandlers.get('nexttrack')?.({} as MediaSessionActionDetails);
+      });
+      expect(spies.onHeadphoneButtonPress).toHaveBeenCalledTimes(1);
+      expect(spies.navigateToTarget).toHaveBeenCalledWith('kitchen');
+    });
+
+    // The original reason the dedupe exists: macOS Chrome fires BOTH a
+    // MediaSession action and a keydown for one media-key press. That
+    // must still collapse to a single navigation.
+    it('still collapses one press arriving on both transports', () => {
+      const { spies } = running();
+      act(() => {
+        mediaSessionHandlers.get('nexttrack')?.({} as MediaSessionActionDetails);
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'MediaTrackNext' }));
+      });
+      expect(spies.navigateToTarget).toHaveBeenCalledTimes(1);
+    });
+
+    it('still collapses a repeated play/pause', () => {
+      const { spies } = running();
+      act(() => {
+        mediaSessionHandlers.get('play')?.({} as MediaSessionActionDetails);
+        mediaSessionHandlers.get('pause')?.({} as MediaSessionActionDetails);
+      });
+      expect(spies.onHeadphoneButtonPress).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // 'choice2' required two choices and had no fallback, so the
+  // previous-track button was inert on every linear node — and on every
+  // node during narration, since choices aren't offered until the
+  // passage ends.
+  describe('previous-track does something on every node', () => {
+    it('selects the second choice when there is one', () => {
+      const { spies } = running();
+      act(() => {
+        mediaSessionHandlers.get('previoustrack')?.({} as MediaSessionActionDetails);
+      });
+      expect(spies.navigateToTarget).toHaveBeenCalledWith('garden');
+      expect(spies.goBack).not.toHaveBeenCalled();
+    });
+
+    it('falls back to going back on a node with no second choice', () => {
+      const { spies } = running({ currentNode: linearNode });
+      act(() => {
+        mediaSessionHandlers.get('previoustrack')?.({} as MediaSessionActionDetails);
+      });
+      expect(spies.goBack).toHaveBeenCalledTimes(1);
+    });
+
+    it('honours an explicit go_back mapping unchanged', () => {
+      const { spies } = running({
+        story: { ...runningStory, settings: { bluetoothControls: { previousTrack: 'go_back' } } },
+      });
+      act(() => {
+        mediaSessionHandlers.get('previoustrack')?.({} as MediaSessionActionDetails);
+      });
+      expect(spies.goBack).toHaveBeenCalledTimes(1);
+      expect(spies.navigateToTarget).not.toHaveBeenCalled();
+    });
+  });
+});

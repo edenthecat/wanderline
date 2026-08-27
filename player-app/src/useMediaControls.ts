@@ -38,10 +38,21 @@ const MEDIA_KEYS_PREVIOUS = new Set<string>(['MediaTrackPrevious', 'MediaPreviou
 
 // macOS Chrome and some Windows builds fire BOTH a
 // MediaSession action handler AND a window keydown for the same
-// OS-level media-key press. Both transports stamp the same ref
+// OS-level media-key press. Both transports stamp the same key
 // before invoking their handler and bail if a sibling stamp landed
 // within this window.
+//
+// Stamped PER ACTION, not globally. A single shared timestamp also
+// swallowed genuinely different actions that arrived together: a
+// Bluetooth gesture emitting `play` and `nexttrack` a few ms apart had
+// whichever landed first win, and the other was discarded in silence.
+// The listener pressed skip and got play/pause. Keying by action keeps
+// the same-press-two-transports case deduped — that press produces the
+// same action on both paths — while letting a real pair through.
 const MEDIA_TRANSPORT_DEDUPE_MS = 75;
+
+/** Logical transports that dedupe independently of one another. */
+type TransportKey = 'playpause' | 'next' | 'previous' | 'seekforward' | 'seekbackward';
 
 type BluetoothAction = 'choice1' | 'choice2' | 'cycle_choices' | 'confirm' | 'divert' | 'go_back';
 
@@ -146,7 +157,7 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
   // the bindings anchored to real state changes.
   const { navigateToTargetRef, navigateToNodeRef, goBackRef, onHeadphoneButtonPressRef } = handlers;
 
-  const mediaTransportLastFiredAtRef = useRef<number>(0);
+  const mediaTransportLastFiredAtRef = useRef<Partial<Record<TransportKey, number>>>({});
   const handleMediaNextRef = useRef<(() => void) | null>(null);
   const handleMediaPreviousRef = useRef<(() => void) | null>(null);
   const startStoryRef = useRef<() => void>(startStory);
@@ -180,10 +191,11 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
     };
   }, [story, showInstructions, startStory]);
 
-  const claimFire = useCallback((): boolean => {
+  const claimFire = useCallback((key: TransportKey): boolean => {
     const now = performance.now();
-    if (now - mediaTransportLastFiredAtRef.current < MEDIA_TRANSPORT_DEDUPE_MS) return false;
-    mediaTransportLastFiredAtRef.current = now;
+    const last = mediaTransportLastFiredAtRef.current[key] ?? 0;
+    if (now - last < MEDIA_TRANSPORT_DEDUPE_MS) return false;
+    mediaTransportLastFiredAtRef.current[key] = now;
     return true;
   }, []);
 
@@ -198,12 +210,12 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
       story.settings?.bluetoothControls?.previousTrack ?? 'choice2';
 
     const handlePlayPause = () => {
-      if (!claimFire()) return;
+      if (!claimFire('playpause')) return;
       onHeadphoneButtonPressRef.current?.();
     };
 
     const handleNext = () => {
-      if (!claimFire()) return;
+      if (!claimFire('next')) return;
       const node = currentNodeRef.current;
       if (!node) return;
       const navigateToTarget = navigateToTargetRef.current;
@@ -240,19 +252,26 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
     };
 
     const handlePrevious = () => {
-      if (!claimFire()) return;
+      if (!claimFire('previous')) return;
       const node = currentNodeRef.current;
       if (!node) return;
       const navigateToTarget = navigateToTargetRef.current;
       const goBack = goBackRef.current;
       if (!navigateToTarget || !goBack) return;
       switch (prevAction) {
-        case 'choice2':
-          if (node.choices.length > 1) {
-            const choice = node.choices[1];
-            if (choice) navigateToTarget(choice.target);
-          }
+        case 'choice2': {
+          // Falls back to goBack when there's no second choice, mirroring
+          // how 'choice1' falls back to the node's divert. Without it the
+          // previous-track button was inert on every linear node — and on
+          // EVERY node during narration, since choices aren't offered
+          // until the passage ends. Registered, wired, and silently doing
+          // nothing is indistinguishable from broken to a listener whose
+          // only feedback is audio.
+          const choice = node.choices[1];
+          if (choice) navigateToTarget(choice.target);
+          else goBack();
           break;
+        }
         case 'cycle_choices':
           if (node.choices.length > 0) {
             setSelectedChoice((c) => Math.max(0, c - 1));
@@ -267,7 +286,7 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
     };
 
     const handleSeekForward = () => {
-      if (!claimFire()) return;
+      if (!claimFire('seekforward')) return;
       const node = currentNodeRef.current;
       if (!node) return;
       const navigateToTarget = navigateToTargetRef.current;
@@ -282,7 +301,7 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
     };
 
     const handleSeekBackward = () => {
-      if (!claimFire()) return;
+      if (!claimFire('seekbackward')) return;
       goBackRef.current?.();
     };
 
@@ -418,9 +437,27 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
   useEffect(() => {
     const ms = navigator.mediaSession;
     if (!ms) return;
-    ms.playbackState =
-      playerState === 'playing' ? 'playing' : playerState === 'paused' ? 'paused' : 'none';
-  }, [playerState]);
+    // 'none' tells the OS this page has no media session at all, and it
+    // stops routing next/previous to the headset — play/pause survives
+    // only because browsers service that against the media element
+    // directly. Four of the six PlayerStates used to map here, including
+    // 'ended', which is the state the player sits in for the whole
+    // choice-prompt phase: audio is audible (through separate elements
+    // that never set 'playing'), the listener is being asked to choose,
+    // and their skip buttons are dead.
+    //
+    // So only report 'none' when there is genuinely no story. 'ended'
+    // reports 'playing' because the choice prompts are sounding;
+    // everything else in-between reports 'paused', which keeps the
+    // session alive without claiming audio that isn't there.
+    if (!story) {
+      ms.playbackState = 'none';
+    } else if (playerState === 'playing' || playerState === 'ended') {
+      ms.playbackState = 'playing';
+    } else {
+      ms.playbackState = 'paused';
+    }
+  }, [playerState, story]);
 
   return { mediaActions };
 }
