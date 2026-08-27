@@ -27,7 +27,6 @@
 // nothing here is persisted as a side effect.
 
 import type { StoryGraph } from '../api/client';
-import { computeStoryHealth } from './storyHealth';
 
 const TERMINAL_TARGETS = new Set(['END', 'DONE']);
 
@@ -70,8 +69,8 @@ export function normalizeStoryGraph<T extends StoryGraph | null | undefined>(
   const nodes: Record<string, unknown> = Object.create(null);
   for (const [id, node] of Object.entries(graph.nodes)) {
     // Tracked per node: `choices.map` always returns a fresh array, so
-    // comparing array identity would rebuild every node on every load
-    // and quietly add `choices: []` / `divert: undefined` keys to nodes
+    // comparing array identity would rebuild every node on every load,
+    // and each rebuild would add `choices` / `divert` keys to nodes
     // that never had them.
     let nodeChanged = false;
     const choices = node.choices?.map((c) => {
@@ -84,29 +83,21 @@ export function normalizeStoryGraph<T extends StoryGraph | null | undefined>(
     if (divert !== node.divert) nodeChanged = true;
     if (nodeChanged) {
       changed = true;
-      nodes[id] = { ...node, ...(choices ? { choices } : {}), divert };
+      const next: Record<string, unknown> = { ...node };
+      if (choices) next.choices = choices;
+      if (divert !== node.divert) next.divert = divert;
+      nodes[id] = next;
     } else {
       nodes[id] = node;
     }
   }
   if (!changed) return graph;
-  const normalized = { ...graph, nodes } as T & StoryGraph;
-
-  // The stored validation blob was computed against the un-qualified
-  // targets and nothing re-validates on read, so a legacy project
-  // carries `unreachable_node` warnings for knots that are reachable
-  // once the targets resolve. Left alone, the Graph tab would paint a
-  // warning badge and the ValidationPanel would list a node that the
-  // health panel — reading the same graph — now calls reachable.
-  const warnings = normalized.validation?.warnings;
-  if (!warnings?.some((w) => w.type === 'unreachable_node')) return normalized;
-  const { reachableNodes } = computeStoryHealth(normalized);
-  const kept = warnings.filter(
-    (w) => !(w.type === 'unreachable_node' && w.nodeId && reachableNodes.has(w.nodeId)),
-  );
-  if (kept.length === warnings.length) return normalized;
-  return {
-    ...normalized,
-    validation: { ...normalized.validation, warnings: kept },
-  } as T & StoryGraph;
+  // `validation` is left exactly as stored. It is tempting to strip
+  // `unreachable_node` warnings that qualification makes obsolete, but
+  // there are none: the backend's findReachableNodes already suffix-
+  // matches bare targets, and it never warns about a dotted id at all.
+  // Filtering them against computeStoryHealth would also delete true
+  // warnings, because its Ink fall-through synthesis reaches knots that
+  // real Ink never enters.
+  return { ...graph, nodes } as T;
 }

@@ -13,9 +13,16 @@ import { normalizeStoryGraph } from '../normalizeStoryGraph';
 import { computeStoryHealth } from '../storyHealth';
 import type { StoryGraph } from '../../api/client';
 
+let line = 0;
 const node = (id: string, over: Record<string, unknown> = {}) => ({
   id,
-  type: 'knot',
+  // Real graphs carry type/parent/lineNumber, and computeStoryHealth's
+  // Ink fall-through walk keys off all three. A helper that omits them
+  // leaves those branches inert and quietly makes reachability
+  // assertions vacuous.
+  type: id.includes('.') ? 'stitch' : 'knot',
+  parent: id.includes('.') ? id.split('.')[0] : null,
+  lineNumber: ++line,
   content: [{ text: 'x', tags: [] }],
   choices: [],
   divert: null,
@@ -158,24 +165,6 @@ describe('normalizeStoryGraph', () => {
     // A plain object literal would swallow this assignment entirely.
     expect(Object.keys(g.nodes)).toContain('__proto__');
   });
-
-  it('drops stale unreachable warnings for nodes the fix makes reachable', () => {
-    const g = graph({
-      inbox: node('inbox', { choices: [{ text: 'read', target: 'read_email_5' }] }),
-      'inbox.read_email_5': node('inbox.read_email_5', { divert: 'outro' }),
-      outro: node('outro', { divert: 'END' }),
-    });
-    g.validation.warnings = [
-      { type: 'unreachable_node', message: 'x', nodeId: 'outro' },
-      { type: 'unreachable_node', message: 'y', nodeId: 'ghost' },
-      { type: 'missing_target', message: 'z', nodeId: 'inbox' },
-    ];
-    const out = normalizeStoryGraph(g);
-    const types = out.validation.warnings.map((w) => `${w.type}:${w.nodeId}`);
-    // `outro` is reachable now; `ghost` still isn't, and unrelated
-    // warnings are untouched.
-    expect(types).toEqual(['unreachable_node:ghost', 'missing_target:inbox']);
-  });
 });
 
 describe('story health on a normalized legacy graph', () => {
@@ -192,14 +181,17 @@ describe('story health on a normalized legacy graph', () => {
     );
   });
 
-  it('still reports a genuinely orphaned node', () => {
+  it('still reports a genuinely orphaned knot', () => {
     const g = normalizeStoryGraph(
       graph({
-        inbox: node('inbox', { divert: 'END' }),
-        'inbox.orphan': node('inbox.orphan', { divert: 'END' }),
+        inbox: node('inbox', { choices: [{ text: 'read', target: 'read_email_5' }] }),
+        'inbox.read_email_5': node('inbox.read_email_5', { divert: 'END' }),
+        // Nothing diverts or chooses into this, and it is not a stitch
+        // of anything, so no fall-through reaches it either.
+        lonely: node('lonely', { divert: 'END' }),
       }),
     );
-    // Tolerance must not become "everything is reachable".
-    expect(computeStoryHealth(g).unreachableNodes).toContain('inbox.orphan');
+    // Qualification must not become "everything is reachable".
+    expect(computeStoryHealth(g).unreachableNodes).toContain('lonely');
   });
 });
