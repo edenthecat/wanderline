@@ -1,32 +1,45 @@
 import { describe, expect, it } from 'vitest';
-import { shouldAutoAdvance } from './App';
+import { autoAdvanceTarget } from './App';
 
-// Passages used to advance on their own unless a node explicitly said
-// not to — and a node with no metadata row, the common case, said
-// nothing. Combined with the database column defaulting to true, that
-// meant effectively every passage advanced whether or not anyone chose
-// it, which reads to a listener as the story moving by itself.
-describe('shouldAutoAdvance', () => {
-  it('is off when neither the node nor the project says anything', () => {
-    expect(shouldAutoAdvance(undefined, undefined)).toBe(false);
-    expect(shouldAutoAdvance({}, {})).toBe(false);
+// Auto-advance is a project setting only — there is no per-node
+// override — and it applies only where there is exactly one way
+// forward. A passage offering a real decision must never take it on
+// the listener's behalf.
+const ON = { autoAdvance: true };
+const OFF = { autoAdvance: false };
+
+describe('autoAdvanceTarget', () => {
+  it('is off unless the project turns it on', () => {
+    expect(autoAdvanceTarget({ choices: [{ target: 'b' }] }, undefined)).toBeNull();
+    expect(autoAdvanceTarget({ choices: [{ target: 'b' }] }, {})).toBeNull();
+    expect(autoAdvanceTarget({ choices: [{ target: 'b' }] }, OFF)).toBeNull();
   });
 
-  it('follows the project setting when the node has no opinion', () => {
-    expect(shouldAutoAdvance(undefined, { autoAdvance: true })).toBe(true);
-    expect(shouldAutoAdvance({}, { autoAdvance: false })).toBe(false);
+  it('advances through a single choice', () => {
+    expect(autoAdvanceTarget({ choices: [{ target: 'b' }] }, ON)).toBe('b');
   });
 
-  // A passage the author deliberately configured wins over the project
-  // default, in both directions.
-  it('lets a node override the project setting', () => {
-    expect(shouldAutoAdvance({ autoAdvance: false }, { autoAdvance: true })).toBe(false);
-    expect(shouldAutoAdvance({ autoAdvance: true }, { autoAdvance: false })).toBe(true);
+  it('advances through a divert when there are no choices', () => {
+    expect(autoAdvanceTarget({ choices: [], divert: 'b' }, ON)).toBe('b');
   });
 
-  it('treats a missing project setting as off, not as unset-means-on', () => {
-    expect(shouldAutoAdvance({}, { captionsDefault: true } as { autoAdvance?: boolean })).toBe(
-      false,
-    );
+  // The rule that matters: a branch is the listener's to make.
+  it('never advances a passage that offers a real decision', () => {
+    expect(autoAdvanceTarget({ choices: [{ target: 'b' }, { target: 'c' }] }, ON)).toBeNull();
+    expect(
+      autoAdvanceTarget({ choices: [{ target: 'b' }, { target: 'c' }], divert: 'd' }, ON),
+    ).toBeNull();
+  });
+
+  it('does not advance a passage with nowhere to go', () => {
+    expect(autoAdvanceTarget({ choices: [], divert: null }, ON)).toBeNull();
+    expect(autoAdvanceTarget({}, ON)).toBeNull();
+    expect(autoAdvanceTarget(null, ON)).toBeNull();
+  });
+
+  // A single choice wins over a divert; that's the path the author
+  // actually offered.
+  it('prefers the single choice when a divert is also present', () => {
+    expect(autoAdvanceTarget({ choices: [{ target: 'b' }], divert: 'd' }, ON)).toBe('b');
   });
 });

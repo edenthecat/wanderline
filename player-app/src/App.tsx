@@ -181,23 +181,30 @@ function processClick(
 }
 
 /**
- * Whether a passage advances on its own once narration ends.
+ * Where a passage goes when it advances on its own, or null if it
+ * shouldn't.
  *
- * Resolution: the node's own setting if the author set one, otherwise
- * the project default, otherwise OFF.
+ * Two rules, both deliberate:
  *
- * This used to read `metadata?.autoAdvance !== false`, so a node with
- * no metadata row — the common case — advanced automatically. Combined
- * with the DB column defaulting to true, effectively every passage
- * advanced whether or not anyone chose that, which reads to a listener
- * as the story moving on its own.
+ *  - It is entirely a project setting. There is no per-node override.
+ *    Auto-advance was previously on unless a node refused, and a node
+ *    with no metadata row — the common case — didn't refuse, so
+ *    effectively every passage advanced whether or not anyone chose it.
+ *
+ *  - It only applies where there is exactly one way forward: a single
+ *    choice, or a divert with no choices. A passage offering a real
+ *    decision must never take it on the listener's behalf, which is
+ *    the difference between a story that flows and one that runs away.
  */
-export function shouldAutoAdvance(
-  metadata: { autoAdvance?: boolean } | undefined,
+export function autoAdvanceTarget(
+  node: { choices?: { target: string }[]; divert?: string | null } | null | undefined,
   settings: { autoAdvance?: boolean } | undefined,
-): boolean {
-  if (typeof metadata?.autoAdvance === 'boolean') return metadata.autoAdvance;
-  return settings?.autoAdvance === true;
+): string | null {
+  if (settings?.autoAdvance !== true || !node) return null;
+  const choices = node.choices ?? [];
+  if (choices.length === 1) return choices[0]?.target ?? null;
+  if (choices.length === 0 && node.divert) return node.divert;
+  return null;
 }
 
 function createInitialClickState(): ClickDetectionState {
@@ -1074,13 +1081,10 @@ export default function App() {
         // Start the sequence
         runChoiceSequence();
       } else if (
-        // Default is "auto-advance on" — only an explicit false opts
-        // out. Keeps the editor's `?? true` default consistent with
-        // what the runtime does for legacy nodes that have no row.
-        shouldAutoAdvance(currentNode.metadata, story.settings) &&
-        currentNode.divert &&
-        story.nodes[currentNode.divert]
+        autoAdvanceTarget(currentNode, story.settings) &&
+        story.nodes[autoAdvanceTarget(currentNode, story.settings)!]
       ) {
+        const target = autoAdvanceTarget(currentNode, story.settings)!;
         // Total post-audio hold = the per-node delayAfterMs (a generic
         // "wait after audio finishes" hint) plus the dedicated
         // autoAdvanceDelayMs (how long the listener has to react to
@@ -1088,10 +1092,7 @@ export default function App() {
         const postAudioHoldMs =
           (currentNode.metadata?.delayAfterMs ?? 0) +
           (currentNode.metadata?.autoAdvanceDelayMs ?? 2000);
-        autoNavigateTimeoutRef.current = setTimeout(
-          () => navigateToNode(currentNode.divert!),
-          postAudioHoldMs,
-        );
+        autoNavigateTimeoutRef.current = setTimeout(() => navigateToNode(target), postAudioHoldMs);
       }
     };
     audio.ontimeupdate = () => {
@@ -1267,14 +1268,13 @@ export default function App() {
   useEffect(() => {
     if (!story || !currentNode || !isAuthenticated || showInstructions) return;
     if (currentNode.audio?.voiceover) return; // handled by playVoiceover's audio.onended
-    if (!shouldAutoAdvance(currentNode.metadata, story?.settings)) return;
-    if (!currentNode.divert || !story.nodes[currentNode.divert]) return;
-    // Compose: pre-roll → (no audio) → post-audio hold → divert.
+    const target = autoAdvanceTarget(currentNode, story?.settings);
+    if (!target || !story.nodes[target]) return;
+    // Compose: pre-roll → (no audio) → post-audio hold → onward.
     const totalDelay =
       (currentNode.metadata?.delayBeforeMs ?? 0) +
       (currentNode.metadata?.delayAfterMs ?? 0) +
       (currentNode.metadata?.autoAdvanceDelayMs ?? 2000);
-    const target = currentNode.divert;
     const t = setTimeout(() => {
       if (currentNodeIdRef.current !== currentNode.id) return;
       navigateToNode(target);
