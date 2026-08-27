@@ -263,7 +263,11 @@ export function createMetadataRouter(pool: Pool): Router {
           choice_1_timestamp_ms = COALESCE($8, node_metadata.choice_1_timestamp_ms),
           choice_2_timestamp_ms = COALESCE($9, node_metadata.choice_2_timestamp_ms),
           no_inline_choice_audio = COALESCE($10, node_metadata.no_inline_choice_audio),
-          character_id = CASE WHEN $11::uuid IS NULL AND node_metadata.character_id IS NOT NULL THEN NULL ELSE COALESCE($11, node_metadata.character_id) END
+          -- $12 distinguishes "key absent" from "key present and null".
+          -- Without it, binding NULL for an omitted characterId cleared
+          -- the column, so saving the transcript override or the timing
+          -- settings silently unassigned the node's character.
+          character_id = CASE WHEN $12::boolean THEN $11::uuid ELSE node_metadata.character_id END
         RETURNING *
       `,
         [
@@ -278,6 +282,7 @@ export function createMetadataRouter(pool: Pool): Router {
           choice2TimestampMs !== undefined ? choice2TimestampMs : null,
           noInlineChoiceAudio !== undefined ? noInlineChoiceAudio : null,
           characterId !== undefined ? characterId : null,
+          characterId !== undefined,
         ],
       );
 

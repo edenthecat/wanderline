@@ -194,6 +194,7 @@ export default function StoryTab({
     metadataLoaded,
     audioByNode,
     audioNames,
+    characters,
     metadataError,
     retryMetadata,
     nodeIdSet,
@@ -629,6 +630,7 @@ export default function StoryTab({
                     projectId={projectId}
                     nodeAudio={audioByNode[node.id]}
                     audioNames={audioNames}
+                    characters={characters}
                     metadataLoaded={metadataLoaded}
                     nodeIdSet={nodeIdSet}
                     nodeIdOptions={nodeIdOptions}
@@ -728,6 +730,7 @@ export default function StoryTab({
                           projectId={projectId}
                           nodeAudio={audioByNode[knot.id]}
                           audioNames={audioNames}
+                          characters={characters}
                           metadataLoaded={metadataLoaded}
                           nodeIdSet={nodeIdSet}
                           nodeIdOptions={nodeIdOptions}
@@ -764,6 +767,7 @@ export default function StoryTab({
                               projectId={projectId}
                               nodeAudio={audioByNode[child.id]}
                               audioNames={audioNames}
+                              characters={characters}
                               metadataLoaded={metadataLoaded}
                               nodeIdSet={nodeIdSet}
                               nodeIdOptions={nodeIdOptions}

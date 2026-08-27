@@ -9,7 +9,12 @@
 
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import * as Y from 'yjs';
-import { audioFileUrl, type AudioAssignments, type NodeMetadata } from '../api/client';
+import {
+  audioFileUrl,
+  type AudioAssignments,
+  type Character,
+  type NodeMetadata,
+} from '../api/client';
 import { useAudition } from '../hooks/useAudition';
 import AuditionButton from './AuditionButton';
 import CollabChoiceTextInput from './CollabChoiceTextInput';
@@ -96,6 +101,8 @@ export interface NodeDetailProps {
   reachableFrom?: string[];
   /** Project id, for resolving attached-audio URLs. */
   projectId: string;
+  /** Characters available to attach to this node. */
+  characters?: Character[];
   /** Clips attached to this node, if any. */
   nodeAudio?: AudioAssignments[string];
   /** audio_file_id -> uploaded name, for labelling the play rows. */
@@ -131,6 +138,7 @@ export default function NodeDetail({
   onSwapChoices,
   onMetadataSave,
   projectId,
+  characters,
   nodeAudio,
   audioNames,
   reachableFrom,
@@ -355,6 +363,14 @@ export default function NodeDetail({
           ))}
         </div>
       )}
+
+      <NodeCharacterPicker
+        nodeId={nodeId}
+        characters={characters}
+        value={metadata?.characterId ?? ''}
+        disabled={!metadataLoaded}
+        onSave={onMetadataSave}
+      />
 
       {showOverrideEditor && (
         <div className="transcript-override">
@@ -747,6 +763,86 @@ function NodeAudioPreview({
         {rows.map((r) => renderRow(`${r.key}:${r.fileId}`, r.fileId, r.label))}
         {sfx.map((fileId, i) => renderRow(`sfx-${i}:${fileId}`, fileId, `SFX ${i + 1}`))}
       </ul>
+    </div>
+  );
+}
+
+// Which character is speaking this passage.
+//
+// The character_id column, the API that validates and stores it, and
+// the player's per-character theming have all existed since the
+// baseline migration — only the editor control was missing, so the
+// field was unreachable outside a direct database edit.
+//
+// Saves immediately on change rather than behind a button: it's a
+// single dropdown with no free text to lose, and the surrounding
+// timing controls that DO batch are the ones with several fields.
+function NodeCharacterPicker({
+  nodeId,
+  characters,
+  value,
+  disabled,
+  onSave,
+}: {
+  nodeId: string;
+  characters?: Character[];
+  value: string;
+  disabled: boolean;
+  onSave: (patch: Partial<NodeMetadata>) => Promise<void>;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // No characters defined yet means nothing to choose between; the
+  // Characters tab is where that starts.
+  if (!characters || characters.length === 0) return null;
+
+  const selected = characters.find((c) => c.id === value);
+
+  async function handleChange(next: string) {
+    setSaving(true);
+    setErr(null);
+    try {
+      // '' from the select means "no character". Send an explicit null:
+      // omitting the key tells the API to leave the value alone, so
+      // clearing would silently do nothing.
+      await onSave({ characterId: next || null });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Failed to save character');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="node-character">
+      <label className="node-character-label" htmlFor={`character-${nodeId}`}>
+        Character
+        {selected && (
+          <span className="node-character-swatch" style={{ background: selected.color }} />
+        )}
+      </label>
+      <select
+        id={`character-${nodeId}`}
+        className="select"
+        value={value}
+        disabled={disabled || saving}
+        onChange={(e) => void handleChange(e.target.value)}
+        aria-label="Character speaking this passage"
+      >
+        <option value="">No character</option>
+        {characters.map((c) => (
+          <option key={c.id} value={c.id}>
+            {c.name}
+          </option>
+        ))}
+      </select>
+      {saving && <span className="text-muted text-sm">Saving…</span>}
+      {err && (
+        <div className="alert alert-error" role="alert">
+          {err}
+        </div>
+      )}
     </div>
   );
 }

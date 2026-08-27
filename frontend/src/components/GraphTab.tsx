@@ -1147,6 +1147,7 @@ function GraphTabInner({
               projectId={projectId}
               nodeAudio={editor.audioByNode[selectedNodeId]}
               audioNames={editor.audioNames}
+              characters={editor.characters}
               nodeIdSet={editor.nodeIdSet}
               nodeIdOptions={editor.nodeIdOptions}
               onChoiceTextEdit={(ci, text) => editor.handleChoiceTextEdit(selectedNodeId, ci, text)}

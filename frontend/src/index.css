@@ -3355,3 +3355,32 @@ details[open] > .audio-section-summary {
 .orphan-actions .audition-btn {
   margin-right: 6px;
 }
+
+/* Per-node character picker. Sits above the voiceover override —
+   who is speaking reads before what they say. */
+.node-character {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+.node-character-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #475569;
+}
+/* The character's own colour, so the assignment is confirmable at a
+   glance without reading the dropdown. */
+.node-character-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: inline-block;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+}
