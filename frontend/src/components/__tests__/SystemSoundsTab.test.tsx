@@ -15,6 +15,8 @@ vi.mock('../../api/client', () => ({
   fetchProjectSettings: vi.fn(),
   updateProjectSettings: vi.fn(),
   fetchAudioFiles: vi.fn(),
+  // Used by the audition control beside each picker.
+  audioFileUrl: (projectId: string, audioId: string) => `/api/${projectId}/audio/${audioId}`,
 }));
 
 const { fetchProjectSettings, updateProjectSettings, fetchAudioFiles } =
