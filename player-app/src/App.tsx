@@ -251,6 +251,15 @@ export default function App() {
   const [passwordInput, setPasswordInput] = useState('');
   const [passwordError, setPasswordError] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  // Auto-advance: the project setting is only the DEFAULT. A listener
+  // who sets it owns it from then on, including across an author
+  // changing that default. Off until the story resolves it, so a slow
+  // load never advances on its own.
+  const [autoAdvance, setAutoAdvance] = useState(false);
+  // Read where a passage ends rather than through the effect's deps:
+  // adding it there would re-run the audio effect and restart
+  // narration under a listener who toggled mid-passage.
+  const autoAdvanceRef = useRef(false);
   const [voiceoverVolume, setVoiceoverVolume] = useState(100);
   const [userIndicatorVolume, setUserIndicatorVolume] = useState(50);
   // Fallbacks are the last link in the resolution chain below, so they
@@ -397,11 +406,24 @@ export default function App() {
           voiceoverVolume?: number;
           backgroundMusicVolume?: number;
           indicatorVolume?: number;
+          autoAdvance?: boolean;
         };
         if (typeof s.voiceoverVolume === 'number') setVoiceoverVolume(s.voiceoverVolume);
         if (typeof s.indicatorVolume === 'number') setUserIndicatorVolume(s.indicatorVolume);
         if (typeof s.backgroundMusicVolume === 'number')
           setUserBgMusicVolume(s.backgroundMusicVolume);
+        // Auto-advance resolves the same way, but per story rather than
+        // per device: it is a fact about how this story reads, and a
+        // standalone build is its own origin anyway.
+        if (typeof s.autoAdvance === 'boolean') setAutoAdvance(s.autoAdvance);
+        const savedAutoAdvance = safeGetItem(
+          localStorage,
+          STORAGE_PREFIX + data.id + '_autoAdvance',
+        );
+        if (savedAutoAdvance === 'true' || savedAutoAdvance === 'false') {
+          setAutoAdvance(savedAutoAdvance === 'true');
+        }
+
         const savedVolumes = safeGetItem(localStorage, STORAGE_PREFIX + 'volumes');
         if (savedVolumes) {
           try {
@@ -624,6 +646,27 @@ export default function App() {
       }
     };
   }, []);
+
+  // Mirror to the ref the audio effect reads. Only that — persisting
+  // here would write on resolution too, freezing the author's default
+  // into storage as though the listener had chosen it, so a later
+  // change to that default could never reach them. Volumes had exactly
+  // this fault; writing solely from the change handler below means
+  // "the listener expressed a preference" is the only path that
+  // records one.
+  useEffect(() => {
+    autoAdvanceRef.current = autoAdvance;
+  }, [autoAdvance]);
+
+  const chooseAutoAdvance = useCallback(
+    (enabled: boolean) => {
+      setAutoAdvance(enabled);
+      if (story) {
+        safeSetItem(localStorage, STORAGE_PREFIX + story.id + '_autoAdvance', String(enabled));
+      }
+    },
+    [story],
+  );
 
   // Save and apply volume settings.
   //
@@ -1102,7 +1145,7 @@ export default function App() {
           // and this branch runs before the auto-advance one — so
           // without this, a single-choice passage that happens to have
           // a choice cue would never advance at all.
-          const onward = autoAdvanceTarget(currentNode, story.settings);
+          const onward = autoAdvanceTarget(currentNode, { autoAdvance: autoAdvanceRef.current });
           if (onward) {
             // Same hold as the no-cue branch below, so two passages
             // configured identically pace identically whether or not
@@ -1121,8 +1164,8 @@ export default function App() {
 
         // Start the sequence
         runChoiceSequence();
-      } else if (autoAdvanceTarget(currentNode, story.settings)) {
-        const target = autoAdvanceTarget(currentNode, story.settings)!;
+      } else if (autoAdvanceTarget(currentNode, { autoAdvance: autoAdvanceRef.current })) {
+        const target = autoAdvanceTarget(currentNode, { autoAdvance: autoAdvanceRef.current })!;
         // Total post-audio hold = the per-node delayAfterMs (a generic
         // "wait after audio finishes" hint) plus the dedicated
         // autoAdvanceDelayMs (how long the listener has to react to
@@ -1309,7 +1352,7 @@ export default function App() {
   useEffect(() => {
     if (!story || !currentNode || !isAuthenticated || showInstructions) return;
     if (currentNode.audio?.voiceover) return; // handled by playVoiceover's audio.onended
-    const target = autoAdvanceTarget(currentNode, story?.settings);
+    const target = autoAdvanceTarget(currentNode, { autoAdvance });
     if (!target) return;
     // Compose: pre-roll → (no audio) → post-audio hold → onward.
     const totalDelay =
@@ -1326,7 +1369,7 @@ export default function App() {
       navigateToTargetRef.current?.(target);
     }, totalDelay);
     return () => clearTimeout(t);
-  }, [story, currentNode, navigateToNode, isAuthenticated, showInstructions]);
+  }, [story, currentNode, navigateToNode, isAuthenticated, showInstructions, autoAdvance]);
 
   // Debounce showing connection issues to avoid flashing for quick retries
   useEffect(() => {
@@ -2009,8 +2052,29 @@ export default function App() {
           aria-modal="false"
         >
           <h3 id="settings-title" style={styles.settingsTitle}>
-            Volume Settings
+            Settings
           </h3>
+          <div style={styles.settingsCheckboxRow}>
+            <input
+              type="checkbox"
+              id="auto-advance"
+              checked={autoAdvance}
+              onChange={(e) => chooseAutoAdvance(e.target.checked)}
+              style={styles.settingsCheckbox}
+              aria-describedby="auto-advance-hint"
+            />
+            {/* Label wraps the name only: a hint inside it would be
+                read out as part of the control's name. */}
+            <label htmlFor="auto-advance" style={styles.settingsCheckboxLabel}>
+              Advance automatically
+            </label>
+            <span id="auto-advance-hint" style={styles.settingsCheckboxHint}>
+              Moves on by itself where there is only one way forward. Passages that ask you to
+              choose always wait for you.
+            </span>
+          </div>
+          <div style={styles.settingsDivider} />
+          <h4 style={styles.saveSlotsTitle}>Volume</h4>
           <div style={styles.settingsRow}>
             <label htmlFor="narration-volume" style={styles.settingsLabel}>
               Narration

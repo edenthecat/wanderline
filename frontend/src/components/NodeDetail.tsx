@@ -430,10 +430,10 @@ export default function NodeDetail({
       <div className="transcript-override timing-controls">
         <label className="transcript-override-label">Timing & auto-advance</label>
         <p className="text-sm text-muted transcript-override-hint">
-          How long this node pauses when the player advances past it. Advancing itself is a project
-          setting &mdash; Settings &rarr; Player display &rarr; &ldquo;Advance automatically&rdquo;
+          How long this node pauses when the player advances past it. Whether it advances at all is
+          up to the listener &mdash; Settings &rarr; Player display sets where their toggle starts
           &mdash; and applies only to passages with a single way forward, so these fields have no
-          effect while it is off.
+          effect for a listener who has it off.
         </p>
         <div className="timing-grid">
           <label className="timing-field">
@@ -458,7 +458,7 @@ export default function NodeDetail({
               value={delayAfterMs}
               onChange={(e) => setDelayAfterMs(parseMs(e.target.value))}
               disabled={timingLocked}
-              title="Only used when the project setting \u201cAdvance automatically\u201d is on. Stacks on top of the auto-advance delay below."
+              title="Only used for a listener who has \u201cAdvance automatically\u201d on. Stacks on top of the auto-advance delay below."
             />
           </label>
           <label className="timing-field">
