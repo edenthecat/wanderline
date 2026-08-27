@@ -302,3 +302,78 @@ describe('background music survives a rejected play', () => {
     expect(bgm.playCount).toBe(settled);
   });
 });
+
+// The author's chosen defaults were being applied twice: once when
+// seeding the volume state from story.settings, then again when
+// setting element.volume. A 30% music default played at 9%, a 50%
+// indicator default at 25%. Voiceover escaped only because its default
+// is 100 and 1 x 1 = 1, which is why this went unnoticed.
+describe('author-chosen default volumes are applied exactly once', () => {
+  // Two choices, because per-choice indicators only exist on a real
+  // branch — the shared fixture's single-choice node never wires the
+  // second cue up.
+  function storyWithVolumes(settings: Record<string, unknown>) {
+    const story = makeStory({
+      backgroundMusic: ['bgm.mp3'],
+      indicatorAudio: { choice1: 'c1.mp3', choice2: 'c2.mp3' },
+      settings,
+    }) as Record<string, unknown>;
+    const nodes = story.nodes as Record<string, Record<string, unknown>>;
+    nodes.start.choices = [
+      { text: 'Go on', target: 'next' },
+      { text: 'Turn back', target: 'next' },
+    ];
+    return story;
+  }
+
+  it('plays background music at the level the author set', async () => {
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = storyWithVolumes({
+      backgroundMusicVolume: 30,
+    });
+    render(<App />);
+    await startTheStory();
+
+    await waitFor(() => expect(audioInstances.some((a) => a.src.includes('bgm.mp3'))).toBe(true));
+    const bgm = [...audioInstances].reverse().find((a) => a.src.includes('bgm.mp3'))!;
+    expect(bgm.volume).toBeCloseTo(0.3, 5); // not 0.09
+  });
+
+  it('plays choice indicators at the level the author set', async () => {
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = storyWithVolumes({
+      indicatorVolume: 50,
+    });
+    render(<App />);
+    await startTheStory();
+
+    // Preloading also constructs an element for this file that never
+    // plays and never gets a volume, so assert on the cue the player
+    // actually wires up rather than on construction order.
+    await waitFor(() => {
+      const cues = audioInstances.filter((a) => a.src.includes('c1.mp3'));
+      expect(cues.some((a) => Math.abs(a.volume - 0.5) < 1e-5)).toBe(true); // not 0.25
+    });
+  });
+
+  it('plays voiceover at the level the author set', async () => {
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = storyWithVolumes({
+      voiceoverVolume: 60,
+    });
+    render(<App />);
+    await startTheStory();
+
+    const vo = voiceoverFor('start.mp3')!;
+    await waitFor(() => expect(vo.volume).toBeCloseTo(0.6, 5));
+  });
+
+  // With no author setting the player falls back to its own defaults,
+  // which have to match the editor's (VolumesTab: 100 / 30 / 50).
+  it('falls back to the same music default the editor shows', async () => {
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = storyWithVolumes({});
+    render(<App />);
+    await startTheStory();
+
+    await waitFor(() => expect(audioInstances.some((a) => a.src.includes('bgm.mp3'))).toBe(true));
+    const bgm = [...audioInstances].reverse().find((a) => a.src.includes('bgm.mp3'))!;
+    expect(bgm.volume).toBeCloseTo(0.3, 5);
+  });
+});
