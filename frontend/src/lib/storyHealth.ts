@@ -17,7 +17,6 @@
 //     Coarse reading-time estimate at 160 wpm (typical narrator pace).
 
 import type { StoryGraph, StoryNode } from '../api/client';
-import { resolveTarget } from './resolveTarget';
 
 const SINK_TARGETS = new Set(['END', 'DONE', '']);
 
@@ -110,9 +109,6 @@ export function computeStoryHealth(graph: StoryGraph | null | undefined): StoryH
     };
   }
   const allIds = Object.keys(graph.nodes ?? {});
-  // Built once; resolveTarget only needs membership + a suffix scan,
-  // and rebuilding it per edge would make the BFS allocate O(n) per step.
-  const nodeIds = new Set(allIds);
   const reachable = new Set<string>();
   const queue: string[] = [];
   if (graph.startNode && graph.nodes[graph.startNode]) {
@@ -128,15 +124,12 @@ export function computeStoryHealth(graph: StoryGraph | null | undefined): StoryH
     const node = graph.nodes[id];
     if (!node) continue;
     for (const target of outgoingTargets(node, graph)) {
-      // Bare stitch targets (`-> read_email_5` inside `== inbox ==`)
-      // name a real node; stored graphs from before the parser fix
-      // still hold them unqualified. Skipping them here is what
-      // reported working stories as unreachable.
-      const resolved = resolveTarget(target, id, nodeIds);
-      if (!resolved) continue; // dangling target — counted as a validation error elsewhere
-      if (reachable.has(resolved)) continue;
-      reachable.add(resolved);
-      queue.push(resolved);
+      // Targets are qualified at the API boundary (normalizeStoryGraph),
+      // so an id that isn't here is genuinely dangling.
+      if (!graph.nodes[target]) continue; // counted as a validation error elsewhere
+      if (reachable.has(target)) continue;
+      reachable.add(target);
+      queue.push(target);
     }
   }
 

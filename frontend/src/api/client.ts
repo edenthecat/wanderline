@@ -2,6 +2,10 @@
  * API client — thin wrappers around fetch() with session cookies.
  */
 
+// Type-only cycle (normalizeStoryGraph imports StoryGraph from here),
+// erased at build, so there is no runtime import cycle.
+import { normalizeStoryGraph } from '../lib/normalizeStoryGraph';
+
 const API_BASE = '/api';
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -184,7 +188,13 @@ export function fetchProjects(): Promise<{ projects: ProjectSummary[] }> {
 }
 
 export function fetchProject(id: string): Promise<{ project: ProjectDetail }> {
-  return request(`/projects/${id}`);
+  // Qualify bare stitch targets once, here, so every tab sees the same
+  // graph. See lib/normalizeStoryGraph for why this is a boundary
+  // concern and not a per-consumer one.
+  return request<{ project: ProjectDetail }>(`/projects/${id}`).then((res) => ({
+    ...res,
+    project: { ...res.project, story_graph: normalizeStoryGraph(res.project.story_graph) },
+  }));
 }
 
 export function createProject(

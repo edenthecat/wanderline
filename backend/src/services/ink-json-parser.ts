@@ -153,12 +153,22 @@ function findDiverts(content: unknown[], currentKnot?: string): string[] {
         if (target.includes('$')) {
           continue;
         }
-        // Same resolution as the standalone-divert branch below. These
-        // were two separate copies of this logic and drifted; sharing
-        // one keeps a fix in either place from missing the other.
-        const resolved = resolveRelativeJsonTarget(target, currentKnot);
-        if (resolved && !resolved.startsWith('0.')) {
-          diverts.push(resolved);
+        // Handle relative paths like .^.^.^.stitch_name
+        if (target.startsWith('.')) {
+          // Extract the final component (stitch name)
+          const parts = target.split('.');
+          const lastPart = parts[parts.length - 1];
+          if (lastPart && !lastPart.startsWith('^') && lastPart !== 's') {
+            // This is a relative reference to a stitch
+            if (currentKnot) {
+              diverts.push(`${currentKnot}.${lastPart}`);
+            } else {
+              diverts.push(lastPart);
+            }
+          }
+        } else if (!target.startsWith('0.')) {
+          // Absolute reference
+          diverts.push(target);
         }
       }
     } else if (Array.isArray(item)) {
@@ -286,17 +296,13 @@ function parseKnotContent(id: string, content: unknown[], parent: string | null)
 
       // Standalone divert (not inside choice)
       if ('->' in obj) {
-        const rawTarget = obj['->'] as string;
-        // A relative target (`.^.^.stitch`) was excluded outright, so a
-        // knot falling through to its own first stitch lost its divert
-        // entirely — the editor showed a dead end and the player had
-        // nowhere to advance to. findDiverts in this same file already
-        // resolves this form for choices; the standalone branch simply
-        // never learned to.
-        // The enclosing knot: `parent` for a stitch, the node's own id
-        // for a knot.
-        const target = resolveRelativeJsonTarget(rawTarget, parent ?? id);
-        if (target && !target.startsWith('0.') && !target.includes('$') && !node.divert) {
+        const target = obj['->'] as string;
+        if (
+          !target.startsWith('.') &&
+          !target.startsWith('0.') &&
+          !target.includes('$') &&
+          !node.divert
+        ) {
           node.divert = target;
         }
       }
@@ -365,35 +371,6 @@ function findStartNode(nodes: Record<string, StoryNode>): string {
   }
 
   return '';
-}
-
-// A knot or stitch name as an author may write it. Compiled Ink paths
-// also end in things that are NOT passages — container indices (`.^.^.2`)
-// and generated names (`.^.0.g-0`, `.c-0`) — and turning those into
-// `<knot>.2` or `<knot>.g-0` invents an id that names nothing. That is
-// the same phantom-broken-link symptom this parser is meant to stop
-// producing, so anything that isn't a legal identifier is rejected.
-const INK_IDENTIFIER = /^[A-Za-z_]\w*$/;
-
-/**
- * Resolve a compiled-Ink divert target to a node id.
- *
- * Absolute targets pass through. A relative target (`.^.^.stitch`) is
- * reduced to its last component and qualified against the enclosing
- * knot. Returns null when the target does not name a passage, which
- * callers treat as "no divert here" rather than inventing one.
- */
-function resolveRelativeJsonTarget(
-  target: string,
-  currentKnot: string | null | undefined,
-): string | null {
-  if (!target.startsWith('.')) return target;
-  const parts = target.split('.');
-  const lastPart = parts[parts.length - 1];
-  // `s` is the compiler's own container name and is a legal identifier,
-  // so it has to be excluded by name rather than by shape.
-  if (!lastPart || lastPart === 's' || !INK_IDENTIFIER.test(lastPart)) return null;
-  return currentKnot ? `${currentKnot}.${lastPart}` : lastPart;
 }
 
 /**
