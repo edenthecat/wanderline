@@ -1,0 +1,147 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import App, { fallThroughTarget, autoAdvanceTarget } from './App';
+
+// Ink's implicit continuation: entering a knot runs its first stitch,
+// and a stitch that ends without a divert continues into the next
+// sibling. Neither parser materialises that as a divert — validateGraph
+// explicitly skips such knots, and storyHealth walks parent/lineNumber
+// to compensate for reachability.
+//
+// The player did not compensate. "No choices and no divert" was read as
+// the end of the story, so a chapter's opening prose printed The End
+// and the rest of the chapter was unreachable in playback while the
+// editor showed it as perfectly healthy.
+
+class MockAudio {
+  src = '';
+  preload = '';
+  volume = 1;
+  loop = false;
+  paused = true;
+  currentTime = 0;
+  duration = 0;
+  oncanplaythrough: (() => void) | null = null;
+  onended: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  onstalled: (() => void) | null = null;
+  constructor(src?: string) {
+    this.src = src || '';
+  }
+  play() {
+    this.paused = false;
+    return Promise.resolve();
+  }
+  pause() {
+    this.paused = true;
+  }
+  load() {}
+  addEventListener() {}
+  removeEventListener() {}
+}
+
+const knot = (id: string, over: Record<string, unknown> = {}) => ({
+  id,
+  type: 'knot',
+  parent: null,
+  lineNumber: 1,
+  content: [{ text: id + ' prose.' }],
+  choices: [],
+  divert: null,
+  tags: [],
+  ...over,
+});
+const stitch = (id: string, parent: string, line: number, over: Record<string, unknown> = {}) => ({
+  ...knot(id, over),
+  type: 'stitch',
+  parent,
+  lineNumber: line,
+});
+
+const chapterStory = {
+  id: 'ft',
+  title: 'FT',
+  audioBaseUrl: './audio/',
+  startNode: 'chapter',
+  nodes: {
+    chapter: knot('chapter'),
+    'chapter.scene_one': stitch('chapter.scene_one', 'chapter', 4),
+    'chapter.scene_two': stitch('chapter.scene_two', 'chapter', 8, { divert: 'END' }),
+  },
+};
+
+beforeEach(() => {
+  vi.stubGlobal('Audio', MockAudio);
+  localStorage.clear();
+});
+afterEach(() => {
+  cleanup();
+  localStorage.clear();
+  delete (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__;
+  vi.unstubAllGlobals();
+});
+
+describe('fallThroughTarget', () => {
+  const nodes = chapterStory.nodes as unknown as Record<
+    string,
+    { id: string; type?: string; parent?: string | null; lineNumber?: number }
+  >;
+
+  it('sends a knot into its first stitch by line order', () => {
+    expect(fallThroughTarget(chapterStory.nodes.chapter, nodes)).toBe('chapter.scene_one');
+  });
+
+  it('sends a stitch into its next sibling', () => {
+    expect(fallThroughTarget(chapterStory.nodes['chapter.scene_one'], nodes)).toBe(
+      'chapter.scene_two',
+    );
+  });
+
+  it('stops at the last stitch', () => {
+    expect(fallThroughTarget(chapterStory.nodes['chapter.scene_two'], nodes)).toBeNull();
+  });
+
+  it('leaves a passage with its own way forward alone', () => {
+    expect(fallThroughTarget(knot('k', { divert: 'somewhere' }), nodes)).toBeNull();
+    expect(fallThroughTarget(knot('k', { choices: [{ target: 'x' }] }), nodes)).toBeNull();
+  });
+
+  it('reports a knot with no stitches as a real terminus', () => {
+    expect(fallThroughTarget(knot('lonely'), { lonely: knot('lonely') })).toBeNull();
+  });
+});
+
+describe('auto-advance across a fall-through', () => {
+  const nodes = chapterStory.nodes as unknown as Record<
+    string,
+    { id: string; type?: string; parent?: string | null; lineNumber?: number }
+  >;
+
+  it('advances into the first stitch when enabled', () => {
+    expect(autoAdvanceTarget(chapterStory.nodes.chapter, { autoAdvance: true }, nodes)).toBe(
+      'chapter.scene_one',
+    );
+  });
+
+  it('stays put when the listener has it off', () => {
+    expect(autoAdvanceTarget(chapterStory.nodes.chapter, { autoAdvance: false }, nodes)).toBeNull();
+  });
+});
+
+describe('a chapter that opens with prose', () => {
+  it('does not print The End on the knot', async () => {
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = chapterStory;
+    render(<App />);
+    fireEvent.click(await screen.findByLabelText('Start the story'));
+    expect(await screen.findByText('chapter prose.')).toBeTruthy();
+    expect(screen.queryByText('The End')).toBeNull();
+  });
+
+  it('offers Continue into the rest of the chapter', async () => {
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = chapterStory;
+    render(<App />);
+    fireEvent.click(await screen.findByLabelText('Start the story'));
+    fireEvent.click(await screen.findByLabelText('Continue to next part of the story'));
+    expect(await screen.findByText('chapter.scene_one prose.')).toBeTruthy();
+  });
+});

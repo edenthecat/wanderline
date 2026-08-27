@@ -196,14 +196,79 @@ function processClick(
  *    decision must never take it on the listener's behalf, which is
  *    the difference between a story that flows and one that runs away.
  */
+/**
+ * Where a passage falls through to when it names nowhere.
+ *
+ * Ink runs a knot by running its first stitch, and a stitch that ends
+ * without a divert continues into the next sibling. Neither parser
+ * materialises that as a divert — `storyHealth` compensates the same
+ * way for reachability — so without this the player reads "no choices,
+ * no divert" as the end of the story and prints The End in the middle
+ * of a chapter.
+ *
+ * Returns null when the passage really is a terminus.
+ */
+export function fallThroughTarget(
+  // `id` optional so callers holding a partially-typed node (the
+  // auto-advance path) can pass it through. An absent id simply matches
+  // no children and no sibling, which is the correct answer for it.
+  node:
+    | {
+        id?: string;
+        type?: string;
+        parent?: string | null;
+        choices?: { target: string }[];
+        divert?: string | null;
+      }
+    | null
+    | undefined,
+  nodes: Record<string, { id: string; type?: string; parent?: string | null; lineNumber?: number }>,
+): string | null {
+  if (!node || node.divert || (node.choices?.length ?? 0) > 0) return null;
+  const byLine = (a: { lineNumber?: number }, b: { lineNumber?: number }) =>
+    (a.lineNumber ?? 0) - (b.lineNumber ?? 0);
+  if (node.type === 'knot') {
+    const first = Object.values(nodes)
+      .filter((n) => n.parent === node.id && n.type === 'stitch')
+      .sort(byLine)[0];
+    return first?.id ?? null;
+  }
+  if (node.type === 'stitch' && node.parent) {
+    const siblings = Object.values(nodes)
+      .filter((n) => n.parent === node.parent && n.type === 'stitch')
+      .sort(byLine);
+    const i = siblings.findIndex((n) => n.id === node.id);
+    return i >= 0 ? (siblings[i + 1]?.id ?? null) : null;
+  }
+  return null;
+}
+
 export function autoAdvanceTarget(
-  node: { choices?: { target: string }[]; divert?: string | null } | null | undefined,
+  node:
+    | {
+        id?: string;
+        type?: string;
+        parent?: string | null;
+        choices?: { target: string }[];
+        divert?: string | null;
+      }
+    | null
+    | undefined,
   settings: { autoAdvance?: boolean } | undefined,
+  // Optional: pass the story's nodes to also advance across Ink's
+  // implicit continuation. Without it a fall-through passage stalls
+  // with auto-advance on, while the manual Continue button works —
+  // the setting would make the story *less* able to progress.
+  nodes?: Record<
+    string,
+    { id: string; type?: string; parent?: string | null; lineNumber?: number }
+  >,
 ): string | null {
   if (settings?.autoAdvance !== true || !node) return null;
   const choices = node.choices ?? [];
   if (choices.length === 1) return choices[0]?.target ?? null;
   if (choices.length === 0 && node.divert) return node.divert;
+  if (choices.length === 0 && nodes) return fallThroughTarget(node, nodes);
   return null;
 }
 
@@ -1145,7 +1210,11 @@ export default function App() {
           // and this branch runs before the auto-advance one — so
           // without this, a single-choice passage that happens to have
           // a choice cue would never advance at all.
-          const onward = autoAdvanceTarget(currentNode, { autoAdvance: autoAdvanceRef.current });
+          const onward = autoAdvanceTarget(
+            currentNode,
+            { autoAdvance: autoAdvanceRef.current },
+            story.nodes,
+          );
           if (onward) {
             // Same hold as the no-cue branch below, so two passages
             // configured identically pace identically whether or not
@@ -1164,8 +1233,14 @@ export default function App() {
 
         // Start the sequence
         runChoiceSequence();
-      } else if (autoAdvanceTarget(currentNode, { autoAdvance: autoAdvanceRef.current })) {
-        const target = autoAdvanceTarget(currentNode, { autoAdvance: autoAdvanceRef.current })!;
+      } else if (
+        autoAdvanceTarget(currentNode, { autoAdvance: autoAdvanceRef.current }, story.nodes)
+      ) {
+        const target = autoAdvanceTarget(
+          currentNode,
+          { autoAdvance: autoAdvanceRef.current },
+          story.nodes,
+        )!;
         // Total post-audio hold = the per-node delayAfterMs (a generic
         // "wait after audio finishes" hint) plus the dedicated
         // autoAdvanceDelayMs (how long the listener has to react to
@@ -1352,7 +1427,7 @@ export default function App() {
   useEffect(() => {
     if (!story || !currentNode || !isAuthenticated || showInstructions) return;
     if (currentNode.audio?.voiceover) return; // handled by playVoiceover's audio.onended
-    const target = autoAdvanceTarget(currentNode, { autoAdvance });
+    const target = autoAdvanceTarget(currentNode, { autoAdvance }, story.nodes);
     if (!target) return;
     // Compose: pre-roll → (no audio) → post-audio hold → onward.
     const totalDelay =
@@ -1950,10 +2025,15 @@ export default function App() {
     );
   }
 
+  // Ink's implicit continuation: a knot runs its first stitch, a stitch
+  // continues into its next sibling. Not materialised by the parser, so
+  // it has to be resolved here or a chapter's opening prose reads as
+  // the end of the story.
+  const fallThrough = story ? fallThroughTarget(currentNode, story.nodes) : null;
   const isEnd =
     reachedEnding ||
     currentNode.tags.includes('ending') ||
-    (currentNode.choices.length === 0 && !currentNode.divert) ||
+    (currentNode.choices.length === 0 && !currentNode.divert && !fallThrough) ||
     currentNode.divert === 'END' ||
     currentNode.divert === 'DONE';
 
@@ -2356,11 +2436,11 @@ export default function App() {
           </nav>
         )}
 
-        {currentNode.divert && currentNode.choices.length === 0 && !isEnd && (
+        {(currentNode.divert || fallThrough) && currentNode.choices.length === 0 && !isEnd && (
           <button
             onClick={(e) => {
               e.stopPropagation();
-              navigateToTarget(currentNode.divert!);
+              navigateToTarget(currentNode.divert ?? fallThrough!);
             }}
             style={styles.continueBtn}
             aria-label="Continue to next part of the story"
