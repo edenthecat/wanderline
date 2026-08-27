@@ -59,8 +59,29 @@ describe('Story graph view', () => {
   });
 
   it('renders missing-target nodes flagged as missing', () => {
+    // Needs a name that resolves to nothing anywhere. This used to
+    // lean on the shared fixture's `-> actual_credits`, but that is a
+    // bare reference to `credits`'s own stitch and was only ever
+    // "missing" because the parser failed to qualify it.
+    const ink = `=== _intro ===
+The story starts.
++ [Go] -> nowhere_at_all
+`;
+    cy.apiCreateProject('Graph missing target').then((id) => {
+      cy.apiUploadInk(id, ink);
+      cy.visit(`/projects/${id}`);
+      cy.contains('button', 'Graph').click();
+      cy.get('[data-testid="story-graph"]', { timeout: 10000 }).should('be.visible');
+      cy.get('[data-testid="story-graph"]').find('.graph-node-card.is-missing').should('exist');
+    });
+  });
+
+  it('does not flag a bare stitch reference as missing', () => {
+    // `-> actual_credits` inside `== credits ==` names that knot's own
+    // stitch, so it resolves to `credits.actual_credits`. Every target
+    // in the fixture names a real node; nothing may render as broken.
     cy.get('[data-testid="story-graph"]').contains('actual_credits').should('exist');
-    cy.get('[data-testid="story-graph"]').find('.graph-node-card.is-missing').should('exist');
+    cy.get('[data-testid="story-graph"]').find('.graph-node-card.is-missing').should('not.exist');
   });
 
   it('renders per-choice rows inside the node card', () => {
