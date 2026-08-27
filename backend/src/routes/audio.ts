@@ -1205,6 +1205,115 @@ export function createAudioRouter(pool: Pool): Router {
   );
 
   // Re-match existing unassigned audio files to nodes
+  /**
+   * @openapi
+   * /projects/{id}/audio/assignments/audit:
+   *   get:
+   *     summary: Report assignments whose filename resolves elsewhere.
+   *     description: |
+   *       Read-only. Re-runs the matcher over every ALREADY-ASSIGNED
+   *       audio file and reports the ones now pointing at a different
+   *       node than the one they sit on.
+   *
+   *       `/rematch` cannot surface these: it skips any file that
+   *       already has an assignment, so a project populated under
+   *       older matching logic never gets re-examined. That was fine
+   *       while the matcher only ever gained precision, but a matcher
+   *       BUG leaves silently wrong assignments that nothing revisits.
+   *
+   *       Deliberately does not change anything. A filename that
+   *       disagrees with its node is often intentional — an author may
+   *       have assigned a clip by hand — so this produces a list to
+   *       review rather than a correction to trust.
+   *     tags: [Audio]
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema: { type: string, format: uuid }
+   *     responses:
+   *       200:
+   *         description: Assignments that disagree with the matcher.
+   */
+  router.get('/assignments/audit', async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+
+      const projectResult = await pool.query(
+        `SELECT p.id, ps.story_graph
+           FROM projects p
+           LEFT JOIN project_stories ps ON p.id = ps.project_id
+          WHERE p.id = $1`,
+        [id],
+      );
+      if (projectResult.rows.length === 0) {
+        res.status(404).json({ error: 'Project not found' });
+        return;
+      }
+      const storyGraph = projectResult.rows[0].story_graph;
+      if (!storyGraph) {
+        res.status(400).json({ error: 'No story uploaded yet' });
+        return;
+      }
+
+      const matchTables = buildMatchTables(storyGraph.nodes);
+
+      const rows = await pool.query(
+        `SELECT naa.node_id, naa.audio_type, naa.audio_file_id,
+                af.original_name, af.filename
+           FROM node_audio_assignments naa
+           JOIN audio_files af ON naa.audio_file_id = af.id
+          WHERE naa.project_id = $1
+          ORDER BY naa.node_id, naa.audio_type`,
+        [id],
+      );
+
+      const disagreements: {
+        audioFileId: string;
+        filename: string;
+        currentNodeId: string;
+        currentAudioType: string;
+        suggestedNodeId: string | null;
+        suggestedAudioType: string | null;
+        reason: 'different-node' | 'different-type' | 'no-longer-matches';
+        currentNodeExists: boolean;
+      }[] = [];
+
+      for (const row of rows.rows) {
+        const match = matchAudioFile(row.original_name, matchTables);
+        const suggestedNodeId = match?.nodeId ?? null;
+        const suggestedAudioType = match?.audioType ?? null;
+
+        // An unmatchable filename is not evidence of anything: plenty
+        // of clips are named in ways the matcher was never meant to
+        // read, and flagging them would bury the real signal.
+        if (!suggestedNodeId) continue;
+        if (suggestedNodeId === row.node_id && suggestedAudioType === row.audio_type) continue;
+
+        disagreements.push({
+          audioFileId: row.audio_file_id,
+          filename: row.original_name,
+          currentNodeId: row.node_id,
+          currentAudioType: row.audio_type,
+          suggestedNodeId,
+          suggestedAudioType,
+          reason: suggestedNodeId !== row.node_id ? 'different-node' : 'different-type',
+          // A node the story no longer contains is the strongest
+          // signal in the report: the assignment cannot be correct.
+          currentNodeExists: Object.prototype.hasOwnProperty.call(storyGraph.nodes, row.node_id),
+        });
+      }
+
+      res.json({
+        totalAssignments: rows.rows.length,
+        disagreements,
+      });
+    } catch (error) {
+      req.log.error({ err: error }, 'Failed to audit audio assignments');
+      res.status(500).json({ error: 'Failed to audit audio assignments' });
+    }
+  });
+
   router.post('/rematch', async (req: Request, res: Response) => {
     try {
       const { id } = req.params;

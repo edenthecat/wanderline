@@ -1145,6 +1145,30 @@ export async function uploadProjectIcon(
   return res.json();
 }
 
+export interface AssignmentDisagreement {
+  audioFileId: string;
+  filename: string;
+  currentNodeId: string;
+  currentAudioType: string;
+  suggestedNodeId: string | null;
+  suggestedAudioType: string | null;
+  reason: 'different-node' | 'different-type' | 'no-longer-matches';
+  /** False when the story no longer contains the node it's assigned to. */
+  currentNodeExists: boolean;
+}
+
+/**
+ * Read-only report of assignments whose filename resolves to a
+ * different node than the one they're on. Changes nothing — rematch
+ * skips already-assigned files, so a project populated under older
+ * matching logic is never re-examined on its own.
+ */
+export function auditAudioAssignments(
+  projectId: string,
+): Promise<{ totalAssignments: number; disagreements: AssignmentDisagreement[] }> {
+  return request(`/projects/${projectId}/audio/assignments/audit`);
+}
+
 export function deleteAllProjectAudio(projectId: string): Promise<{ success: boolean }> {
   return request(`/projects/${projectId}/audio`, { method: 'DELETE' });
 }

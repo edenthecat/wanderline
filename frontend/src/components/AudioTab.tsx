@@ -19,6 +19,7 @@ import {
   type StoryGraph,
 } from '../api/client';
 import OrphanedAudioPanel from './OrphanedAudioPanel';
+import AssignmentAuditPanel from './AssignmentAuditPanel';
 import { useYjs } from '../hooks/useYjs';
 import { bumpLiveSignal, useLiveSignal } from '../hooks/useLiveSignal';
 import { useAudition } from '../hooks/useAudition';
@@ -454,6 +455,10 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
           </div>
         </div>
       )}
+
+      {/* Not gated on `coverage`: the audit reads assignments directly
+          and is useful even when the coverage summary hasn't loaded. */}
+      <AssignmentAuditPanel projectId={projectId} />
 
       {coverage && (
         <OrphanedAudioPanel
