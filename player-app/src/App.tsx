@@ -1074,7 +1074,22 @@ export default function App() {
             await playAudio(choice2AudioRef.current);
             if (isStale()) return;
           }
-          // Wait 2 seconds then repeat
+          // A passage with only one way forward and auto-advance on
+          // plays its cue ONCE and then moves on. Repeating it would
+          // loop forever on a passage that has no decision to wait for,
+          // and this branch runs before the auto-advance one — so
+          // without this, a single-choice passage that happens to have
+          // a choice cue would never advance at all.
+          const onward = autoAdvanceTarget(currentNode, story.settings);
+          if (onward && story.nodes[onward]) {
+            autoNavigateTimeoutRef.current = setTimeout(
+              () => navigateToNode(onward),
+              story.settings?.choiceAudioDelayMs ?? 2000,
+            );
+            return;
+          }
+          // Otherwise the listener still has a choice to make: keep
+          // offering it.
           choiceRepeatIntervalRef.current = setTimeout(runChoiceSequence, 2000);
         };
 

@@ -377,3 +377,73 @@ describe('author-chosen default volumes are applied exactly once', () => {
     expect(bgm.volume).toBeCloseTo(0.3, 5);
   });
 });
+
+// Choice cues and auto-advance interact: the cue branch runs first, so
+// a single-choice passage that has a cue would loop it forever and
+// never advance. It should play the cue once, then move on — while a
+// real branch keeps offering its choices indefinitely.
+describe('choice audio and auto-advance', () => {
+  function storyWith(choices: { text: string; target: string }[], autoAdvance: boolean) {
+    return makeStory({
+      settings: { autoAdvance },
+      indicatorAudio: { choice1: 'c1.mp3', choice2: 'c2.mp3' },
+      nodes: {
+        start: {
+          id: 'start',
+          type: 'knot',
+          content: [{ text: 'The beginning.' }],
+          choices,
+          divert: null,
+          tags: [],
+          audio: { voiceover: 'start.mp3', choice1: 'n1.mp3', choice2: 'n2.mp3' },
+        },
+        second: {
+          id: 'second',
+          type: 'knot',
+          content: [{ text: 'The middle.' }],
+          choices: [],
+          divert: null,
+          tags: [],
+        },
+      },
+    });
+  }
+
+  it('still plays the choice cue', async () => {
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = storyWith(
+      [{ text: 'On', target: 'second' }],
+      true,
+    );
+    render(<App />);
+    await startTheStory();
+    const vo = voiceoverFor('start.mp3')!;
+    await waitFor(() => expect(vo).toBeDefined());
+    vo.onended?.();
+    // The cue element gets constructed and played rather than skipped.
+    await waitFor(() =>
+      expect(audioInstances.some((a) => a.src.includes('c1.mp3') || a.src.includes('n1.mp3'))).toBe(
+        true,
+      ),
+    );
+  });
+
+  // A real branch must keep waiting for the listener no matter what the
+  // project setting says.
+  it('never advances a passage with two choices', async () => {
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = storyWith(
+      [
+        { text: 'A', target: 'second' },
+        { text: 'B', target: 'second' },
+      ],
+      true,
+    );
+    render(<App />);
+    await startTheStory();
+    const vo = voiceoverFor('start.mp3')!;
+    await waitFor(() => expect(vo).toBeDefined());
+    vo.onended?.();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(screen.getByText('The beginning.')).toBeTruthy();
+    expect(screen.queryByText('The middle.')).toBeNull();
+  });
+});
