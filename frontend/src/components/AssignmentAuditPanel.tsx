@@ -11,7 +11,11 @@
 // produces a list to review rather than a correction to trust.
 
 import { useState } from 'react';
-import { auditAudioAssignments, type AssignmentDisagreement } from '../api/client';
+import {
+  acknowledgeAssignment,
+  auditAudioAssignments,
+  type AssignmentDisagreement,
+} from '../api/client';
 
 interface Props {
   projectId: string;
@@ -22,8 +26,41 @@ export default function AssignmentAuditPanel({ projectId }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{
     totalAssignments: number;
+    acknowledged: number;
     disagreements: AssignmentDisagreement[];
   } | null>(null);
+  const [acking, setAcking] = useState<string | null>(null);
+
+  const rowKey = (d: AssignmentDisagreement) =>
+    `${d.audioFileId}:${d.currentNodeId}:${d.currentAudioType}`;
+
+  // Drops the row locally rather than refetching: the author is working
+  // down a list, and having it reorder under them on every click makes
+  // it easy to lose their place.
+  async function markFine(d: AssignmentDisagreement) {
+    setAcking(rowKey(d));
+    setError(null);
+    try {
+      await acknowledgeAssignment(projectId, {
+        audioFileId: d.audioFileId,
+        nodeId: d.currentNodeId,
+        audioType: d.currentAudioType,
+      });
+      setResult((prev) =>
+        prev
+          ? {
+              ...prev,
+              acknowledged: prev.acknowledged + 1,
+              disagreements: prev.disagreements.filter((x) => rowKey(x) !== rowKey(d)),
+            }
+          : prev,
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not mark as fine');
+    } finally {
+      setAcking(null);
+    }
+  }
 
   async function run() {
     setRunning(true);
@@ -60,7 +97,8 @@ export default function AssignmentAuditPanel({ projectId }: Props) {
       {result && result.disagreements.length === 0 && (
         <p className="text-muted" role="status">
           Checked {result.totalAssignments} assignment{result.totalAssignments === 1 ? '' : 's'} —
-          every filename agrees with the passage it&rsquo;s on.
+          nothing left to review
+          {result.acknowledged > 0 && <> ({result.acknowledged} marked as fine)</>}.
         </p>
       )}
 
@@ -68,7 +106,8 @@ export default function AssignmentAuditPanel({ projectId }: Props) {
         <>
           <p role="status">
             <strong>{result.disagreements.length}</strong> of {result.totalAssignments} assignments
-            disagree with their filename.
+            disagree with their filename
+            {result.acknowledged > 0 && <> ({result.acknowledged} already marked as fine)</>}.
           </p>
           <div className="table-scroll">
             <table className="audit-table">
@@ -77,6 +116,9 @@ export default function AssignmentAuditPanel({ projectId }: Props) {
                   <th scope="col">File</th>
                   <th scope="col">Currently on</th>
                   <th scope="col">Filename suggests</th>
+                  <th scope="col">
+                    <span className="visually-hidden">Actions</span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -98,6 +140,17 @@ export default function AssignmentAuditPanel({ projectId }: Props) {
                       {d.suggestedAudioType !== d.currentAudioType && (
                         <span className="text-muted text-sm"> · {d.suggestedAudioType}</span>
                       )}
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-ghost"
+                        disabled={acking === rowKey(d)}
+                        onClick={() => void markFine(d)}
+                        aria-label={`Mark ${d.filename} on ${d.currentNodeId} as fine`}
+                      >
+                        {acking === rowKey(d) ? 'Saving…' : 'Mark as fine'}
+                      </button>
                     </td>
                   </tr>
                 ))}

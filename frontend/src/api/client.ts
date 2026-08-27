@@ -1163,10 +1163,37 @@ export interface AssignmentDisagreement {
  * skips already-assigned files, so a project populated under older
  * matching logic is never re-examined on its own.
  */
-export function auditAudioAssignments(
-  projectId: string,
-): Promise<{ totalAssignments: number; disagreements: AssignmentDisagreement[] }> {
+export function auditAudioAssignments(projectId: string): Promise<{
+  totalAssignments: number;
+  /** Rows previously marked as fine, counted rather than hidden
+   * outright so "nothing is wrong" is distinguishable from
+   * "everything was waved through". */
+  acknowledged: number;
+  disagreements: AssignmentDisagreement[];
+}> {
   return request(`/projects/${projectId}/audio/assignments/audit`);
+}
+
+/** Hide one audited row. Keyed on the exact assignment, so moving the
+ * clip re-raises it rather than carrying the approval forward. */
+export function acknowledgeAssignment(
+  projectId: string,
+  body: { audioFileId: string; nodeId: string; audioType: string },
+): Promise<{ acknowledged: boolean }> {
+  return request(`/projects/${projectId}/audio/assignments/audit/ack`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export function unacknowledgeAssignment(
+  projectId: string,
+  body: { audioFileId: string; nodeId: string; audioType: string },
+): Promise<{ acknowledged: boolean }> {
+  return request(`/projects/${projectId}/audio/assignments/audit/ack`, {
+    method: 'DELETE',
+    body: JSON.stringify(body),
+  });
 }
 
 export function deleteAllProjectAudio(projectId: string): Promise<{ success: boolean }> {

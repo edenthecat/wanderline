@@ -1268,6 +1268,22 @@ export function createAudioRouter(pool: Pool): Router {
         [id],
       );
 
+      // Rows an author has already looked at and accepted. Keyed on the
+      // exact assignment, so moving the clip re-raises it rather than
+      // carrying a stale approval forward.
+      const ackRows = await pool.query(
+        `SELECT audio_file_id, node_id, audio_type
+           FROM audio_assignment_audit_acks
+          WHERE project_id = $1`,
+        [id],
+      );
+      const ackKey = (fileId: string, nodeId: string, audioType: string) =>
+        `${fileId}\u0000${nodeId}\u0000${audioType}`;
+      const acked = new Set(
+        ackRows.rows.map((r) => ackKey(r.audio_file_id, r.node_id, r.audio_type)),
+      );
+      let acknowledged = 0;
+
       const disagreements: {
         audioFileId: string;
         filename: string;
@@ -1290,6 +1306,14 @@ export function createAudioRouter(pool: Pool): Router {
         if (!suggestedNodeId) continue;
         if (suggestedNodeId === row.node_id && suggestedAudioType === row.audio_type) continue;
 
+        // Counted rather than dropped silently: an author needs to be
+        // able to tell "nothing is wrong" from "everything was waved
+        // through months ago".
+        if (acked.has(ackKey(row.audio_file_id, row.node_id, row.audio_type))) {
+          acknowledged++;
+          continue;
+        }
+
         disagreements.push({
           audioFileId: row.audio_file_id,
           filename: row.original_name,
@@ -1306,11 +1330,92 @@ export function createAudioRouter(pool: Pool): Router {
 
       res.json({
         totalAssignments: rows.rows.length,
+        acknowledged,
         disagreements,
       });
     } catch (error) {
       req.log.error({ err: error }, 'Failed to audit audio assignments');
       res.status(500).json({ error: 'Failed to audit audio assignments' });
+    }
+  });
+
+  /**
+   * @openapi
+   * /projects/{id}/audio/assignments/audit/ack:
+   *   post:
+   *     summary: Mark an audited assignment as intentional.
+   *     description: |
+   *       Hides one row from the audit report. Keyed on the specific
+   *       assignment, so moving the clip to a different node re-raises
+   *       it instead of carrying the approval forward.
+   *     tags: [Audio]
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema: { type: string, format: uuid }
+   *     responses:
+   *       200: { description: Acknowledged. }
+   *   delete:
+   *     summary: Un-mark an assignment, returning it to the report.
+   *     tags: [Audio]
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema: { type: string, format: uuid }
+   *     responses:
+   *       200: { description: Acknowledgement removed. }
+   */
+  router.post('/assignments/audit/ack', async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { audioFileId, nodeId, audioType } = req.body ?? {};
+      if (!audioFileId || !nodeId || !audioType) {
+        res.status(400).json({ error: 'audioFileId, nodeId and audioType are required' });
+        return;
+      }
+      // Scoped by project_id so a caller can't acknowledge a row on a
+      // project they reached a file id from.
+      const owned = await pool.query(
+        `SELECT 1 FROM node_audio_assignments
+          WHERE project_id = $1 AND audio_file_id = $2 AND node_id = $3 AND audio_type = $4`,
+        [id, audioFileId, nodeId, audioType],
+      );
+      if (owned.rows.length === 0) {
+        res.status(404).json({ error: 'Assignment not found' });
+        return;
+      }
+      await pool.query(
+        `INSERT INTO audio_assignment_audit_acks (project_id, audio_file_id, node_id, audio_type)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (project_id, audio_file_id, node_id, audio_type) DO NOTHING`,
+        [id, audioFileId, nodeId, audioType],
+      );
+      res.json({ acknowledged: true });
+    } catch (error) {
+      req.log.error({ err: error }, 'Failed to acknowledge audit row');
+      res.status(500).json({ error: 'Failed to acknowledge' });
+    }
+  });
+
+  router.delete('/assignments/audit/ack', async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { audioFileId, nodeId, audioType } = req.body ?? {};
+      if (!audioFileId || !nodeId || !audioType) {
+        res.status(400).json({ error: 'audioFileId, nodeId and audioType are required' });
+        return;
+      }
+      await pool.query(
+        `DELETE FROM audio_assignment_audit_acks
+          WHERE project_id = $1 AND audio_file_id = $2 AND node_id = $3 AND audio_type = $4`,
+        [id, audioFileId, nodeId, audioType],
+      );
+      res.json({ acknowledged: false });
+    } catch (error) {
+      req.log.error({ err: error }, 'Failed to remove audit acknowledgement');
+      res.status(500).json({ error: 'Failed to remove acknowledgement' });
     }
   });
 
