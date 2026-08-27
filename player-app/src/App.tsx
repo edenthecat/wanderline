@@ -2087,49 +2087,76 @@ export default function App() {
           )}
         </div>
 
-        {currentNode.audio?.voiceover && !audioError && !audioSkipped && (
-          <div style={styles.player} role="group" aria-label="Audio player">
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                togglePlayback();
-              }}
-              style={styles.playBtn}
-              aria-label={
-                playerState === 'loading'
-                  ? 'Loading audio'
-                  : playerState === 'playing'
-                    ? 'Pause narration'
-                    : 'Play narration'
-              }
-            >
-              <span aria-hidden="true">
-                {playerState === 'loading' ? '...' : playerState === 'playing' ? '||' : '>'}
-              </span>
-            </button>
-            {story.settings?.showProgressBar !== false && (
-              <div
-                style={styles.progress}
-                role="progressbar"
-                aria-valuenow={
-                  audioDuration > 0 ? Math.round((audioProgress / audioDuration) * 100) : 0
-                }
-                aria-valuemin={0}
-                aria-valuemax={100}
+        {/* The row shows if EITHER control has something to offer. Back
+            used to be trapped inside the audio-only condition, so a
+            text-only passage — or one whose audio failed, which is
+            exactly when someone wants to retreat — had no way back. */}
+        {(history.length > 0 || (currentNode.audio?.voiceover && !audioError && !audioSkipped)) && (
+          <div style={styles.player} role="group" aria-label="Playback controls">
+            {/* goBack was reachable only by Backspace or a headphone
+                button, so on a phone — the primary way this is listened
+                to — there was no way back at all. Hidden rather than
+                disabled at the start of the story: a control that never
+                does anything is worse than one that isn't there. */}
+            {history.length > 0 && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  goBack();
+                }}
+                style={styles.backBtn}
+                data-theme-component="backButton"
+                aria-label="Go back to the previous part"
+              >
+                <span aria-hidden="true">&#8592;</span>
+              </button>
+            )}
+            {currentNode.audio?.voiceover && !audioError && !audioSkipped && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  togglePlayback();
+                }}
+                style={styles.playBtn}
                 aria-label={
-                  'Audio progress ' +
-                  (audioDuration > 0 ? Math.round((audioProgress / audioDuration) * 100) : 0) +
-                  ' percent'
+                  playerState === 'loading'
+                    ? 'Loading audio'
+                    : playerState === 'playing'
+                      ? 'Pause narration'
+                      : 'Play narration'
                 }
               >
-                <div
-                  style={{
-                    ...styles.progressBar,
-                    width: audioDuration > 0 ? `${(audioProgress / audioDuration) * 100}%` : '0%',
-                  }}
-                />
-              </div>
+                <span aria-hidden="true">
+                  {playerState === 'loading' ? '...' : playerState === 'playing' ? '||' : '>'}
+                </span>
+              </button>
             )}
+            {currentNode.audio?.voiceover &&
+              !audioError &&
+              !audioSkipped &&
+              story.settings?.showProgressBar !== false && (
+                <div
+                  style={styles.progress}
+                  role="progressbar"
+                  aria-valuenow={
+                    audioDuration > 0 ? Math.round((audioProgress / audioDuration) * 100) : 0
+                  }
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-label={
+                    'Audio progress ' +
+                    (audioDuration > 0 ? Math.round((audioProgress / audioDuration) * 100) : 0) +
+                    ' percent'
+                  }
+                >
+                  <div
+                    style={{
+                      ...styles.progressBar,
+                      width: audioDuration > 0 ? `${(audioProgress / audioDuration) * 100}%` : '0%',
+                    }}
+                  />
+                </div>
+              )}
           </div>
         )}
 

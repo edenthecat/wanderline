@@ -161,6 +161,25 @@ export const styles: Record<string, React.CSSProperties> = {
     justifyContent: 'center',
     cursor: 'pointer',
   },
+  // Deliberately subordinate to playBtn: outlined rather than filled,
+  // so the primary action stays visually primary. Same 44px hit target
+  // — this is pressed one-handed, often without looking.
+  backBtn: {
+    width: '44px',
+    height: '44px',
+    borderRadius: '50%',
+    borderStyle: 'solid',
+    borderWidth: '1px',
+    borderColor: 'var(--wl-accent, rgba(78,205,196,0.5))',
+    background: 'transparent',
+    color: 'var(--wl-accent, #4ecdc4)',
+    fontSize: '1.1rem',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
+    flex: 'none',
+  },
   progress: {
     flex: 1,
     height: '6px',
