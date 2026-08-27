@@ -5,6 +5,7 @@ import { join, resolve, relative } from 'path';
 import { mountStoryRoutes } from './projects-story.js';
 import { mountSettingsRoutes } from './projects-settings.js';
 import { mountIconRoutes } from './projects-icon.js';
+import { mountFlagRoutes } from './projects-flags.js';
 import { mountExportRoutes } from './projects-export.js';
 import { mountPreviewRoutes } from './projects-preview.js';
 import { mountBuildRoutes } from './projects-builds.js';
@@ -510,6 +511,7 @@ export function createProjectsRouter(
   mountStoryRoutes(router, pool);
   mountSettingsRoutes(router, pool);
   mountIconRoutes(router, pool);
+  mountFlagRoutes(router, pool);
   mountExportRoutes(router, pool);
   mountPreviewRoutes(router, pool);
   mountBuildRoutes(router, pool, { postLimiter: buildEnqueueLimiter });

@@ -1199,6 +1199,46 @@ export function unacknowledgeAssignment(
   });
 }
 
+export type NodeFlagReason = 'not_working' | 'incorrect_audio' | 'needs_text_edit';
+
+export interface NodeFlag {
+  id: string;
+  nodeId: string;
+  reason: NodeFlagReason;
+  note: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+  createdByName?: string | null;
+}
+
+/** Open flags by default; `includeResolved` returns the full history. */
+export function fetchNodeFlags(
+  projectId: string,
+  includeResolved = false,
+): Promise<{
+  /** True count, which may exceed the returned page. */
+  total: number;
+  truncated: boolean;
+  flags: NodeFlag[];
+}> {
+  return request(`/projects/${projectId}/flags${includeResolved ? '?include=resolved' : ''}`);
+}
+
+export function createNodeFlag(
+  projectId: string,
+  body: { nodeId: string; reason: NodeFlagReason; note?: string },
+): Promise<{ flag: NodeFlag }> {
+  return request(`/projects/${projectId}/flags`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+/** Kept as history rather than deleted. */
+export function resolveNodeFlag(projectId: string, flagId: string): Promise<{ resolved: boolean }> {
+  return request(`/projects/${projectId}/flags/${flagId}/resolve`, { method: 'POST' });
+}
+
 export function deleteAllProjectAudio(projectId: string): Promise<{ success: boolean }> {
   return request(`/projects/${projectId}/audio`, { method: 'DELETE' });
 }

@@ -29,6 +29,7 @@ import {
   createPublicInvitationsRouter,
   cleanupExpiredInvitations,
 } from './routes/invitations.js';
+import { createCsrfGuard } from './middleware/csrf.js';
 import { createAuthMiddleware } from './middleware/auth.js';
 import { UPLOAD_DIR } from './config.js';
 import {
@@ -211,6 +212,11 @@ const sessionMiddleware = session({
   },
 });
 app.use(sessionMiddleware);
+
+// Second layer under the SameSite=Lax cookie: reject state-changing
+// requests that declare an origin we don't serve. See middleware/csrf.ts
+// for why this isn't a token scheme.
+app.use(createCsrfGuard(allowedOrigins));
 
 // Database schema is initialized before the server starts listening (see bottom of file)
 

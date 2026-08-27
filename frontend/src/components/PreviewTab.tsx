@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ApiError, fetchMe } from '../api/client';
+import FlagNodeControl from './FlagNodeControl';
 
 interface Props {
   projectId: string;
@@ -17,6 +18,31 @@ export default function PreviewTab({ projectId, hasStory }: Props) {
   // Bumping this key forces React to recreate the iframe element, which
   // reloads the player from scratch — simplest possible "Restart" action.
   const [iframeKey, setIframeKey] = useState(0);
+
+  // The passage currently on screen inside the preview, reported by
+  // the player over postMessage. Drives the flag control: a reviewer
+  // means "this one", and making them remember an id and go find it
+  // afterwards is how a noticed problem becomes a forgotten one.
+  const [previewNodeId, setPreviewNodeId] = useState<string | null>(null);
+
+  useEffect(() => {
+    function onMessage(e: MessageEvent) {
+      // Same-origin only. The preview is served from this app, so
+      // anything from elsewhere has no business moving this state.
+      if (e.origin !== window.location.origin) return;
+      const data = e.data as { type?: string; nodeId?: unknown } | null;
+      if (!data || data.type !== 'wanderline:node') return;
+      if (typeof data.nodeId === 'string') setPreviewNodeId(data.nodeId);
+    }
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, []);
+
+  // A restart drops us back to the start; clear rather than let the
+  // flag control keep naming the passage we were on before.
+  useEffect(() => {
+    setPreviewNodeId(null);
+  }, [iframeKey]);
   const previewUrl = `/api/projects/${projectId}/preview`;
 
   // Session gate. The preview endpoint sits behind requireAuth,
@@ -137,6 +163,7 @@ export default function PreviewTab({ projectId, hasStory }: Props) {
           >
             Restart
           </button>
+          <FlagNodeControl projectId={projectId} nodeId={previewNodeId} />
           <a
             className="btn btn-ghost btn-sm"
             href={previewUrl}
