@@ -33,7 +33,11 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
-          queries: security-and-quality
+          # Query selection lives in the config file so an exclusion has
+          # to carry a written justification next to it, reviewable in a
+          # diff, rather than being dismissed per-alert in the UI where
+          # the reasoning isn't visible from the repo.
+          config-file: ./.github/codeql/codeql-config.yml
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4

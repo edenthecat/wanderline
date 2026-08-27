@@ -1,0 +1,38 @@
+name: Wanderline CodeQL config
+
+# The default query pack, unchanged. Filters below are the only
+# deviation, and each one records a decision rather than hiding a
+# finding.
+queries:
+  - uses: security-and-quality
+
+query-filters:
+  # js/missing-token-validation — "Missing CSRF middleware".
+  #
+  # The rule looks for a session-secret token middleware by package
+  # (its own guidance names `lusca.csrf`). It cannot see any other
+  # mitigation, so it fires on our session setup no matter what we do
+  # short of adopting one of the packages it recognises.
+  #
+  # What actually protects these routes:
+  #
+  #   1. The session cookie is SameSite=Lax (backend/src/index.ts), so
+  #      a browser will not attach it to a cross-site state-changing
+  #      request at all. That closes the vector the rule describes.
+  #   2. backend/src/middleware/csrf.ts rejects any state-changing
+  #      request declaring an origin we don't serve, as a second layer
+  #      under the cookie policy. 14 tests cover it.
+  #
+  # Why not adopt a token package: it needs an issuing endpoint, a
+  # token on all 49 mutating client calls plus 6 raw uploads, a hidden
+  # field in the server-rendered public-preview password form, and
+  # tokens threaded through 69 state-changing requests in the Cypress
+  # suite. That is a large, risky change to the tests that protect us,
+  # to satisfy a pattern-match against a threat the cookie policy
+  # already blocks.
+  #
+  # Revisit if the session cookie ever moves to SameSite=None (an
+  # embedding requirement would do it) — at that point layer 1 is gone
+  # and a real token scheme is warranted.
+  - exclude:
+      id: js/missing-token-validation
