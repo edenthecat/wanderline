@@ -187,10 +187,6 @@ The story starts.
   it('shows an empty state when the project has no story', () => {
     cy.apiCreateProject('Graph Empty Test').then((id) => {
       cy.visit(`/projects/${id}`);
-      // Same gate the shared beforeEach uses: wait for the project to
-      // load before clicking, rather than leaning on the default
-      // command timeout to cover load + ink upload on a slow runner.
-      cy.contains('Graph missing target', { timeout: 15000 }).should('be.visible');
       cy.contains('button', 'Graph').click();
       cy.contains('Upload a story file to see its node graph').should('be.visible');
       cy.get('[data-testid="story-graph"]').should('not.exist');
