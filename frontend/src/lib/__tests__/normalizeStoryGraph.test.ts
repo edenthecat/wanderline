@@ -90,6 +90,32 @@ describe('normalizeStoryGraph', () => {
     expect(g.nodes['inbox'].choices[0].target).toBe('shared');
   });
 
+  it('does not reach into another knot to satisfy a bare name', () => {
+    const g = normalizeStoryGraph(
+      graph({
+        inbox: node('inbox', { choices: [{ text: 'go', target: 'far_away' }] }),
+        other: node('other', { divert: 'END' }),
+        'other.far_away': node('other.far_away', { divert: 'END' }),
+      }),
+    );
+    // Two tiers only, matching resolveBareStitchTargets and the build's
+    // own gate. A third would draw a solid edge here for a story the
+    // build rejects.
+    expect(g.nodes['inbox'].choices[0].target).toBe('far_away');
+  });
+
+  it('leaves untouched nodes strictly identical', () => {
+    const g = graph({
+      inbox: node('inbox', { choices: [{ text: 'read', target: 'read_email_5' }] }),
+      'inbox.read_email_5': node('inbox.read_email_5', { divert: 'END' }),
+      elsewhere: node('elsewhere', { divert: 'END' }),
+    });
+    const out = normalizeStoryGraph(g);
+    // Only the node that needed qualifying is rebuilt.
+    expect(out.nodes['elsewhere']).toBe(g.nodes['elsewhere']);
+    expect(out.nodes['inbox']).not.toBe(g.nodes['inbox']);
+  });
+
   it('returns the same object when there is nothing to qualify', () => {
     const g = graph({
       inbox: node('inbox', { choices: [{ text: 'go', target: 'inbox.one' }] }),

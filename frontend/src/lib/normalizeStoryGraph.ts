@@ -28,23 +28,19 @@ const TERMINAL_TARGETS = new Set(['END', 'DONE']);
  * return it untouched when it names nothing — a genuinely broken link,
  * which the editor still needs to surface as "(missing)".
  *
- * The order matches the backend's `validateGraph` and the player's
- * `navigateToTarget`: exact id, then the current knot's stitch, then
- * any node with a matching suffix.
+ * Two tiers, deliberately: an exact id, then the referring node's own
+ * knot. No suffix fallback — the parser (`resolveBareStitchTargets`)
+ * and the build's own gate (`build-service`'s `resolveTarget`) both
+ * stop at two, and a third tier here would let the editor draw a solid
+ * edge across knots for a story the build then rejects. The player is
+ * more lenient at runtime, but that is a don't-strand-the-listener
+ * choice, not the authoring contract.
  */
 function resolveTarget(target: string, fromNodeId: string, nodeIds: ReadonlySet<string>): string {
   if (!target || TERMINAL_TARGETS.has(target) || nodeIds.has(target)) return target;
   const knot = fromNodeId.split('.')[0];
   const qualified = `${knot}.${target}`;
-  if (nodeIds.has(qualified)) return qualified;
-  // Last resort: any node ending `.target`. Ambiguous in principle, but
-  // a well-formed story has exactly one, and resolving to the wrong
-  // stitch still beats reporting a working story as broken.
-  const suffix = `.${target}`;
-  for (const id of nodeIds) {
-    if (id.endsWith(suffix)) return id;
-  }
-  return target;
+  return nodeIds.has(qualified) ? qualified : target;
 }
 
 /**
@@ -58,20 +54,25 @@ export function normalizeStoryGraph<T extends StoryGraph | null | undefined>(gra
   let changed = false;
   const nodes: Record<string, unknown> = {};
   for (const [id, node] of Object.entries(graph.nodes)) {
-    let next = node;
-    const choices = node.choices ?? [];
-    const newChoices = choices.map((c) => {
+    // Tracked per node: `choices.map` always returns a fresh array, so
+    // comparing array identity would rebuild every node on every load
+    // and quietly add `choices: []` / `divert: undefined` keys to nodes
+    // that never had them.
+    let nodeChanged = false;
+    const choices = node.choices?.map((c) => {
       const target = resolveTarget(c.target, id, nodeIds);
       if (target === c.target) return c;
-      changed = true;
+      nodeChanged = true;
       return { ...c, target };
     });
     const divert = node.divert ? resolveTarget(node.divert, id, nodeIds) : node.divert;
-    if (divert !== node.divert) changed = true;
-    if (newChoices !== choices || divert !== node.divert) {
-      next = { ...node, choices: newChoices, divert };
+    if (divert !== node.divert) nodeChanged = true;
+    if (nodeChanged) {
+      changed = true;
+      nodes[id] = { ...node, ...(choices ? { choices } : {}), divert };
+    } else {
+      nodes[id] = node;
     }
-    nodes[id] = next;
   }
   if (!changed) return graph;
   return { ...graph, nodes } as T;

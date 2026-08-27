@@ -277,12 +277,18 @@ export function resolveBareStitchTargets(nodes: Record<string, StoryNode>): void
     if (!target || TERMINAL_TARGETS.has(target)) return target;
     // Already points at a real node — including a knot that shares its
     // name with a stitch. Leave it exactly as it is.
-    if (nodes[target]) return target;
+    //
+    // Own-property checks, not `nodes[x]`: `constructor`, `toString`
+    // and friends are legal Ink names under the parser's `\w+` rule,
+    // and a plain object returns something truthy for all of them —
+    // so a real `= constructor` stitch would look already-resolved and
+    // never get qualified. build-service's gate already does this.
+    if (Object.hasOwn(nodes, target)) return target;
     // The referring node's knot: its own id for a knot, the part
     // before the first dot for a stitch.
     const knot = fromNodeId.split('.')[0];
     const qualified = `${knot}.${target}`;
-    return nodes[qualified] ? qualified : target;
+    return Object.hasOwn(nodes, qualified) ? qualified : target;
   };
 
   for (const [nodeId, node] of Object.entries(nodes)) {

@@ -154,7 +154,15 @@ The fifth.
   });
 
   // A target naming a stitch of a DIFFERENT knot isn't ours to guess
-  // at — it stays put and validation reports it.
+  // at, so it stays put.
+  //
+  // Nothing reports it, which is worth knowing: validateGraph
+  // suffix-matches (`id.endsWith('.' + target)`) so it emits no
+  // missing_target, and unreachable_node is skipped for any dotted id.
+  // The story parses with zero warnings and the unresolved target is
+  // persisted as written. The build gate is what rejects it, and the
+  // editor agrees with the gate because normalizeStoryGraph stops at
+  // the same two tiers.
   it('does not reach into another knot to satisfy a bare name', () => {
     const g = parseInk(
       `
