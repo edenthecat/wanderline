@@ -2,15 +2,34 @@ import { jest } from '@jest/globals';
 import express from 'express';
 import request from 'supertest';
 import type { Pool } from 'pg';
-import { mountStoryRoutes } from '../projects-story.js';
-
 // rename endpoint. Kept as a focused unit test — the endpoint
 // runs a transaction (BEGIN → SELECT FOR UPDATE → UPDATE ×3 → COMMIT)
 // so the mock returns a client with a scripted query sequence.
 
-jest.mock('../../services/collab-server.js', () => ({
-  invalidateRoom: jest.fn(async () => undefined),
+// unstable_mockModule, not jest.mock: this project runs Jest in ESM,
+// where jest.mock does not hoist and the mock never takes effect. The
+// route then called the REAL invalidateRoom, which returns undefined
+// until the collab server has been initialised — so `.catch` on it
+// threw. That only showed when this file ran alone: Jest reuses a
+// worker across files, so in a full run some earlier file had already
+// initialised the module and the call happened to return a promise.
+// Every other backend suite already uses unstable_mockModule.
+// The factory replaces the whole module, so it must cover every export
+// the import graph reaches — projects-story pulls in projects-snapshots,
+// which also needs flushPendingShadowSave.
+const mockInvalidateRoom = jest
+  .fn<(projectId: string) => Promise<boolean>>()
+  .mockResolvedValue(true);
+const mockFlushPendingShadowSave = jest
+  .fn<(projectId: string) => Promise<void>>()
+  .mockResolvedValue(undefined);
+jest.unstable_mockModule('../../services/collab-server.js', () => ({
+  invalidateRoom: mockInvalidateRoom,
+  flushPendingShadowSave: mockFlushPendingShadowSave,
 }));
+
+// Imported after the mock is registered so the route picks it up.
+const { mountStoryRoutes } = await import('../projects-story.js');
 
 function makeApp(pool: Pool) {
   const app = express();
@@ -122,6 +141,67 @@ describe('PATCH /:id/story/node/rename', () => {
     expect(res.status).toBe(200);
     expect(res.body.story_graph.startNode).toBe('Intro');
     expect(res.body.story_graph.nodes.Other.choices[0].target).toBe('Intro');
+  });
+
+  // Graphs stored before the parser qualified bare stitch targets still
+  // hold them, and a bare name only means anything relative to the knot
+  // it was written in. Missing them left a working link pointing at a
+  // name that no longer existed, broken by an unrelated rename.
+  it('rewrites a bare stitch reference written inside the same knot', async () => {
+    const storyGraph = graph('inbox', {
+      inbox: {
+        choices: [{ text: 'read', target: 'read_email_5' }],
+        divert: null,
+        parent: null,
+        type: 'knot',
+      },
+      'inbox.read_email_5': { choices: [], divert: 'END', parent: 'inbox', type: 'stitch' },
+    });
+    const { pool } = makePool([
+      { match: 'BEGIN' },
+      { match: 'SELECT story_graph', rows: [{ story_graph: storyGraph, source_language: 'ink' }] },
+      { match: /UPDATE project_stories/ },
+      { match: /UPDATE node_audio_assignments\b/ },
+      { match: /UPDATE node_metadata\b/ },
+      { match: /UPDATE projects/ },
+      { match: 'COMMIT' },
+    ]);
+    const res = await request(makeApp(pool))
+      .patch(`/api/projects/${projectId}/story/node/rename`)
+      .send({ oldId: 'inbox.read_email_5', newId: 'inbox.read_email_6' });
+    expect(res.status).toBe(200);
+    expect(res.body.story_graph.nodes.inbox.choices[0].target).toBe('inbox.read_email_6');
+  });
+
+  it('leaves a bare name that resolves to a different knot alone', async () => {
+    // `read_email_5` written in `other` names `other.read_email_5`, not
+    // the stitch being renamed. Rewriting it would repoint a link that
+    // has nothing to do with this rename.
+    const storyGraph = graph('inbox', {
+      inbox: { choices: [], divert: null, parent: null, type: 'knot' },
+      'inbox.read_email_5': { choices: [], divert: 'END', parent: 'inbox', type: 'stitch' },
+      other: {
+        choices: [{ text: 'read', target: 'read_email_5' }],
+        divert: null,
+        parent: null,
+        type: 'knot',
+      },
+      'other.read_email_5': { choices: [], divert: 'END', parent: 'other', type: 'stitch' },
+    });
+    const { pool } = makePool([
+      { match: 'BEGIN' },
+      { match: 'SELECT story_graph', rows: [{ story_graph: storyGraph, source_language: 'ink' }] },
+      { match: /UPDATE project_stories/ },
+      { match: /UPDATE node_audio_assignments\b/ },
+      { match: /UPDATE node_metadata\b/ },
+      { match: /UPDATE projects/ },
+      { match: 'COMMIT' },
+    ]);
+    const res = await request(makeApp(pool))
+      .patch(`/api/projects/${projectId}/story/node/rename`)
+      .send({ oldId: 'inbox.read_email_5', newId: 'inbox.read_email_6' });
+    expect(res.status).toBe(200);
+    expect(res.body.story_graph.nodes.other.choices[0].target).toBe('read_email_5');
   });
 
   it("returns 404 when the old id doesn't exist", async () => {
@@ -265,10 +345,12 @@ describe('PATCH /:id/story/node/rename', () => {
     // Mock invalidateRoom to reject. The rename must still return
     // 200 because the DB is already consistent — the collab-server
     // hiccup is logged, not surfaced as a 500.
-    const collab = jest.requireMock('../../services/collab-server.js') as {
-      invalidateRoom: jest.Mock<() => Promise<void>>;
-    };
-    collab.invalidateRoom.mockImplementationOnce(async () => {
+    // Drive the module mock directly. This used to reach for
+    // jest.requireMock, a CommonJS API that returns a different object
+    // under ESM — so it rejected a function the route never called, and
+    // the 200 it asserted came from the real invalidateRoom succeeding.
+    // The failure path was never exercised.
+    mockInvalidateRoom.mockImplementationOnce(async () => {
       throw new Error('collab-server offline');
     });
     const storyGraph = graph('Home', {
@@ -288,7 +370,10 @@ describe('PATCH /:id/story/node/rename', () => {
       .send({ oldId: 'Home', newId: 'Foyer' });
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
-    collab.invalidateRoom.mockReset();
+    // mockImplementationOnce is spent by the call above; reset anyway so
+    // a future edit can't leak a rejection into the next test.
+    mockInvalidateRoom.mockReset();
+    mockInvalidateRoom.mockResolvedValue(true);
   });
 
   it('409 on stitch-collision cascade — refuses to overwrite an existing node under the new prefix', async () => {

@@ -1212,23 +1212,37 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
           storyGraph.nodes[newStitchKey] = stitch;
         }
       }
-      const rewriteReference = (ref: string | null | undefined): string | null | undefined => {
+      const rewriteReference = (
+        ref: string | null | undefined,
+        // The referring node. A bare stitch name means nothing on its
+        // own — it resolves against the knot it was written in.
+        fromNodeId: string,
+      ): string | null | undefined => {
         if (ref == null) return ref;
         if (ref === oldId) return newId;
         if (ref.startsWith(oldPrefix)) return newId + '.' + ref.slice(oldPrefix.length);
+        // Graphs stored before the parser qualified these still hold
+        // bare targets, so renaming a stitch left them pointing at a
+        // name that no longer exists — a working link quietly broken by
+        // an unrelated rename. Rewritten to the qualified id; the Ink
+        // emitter shortens same-knot targets back to bare on export, so
+        // the author's source keeps its original shape.
+        if (!ref.includes('.') && fromNodeId.split('.')[0] + '.' + ref === oldId) {
+          return newId;
+        }
         return ref;
       };
       for (const nodeKey of Object.keys(storyGraph.nodes)) {
         const node = storyGraph.nodes[nodeKey];
         if (Array.isArray(node.choices)) {
           for (const choice of node.choices) {
-            const nextTarget = rewriteReference(choice.target);
+            const nextTarget = rewriteReference(choice.target, nodeKey);
             if (typeof nextTarget === 'string' && nextTarget !== choice.target) {
               choice.target = nextTarget;
             }
           }
         }
-        const nextDivert = rewriteReference(node.divert ?? null);
+        const nextDivert = rewriteReference(node.divert ?? null, nodeKey);
         if (nextDivert !== (node.divert ?? null)) {
           node.divert = (nextDivert as string | null) ?? null;
         }
