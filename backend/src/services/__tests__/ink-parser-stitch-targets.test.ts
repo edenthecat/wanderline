@@ -181,4 +181,20 @@ Deep.
     );
     expect(g.nodes['inbox'].divert).toBe('far_away');
   });
+
+  // `__proto__` matches the knot rule's `\w+`. On a plain object the
+  // assignment hits the prototype setter: the knot disappears, and the
+  // record's prototype becomes that node so unguarded lookups start
+  // answering with its fields for any missing key.
+  it('keeps a knot named __proto__', () => {
+    const g = parseInk(
+      `
+== __proto__ ==
+Hello.
+-> END
+`,
+      'id',
+    );
+    expect(Object.keys(g.nodes)).toContain('__proto__');
+  });
 });

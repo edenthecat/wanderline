@@ -79,8 +79,14 @@ export function parseInk(source: string, storyId: string, title?: string): Story
     parseLine(line, state, lines, i);
   }
 
-  // Convert Map to Record
-  const nodes: Record<string, StoryNode> = {};
+  // Convert Map to Record.
+  //
+  // Null-prototype: `__proto__` matches the knot rule's `\w+`, and
+  // assigning it on a plain literal hits the prototype setter — the
+  // knot never becomes an own property, and worse, `nodes`' prototype
+  // silently becomes that StoryNode, so unguarded lookups elsewhere
+  // start returning its `id`/`type`/`content` for any missing key.
+  const nodes: Record<string, StoryNode> = Object.create(null);
   state.nodes.forEach((node, id) => {
     nodes[id] = node;
   });

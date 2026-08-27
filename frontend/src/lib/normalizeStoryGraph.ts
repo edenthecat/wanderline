@@ -72,6 +72,13 @@ export function normalizeStoryGraph<T extends StoryGraph | null | undefined>(
     // comparing array identity would rebuild every node on every load,
     // and each rebuild would add `choices` / `divert` keys to nodes
     // that never had them.
+    if (!node) {
+      // Every other consumer tolerates a null node in a stored graph.
+      // This runs inside fetchProject, so throwing here would turn one
+      // oddly-rendered tab into a project page that won't open at all.
+      nodes[id] = node;
+      continue;
+    }
     let nodeChanged = false;
     const choices = node.choices?.map((c) => {
       const target = resolveTarget(c.target, id, nodeIds);
