@@ -20,6 +20,10 @@ const ALLOWED_TOP_LEVEL_KEYS = new Set([
   'choiceIndicatorAudio',
   'choiceAudioDelayMs',
   'captionsDefault',
+  // Project-wide default for advancing to the next passage on its own
+  // once narration ends. Off unless the author turns it on; a node can
+  // still override either way.
+  'autoAdvance',
   'showProgressBar',
   'showChoiceList',
   'bluetoothControls',

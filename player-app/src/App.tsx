@@ -89,6 +89,7 @@ interface StoryData {
     // UI options — all default to "on" when unset. Set via the editor's
     // Settings tab; see project_settings JSONB on the backend.
     captionsDefault?: boolean;
+    autoAdvance?: boolean;
     showProgressBar?: boolean;
     showChoiceList?: boolean;
     // Bluetooth / headphone button mapping.
@@ -179,8 +180,42 @@ function processClick(
   };
 }
 
+/**
+ * Whether a passage advances on its own once narration ends.
+ *
+ * Resolution: the node's own setting if the author set one, otherwise
+ * the project default, otherwise OFF.
+ *
+ * This used to read `metadata?.autoAdvance !== false`, so a node with
+ * no metadata row — the common case — advanced automatically. Combined
+ * with the DB column defaulting to true, effectively every passage
+ * advanced whether or not anyone chose that, which reads to a listener
+ * as the story moving on its own.
+ */
+export function shouldAutoAdvance(
+  metadata: { autoAdvance?: boolean } | undefined,
+  settings: { autoAdvance?: boolean } | undefined,
+): boolean {
+  if (typeof metadata?.autoAdvance === 'boolean') return metadata.autoAdvance;
+  return settings?.autoAdvance === true;
+}
+
 function createInitialClickState(): ClickDetectionState {
   return { clickCount: 0, lastClickTime: 0, timeoutId: null };
+}
+
+/**
+ * Drop any in-flight multi-click run.
+ *
+ * The tally has to be cleared when the story moves, or presses from
+ * either side of a node boundary combine into one gesture: a press on
+ * the passage you just left, plus a press on the one you just arrived
+ * at, counts as a double-click and navigates again. To a listener that
+ * reads as the story advancing on its own.
+ */
+function resetClickState(state: ClickDetectionState): ClickDetectionState {
+  if (state.timeoutId !== null) clearTimeout(state.timeoutId);
+  return createInitialClickState();
 }
 
 export default function App() {
@@ -634,6 +669,13 @@ export default function App() {
   playerStateRef.current = playerState;
   currentNodeRef.current = currentNode;
 
+  // Clear the multi-click tally on every node change. Without this,
+  // `lastClickTime` survived the navigation and a press on the new
+  // passage combined with one from the old.
+  useEffect(() => {
+    clickStateRef.current = resetClickState(clickStateRef.current);
+  }, [currentNodeId]);
+
   const saveProgress = useCallback(
     (nodeId: string, hist: string[]) => {
       if (!story) return;
@@ -1035,7 +1077,7 @@ export default function App() {
         // Default is "auto-advance on" — only an explicit false opts
         // out. Keeps the editor's `?? true` default consistent with
         // what the runtime does for legacy nodes that have no row.
-        currentNode.metadata?.autoAdvance !== false &&
+        shouldAutoAdvance(currentNode.metadata, story.settings) &&
         currentNode.divert &&
         story.nodes[currentNode.divert]
       ) {
@@ -1225,7 +1267,7 @@ export default function App() {
   useEffect(() => {
     if (!story || !currentNode || !isAuthenticated || showInstructions) return;
     if (currentNode.audio?.voiceover) return; // handled by playVoiceover's audio.onended
-    if (currentNode.metadata?.autoAdvance === false) return;
+    if (!shouldAutoAdvance(currentNode.metadata, story?.settings)) return;
     if (!currentNode.divert || !story.nodes[currentNode.divert]) return;
     // Compose: pre-roll → (no audio) → post-audio hold → divert.
     const totalDelay =
@@ -1415,10 +1457,16 @@ export default function App() {
    * button. Sharing one callback means the two cannot drift again.
    */
   const togglePlayback = useCallback(() => {
-    if (playerState === 'playing') audioRef.current?.pause();
-    else if (playerState === 'paused') audioRef.current?.play().catch(() => {});
+    // Same 400ms staleness as the handlers above: by the time this
+    // runs, narration may have ended. playerStateRef was written every
+    // render and read nowhere, so a press captured while 'playing'
+    // would pause an element that had already finished — a press that
+    // appeared to do nothing.
+    const state = playerStateRef.current;
+    if (state === 'playing') audioRef.current?.pause();
+    else if (state === 'paused') audioRef.current?.play().catch(() => {});
     else playVoiceover();
-  }, [playerState, playVoiceover]);
+  }, [playVoiceover]);
 
   const handleSingleClick = useCallback(() => {
     if (showInstructions) {
@@ -1428,23 +1476,37 @@ export default function App() {
     togglePlayback();
   }, [showInstructions, startStory, togglePlayback]);
 
+  // These run 400ms after the press that armed them, so they must read
+  // the node through a ref. Closing over `currentNode` meant a press
+  // made just before an auto-advance fired against the PREVIOUS node —
+  // navigating from a passage the listener had already left, which
+  // surfaces as the story jumping somewhere unrelated and audio playing
+  // from a different node than the one on screen.
+  //
+  // useMediaControls already reads currentNodeRef for exactly this
+  // reason ("so rapid headphone presses see the latest value, not the
+  // closure-captured snapshot"); the click path never got the same
+  // treatment, and currentNodeRef was written every render and read
+  // nowhere in this file.
   const handleDoubleClick = useCallback(() => {
-    if (!story || !currentNode) return;
-    if (currentNode.choices.length > 0) {
-      const choice = currentNode.choices[0];
+    const node = currentNodeRef.current;
+    if (!story || !node) return;
+    if (node.choices.length > 0) {
+      const choice = node.choices[0];
       if (choice) navigateToTarget(choice.target);
-    } else if (currentNode.divert && story.nodes[currentNode.divert]) {
-      navigateToNode(currentNode.divert);
+    } else if (node.divert && story.nodes[node.divert]) {
+      navigateToNode(node.divert);
     }
-  }, [story, currentNode, navigateToNode]);
+  }, [story, navigateToNode, navigateToTarget]);
 
   const handleTripleClick = useCallback(() => {
-    if (!story || !currentNode) return;
-    if (currentNode.choices.length > 1) {
-      const choice = currentNode.choices[1];
+    const node = currentNodeRef.current;
+    if (!story || !node) return;
+    if (node.choices.length > 1) {
+      const choice = node.choices[1];
       if (choice) navigateToTarget(choice.target);
     }
-  }, [story, currentNode, navigateToNode]);
+  }, [story, navigateToTarget]);
 
   const handleHeadphoneButtonPress = useCallback(() => {
     clickStateRef.current = processClick(clickStateRef.current, Date.now(), {

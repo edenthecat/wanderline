@@ -1082,6 +1082,9 @@ export interface ProjectSettings {
   // UI options for the generated player. All default to true / "on"
   // when unset — see player-app/src/App.tsx for the resolution.
   captionsDefault?: boolean;
+  /** Project-wide default for advancing between passages on its own.
+   * Off unless set; a node's own metadata still overrides. */
+  autoAdvance?: boolean;
   showProgressBar?: boolean;
   showChoiceList?: boolean;
   // per-project Bluetooth / headphone button mapping. Falls

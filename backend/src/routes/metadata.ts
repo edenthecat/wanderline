@@ -252,7 +252,7 @@ export function createMetadataRouter(pool: Pool): Router {
       const result = await pool.query(
         `
         INSERT INTO node_metadata (project_id, node_id, transcript, delay_before_ms, delay_after_ms, auto_advance, auto_advance_delay_ms, choice_1_timestamp_ms, choice_2_timestamp_ms, no_inline_choice_audio, character_id)
-        VALUES ($1, $2, COALESCE($3, ''), COALESCE($4, 0), COALESCE($5, 0), COALESCE($6, true), COALESCE($7, 2000), $8, $9, COALESCE($10, false), $11)
+        VALUES ($1, $2, COALESCE($3, ''), COALESCE($4, 0), COALESCE($5, 0), COALESCE($6, false), COALESCE($7, 2000), $8, $9, COALESCE($10, false), $11)
         ON CONFLICT (project_id, node_id)
         DO UPDATE SET
           transcript = COALESCE($3, node_metadata.transcript),
