@@ -146,14 +146,18 @@ describe('collab-server', () => {
     // A disconnects.
     a.provider.destroy();
 
-    // After A leaves, C should still see B's entry. The pre-fix
-    // behavior was that A's disconnect wiped B's awareness too.
+    // Wait for A's removal to actually propagate, not for B — B was
+    // already present before A disconnected, so waiting on it was
+    // satisfied instantly and the assertions below then raced the
+    // removal broadcast. A's departure is the thing that takes time,
+    // and it's also the precondition that makes "did B survive it?"
+    // meaningful.
     await waitFor(() => {
       const states = c.provider.awareness.getStates();
       const names = Array.from(states.values()).map(
         (s) => (s as { user?: { name?: string } })?.user?.name,
       );
-      return names.includes('b') ? names : undefined;
+      return !names.includes('a') ? names : undefined;
     });
     const names = Array.from(c.provider.awareness.getStates().values()).map(
       (s) => (s as { user?: { name?: string } })?.user?.name,
