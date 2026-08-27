@@ -111,7 +111,7 @@ export function computeStoryHealth(graph: StoryGraph | null | undefined): StoryH
   const allIds = Object.keys(graph.nodes ?? {});
   const reachable = new Set<string>();
   const queue: string[] = [];
-  if (graph.startNode && graph.nodes[graph.startNode]) {
+  if (graph.startNode && Object.prototype.hasOwnProperty.call(graph.nodes, graph.startNode)) {
     queue.push(graph.startNode);
     reachable.add(graph.startNode);
   }
@@ -124,7 +124,13 @@ export function computeStoryHealth(graph: StoryGraph | null | undefined): StoryH
     const node = graph.nodes[id];
     if (!node) continue;
     for (const target of outgoingTargets(node, graph)) {
-      if (!graph.nodes[target]) continue; // dangling target — counted as a validation error elsewhere
+      // Targets are qualified at the API boundary (normalizeStoryGraph),
+      // so an id that isn't here is genuinely dangling.
+      //
+      // Own-property check: `constructor`, `toString` and friends are
+      // legal Ink names, and a truthiness lookup would walk them in as
+      // phantom reachable nodes that later surface as dead ends.
+      if (!Object.prototype.hasOwnProperty.call(graph.nodes, target)) continue; // a validation error elsewhere
       if (reachable.has(target)) continue;
       reachable.add(target);
       queue.push(target);

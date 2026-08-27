@@ -20,6 +20,7 @@
  */
 
 import type { StoryGraph, StoryNode, ValidationResult, ValidationMessage } from '../types.js';
+import { resolveBareStitchTargets } from './ink-parser.js';
 
 export type { StoryGraph, StoryNode, ValidationResult };
 
@@ -97,6 +98,10 @@ export function parseInkJson(jsonContent: string, storyId: string, title?: strin
       }
     }
   }
+
+  // Same qualification the .ink path does, so both upload routes agree
+  // on what a bare stitch target means.
+  resolveBareStitchTargets(nodes);
 
   // Determine start node
   const startNode = findStartNode(nodes);

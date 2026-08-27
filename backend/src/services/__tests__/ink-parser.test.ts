@@ -254,7 +254,14 @@ Other stuff.
 `;
       const result = parseInk(source, 'test-id');
       const tell = result.nodes['tell_you'];
-      expect(tell.choices.map((c) => c.target)).toEqual(['no_reason', 'infinite_grace']);
+      // Qualified: both are stitches of `tell_you`, and a bare name
+      // inside a knot scopes to that knot's stitches. This assertion
+      // previously expected the bare names, which is what left the
+      // editor showing "(missing)" and reachability skipping them.
+      expect(tell.choices.map((c) => c.target)).toEqual([
+        'tell_you.no_reason',
+        'tell_you.infinite_grace',
+      ]);
       // The knot has no unconditional fall-through after the choices —
       // divert must remain null. Previously this was 'infinite_grace'
       // because the look-ahead-consumed line was re-processed.

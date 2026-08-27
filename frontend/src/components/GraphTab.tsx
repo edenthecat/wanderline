@@ -245,7 +245,11 @@ function resolveTarget(
   nodes: Record<string, StoryNode>,
 ): { id: string; missing: boolean; terminal: boolean } {
   if (target === 'END' || target === 'DONE') return { id: target, missing: false, terminal: true };
-  if (nodes[target]) return { id: target, missing: false, terminal: false };
+  // Own-property check: a truthiness lookup calls `constructor` and
+  // friends present, so the edge is drawn to a node that never renders
+  // and the broken link vanishes instead of showing as missing.
+  if (Object.prototype.hasOwnProperty.call(nodes, target))
+    return { id: target, missing: false, terminal: false };
   return { id: target, missing: true, terminal: false };
 }
 
