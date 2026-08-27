@@ -3293,3 +3293,56 @@ details[open] > .audio-section-summary {
   text-transform: uppercase;
   font-weight: 600;
 }
+
+/* Attached-audio audition rows in the node panel. Deliberately mirrors
+   .node-reachable-from's framing — both are read-only context panels
+   that sit below the editing controls. */
+.node-audio-preview {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border);
+}
+.node-audio-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #475569;
+  margin: 0 0 6px;
+}
+.node-audio-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.node-audio-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.node-audio-play {
+  flex: none;
+  width: 28px;
+  min-height: 28px;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1;
+}
+.node-audio-label {
+  font-size: 13px;
+  font-weight: 500;
+  flex: none;
+}
+/* The uploaded filename can be long; let it truncate rather than push
+   the row wide enough to scroll the panel. */
+.node-audio-file {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}

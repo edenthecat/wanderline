@@ -20,6 +20,7 @@ import { ReactNode } from 'react';
 import {
   addChoice,
   deleteChoice,
+  fetchAudioAssignments,
   fetchMetadata,
   renameNode,
   swapChoices,
@@ -28,12 +29,17 @@ import {
   updateDivert,
   updateNodeContentText,
   updateNodeMetadata,
+  type AudioAssignments,
   type NodeMetadata,
   type StoryGraph,
 } from '../api/client';
 import { bumpLiveSignal, useLiveSignal } from './useLiveSignal';
 
 const METADATA_SIGNAL = 'metadata';
+// Bumped by AudioTab whenever a clip is assigned, unassigned or
+// deleted. Subscribing here means attaching audio in one tab lights up
+// the play control in another without a reload.
+const AUDIO_ASSIGNMENTS_SIGNAL = 'audio-assignments';
 const CHOICE_TEXT_SAVE_DEBOUNCE_MS = 800;
 
 interface UseNodeEditorArgs {
@@ -47,6 +53,11 @@ export interface UseNodeEditorResult {
   metadata: Record<string, NodeMetadata>;
   metadataLoaded: boolean;
   metadataError: string | null;
+  /** Clips attached to each node, keyed by node id. Empty if the
+   * lookup failed — the audition control just doesn't render. */
+  audioByNode: AudioAssignments;
+  /** audio_file_id -> the name the author uploaded, for labelling. */
+  audioNames: Record<string, string>;
   /** Manually retry the bulk metadata fetch after a transient failure. */
   retryMetadata: () => void;
   /** Set of every node id that exists in the current storyGraph. */
@@ -85,6 +96,13 @@ export function useNodeEditor({
 }: UseNodeEditorArgs): UseNodeEditorResult {
   const [metadata, setMetadata] = useState<Record<string, NodeMetadata>>({});
   const [metadataLoaded, setMetadataLoaded] = useState(false);
+  // Which clips are attached to each node, so NodeDetail can offer to
+  // play them. Bulk-fetched here for the same reason metadata is: both
+  // StoryTab and GraphTab drive the same NodeDetail panel, and a
+  // per-node request would mean one call per expanded knot.
+  const [audioByNode, setAudioByNode] = useState<AudioAssignments>({});
+  // audio_file_id -> the name the author uploaded, for labelling.
+  const [audioNames, setAudioNames] = useState<Record<string, string>>({});
   const [metadataError, setMetadataError] = useState<string | null>(null);
   const [editorError, setEditorError] = useState<string | null>(null);
   // Bumped by retryMetadata + by the cross-tab signal so peer saves
@@ -92,6 +110,7 @@ export function useNodeEditor({
   const [metadataReloadKey, setMetadataReloadKey] = useState(0);
 
   const metadataSignalTick = useLiveSignal(yDoc, METADATA_SIGNAL);
+  const audioSignal = useLiveSignal(yDoc, AUDIO_ASSIGNMENTS_SIGNAL);
   const lastMetadataSignalRef = useRef(0);
   useEffect(() => {
     if (metadataSignalTick === 0) return;
@@ -118,8 +137,35 @@ export function useNodeEditor({
     setMetadata({});
     setMetadataLoaded(false);
     setMetadataError(null);
+    setAudioByNode({});
+    setAudioNames({});
     dirtyKeysRef.current = new Set();
   }, [projectId]);
+
+  // Attached-audio lookup. Deliberately not gated on storyGraph: a
+  // project can have assignments before its graph loads, and a failure
+  // here is silent — the audition control simply doesn't appear. It is
+  // an affordance on top of the editor, not something worth blocking
+  // or erroring the panel over.
+  useEffect(() => {
+    let cancelled = false;
+    fetchAudioAssignments(projectId)
+      .then((res) => {
+        if (cancelled) return;
+        setAudioByNode(res.assignments ?? {});
+        const names: Record<string, string> = {};
+        for (const row of res.raw ?? []) {
+          if (row.audio_file_id) names[row.audio_file_id] = row.original_name || row.filename;
+        }
+        setAudioNames(names);
+      })
+      .catch(() => {
+        if (!cancelled) setAudioByNode({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, audioSignal]);
 
   // Bulk-fetch per-node metadata so individual NodeDetail components
   // don't each fire their own request.
@@ -369,6 +415,8 @@ export function useNodeEditor({
   return {
     metadata,
     metadataLoaded,
+    audioByNode,
+    audioNames,
     metadataError,
     retryMetadata,
     nodeIdSet,

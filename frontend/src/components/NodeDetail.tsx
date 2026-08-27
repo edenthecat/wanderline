@@ -9,7 +9,8 @@
 
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import * as Y from 'yjs';
-import type { NodeMetadata } from '../api/client';
+import { audioFileUrl, type AudioAssignments, type NodeMetadata } from '../api/client';
+import { useAudition } from '../hooks/useAudition';
 import CollabChoiceTextInput from './CollabChoiceTextInput';
 import CollabContentTextarea from './CollabContentTextarea';
 import { getChoiceText, getContentText } from '../hooks/useStoryYDoc';
@@ -92,6 +93,12 @@ export interface NodeDetailProps {
    * Rendered as a small "Reachable from" panel so authors can see context
    * before editing. Caller computes this from the storyGraph. */
   reachableFrom?: string[];
+  /** Project id, for resolving attached-audio URLs. */
+  projectId: string;
+  /** Clips attached to this node, if any. */
+  nodeAudio?: AudioAssignments[string];
+  /** audio_file_id -> uploaded name, for labelling the play rows. */
+  audioNames?: Record<string, string>;
   /** Click a "Reachable from" entry to jump the canvas / list to it. */
   onJumpToNode?: (nodeId: string) => void;
   /**: shared Y.Doc for this project (null until connected).
@@ -122,6 +129,9 @@ export default function NodeDetail({
   onDeleteChoice,
   onSwapChoices,
   onMetadataSave,
+  projectId,
+  nodeAudio,
+  audioNames,
   reachableFrom,
   onJumpToNode,
   yDoc,
@@ -573,6 +583,7 @@ export default function NodeDetail({
           </select>
         </div>
       )}
+      <NodeAudioPreview projectId={projectId} nodeAudio={nodeAudio} audioNames={audioNames} />
       {reachableFrom && reachableFrom.length > 0 && (
         <div className="node-reachable-from">
           <h4 className="node-reachable-from-title">Reachable from</h4>
@@ -679,5 +690,66 @@ function AddChoiceRow({ defaultTarget, nodeIdOptions, onSubmit }: AddChoiceRowPr
       </button>
       {err && <span className="text-sm text-danger">{err}</span>}
     </form>
+  );
+}
+
+// The clips attached to this node, with a play control for each.
+//
+// Authors were previously assigning audio in the Audio tab and then had
+// no way to confirm they'd attached the RIGHT take without running a
+// preview build of the whole story. Reuses useAudition, so only one
+// clip plays at a time and switching rows stops the previous one.
+const AUDIO_SLOTS: { key: 'voiceover' | 'ambience' | 'choice1' | 'choice2'; label: string }[] = [
+  { key: 'voiceover', label: 'Voiceover' },
+  { key: 'ambience', label: 'Ambience' },
+  { key: 'choice1', label: 'Choice 1 cue' },
+  { key: 'choice2', label: 'Choice 2 cue' },
+];
+
+function NodeAudioPreview({
+  projectId,
+  nodeAudio,
+  audioNames,
+}: {
+  projectId: string;
+  nodeAudio?: AudioAssignments[string];
+  audioNames?: Record<string, string>;
+}) {
+  const { playingId, toggle } = useAudition();
+
+  if (!nodeAudio) return null;
+  const rows = AUDIO_SLOTS.map((slot) => ({ ...slot, fileId: nodeAudio[slot.key] })).filter(
+    (r): r is { key: (typeof AUDIO_SLOTS)[number]['key']; label: string; fileId: string } =>
+      !!r.fileId,
+  );
+  const sfx = nodeAudio.sfx ?? [];
+  if (rows.length === 0 && sfx.length === 0) return null;
+
+  const renderRow = (id: string, fileId: string, label: string) => {
+    const playing = playingId === id;
+    return (
+      <li key={id} className="node-audio-row">
+        <button
+          type="button"
+          className="btn btn-sm node-audio-play"
+          onClick={() => toggle(id, audioFileUrl(projectId, fileId))}
+          aria-label={`${playing ? 'Stop' : 'Play'} ${label}`}
+        >
+          {playing ? '\u25a0' : '\u25b6'}
+        </button>
+        <span className="node-audio-label">{label}</span>
+        <span className="node-audio-file text-muted">{audioNames?.[fileId] ?? fileId}</span>
+      </li>
+    );
+  };
+
+  return (
+    <div className="node-audio-preview">
+      <h4 className="node-audio-title">Attached audio</h4>
+      <ul className="node-audio-list">
+        {rows.map((r) => renderRow(`${r.key}:${r.fileId}`, r.fileId, r.label))}
+        {sfx.map((fileId, i) => renderRow(`sfx-${i}:${fileId}`, fileId, `SFX ${i + 1}`))}
+      </ul>
+    </div>
   );
 }
