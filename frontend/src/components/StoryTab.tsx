@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useCallback, type ChangeEvent } from 'react';
 import { FLAG_REASON_LABELS } from './flagLabels';
+import FlaggedNodesPanel from './FlaggedNodesPanel';
 import {
   uploadInk,
   uploadInkJson,
@@ -550,6 +551,13 @@ export default function StoryTab({
             errors={storyGraph.validation.errors}
             warnings={storyGraph.validation.warnings}
             onNodeJump={jumpToNode}
+          />
+          <FlaggedNodesPanel
+            projectId={projectId}
+            flagsByNode={flagsByNode}
+            nodeIdSet={nodeIdSet}
+            onJumpToNode={jumpToNode}
+            onFlagsChanged={refreshFlags}
           />
           <StoryHealthPanel storyGraph={storyGraph} onJumpToNode={jumpToNode} />
           {/* Stats */}

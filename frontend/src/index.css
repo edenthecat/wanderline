@@ -3578,3 +3578,71 @@ which is context rather than a problem. */ .node-flag-badge {
   display: flex;
   gap: 8px;
 }
+
+/* Open-flags roll-up. Mirrors .story-health's framing — both are
+   collapsible strips above the story — but tinted, because this one
+   is people reporting problems rather than a computed summary. */
+.flagged-panel {
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  margin-bottom: 12px;
+  background: #fef2f2;
+}
+.flagged-panel-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  width: 100%;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+}
+.flagged-panel-toggle {
+  font-size: 10px;
+  color: #991b1b;
+}
+.flagged-panel-body {
+  padding: 0 14px 12px;
+}
+.flagged-panel-list,
+.flagged-panel-flags {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.flagged-panel-node + .flagged-panel-node {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #fecaca;
+}
+.flagged-panel-node-head {
+  margin-bottom: 4px;
+}
+.flagged-panel-orphan {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.flagged-panel-flags {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 12px;
+}
+.flagged-panel-flag {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.flagged-panel-flag-body {
+  min-width: 0;
+}
+.flagged-panel-note {
+  margin: 2px 0;
+  font-size: 13px;
+  /* Reviewer notes are free text and may be pasted. */
+  overflow-wrap: anywhere;
+}
