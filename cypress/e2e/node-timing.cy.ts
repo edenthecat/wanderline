@@ -1,14 +1,17 @@
-// Covers per-node timing & auto-advance controls in NodeDetail,
-// plus the "timing" badge that surfaces in node headers when the saved
-// values diverge from the player's runtime defaults.
+// Covers the per-node timing fields in NodeDetail, plus the "timing"
+// badge that surfaces in node headers when the saved values diverge
+// from the player's runtime defaults.
+//
+// Auto-advance itself is no longer a per-node control — it is a single
+// project setting under Settings > Player display, covered by the
+// frontend unit tests. The delay fields remain per-node: they govern
+// the pause when advancing does happen.
 
 const PREROLL = 'Pre-roll delay before voiceover (ms)';
 const EXTRA = 'Extra pause before auto-advance (ms)';
-const AUTOADV = 'Auto-advance after audio ends';
 const AUTODELAY = 'Auto-advance delay (ms)';
 
 const numberField = (label: string) => cy.contains('label', label).find('input[type=number]');
-const checkboxField = (label: string) => cy.contains('label', label).find('input[type=checkbox]');
 
 describe('Node timing & auto-advance controls', () => {
   let projectId: string;
@@ -31,11 +34,10 @@ describe('Node timing & auto-advance controls', () => {
     cy.contains('.node-header', '_intro', { timeout: 10000 }).click();
   });
 
-  it('renders the four timing fields with runtime defaults', () => {
+  it('renders the timing fields with runtime defaults', () => {
     cy.contains('Timing & auto-advance').should('be.visible');
     numberField(PREROLL).should('have.value', '0');
     numberField(EXTRA).should('have.value', '0');
-    checkboxField(AUTOADV).should('be.checked');
     numberField(AUTODELAY).should('have.value', '2000');
   });
 
@@ -44,26 +46,19 @@ describe('Node timing & auto-advance controls', () => {
     // number input lets React re-render to the default ('0') before
     // we finish typing, producing values like '5000' instead of '500'.
     numberField(PREROLL).type('{selectall}500');
-    checkboxField(AUTOADV).uncheck();
+    numberField(AUTODELAY).type('{selectall}5000');
     cy.contains('button', 'Save timing').click();
     cy.contains('button', 'Save timing').should('be.disabled');
 
     cy.request('GET', `/api/projects/${projectId}/metadata/_intro`).then((res) => {
       expect(res.body.metadata.delayBeforeMs).to.eq(500);
-      expect(res.body.metadata.autoAdvance).to.eq(false);
+      expect(res.body.metadata.autoAdvanceDelayMs).to.eq(5000);
     });
 
-    // Badge appears next to the node id (auto-advance was flipped off)
+    // Badge appears next to the node id (timing diverges from defaults)
     cy.contains('.node-header', '_intro').within(() => {
       cy.contains('.badge', /timing/i).should('be.visible');
     });
-  });
-
-  it('disables the auto-advance-dependent fields when the toggle is off', () => {
-    checkboxField(AUTOADV).uncheck();
-    numberField(AUTODELAY).should('be.disabled');
-    // "Extra pause" only stacks onto auto-advance, so it's gated too.
-    numberField(EXTRA).should('be.disabled');
   });
 
   it('rounds decimals and clamps runaway values via the parseMs helper', () => {

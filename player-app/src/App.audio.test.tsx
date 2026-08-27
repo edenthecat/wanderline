@@ -409,7 +409,11 @@ describe('choice audio and auto-advance', () => {
     });
   }
 
-  it('still plays the choice cue', async () => {
+  // Asserts only that the cue is constructed and played, NOT that the
+  // passage then advances — driving the full cue sequence needs an
+  // 'ended' listener the mock doesn't implement. The advance itself is
+  // covered by the autoAdvanceTarget unit tests.
+  it('constructs and plays the choice cue', async () => {
     (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = storyWith(
       [{ text: 'On', target: 'second' }],
       true,

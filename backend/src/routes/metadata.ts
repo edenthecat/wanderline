@@ -75,6 +75,10 @@ export function createMetadataRouter(pool: Pool): Router {
           transcript: row.transcript,
           delayBeforeMs: row.delay_before_ms,
           delayAfterMs: row.delay_after_ms,
+          // Retained for API compatibility; the player no longer reads
+          // it (advancing is a project setting now). Reported as stored
+          // rather than defaulted, so it stops disagreeing with the
+          // column default and the no-row response.
           autoAdvance: row.auto_advance,
           autoAdvanceDelayMs: row.auto_advance_delay_ms,
           choice1TimestampMs: row.choice_1_timestamp_ms,
@@ -136,7 +140,10 @@ export function createMetadataRouter(pool: Pool): Router {
             transcript: null,
             delayBeforeMs: 0,
             delayAfterMs: 0,
-            autoAdvance: true,
+            // Matches what a fresh row now inserts. Previously this
+            // said true while the INSERT wrote false, so a consumer saw
+            // the value flip on a node's first metadata write.
+            autoAdvance: false,
             autoAdvanceDelayMs: 2000,
             choice1TimestampMs: null,
             choice2TimestampMs: null,
