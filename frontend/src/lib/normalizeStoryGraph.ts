@@ -16,10 +16,18 @@
 // graph reporting different answers in different tabs. Normalizing at
 // the boundary keeps them consistent by construction.
 //
+// Ink only. Twee has no equivalent scoping rule: twee-parser uses the
+// passage name verbatim as the node id and never sets `parent`, and a
+// period is a legal character, so `Section.Scene` naming is ordinary.
+// Applying knot-scoping there would read a broken `[[Key]]` inside
+// `Hall.Door` as `Hall.Key` and silently repoint it at a real passage —
+// hiding exactly the broken link the parser reports as an error.
+//
 // The stored graph is not rewritten; edits PATCH individual fields, so
 // nothing here is persisted as a side effect.
 
 import type { StoryGraph } from '../api/client';
+import { computeStoryHealth } from './storyHealth';
 
 const TERMINAL_TARGETS = new Set(['END', 'DONE']);
 
@@ -48,11 +56,18 @@ function resolveTarget(target: string, fromNodeId: string, nodeIds: ReadonlySet<
  * where they can. Returns the input unchanged when there is nothing to
  * qualify, so a post-fix graph costs one pass and no allocation.
  */
-export function normalizeStoryGraph<T extends StoryGraph | null | undefined>(graph: T): T {
-  if (!graph?.nodes) return graph;
+export function normalizeStoryGraph<T extends StoryGraph | null | undefined>(
+  graph: T,
+  sourceLanguage?: 'ink' | 'twee' | null,
+): T {
+  if (!graph?.nodes || sourceLanguage === 'twee') return graph;
   const nodeIds = new Set(Object.keys(graph.nodes));
   let changed = false;
-  const nodes: Record<string, unknown> = {};
+  // Null-prototype: `__proto__` is a legal passage name and a legal
+  // knot name, and assigning it on a plain object literal hits the
+  // prototype setter and creates no own property — silently dropping
+  // that node from every consumer that walks Object.keys.
+  const nodes: Record<string, unknown> = Object.create(null);
   for (const [id, node] of Object.entries(graph.nodes)) {
     // Tracked per node: `choices.map` always returns a fresh array, so
     // comparing array identity would rebuild every node on every load
@@ -75,5 +90,23 @@ export function normalizeStoryGraph<T extends StoryGraph | null | undefined>(gra
     }
   }
   if (!changed) return graph;
-  return { ...graph, nodes } as T;
+  const normalized = { ...graph, nodes } as T & StoryGraph;
+
+  // The stored validation blob was computed against the un-qualified
+  // targets and nothing re-validates on read, so a legacy project
+  // carries `unreachable_node` warnings for knots that are reachable
+  // once the targets resolve. Left alone, the Graph tab would paint a
+  // warning badge and the ValidationPanel would list a node that the
+  // health panel — reading the same graph — now calls reachable.
+  const warnings = normalized.validation?.warnings;
+  if (!warnings?.some((w) => w.type === 'unreachable_node')) return normalized;
+  const { reachableNodes } = computeStoryHealth(normalized);
+  const kept = warnings.filter(
+    (w) => !(w.type === 'unreachable_node' && w.nodeId && reachableNodes.has(w.nodeId)),
+  );
+  if (kept.length === warnings.length) return normalized;
+  return {
+    ...normalized,
+    validation: { ...normalized.validation, warnings: kept },
+  } as T & StoryGraph;
 }

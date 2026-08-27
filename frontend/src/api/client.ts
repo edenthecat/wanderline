@@ -193,7 +193,10 @@ export function fetchProject(id: string): Promise<{ project: ProjectDetail }> {
   // concern and not a per-consumer one.
   return request<{ project: ProjectDetail }>(`/projects/${id}`).then((res) => ({
     ...res,
-    project: { ...res.project, story_graph: normalizeStoryGraph(res.project.story_graph) },
+    project: {
+      ...res.project,
+      story_graph: normalizeStoryGraph(res.project.story_graph, res.project.source_language),
+    },
   }));
 }
 

@@ -127,6 +127,55 @@ describe('normalizeStoryGraph', () => {
   it('passes null through', () => {
     expect(normalizeStoryGraph(null)).toBeNull();
   });
+
+  it('leaves Twee graphs alone — no knot scoping there', () => {
+    // `Hall.Door` / `Hall.Key` are ordinary Twee passage names, and
+    // `[[Key]]` is a genuinely broken link the parser reports as an
+    // error. Qualifying it would repoint it at a real passage.
+    const g = graph(
+      {
+        'Hall.Door': node('Hall.Door', { choices: [{ text: 'k', target: 'Key' }] }),
+        'Hall.Key': node('Hall.Key', { divert: 'END' }),
+      },
+      'Hall.Door',
+    );
+    expect(normalizeStoryGraph(g, 'twee')).toBe(g);
+    // Same graph read as Ink would qualify — that's the difference.
+    expect(normalizeStoryGraph(g, 'ink').nodes['Hall.Door'].choices[0].target).toBe('Hall.Key');
+  });
+
+  it('keeps a node named __proto__', () => {
+    const g = normalizeStoryGraph(
+      graph({
+        inbox: node('inbox', { choices: [{ text: 'go', target: 'read_email_5' }] }),
+        'inbox.read_email_5': node('inbox.read_email_5', { divert: 'END' }),
+        // Computed key: the literal form `__proto__:` sets the
+        // prototype instead of creating an own property, so the
+        // fixture would never contain the node it means to test.
+        ['__proto__']: node('__proto__', { divert: 'END' }),
+      }),
+    );
+    // A plain object literal would swallow this assignment entirely.
+    expect(Object.keys(g.nodes)).toContain('__proto__');
+  });
+
+  it('drops stale unreachable warnings for nodes the fix makes reachable', () => {
+    const g = graph({
+      inbox: node('inbox', { choices: [{ text: 'read', target: 'read_email_5' }] }),
+      'inbox.read_email_5': node('inbox.read_email_5', { divert: 'outro' }),
+      outro: node('outro', { divert: 'END' }),
+    });
+    g.validation.warnings = [
+      { type: 'unreachable_node', message: 'x', nodeId: 'outro' },
+      { type: 'unreachable_node', message: 'y', nodeId: 'ghost' },
+      { type: 'missing_target', message: 'z', nodeId: 'inbox' },
+    ];
+    const out = normalizeStoryGraph(g);
+    const types = out.validation.warnings.map((w) => `${w.type}:${w.nodeId}`);
+    // `outro` is reachable now; `ghost` still isn't, and unrelated
+    // warnings are untouched.
+    expect(types).toEqual(['unreachable_node:ghost', 'missing_target:inbox']);
+  });
 });
 
 describe('story health on a normalized legacy graph', () => {
