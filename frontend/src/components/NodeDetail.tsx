@@ -29,7 +29,6 @@ import { getChoiceText, getContentText } from '../hooks/useStoryYDoc';
 export const TIMING_DEFAULTS = {
   delayBeforeMs: 0,
   delayAfterMs: 0,
-  autoAdvance: true,
   autoAdvanceDelayMs: 2000,
 } as const;
 
@@ -59,7 +58,6 @@ export function hasCustomTiming(meta?: NodeMetadata): boolean {
   return (
     (meta.delayBeforeMs ?? TIMING_DEFAULTS.delayBeforeMs) !== TIMING_DEFAULTS.delayBeforeMs ||
     (meta.delayAfterMs ?? TIMING_DEFAULTS.delayAfterMs) !== TIMING_DEFAULTS.delayAfterMs ||
-    (meta.autoAdvance ?? TIMING_DEFAULTS.autoAdvance) !== TIMING_DEFAULTS.autoAdvance ||
     (meta.autoAdvanceDelayMs ?? TIMING_DEFAULTS.autoAdvanceDelayMs) !==
       TIMING_DEFAULTS.autoAdvanceDelayMs
   );
@@ -241,28 +239,23 @@ export default function NodeDetail({
   // ── Timing & auto-advance ─────────────────────────────────────────
   const savedDelayBeforeMs = metadata?.delayBeforeMs ?? TIMING_DEFAULTS.delayBeforeMs;
   const savedDelayAfterMs = metadata?.delayAfterMs ?? TIMING_DEFAULTS.delayAfterMs;
-  const savedAutoAdvance = metadata?.autoAdvance ?? TIMING_DEFAULTS.autoAdvance;
   const savedAutoAdvanceDelayMs =
     metadata?.autoAdvanceDelayMs ?? TIMING_DEFAULTS.autoAdvanceDelayMs;
 
   const [delayBeforeMs, setDelayBeforeMs] = useState(savedDelayBeforeMs);
   const [delayAfterMs, setDelayAfterMs] = useState(savedDelayAfterMs);
-  const [autoAdvance, setAutoAdvance] = useState(savedAutoAdvance);
   const [autoAdvanceDelayMs, setAutoAdvanceDelayMs] = useState(savedAutoAdvanceDelayMs);
   const [timingSaving, setTimingSaving] = useState(false);
   const [timingError, setTimingError] = useState<string | null>(null);
 
   const lastDelayBeforeRef = useRef(savedDelayBeforeMs);
   const lastDelayAfterRef = useRef(savedDelayAfterMs);
-  const lastAutoAdvanceRef = useRef(savedAutoAdvance);
   const lastAutoAdvanceDelayRef = useRef(savedAutoAdvanceDelayMs);
   const delayBeforeMsRef = useRef(delayBeforeMs);
   const delayAfterMsRef = useRef(delayAfterMs);
-  const autoAdvanceRef = useRef(autoAdvance);
   const autoAdvanceDelayMsRef = useRef(autoAdvanceDelayMs);
   delayBeforeMsRef.current = delayBeforeMs;
   delayAfterMsRef.current = delayAfterMs;
-  autoAdvanceRef.current = autoAdvance;
   autoAdvanceDelayMsRef.current = autoAdvanceDelayMs;
 
   useEffect(() => {
@@ -274,22 +267,17 @@ export default function NodeDetail({
       setDelayAfterMs(savedDelayAfterMs);
       lastDelayAfterRef.current = savedDelayAfterMs;
     }
-    if (autoAdvanceRef.current === lastAutoAdvanceRef.current) {
-      setAutoAdvance(savedAutoAdvance);
-      lastAutoAdvanceRef.current = savedAutoAdvance;
-    }
     if (autoAdvanceDelayMsRef.current === lastAutoAdvanceDelayRef.current) {
       setAutoAdvanceDelayMs(savedAutoAdvanceDelayMs);
       lastAutoAdvanceDelayRef.current = savedAutoAdvanceDelayMs;
     }
     setTimingError(null);
-  }, [savedDelayBeforeMs, savedDelayAfterMs, savedAutoAdvance, savedAutoAdvanceDelayMs]);
+  }, [savedDelayBeforeMs, savedDelayAfterMs, savedAutoAdvanceDelayMs]);
 
   const timingDirty =
     delayBeforeMs !== savedDelayBeforeMs ||
     delayAfterMs !== savedDelayAfterMs ||
-    autoAdvance !== savedAutoAdvance ||
-    (autoAdvance && autoAdvanceDelayMs !== savedAutoAdvanceDelayMs);
+    autoAdvanceDelayMs !== savedAutoAdvanceDelayMs;
   const timingLocked = !metadataLoaded || timingSaving;
 
   async function handleTimingSave() {
@@ -299,9 +287,8 @@ export default function NodeDetail({
       const patch: Partial<NodeMetadata> = {
         delayBeforeMs,
         delayAfterMs,
-        autoAdvance,
       };
-      if (autoAdvance) patch.autoAdvanceDelayMs = autoAdvanceDelayMs;
+      patch.autoAdvanceDelayMs = autoAdvanceDelayMs;
       await onMetadataSave(patch);
     } catch (err) {
       if (mountedRef.current) {
@@ -315,7 +302,6 @@ export default function NodeDetail({
   function handleTimingRevert() {
     setDelayBeforeMs(savedDelayBeforeMs);
     setDelayAfterMs(savedDelayAfterMs);
-    setAutoAdvance(savedAutoAdvance);
     setAutoAdvanceDelayMs(savedAutoAdvanceDelayMs);
     setTimingError(null);
   }
@@ -433,8 +419,10 @@ export default function NodeDetail({
       <div className="transcript-override timing-controls">
         <label className="transcript-override-label">Timing & auto-advance</label>
         <p className="text-sm text-muted transcript-override-hint">
-          Control how the player paces this node. Auto-advance moves to the next node once the
-          voiceover ends; toggle off for nodes the listener should stay on (e.g. branch decisions).
+          How long this node pauses when the player advances past it. Advancing itself is a project
+          setting &mdash; Settings &rarr; Player display &rarr; &ldquo;Advance automatically&rdquo;
+          &mdash; and applies only to passages with a single way forward, so these fields have no
+          effect while it is off.
         </p>
         <div className="timing-grid">
           <label className="timing-field">
@@ -458,18 +446,9 @@ export default function NodeDetail({
               step={100}
               value={delayAfterMs}
               onChange={(e) => setDelayAfterMs(parseMs(e.target.value))}
-              disabled={timingLocked || !autoAdvance}
-              title="Only used when auto-advance is on. Stacks on top of the auto-advance delay below."
-            />
-          </label>
-          <label className="timing-field timing-field-checkbox">
-            <input
-              type="checkbox"
-              checked={autoAdvance}
-              onChange={(e) => setAutoAdvance(e.target.checked)}
               disabled={timingLocked}
+              title="Only used when the project setting \u201cAdvance automatically\u201d is on. Stacks on top of the auto-advance delay below."
             />
-            <span>Auto-advance after audio ends</span>
           </label>
           <label className="timing-field">
             <span>Auto-advance delay (ms)</span>
@@ -480,7 +459,7 @@ export default function NodeDetail({
               step={100}
               value={autoAdvanceDelayMs}
               onChange={(e) => setAutoAdvanceDelayMs(parseMs(e.target.value))}
-              disabled={timingLocked || !autoAdvance}
+              disabled={timingLocked}
             />
           </label>
         </div>

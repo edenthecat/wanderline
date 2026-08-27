@@ -75,6 +75,9 @@ export interface StoryData {
     choiceAudioDelayMs?: number;
     // UI options — see frontend SettingsTab "Player display".
     captionsDefault?: boolean;
+    /** Project-wide default for auto-advancing between passages.
+     * Undefined means off; a node's own metadata still overrides. */
+    autoAdvance?: boolean;
     showProgressBar?: boolean;
     showChoiceList?: boolean;
     // Bluetooth / headphone button mapping. See frontend
@@ -293,6 +296,7 @@ export async function buildStoryData(
       defaultIndicatorAudioUrl,
       choiceAudioDelayMs: settings.choiceAudioDelayMs,
       captionsDefault: settings.captionsDefault,
+      autoAdvance: settings.autoAdvance,
       showProgressBar: settings.showProgressBar,
       showChoiceList: settings.showChoiceList,
       bluetoothControls: settings.bluetoothControls,

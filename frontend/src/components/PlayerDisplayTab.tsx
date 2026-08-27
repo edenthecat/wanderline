@@ -5,9 +5,10 @@ interface Props {
   projectId: string;
 }
 
-type Toggle = 'captionsDefault' | 'showProgressBar' | 'showChoiceList';
+type Toggle = 'captionsDefault' | 'showProgressBar' | 'showChoiceList' | 'autoAdvance';
 
-const TOGGLES: { key: Toggle; label: string; hint: string }[] = [
+/** `defaultOn: false` for options that stay off unless asked for. */
+const TOGGLES: { key: Toggle; label: string; hint: string; defaultOn?: boolean }[] = [
   {
     key: 'captionsDefault',
     label: 'Captions on by default',
@@ -17,6 +18,12 @@ const TOGGLES: { key: Toggle; label: string; hint: string }[] = [
     key: 'showProgressBar',
     label: 'Show progress bar',
     hint: 'Display the audio progress bar under each node.',
+  },
+  {
+    key: 'autoAdvance',
+    label: 'Advance automatically',
+    hint: 'Move to the next passage on its own once narration ends, instead of waiting for the listener. Off by default — an individual passage can still override this either way. Leave it off for stories where the listener should choose when to continue.',
+    defaultOn: false,
   },
   {
     key: 'showChoiceList',
@@ -29,10 +36,13 @@ export default function PlayerDisplayTab({ projectId }: Props) {
   const { settings, loading, error, updateOne } = useProjectSettings(projectId);
   if (loading) return <div className="page-loader">Loading display...</div>;
 
-  // Defaults: every UI option is on when unset (mirrors player-app
-  // resolution — see player-app/src/App.tsx).
-  function read(key: Toggle): boolean {
-    return (settings?.[key as keyof ProjectSettings] as boolean | undefined) !== false;
+  // Defaults mirror the player's own resolution (player-app/src/App.tsx).
+  // Display options are on when unset; auto-advance is off unless the
+  // author turns it on, so it can't be read with the same `!== false`.
+  function read(row: (typeof TOGGLES)[number]): boolean {
+    const value = settings?.[row.key as keyof ProjectSettings] as boolean | undefined;
+    if (typeof value === 'boolean') return value;
+    return row.defaultOn !== false;
   }
 
   return (
@@ -53,7 +63,7 @@ export default function PlayerDisplayTab({ projectId }: Props) {
               <label>
                 <input
                   type="checkbox"
-                  checked={read(row.key)}
+                  checked={read(row)}
                   onChange={(e) => updateOne(row.key, e.target.checked)}
                 />
                 <div>
