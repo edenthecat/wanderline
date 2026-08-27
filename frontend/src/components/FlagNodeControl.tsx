@@ -6,7 +6,7 @@
 // a forgotten one — so the control names the current passage and files
 // against it directly.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { createNodeFlag, type NodeFlagReason } from '../api/client';
 
 const REASONS: { value: NodeFlagReason; label: string }[] = [
@@ -24,20 +24,49 @@ interface Props {
 
 export default function FlagNodeControl({ projectId, nodeId, onFlagged }: Props) {
   const [open, setOpen] = useState(false);
+  // The passage this popover is filing against, captured when it
+  // opened. `nodeId` is live — the player pushes a new one whenever
+  // playback moves, and it moves on its own with auto-advance. Reading
+  // it at submit time meant a reviewer who heard a problem, opened the
+  // form and started typing could file the report against whatever
+  // passage happened to be playing by the time they pressed the button,
+  // which is exactly the mix-up the feature exists to prevent.
+  const [target, setTarget] = useState<string | null>(null);
   const [reason, setReason] = useState<NodeFlagReason>('not_working');
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [justFlagged, setJustFlagged] = useState<string | null>(null);
 
+  // Finding: the confirmation used to persist indefinitely, so ten
+  // passages later the toolbar still read "Flagged chapter1.intro" —
+  // indistinguishable from having just flagged the current one.
+  useEffect(() => {
+    setJustFlagged(null);
+  }, [nodeId]);
+
+  function openPopover() {
+    setTarget(nodeId);
+    setError(null);
+    setOpen(true);
+  }
+
+  function closePopover() {
+    setOpen(false);
+    setTarget(null);
+    // Otherwise a failure from a previous attempt greets the next one.
+    setError(null);
+  }
+
   async function submit() {
-    if (!nodeId) return;
+    if (!target) return;
     setSaving(true);
     setError(null);
     try {
-      await createNodeFlag(projectId, { nodeId, reason, note: note.trim() || undefined });
-      setJustFlagged(nodeId);
+      await createNodeFlag(projectId, { nodeId: target, reason, note: note.trim() || undefined });
+      setJustFlagged(target);
       setOpen(false);
+      setTarget(null);
       setNote('');
       onFlagged?.();
     } catch (e) {
@@ -52,7 +81,7 @@ export default function FlagNodeControl({ projectId, nodeId, onFlagged }: Props)
       <button
         type="button"
         className="btn btn-ghost btn-sm"
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => (open ? closePopover() : openPopover())}
         // Disabled until the player reports a passage: flagging
         // "nothing" would file a report nobody can act on.
         disabled={!nodeId}
@@ -68,11 +97,23 @@ export default function FlagNodeControl({ projectId, nodeId, onFlagged }: Props)
         </span>
       )}
 
-      {open && nodeId && (
+      {open && target && (
         <div className="flag-control-popover" role="group" aria-label="Flag this passage">
           <p className="text-sm">
-            Flagging <code>{nodeId}</code>
+            Flagging <code>{target}</code>
           </p>
+          {/* The preview kept playing while this was open. Say so
+              rather than silently filing against either passage — the
+              reviewer is the only one who knows which they meant. */}
+          {nodeId && nodeId !== target && (
+            <p className="flag-control-moved text-sm">
+              The preview has moved on to <code>{nodeId}</code>. This will still be filed against{' '}
+              <code>{target}</code>.{' '}
+              <button type="button" className="btn-link" onClick={() => setTarget(nodeId)}>
+                Flag {nodeId} instead
+              </button>
+            </p>
+          )}
           <div className="flag-control-reasons">
             {REASONS.map((r) => (
               <label key={r.value} className="flag-control-reason">
@@ -113,7 +154,7 @@ export default function FlagNodeControl({ projectId, nodeId, onFlagged }: Props)
             <button
               type="button"
               className="btn btn-ghost btn-sm"
-              onClick={() => setOpen(false)}
+              onClick={closePopover}
               disabled={saving}
             >
               Cancel

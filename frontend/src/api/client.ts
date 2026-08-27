@@ -1215,7 +1215,12 @@ export interface NodeFlag {
 export function fetchNodeFlags(
   projectId: string,
   includeResolved = false,
-): Promise<{ flags: NodeFlag[] }> {
+): Promise<{
+  /** True count, which may exceed the returned page. */
+  total: number;
+  truncated: boolean;
+  flags: NodeFlag[];
+}> {
   return request(`/projects/${projectId}/flags${includeResolved ? '?include=resolved' : ''}`);
 }
 

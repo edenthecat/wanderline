@@ -84,4 +84,73 @@ describe('FlagNodeControl', () => {
     expect(await screen.findByText('server said no')).toBeTruthy();
     expect(screen.getByText('Flag it')).toBeTruthy();
   });
+
+  // The popover stays open while a reviewer types, and the preview
+  // keeps playing underneath it — with auto-advance, without any input
+  // at all. Reading the live node at submit time filed the report
+  // against whatever happened to be playing by then, which is the exact
+  // mix-up this feature exists to prevent.
+  it('files against the passage that was playing when it opened', async () => {
+    const create = vi.spyOn(client, 'createNodeFlag').mockResolvedValue({
+      flag: {} as client.NodeFlag,
+    });
+    const { rerender } = render(<FlagNodeControl projectId="p1" nodeId="chapter1.intro" />);
+    fireEvent.click(screen.getByText('Flag this passage'));
+
+    // The preview advances while the form is open.
+    rerender(<FlagNodeControl projectId="p1" nodeId="chapter1.forest" />);
+    fireEvent.click(screen.getByText('Flag it'));
+
+    await waitFor(() =>
+      expect(create).toHaveBeenCalledWith('p1', {
+        nodeId: 'chapter1.intro',
+        reason: 'not_working',
+      }),
+    );
+  });
+
+  it('says the preview moved on, and offers to re-target', async () => {
+    const create = vi.spyOn(client, 'createNodeFlag').mockResolvedValue({
+      flag: {} as client.NodeFlag,
+    });
+    const { rerender } = render(<FlagNodeControl projectId="p1" nodeId="chapter1.intro" />);
+    fireEvent.click(screen.getByText('Flag this passage'));
+    rerender(<FlagNodeControl projectId="p1" nodeId="chapter1.forest" />);
+
+    expect(screen.getByText(/The preview has moved on/)).toBeTruthy();
+    fireEvent.click(screen.getByText('Flag chapter1.forest instead'));
+    fireEvent.click(screen.getByText('Flag it'));
+    await waitFor(() =>
+      expect(create).toHaveBeenCalledWith('p1', {
+        nodeId: 'chapter1.forest',
+        reason: 'not_working',
+      }),
+    );
+  });
+
+  // Otherwise ten passages later the toolbar still reads "Flagged
+  // chapter1.intro", indistinguishable from having just flagged the
+  // one on screen.
+  it('clears the confirmation once the preview moves on', async () => {
+    vi.spyOn(client, 'createNodeFlag').mockResolvedValue({ flag: {} as client.NodeFlag });
+    const { rerender } = render(<FlagNodeControl projectId="p1" nodeId="her" />);
+    fireEvent.click(screen.getByText('Flag this passage'));
+    fireEvent.click(screen.getByText('Flag it'));
+    expect(await screen.findByText(/Flagged/)).toBeTruthy();
+
+    rerender(<FlagNodeControl projectId="p1" nodeId="sam" />);
+    await waitFor(() => expect(screen.queryByText(/Flagged/)).toBeNull());
+  });
+
+  it('does not greet the next attempt with the previous failure', async () => {
+    vi.spyOn(client, 'createNodeFlag').mockRejectedValue(new Error('server said no'));
+    render(<FlagNodeControl projectId="p1" nodeId="her" />);
+    fireEvent.click(screen.getByText('Flag this passage'));
+    fireEvent.click(screen.getByText('Flag it'));
+    expect(await screen.findByText('server said no')).toBeTruthy();
+
+    fireEvent.click(screen.getByText('Cancel'));
+    fireEvent.click(screen.getByText('Flag this passage'));
+    expect(screen.queryByText('server said no')).toBeNull();
+  });
 });

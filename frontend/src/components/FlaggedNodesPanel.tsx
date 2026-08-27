@@ -20,6 +20,9 @@ interface Props {
   nodeIdSet: Set<string>;
   onJumpToNode: (nodeId: string) => void;
   onFlagsChanged: () => void;
+  /** The server capped the list; say so rather than letting the cap
+   * read as the total. */
+  truncated?: boolean;
 }
 
 export default function FlaggedNodesPanel({
@@ -28,9 +31,15 @@ export default function FlaggedNodesPanel({
   nodeIdSet,
   onJumpToNode,
   onFlagsChanged,
+  truncated,
 }: Props) {
   const [expanded, setExpanded] = useState(false);
-  const [resolving, setResolving] = useState<string | null>(null);
+  // A set, not one id: gating every button on a single in-flight id
+  // meant starting a second resolve re-enabled the first — letting it
+  // fire twice and surface the backend's "already resolved" 404 for an
+  // action that had actually succeeded — while finishing the first
+  // cleared the second's spinner.
+  const [resolving, setResolving] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
 
   const entries = useMemo(() => {
@@ -59,7 +68,7 @@ export default function FlaggedNodesPanel({
   const total = entries.reduce((n, e) => n + e.flags.length, 0);
 
   async function resolve(flagId: string) {
-    setResolving(flagId);
+    setResolving((prev) => new Set(prev).add(flagId));
     setError(null);
     try {
       await resolveNodeFlag(projectId, flagId);
@@ -67,7 +76,11 @@ export default function FlaggedNodesPanel({
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not resolve');
     } finally {
-      setResolving(null);
+      setResolving((prev) => {
+        const next = new Set(prev);
+        next.delete(flagId);
+        return next;
+      });
     }
   }
 
@@ -89,6 +102,7 @@ export default function FlaggedNodesPanel({
         </span>
         <span className="text-sm text-muted">
           across {entries.length} passage{entries.length === 1 ? '' : 's'}
+          {truncated && ' (showing the most recent)'}
         </span>
       </button>
 
@@ -134,10 +148,10 @@ export default function FlaggedNodesPanel({
                         type="button"
                         className="btn btn-sm btn-ghost"
                         onClick={() => void resolve(f.id)}
-                        disabled={resolving === f.id}
+                        disabled={resolving.has(f.id)}
                         aria-label={`Resolve ${FLAG_REASON_LABELS[f.reason] ?? f.reason} on ${nodeId}`}
                       >
-                        {resolving === f.id ? 'Saving…' : 'Resolve'}
+                        {resolving.has(f.id) ? 'Saving…' : 'Resolve'}
                       </button>
                     </li>
                   ))}

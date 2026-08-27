@@ -853,13 +853,18 @@ function NodeFlagList({
   flags?: NodeFlag[];
   onResolved?: () => void;
 }) {
-  const [resolving, setResolving] = useState<string | null>(null);
+  // A set, not one id: gating every button on a single in-flight id
+  // meant starting a second resolve re-enabled the first — letting it
+  // fire twice and surface the backend's "already resolved" 404 for an
+  // action that had actually succeeded — while finishing the first
+  // cleared the second's spinner.
+  const [resolving, setResolving] = useState<Set<string>>(new Set());
   const [err, setErr] = useState<string | null>(null);
 
   if (!flags || flags.length === 0) return null;
 
   async function resolve(flagId: string) {
-    setResolving(flagId);
+    setResolving((prev) => new Set(prev).add(flagId));
     setErr(null);
     try {
       await resolveNodeFlag(projectId, flagId);
@@ -867,7 +872,11 @@ function NodeFlagList({
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Could not resolve');
     } finally {
-      setResolving(null);
+      setResolving((prev) => {
+        const next = new Set(prev);
+        next.delete(flagId);
+        return next;
+      });
     }
   }
 
@@ -892,10 +901,10 @@ function NodeFlagList({
               type="button"
               className="btn btn-sm btn-ghost"
               onClick={() => void resolve(f.id)}
-              disabled={resolving === f.id}
+              disabled={resolving.has(f.id)}
               aria-label={`Mark "${FLAG_REASON_LABELS[f.reason] ?? f.reason}" resolved`}
             >
-              {resolving === f.id ? 'Saving…' : 'Resolve'}
+              {resolving.has(f.id) ? 'Saving…' : 'Resolve'}
             </button>
           </li>
         ))}

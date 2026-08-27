@@ -99,4 +99,48 @@ describe('FlaggedNodesPanel', () => {
     await waitFor(() => expect(resolve).toHaveBeenCalledWith('p1', 'fl1'));
     await waitFor(() => expect(onFlagsChanged).toHaveBeenCalled());
   });
+
+  // Gating every button on one in-flight id meant starting a second
+  // resolve re-enabled the first — letting it fire twice and surface
+  // the backend's "already resolved" 404 for an action that had
+  // actually succeeded — while finishing the first wiped the second's
+  // spinner.
+  it('tracks concurrent resolves independently', async () => {
+    let releaseA: (() => void) | undefined;
+    vi.spyOn(client, 'resolveNodeFlag').mockImplementation((_p, flagId) =>
+      flagId === 'fl1'
+        ? new Promise((res) => {
+            releaseA = () => res({ resolved: true });
+          })
+        : Promise.resolve({ resolved: true }),
+    );
+    render(
+      panel({
+        flagsByNode: { her: [flag(), flag({ id: 'fl2', reason: 'needs_text_edit' })] },
+      }),
+    );
+    fireEvent.click(screen.getByText('2 open flags'));
+
+    const a = screen.getByLabelText('Resolve Incorrect audio on her') as HTMLButtonElement;
+    const b = screen.getByLabelText('Resolve Needs a text edit on her') as HTMLButtonElement;
+
+    fireEvent.click(a);
+    await waitFor(() => expect(a.disabled).toBe(true));
+    fireEvent.click(b);
+
+    // B in flight must not re-enable A.
+    expect(a.disabled).toBe(true);
+    // And B finishing must not clear A's spinner.
+    await waitFor(() => expect(b.disabled).toBe(false));
+    expect(a.disabled).toBe(true);
+
+    releaseA?.();
+    await waitFor(() => expect(a.disabled).toBe(false));
+  });
+
+  // The cap must not masquerade as the total.
+  it('says when the list is capped', () => {
+    render(panel({ truncated: true }));
+    expect(screen.getByText(/showing the most recent/)).toBeTruthy();
+  });
 });

@@ -198,6 +198,7 @@ export default function StoryTab({
     audioNames,
     characters,
     flagsByNode,
+    flagsTruncated,
     refreshFlags,
     metadataError,
     retryMetadata,
@@ -558,6 +559,7 @@ export default function StoryTab({
             nodeIdSet={nodeIdSet}
             onJumpToNode={jumpToNode}
             onFlagsChanged={refreshFlags}
+            truncated={flagsTruncated}
           />
           <StoryHealthPanel storyGraph={storyGraph} onJumpToNode={jumpToNode} />
           {/* Stats */}

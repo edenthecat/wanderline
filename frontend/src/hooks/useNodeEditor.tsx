@@ -67,6 +67,9 @@ export interface UseNodeEditorResult {
   characters: Character[];
   /** Open flags grouped by the passage they were raised against. */
   flagsByNode: Record<string, NodeFlag[]>;
+  /** True when the server capped the list — the grouped flags above are
+   * a page, not the whole set. */
+  flagsTruncated: boolean;
   /** Re-read flags, e.g. after one is raised from the preview. */
   refreshFlags: () => void;
   /** Manually retry the bulk metadata fetch after a transient failure. */
@@ -122,6 +125,7 @@ export function useNodeEditor({
   // acting on it happens here, so the story and graph views have to
   // show which passages someone has questioned.
   const [flagsByNode, setFlagsByNode] = useState<Record<string, NodeFlag[]>>({});
+  const [flagsTruncated, setFlagsTruncated] = useState(false);
   const [flagsNonce, setFlagsNonce] = useState(0);
   const refreshFlags = useCallback(() => setFlagsNonce((n) => n + 1), []);
   const [metadataError, setMetadataError] = useState<string | null>(null);
@@ -162,6 +166,7 @@ export function useNodeEditor({
     setAudioNames({});
     setCharacters([]);
     setFlagsByNode({});
+    setFlagsTruncated(false);
     dirtyKeysRef.current = new Set();
   }, [projectId]);
 
@@ -220,9 +225,13 @@ export function useNodeEditor({
           (grouped[flag.nodeId] ??= []).push(flag);
         }
         setFlagsByNode(grouped);
+        setFlagsTruncated(Boolean(res.truncated));
       })
       .catch(() => {
-        if (!cancelled) setFlagsByNode({});
+        if (!cancelled) {
+          setFlagsByNode({});
+          setFlagsTruncated(false);
+        }
       });
     return () => {
       cancelled = true;
@@ -481,6 +490,7 @@ export function useNodeEditor({
     audioNames,
     characters,
     flagsByNode,
+    flagsTruncated,
     refreshFlags,
     metadataError,
     retryMetadata,

@@ -8,6 +8,20 @@ import { Pool } from 'pg';
 // remember which passage it was. So flags are raised from the preview
 // and surface on the passage itself in the story list and the graph.
 
+// Ids reach Postgres UUID columns directly. Without a shape check a
+// malformed one raises `invalid input syntax for type uuid`, which the
+// catch turns into a 500 and an error-level log for what is really a
+// bad request. requireProjectAccess short-circuits admins before its
+// collaborators query, so a non-UUID project id can reach here too.
+// Same guard projects-icon.ts documents.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Flags are read on every Story/Graph mount, and each carries a note of
+// up to MAX_NOTE_LENGTH. A project that accumulates thousands would
+// ship the lot on each render, so the list is capped and reports the
+// true total alongside it rather than pretending the cap is the count.
+const MAX_FLAGS_RETURNED = 500;
+
 /** Closed set so the editor and the graph can render each consistently. */
 const REASONS = new Set(['not_working', 'incorrect_audio', 'needs_text_edit']);
 
@@ -37,7 +51,16 @@ export function mountFlagRoutes(router: Router, pool: Pool): void {
   router.get('/:id/flags', async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
+      if (!UUID_RE.test(id)) {
+        res.status(400).json({ error: 'Invalid project id' });
+        return;
+      }
       const includeResolved = req.query.include === 'resolved';
+      const countResult = await pool.query(
+        `SELECT COUNT(*)::int AS total FROM node_flags
+          WHERE project_id = $1 ${includeResolved ? '' : 'AND resolved_at IS NULL'}`,
+        [id],
+      );
       const result = await pool.query(
         `SELECT f.id, f.node_id, f.reason, f.note, f.created_at, f.resolved_at,
                 u.display_name AS created_by_name
@@ -45,10 +68,13 @@ export function mountFlagRoutes(router: Router, pool: Pool): void {
            LEFT JOIN users u ON u.id = f.created_by
           WHERE f.project_id = $1
             ${includeResolved ? '' : 'AND f.resolved_at IS NULL'}
-          ORDER BY f.created_at DESC`,
-        [id],
+          ORDER BY f.created_at DESC
+          LIMIT $2`,
+        [id, MAX_FLAGS_RETURNED],
       );
       res.json({
+        total: countResult.rows[0]?.total ?? result.rows.length,
+        truncated: result.rows.length < (countResult.rows[0]?.total ?? 0),
         flags: result.rows.map((r) => ({
           id: r.id,
           nodeId: r.node_id,
@@ -83,6 +109,10 @@ export function mountFlagRoutes(router: Router, pool: Pool): void {
   router.post('/:id/flags', async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
+      if (!UUID_RE.test(id)) {
+        res.status(400).json({ error: 'Invalid project id' });
+        return;
+      }
       const { nodeId, reason, note } = req.body ?? {};
       if (!nodeId || typeof nodeId !== 'string') {
         res.status(400).json({ error: 'nodeId is required' });
@@ -152,6 +182,10 @@ export function mountFlagRoutes(router: Router, pool: Pool): void {
   router.post('/:id/flags/:flagId/resolve', async (req: Request, res: Response) => {
     try {
       const { id, flagId } = req.params;
+      if (!UUID_RE.test(id) || !UUID_RE.test(flagId)) {
+        res.status(400).json({ error: 'Invalid project or flag id' });
+        return;
+      }
       // Scoped by project so a flag id from elsewhere can't be resolved
       // through a project the caller does have access to.
       const result = await pool.query(
