@@ -7,9 +7,9 @@
 // through a bare stitch target was reported unreachable, and
 // NodeDetail's dropdown rendered "(missing)" for the same reason.
 //
-// The parser now qualifies those targets, but this pins the frontend's
-// side of the contract: given targets that name real nodes, the walk
-// reaches them.
+// The parser now qualifies these at parse time, but graphs are stored,
+// so the editor resolves them too — same order the backend validator
+// and the player have always used.
 
 import { describe, expect, it } from 'vitest';
 import { computeStoryHealth } from '../storyHealth';
@@ -46,18 +46,29 @@ describe('storyHealth reachability through stitch targets', () => {
     expect(report.unreachableNodes).not.toContain('inbox.read_email_5');
   });
 
-  // This is what Bijan saw: a bare target names no node, the walk skips
-  // it, and everything downstream is reported unreachable.
-  it('cannot reach a stitch through an unqualified target', () => {
+  // The reported symptom. Story graphs are persisted and nothing
+  // re-parses them on read, so a project uploaded before the parser fix
+  // still holds bare targets — the walk has to resolve them or those
+  // projects keep reporting a working story as unreachable.
+  it('reaches a stitch through an unqualified target', () => {
     const report = computeStoryHealth(
       graph({
         inbox: node('inbox', { choices: [{ text: 'read', target: 'read_email_5' }] }),
         'inbox.read_email_5': node('inbox.read_email_5', { divert: 'END' }),
       }),
     );
-    // Pins WHY the parser fix was needed: without qualification the
-    // frontend genuinely cannot see the edge.
-    expect(report.unreachableNodes).toContain('inbox.read_email_5');
+    expect(report.unreachableNodes).not.toContain('inbox.read_email_5');
+  });
+
+  it('still reports a target that names nothing anywhere', () => {
+    const report = computeStoryHealth(
+      graph({
+        inbox: node('inbox', { choices: [{ text: 'go', target: 'nowhere_at_all' }] }),
+        'inbox.orphan': node('inbox.orphan', { divert: 'END' }),
+      }),
+    );
+    // Tolerance must not become "everything is reachable".
+    expect(report.unreachableNodes).toContain('inbox.orphan');
   });
 
   it('walks a chain of qualified stitch targets', () => {

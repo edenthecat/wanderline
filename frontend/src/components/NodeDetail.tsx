@@ -23,6 +23,7 @@ import AuditionButton from './AuditionButton';
 import CollabChoiceTextInput from './CollabChoiceTextInput';
 import CollabContentTextarea from './CollabContentTextarea';
 import { getChoiceText, getContentText } from '../hooks/useStoryYDoc';
+import { isTerminalTarget, resolveTarget } from '../lib/resolveTarget';
 
 // Runtime defaults for per-node timing — duplicated in
 // player-app/src/App.tsx (look for `?? 0` / `?? 2000` near the
@@ -517,7 +518,7 @@ export default function NodeDetail({
                 onChange={(e) => onChoiceTargetEdit(i, e.target.value)}
                 aria-label={`Choice ${i + 1} target`}
               >
-                {!nodeIdSet.has(ch.target) && ch.target !== 'END' && ch.target !== 'DONE' && (
+                {!resolveTarget(ch.target, nodeId, nodeIdSet) && !isTerminalTarget(ch.target) && (
                   <option value={ch.target}>{ch.target} (missing)</option>
                 )}
                 {nodeIdOptions}
@@ -583,7 +584,7 @@ export default function NodeDetail({
             onChange={(e) => onDivertEdit(e.target.value)}
             aria-label="Divert target"
           >
-            {!nodeIdSet.has(node.divert) && node.divert !== 'END' && node.divert !== 'DONE' && (
+            {!resolveTarget(node.divert, nodeId, nodeIdSet) && !isTerminalTarget(node.divert) && (
               <option value={node.divert}>{node.divert} (missing)</option>
             )}
             {nodeIdOptions}
