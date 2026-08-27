@@ -20,6 +20,7 @@
  */
 
 import type { StoryGraph, StoryNode, ValidationResult, ValidationMessage } from '../types.js';
+import { resolveBareStitchTargets } from './ink-parser.js';
 
 export type { StoryGraph, StoryNode, ValidationResult };
 
@@ -99,6 +100,10 @@ export function parseInkJson(jsonContent: string, storyId: string, title?: strin
   }
 
   // Determine start node
+  // Same qualification the .ink path does, so both upload routes agree
+  // on what a bare stitch target means.
+  resolveBareStitchTargets(nodes);
+
   const startNode = findStartNode(nodes);
 
   // Run validation
@@ -291,13 +296,17 @@ function parseKnotContent(id: string, content: unknown[], parent: string | null)
 
       // Standalone divert (not inside choice)
       if ('->' in obj) {
-        const target = obj['->'] as string;
-        if (
-          !target.startsWith('.') &&
-          !target.startsWith('0.') &&
-          !target.includes('$') &&
-          !node.divert
-        ) {
+        const rawTarget = obj['->'] as string;
+        // A relative target (`.^.^.stitch`) was excluded outright, so a
+        // knot falling through to its own first stitch lost its divert
+        // entirely — the editor showed a dead end and the player had
+        // nowhere to advance to. findDiverts in this same file already
+        // resolves this form for choices; the standalone branch simply
+        // never learned to.
+        // The enclosing knot: `parent` for a stitch, the node's own id
+        // for a knot.
+        const target = resolveRelativeJsonTarget(rawTarget, parent ?? id);
+        if (target && !target.startsWith('0.') && !target.includes('$') && !node.divert) {
           node.divert = target;
         }
       }
@@ -371,6 +380,24 @@ function findStartNode(nodes: Record<string, StoryNode>): string {
 /**
  * Validate the story graph
  */
+/**
+ * Resolve a compiled-Ink target that may be relative.
+ *
+ * Mirrors the logic findDiverts already applies to choice targets:
+ * `.^.^.stitch_name` names a stitch, qualified by the enclosing knot.
+ * Returns null for forms that aren't real targets (internal markers,
+ * container indices), so the caller can skip them.
+ */
+function resolveRelativeJsonTarget(target: string, currentKnot: string | null): string | null {
+  if (!target.startsWith('.')) return target;
+  const parts = target.split('.');
+  const lastPart = parts[parts.length - 1];
+  // `^` prefixes and the bare `s` container are compiler internals,
+  // not passages.
+  if (!lastPart || lastPart.startsWith('^') || lastPart === 's') return null;
+  return currentKnot ? `${currentKnot}.${lastPart}` : lastPart;
+}
+
 function validateGraph(
   nodes: Record<string, StoryNode>,
   startNode: string,

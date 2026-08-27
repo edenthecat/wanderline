@@ -4,11 +4,19 @@
 // Ink scopes a bare `-> read_email_5` inside a knot to that knot's
 // stitch, but the parser only handled the explicit dot form. Everything
 // else kept the bare name while the node itself is
-// `<knot>.read_email_5`, so the two never matched: the editor's
-// dropdown found no such node, reachability never walked into the
-// stitch, and audio coverage — which keys on node ids — saw nothing
-// attached. The player masked it by qualifying at runtime, so the
-// story played while the editor insisted it was broken.
+// `<knot>.read_email_5`, so the two never matched.
+//
+// The symptom is in the FRONTEND, not here: NodeDetail renders
+// "(missing)" on exact nodeIdSet membership, and storyHealth's BFS
+// skips dangling targets, which is what listed a run of passages as
+// unreachable. This backend suite covers the resolution itself; the
+// frontend behaviour is covered in storyHealth's own tests.
+//
+// Note what this suite must NOT claim to guard. validateGraph already
+// suffix-matches bare targets, so it never emitted `missing_target`
+// for them, and it never emits `unreachable_node` for any id
+// containing a dot. Assertions about those two warnings pass with this
+// fix reverted, so they would guard nothing.
 
 import { parseInk } from '../ink-parser.js';
 
@@ -35,17 +43,19 @@ Somewhere else.
     expect(g.nodes['inbox'].choices[0].target).toBe('inbox.read_email_5');
   });
 
-  it('leaves the stitch reachable rather than orphaned', () => {
+  // The guarantee the frontend depends on: every non-terminal target
+  // names a node that actually exists, so an exact-membership check
+  // (NodeDetail's dropdown, storyHealth's BFS) can't miss it.
+  it('leaves every target naming a real node', () => {
     const g = parseInk(story, 'id');
-    const unreachable = g.validation.warnings
-      .filter((w) => w.type === 'unreachable_node')
-      .map((w) => w.nodeId);
-    expect(unreachable).not.toContain('inbox.read_email_5');
-  });
-
-  it('does not report the target as missing', () => {
-    const g = parseInk(story, 'id');
-    expect(g.validation.warnings.filter((w) => w.type === 'missing_target')).toHaveLength(0);
+    const dangling: string[] = [];
+    for (const node of Object.values(g.nodes)) {
+      const targets = [...node.choices.map((c) => c.target), node.divert].filter(
+        (t): t is string => !!t && t !== 'END' && t !== 'DONE',
+      );
+      for (const t of targets) if (!g.nodes[t]) dangling.push(t);
+    }
+    expect(dangling).toEqual([]);
   });
 
   it('resolves a bare divert the same way', () => {

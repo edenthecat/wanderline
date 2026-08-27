@@ -272,7 +272,7 @@ function parseLine(line: string, state: ParserState, allLines: string[], lineInd
  */
 const TERMINAL_TARGETS = new Set(['END', 'DONE']);
 
-function resolveBareStitchTargets(nodes: Record<string, StoryNode>): void {
+export function resolveBareStitchTargets(nodes: Record<string, StoryNode>): void {
   const resolve = (target: string, fromNodeId: string): string => {
     if (!target || TERMINAL_TARGETS.has(target)) return target;
     // Already points at a real node — including a knot that shares its
