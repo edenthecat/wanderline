@@ -420,20 +420,28 @@ describe('App', () => {
 
       await startTheStory();
       await screen.findByText('Welcome to the story.');
-      expect(container.querySelector('header[lang="en"]')).not.toBeNull();
+      expect(container.querySelector('[role="toolbar"][lang="en"]')).not.toBeNull();
+      expect(container.querySelector('[aria-label="Playback controls"][lang="en"]')).not.toBeNull();
       expect(container.querySelector('footer[lang="en"]')).not.toBeNull();
     });
 
-    // The narration is the story's own words and must inherit the
-    // document language — marking it English is the bug inverted.
-    it('leaves the narration region to inherit the document language', async () => {
+    // The story's own words must inherit the document language.
+    // Marking a WRAPPER — <header>, which holds the story title, or
+    // <main>, which holds the narration and the choice labels — is the
+    // bug inverted: lang can't be un-set on a descendant, so the story
+    // would be announced with an English voice.
+    it.each([
+      ['the story title', 'h1'],
+      ['the narration region', '[aria-label="Story narration"]'],
+      ['the choice list', '[aria-label="Story choices"]'],
+    ])('leaves %s to inherit the document language', async (_label, selector) => {
       seedStory(mockStory);
       const { container } = render(<App />);
       await startTheStory();
       await screen.findByText('Welcome to the story.');
-      const narration = container.querySelector('[aria-label="Story narration"]');
-      expect(narration).not.toBeNull();
-      expect(narration!.closest('[lang]')).toBeNull();
+      const el = container.querySelector(selector);
+      expect(el).not.toBeNull();
+      expect(el!.closest('[lang]')).toBeNull();
     });
   });
 });
