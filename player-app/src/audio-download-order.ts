@@ -1,4 +1,5 @@
 import { fallThroughTarget } from './fall-through';
+import { stepTo } from './node-reference';
 
 // Ordering for the "Download for offline" file list.
 //
@@ -44,9 +45,6 @@ export interface OrderableStory {
   indicatorAudio?: { choice1?: string; choice2?: string };
 }
 
-// Terminal divert targets that aren't real nodes.
-const TERMINAL_TARGETS = new Set(['END', 'DONE']);
-
 /**
  * Node ids breadth-first from `startNode`, so index order tracks
  * distance into the story. Nodes the graph can't reach are appended
@@ -66,11 +64,18 @@ export function orderNodesByReachability(story: OrderableStory): string[] {
     ordered.push(id);
 
     const node = story.nodes[id];
+    // Through the same resolver playback uses. Queueing raw targets and
+    // dropping whatever wasn't an exact node id meant the walk stopped
+    // at the first bare stitch name — the shape choices take out of the
+    // Ink compiler — and nearly every passage fell into the untraversed
+    // tail below, so the ordering degenerated to Object.keys order and
+    // an interrupted download stopped promising a playable prefix.
     for (const choice of node.choices ?? []) {
-      const target = choice.target;
-      if (target && !TERMINAL_TARGETS.has(target)) queue.push(target);
+      const target = stepTo(choice.target, story.nodes, id);
+      if (target) queue.push(target);
     }
-    if (node.divert && !TERMINAL_TARGETS.has(node.divert)) queue.push(node.divert);
+    const divert = stepTo(node.divert, story.nodes, id);
+    if (divert) queue.push(divert);
     // Ink's implicit continuation is a real playback edge, so it has to
     // be a real edge here too. Without it every stitch after a knot's
     // first is unreachable by this walk and lands in the tail below —

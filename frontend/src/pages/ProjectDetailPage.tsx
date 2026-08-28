@@ -246,17 +246,18 @@ export default function ProjectDetailPage() {
   function pickTab(t: Tab) {
     setActiveTab(t);
     setMobileSheet(null);
-    // Navigating to Preview by hand means "play the story", not
-    // "replay whichever passage I asked about earlier". Without this
-    // the pin would outlive the request that made it and quietly
-    // hijack the next plain preview.
+    // Navigating to Preview by hand drops the pin: it means "the
+    // preview", not "replay whichever passage I asked about earlier",
+    // and without this the pin would outlive the request that made it.
+    // That restores the ordinary preview — including its resume, which
+    // is the player's own behaviour and predates this control. "From
+    // the beginning" inside the tab is the way to refuse the resume.
     //
-    // The nonce is bumped alongside it: PreviewTab owns the pin once
-    // mounted and only re-reads the prop on a NEW request number.
+    // The nonce is bumped alongside the id: PreviewTab owns the pin
+    // once mounted and only re-reads the prop on a NEW request number.
     // Clearing the id alone worked solely because switching tabs
     // unmounts the component — so picking Preview while already on
-    // Preview (sidebar or mobile sheet) left the pin in place, and the
-    // "whole story" the reviewer asked for still started mid-way.
+    // Preview (sidebar or mobile sheet) left the pin in place.
     setPreviewStartNodeId(null);
     setPreviewStartNonce((n) => n + 1);
   }

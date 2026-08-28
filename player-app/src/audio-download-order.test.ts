@@ -35,6 +35,27 @@ describe('orderNodesByReachability', () => {
     expect(order[order.length - 1]).toBe('orphan');
   });
 
+  // Choices and diverts out of the Ink compiler are routinely bare
+  // stitch names. Queueing them raw and dropping whatever wasn't an
+  // exact id stopped the walk at the first one, so nearly every passage
+  // fell into the unreachable tail and the ordering degenerated to
+  // declaration order — exactly what this module exists to prevent.
+  it('follows references written as bare stitch names', () => {
+    const s = story({
+      startNode: 'tell_you.opening',
+      nodes: {
+        'tell_you.ending': { choices: [], divert: 'END' },
+        'tell_you.opening': { choices: [{ target: 'middle' }], divert: null },
+        'tell_you.middle': { choices: [], divert: 'ending' },
+      },
+    });
+    expect(orderNodesByReachability(s)).toEqual([
+      'tell_you.opening',
+      'tell_you.middle',
+      'tell_you.ending',
+    ]);
+  });
+
   it.each(['END', 'DONE'])('does not treat %s as a node', (target) => {
     const s = story({
       nodes: { start: { choices: [{ target }], divert: null } },

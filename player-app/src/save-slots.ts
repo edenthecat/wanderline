@@ -101,6 +101,12 @@ export function readSlotsWithMigration(storyId: string, validNodeIds?: Set<strin
   if (slots.length === 0) {
     const legacyRaw = safeGet(legacyStorageKey(storyId));
     if (legacyRaw) {
+      // Whether the old payload was consumed or is beyond saving. A
+      // payload that is merely unusable RIGHT NOW — its passage went
+      // missing in a story re-upload — is neither, and deleting it
+      // would be destroying a listener's position over an edit that
+      // might be reverted. It stays until it can be migrated.
+      let settled = false;
       try {
         const legacy = JSON.parse(legacyRaw);
         if (
@@ -108,6 +114,7 @@ export function readSlotsWithMigration(storyId: string, validNodeIds?: Set<strin
           typeof legacy.nodeId === 'string' &&
           (!validNodeIds || validNodeIds.has(legacy.nodeId))
         ) {
+          settled = true;
           slots = [
             {
               id: AUTOSAVE_SLOT_ID,
@@ -122,9 +129,10 @@ export function readSlotsWithMigration(storyId: string, validNodeIds?: Set<strin
           safeSet(key, JSON.stringify(slots));
         }
       } catch {
-        // malformed legacy payload — ignore, drop it
+        // malformed legacy payload — nothing will ever migrate it
+        settled = true;
       }
-      safeRemove(legacyStorageKey(storyId));
+      if (settled) safeRemove(legacyStorageKey(storyId));
     }
   }
 

@@ -109,6 +109,12 @@ type PreloadState = 'idle' | 'loading' | 'complete' | 'error';
 import { fallThroughTarget } from './fall-through';
 export { fallThroughTarget };
 
+// One resolver for every reference in the story — see node-reference.ts
+// for why it lives outside this file. Re-exported because the player's
+// tests reach for it here, alongside the session logic that uses it.
+import { hasNode, resolveNodeReference, stepTo } from './node-reference';
+export { resolveNodeReference };
+
 const STORAGE_PREFIX = 'wanderline_';
 
 // Safe storage helpers for file:// URL compatibility
@@ -231,55 +237,6 @@ export function autoAdvanceTarget(
 
 function createInitialClickState(): ClickDetectionState {
   return { clickCount: 0, lastClickTime: 0, timeoutId: null };
-}
-
-/** Own-property check, so a node id that collides with something on
- * Object.prototype ("constructor", "toString") can't resolve to a
- * passage the story doesn't have. */
-function hasNode(nodes: Record<string, unknown>, id: string): boolean {
-  return Object.prototype.hasOwnProperty.call(nodes, id);
-}
-
-/**
- * Resolve a story reference — a choice target, a divert, or the
- * `?start=` parameter — to a real node id, or null if nothing matches.
- *
- * Three steps, in order:
- *
- *  1. An exact node id.
- *  2. The reference qualified by `contextNodeId`'s knot. Stories
- *     imported from compiled .ink.json routinely carry bare stitch
- *     names on choices, because the source author wrote a relative
- *     divert (`-> .infinite_grace`) and the compiler kept the short
- *     form. From inside "tell_you", "infinite_grace" means
- *     "tell_you.infinite_grace".
- *  3. Any node ending in `.reference`. Picks the first match — a
- *     well-formed story has only one, and if it doesn't, the project's
- *     graph has a real bug worth flagging in the editor; the player
- *     would still rather proceed than hang.
- *
- * Shared by in-story navigation (context: the passage the listener is
- * on) and the `?start=` deep link (context: the story's start node, the
- * only knot there is before anyone has moved). One resolver so a link
- * an author can write in the editor cannot resolve differently from the
- * same reference followed mid-story.
- */
-export function resolveNodeReference(
-  reference: string,
-  nodes: Record<string, unknown>,
-  contextNodeId: string | null | undefined,
-): string | null {
-  if (hasNode(nodes, reference)) return reference;
-  const knot = contextNodeId?.split('.')[0];
-  if (knot) {
-    const qualified = `${knot}.${reference}`;
-    if (hasNode(nodes, qualified)) return qualified;
-  }
-  const suffix = `.${reference}`;
-  for (const id of Object.keys(nodes)) {
-    if (id.endsWith(suffix)) return id;
-  }
-  return null;
 }
 
 /**
@@ -680,18 +637,14 @@ export default function App() {
     (startNodeId: string, nodes: Record<string, StoryNode>, maxDepth: number): string[] => {
       const visited = new Set<string>();
       const queue: Array<{ id: string; depth: number }> = [{ id: startNodeId, depth: 0 }];
-      // Follow references the same way playback does. Walking raw
-      // targets and dropping the ones that miss meant a story imported
-      // from compiled .ink.json — where diverts and choice targets are
-      // routinely bare stitch names — preloaded almost nothing: the
-      // walk stopped at the first bare name, so the passages about to
-      // play were the ones NOT warmed, and the listener met a network
-      // fetch exactly where the preload existed to prevent one.
-      const step = (reference: string | null | undefined, from: string): string | null => {
-        if (!reference || reference === 'END' || reference === 'DONE') return null;
-        return resolveNodeReference(reference, nodes, from);
-      };
-
+      // Follow references the same way playback does (stepTo). Walking
+      // raw targets and dropping the ones that miss meant a story
+      // imported from compiled .ink.json — where diverts and choice
+      // targets are routinely bare stitch names — preloaded almost
+      // nothing: the walk stopped at the first bare name, so the
+      // passages about to play were the ones NOT warmed, and the
+      // listener met a network fetch exactly where the preload existed
+      // to prevent one.
       while (queue.length > 0) {
         const { id, depth } = queue.shift()!;
         if (visited.has(id) || depth > maxDepth) continue;
@@ -701,10 +654,10 @@ export default function App() {
         const node = nodes[id];
 
         for (const choice of node.choices || []) {
-          const target = step(choice.target, id);
+          const target = stepTo(choice.target, nodes, id);
           if (target) queue.push({ id: target, depth: depth + 1 });
         }
-        const divert = step(node.divert, id);
+        const divert = stepTo(node.divert, nodes, id);
         if (divert) queue.push({ id: divert, depth: depth + 1 });
         // And the implicit continuation, or the listener meets a network
         // fetch and the stall banner at exactly the transition

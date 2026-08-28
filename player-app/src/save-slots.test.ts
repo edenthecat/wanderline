@@ -167,6 +167,34 @@ describe('save-slots', () => {
 // but leaves them on disk, so "is there anything here?" and "is there
 // anything usable here?" are different questions — and the one that
 // gates wiping saved state is the first.
+// The legacy key used to be deleted whenever it was READ, migrated or
+// not — so a payload pointing at a passage a re-upload removed was
+// destroyed by the next load, before anything could decide whether it
+// was worth protecting.
+describe('legacy payloads the current story cannot use', () => {
+  const legacyKey = `wanderline_${STORY_ID}`;
+
+  it('is kept, not migrated, while its passage is missing', () => {
+    localStorage.setItem(legacyKey, JSON.stringify({ nodeId: 'a_passage_that_left', history: [] }));
+    expect(readSlotsWithMigration(STORY_ID, validIds)).toHaveLength(0);
+    expect(localStorage.getItem(legacyKey)).not.toBeNull();
+    expect(hasStoredSlots(STORY_ID)).toBe(true);
+  });
+
+  it('migrates once the passage is back', () => {
+    localStorage.setItem(legacyKey, JSON.stringify({ nodeId: 'chapter_a', history: [] }));
+    const slots = readSlotsWithMigration(STORY_ID, validIds);
+    expect(slots.map((s) => s.nodeId)).toEqual(['chapter_a']);
+    expect(localStorage.getItem(legacyKey)).toBeNull();
+  });
+
+  it('drops a payload no story could ever migrate', () => {
+    localStorage.setItem(legacyKey, 'not json');
+    expect(readSlotsWithMigration(STORY_ID, validIds)).toHaveLength(0);
+    expect(localStorage.getItem(legacyKey)).toBeNull();
+  });
+});
+
 describe('hasStoredSlots', () => {
   it('is false on a device with nothing stored', () => {
     expect(hasStoredSlots(STORY_ID)).toBe(false);
