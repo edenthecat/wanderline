@@ -398,4 +398,42 @@ describe('App', () => {
       expect(() => document.dispatchEvent(new Event('visibilitychange'))).not.toThrow();
     });
   });
+
+  // A generated build sets <html lang> to the story's own language, so
+  // the captions are read with the right voice. Everything this app
+  // says in its own words is English regardless, and without a marker
+  // a Japanese story would have a screen reader announce "Settings"
+  // and "Restart story from beginning" with Japanese phonetics.
+  describe('chrome language', () => {
+    // Typed rather than the file's `as any` so this block adds no new
+    // lint warnings.
+    const seedStory = (story: unknown) => {
+      (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = story;
+    };
+
+    it('marks the English chrome as English', async () => {
+      seedStory(mockStory);
+      const { container } = render(<App />);
+      // Pre-start: the instructions screen is all our own copy.
+      await screen.findByLabelText('Start the story');
+      expect(container.querySelector('[role="main"][lang="en"]')).not.toBeNull();
+
+      await startTheStory();
+      await screen.findByText('Welcome to the story.');
+      expect(container.querySelector('header[lang="en"]')).not.toBeNull();
+      expect(container.querySelector('footer[lang="en"]')).not.toBeNull();
+    });
+
+    // The narration is the story's own words and must inherit the
+    // document language — marking it English is the bug inverted.
+    it('leaves the narration region to inherit the document language', async () => {
+      seedStory(mockStory);
+      const { container } = render(<App />);
+      await startTheStory();
+      await screen.findByText('Welcome to the story.');
+      const narration = container.querySelector('[aria-label="Story narration"]');
+      expect(narration).not.toBeNull();
+      expect(narration!.closest('[lang]')).toBeNull();
+    });
+  });
 });

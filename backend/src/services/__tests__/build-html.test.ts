@@ -151,6 +151,13 @@ describe('prepareDistHtml', () => {
       expect(out).toMatch(/<html lang="en"/i);
     });
 
+    // `?? DEFAULT` would let an empty string through, and
+    // `<html lang="">` is worse than no attribute at all.
+    it.each(['', '   ', 'not a tag'])('falls back to en for %p', (language) => {
+      const out = prepareDistHtml(baseHtml, { title: 'X', storyData, language });
+      expect(out).toMatch(/<html lang="en"/i);
+    });
+
     it('adds lang when the source document has none', () => {
       const noLang = baseHtml.replace('<html lang="en">', '<html>');
       const out = prepareDistHtml(noLang, { title: 'X', storyData, language: 'pt-BR' });
@@ -209,15 +216,15 @@ describe('prepareDistHtml', () => {
     // through to the add-branch and ships TWO metas; the browser
     // honours the first, so the build silently reverts to the
     // player's default navy.
-    it('rewrites the meta when name is not the first attribute', () => {
-      const reordered = baseHtml.replace(
-        '<meta name="theme-color" content="#1a1a2e" />',
-        '<meta content="#1a1a2e" name="theme-color" />',
-      );
-      const out = prepareDistHtml(reordered, { title: 'X', storyData, themeColor: '#ffeedd' });
-      expect(out.match(/name="theme-color"/gi)).toHaveLength(1);
+    it.each([
+      ['name is not the first attribute', '<meta content="#1a1a2e" name="theme-color" />'],
+      ['name is single-quoted', "<meta name='theme-color' content='#1a1a2e' />"],
+    ])('rewrites the meta when %s', (_label, tag) => {
+      const variant = baseHtml.replace('<meta name="theme-color" content="#1a1a2e" />', tag);
+      const out = prepareDistHtml(variant, { title: 'X', storyData, themeColor: '#ffeedd' });
+      expect(out.match(/name=("|')theme-color("|')/gi)).toHaveLength(1);
       expect(out).toMatch(/content="#ffeedd"/);
-      expect(out).not.toMatch(/content="#1a1a2e"/);
+      expect(out).not.toMatch(/#1a1a2e/);
     });
   });
 
@@ -258,6 +265,27 @@ describe('prepareDistHtml', () => {
     // The message is ours and it is English; the document around it is
     // tagged with the story's language, so without this a French story
     // has its fallback read aloud with French phonetics.
+    // A reader is shown the story's name, not the project's slug —
+    // the same name the manifest and the preview use.
+    it('prefers the story name over the project name', () => {
+      const out = prepareDistHtml(baseHtml, {
+        title: 'wanderline-demo-2',
+        storyName: 'Ghost Radio',
+        storyData,
+      });
+      const block = /<noscript>[\s\S]*?<\/noscript>/i.exec(out)![0];
+      expect(block).toContain('Ghost Radio');
+      expect(block).not.toContain('wanderline-demo-2');
+      // The tab title still uses the project name.
+      expect(out).toContain('<title>wanderline-demo-2</title>');
+    });
+
+    it.each([undefined, '', '   '])('falls back to the project name for %p', (storyName) => {
+      const out = prepareDistHtml(baseHtml, { title: 'Fallback Name', storyName, storyData });
+      const block = /<noscript>[\s\S]*?<\/noscript>/i.exec(out)![0];
+      expect(block).toContain('Fallback Name');
+    });
+
     it('marks the English message as English', () => {
       const out = prepareDistHtml(baseHtml, { title: 'Le Fantôme', storyData, language: 'fr' });
       const block = /<noscript>[\s\S]*?<\/noscript>/i.exec(out)![0];

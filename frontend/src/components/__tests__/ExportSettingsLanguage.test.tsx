@@ -121,6 +121,28 @@ describe('ExportSettings — language', () => {
     expect((screen.getByLabelText(/language code/i) as HTMLInputElement).value).toBe('not a tag');
   });
 
+  // Same hazard, same guard: an unsaved README draft was being wiped
+  // by any other save in the tab.
+  it('keeps an unsaved README draft when an unrelated setting is saved', () => {
+    const onSave = vi.fn().mockResolvedValue({});
+    const { rerender } = render(
+      <ExportSettings projectId="p1" settings={{}} onSave={onSave as unknown as Save} />,
+    );
+    const textarea = screen.getByLabelText(/exported readme/i);
+    fireEvent.change(textarea, { target: { value: '# Half-written draft' } });
+
+    rerender(
+      <ExportSettings
+        projectId="p1"
+        settings={{ captionsDefault: true }}
+        onSave={onSave as unknown as Save}
+      />,
+    );
+    expect((screen.getByLabelText(/exported readme/i) as HTMLTextAreaElement).value).toBe(
+      '# Half-written draft',
+    );
+  });
+
   it('still re-seeds when the parent swaps projects', () => {
     const onSave = vi.fn().mockResolvedValue({});
     const { rerender } = render(

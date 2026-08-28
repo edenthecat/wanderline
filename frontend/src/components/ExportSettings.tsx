@@ -57,24 +57,23 @@ export default function ExportSettings({ projectId, settings, onSave }: Props) {
 
   // Re-seed when the parent swaps projects; without this the textarea
   // keeps the previous project's README.
-  useEffect(() => {
-    setReadme(settings.exportReadme ?? '');
-    setIconFilename(settings.appIcon?.filename ?? null);
-    setBackground(settings.appIcon?.backgroundColor ?? DEFAULT_COLOR);
-    setTheme(settings.appIcon?.themeColor ?? DEFAULT_COLOR);
-  }, [projectId, settings]);
-
-  // The language field re-seeds on a project swap ONLY. SettingsTab
-  // hands down a fresh settings object after every save from any
-  // control in the tab, so re-seeding on `settings` would snap a
-  // rejected tag back to the stored value and silently clear the
-  // validation error the moment the author touched an unrelated
-  // toggle — leaving them believing a tag took when it didn't, which
-  // is the failure the validation exists to prevent.
+  //
+  // On a project swap ONLY — never on a fresh `settings` object.
+  // SettingsTab hands one down after a save from any control in the
+  // tab, and re-seeding on that clobbers whatever the author is part
+  // way through here: an unsaved README draft snaps back to the stored
+  // text, and a rejected language tag snaps back with its validation
+  // error silently cleared, leaving the author believing it took.
+  // (SettingsTab loads settings only on a project change, so there is
+  // no later fetch this needs to pick up.)
   const seededProjectRef = useRef<string | null>(null);
   useEffect(() => {
     if (seededProjectRef.current === projectId) return;
     seededProjectRef.current = projectId;
+    setReadme(settings.exportReadme ?? '');
+    setIconFilename(settings.appIcon?.filename ?? null);
+    setBackground(settings.appIcon?.backgroundColor ?? DEFAULT_COLOR);
+    setTheme(settings.appIcon?.themeColor ?? DEFAULT_COLOR);
     setLanguage(settings.language ?? '');
     setLanguageError(null);
   }, [projectId, settings]);

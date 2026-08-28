@@ -1840,6 +1840,7 @@ export default function App() {
           }}
           role="main"
           aria-label="Instructions"
+          lang="en"
         >
           <div
             style={styles.instructionsCard}
@@ -2012,6 +2013,18 @@ export default function App() {
     currentNode.divert === 'END' ||
     currentNode.divert === 'DONE';
 
+  /* `<html lang>` carries the story's own language in a generated
+     build (see backend/src/services/build-html.ts), which is right —
+     the captions are the page's primary content and are the whole
+     accessible alternative to the audio. But this app's chrome is
+     hardcoded English, so every container below that holds only our
+     own words is marked `lang="en"`: the header, the settings dialog,
+     the pre-start instructions, the playback controls and the footer.
+     Without that, a Japanese story has a screen reader read "Settings"
+     and "Restart story from beginning" with Japanese phonetics — the
+     mirror of the bug the page-level tag fixes. Story text (the
+     narration region, the choice labels) deliberately carries no
+     `lang` so it inherits the document's. */
   return (
     <div
       style={styles.container}
@@ -2038,7 +2051,7 @@ export default function App() {
       >
         Skip to content
       </a>
-      <header style={styles.header} role="banner" data-theme-component="header">
+      <header style={styles.header} role="banner" data-theme-component="header" lang="en">
         <div style={styles.headerRow}>
           <button
             onClick={(e) => {
@@ -2105,6 +2118,7 @@ export default function App() {
           role="dialog"
           aria-labelledby="settings-title"
           aria-modal="false"
+          lang="en"
         >
           <h3 id="settings-title" style={styles.settingsTitle}>
             Settings
@@ -2319,7 +2333,7 @@ export default function App() {
             text-only passage — or one whose audio failed, which is
             exactly when someone wants to retreat — had no way back. */}
         {(history.length > 0 || (currentNode.audio?.voiceover && !audioError && !audioSkipped)) && (
-          <div style={styles.player} role="group" aria-label="Playback controls">
+          <div style={styles.player} role="group" aria-label="Playback controls" lang="en">
             {/* goBack was reachable only by Backspace or a headphone
                 button, so on a phone — the primary way this is listened
                 to — there was no way back at all. Hidden rather than
@@ -2492,7 +2506,7 @@ export default function App() {
         )}
       </main>
 
-      <footer style={styles.footer} role="contentinfo">
+      <footer style={styles.footer} role="contentinfo" lang="en">
         Keyboard: Space/Arrows/Enter | Headphones: 1-tap Pause, 2-tap Choice 1, 3-tap Choice 2
       </footer>
     </div>

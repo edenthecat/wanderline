@@ -515,6 +515,10 @@ export async function executeBuild(pool: Pool, projectId: string, buildId: strin
     distHtml = prepareDistHtml(distHtml, {
       title: escapedName,
       storyData,
+      // The no-JS fallback is read by a person, so it names the story
+      // the way the manifest and the preview do rather than repeating
+      // the project's slug.
+      storyName: escapeHtml(storyData.title),
       language: buildLanguage,
       // Same value renderManifest writes, so the browser chrome and
       // the installed app's status bar agree with the author's theme.

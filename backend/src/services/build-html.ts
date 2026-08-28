@@ -8,13 +8,23 @@
 // the jest config (risky cross-suite churn) or keep these pure
 // transforms out of the importing chain. The latter wins.
 
-import { DEFAULT_BUILD_LANGUAGE } from './build-language.js';
+import { normalizeBuildLanguage } from './build-language.js';
 
 export interface PrepareDistHtmlOptions {
   /** Project name, already HTML-escaped. Replaces `<title>...</title>`. */
   title: string;
   /** Story data to inject as window.__WANDERLINE_STORY__. */
   storyData: unknown;
+  /**
+   * The story's own name, already HTML-escaped, for the `<noscript>`
+   * fallback — which is read by a person, not printed on a tab, so it
+   * should say what the manifest and the preview say. `title` is the
+   * project name; those differ whenever the author gave the story a
+   * title of its own (see resolveStoryTitle in story-data-builder.ts),
+   * and "wanderline-demo-2" is not what a reader should be shown.
+   * Falls back to `title` when unset.
+   */
+  storyName?: string;
   /**
    * BCP-47 tag for the story's language, already normalized by
    * normalizeBuildLanguage. Replaces the player's hardcoded
@@ -69,13 +79,14 @@ export function setHtmlLang(html: string, language: string): string {
  */
 function applyThemeColor(html: string, themeColor: string): string {
   const meta = `<meta name="theme-color" content="${themeColor}" />`;
-  // `name` is not required to come first. Anchoring on it would miss
-  // `<meta content="#1a1a2e" name="theme-color" />` — the shape an
-  // attribute-reordering minifier or a hand edit can produce — and
-  // fall through to the add-branch, shipping TWO theme-color metas.
-  // Browsers honour the first, so the build would quietly revert to
-  // the player's default navy: the exact bug this function fixes.
-  const existing = /<meta[^>]*\sname="theme-color"[^>]*>/i;
+  // `name` is not required to come first, nor to be double-quoted.
+  // Missing either shape — `<meta content="#1a1a2e" name="theme-color">`
+  // from an attribute-reordering minifier, or `name='theme-color'` from
+  // a hand edit — falls through to the add-branch and ships TWO
+  // theme-color metas. Browsers honour the first, so the build would
+  // quietly revert to the player's default navy: the exact bug this
+  // function exists to fix.
+  const existing = /<meta[^>]*\sname=("theme-color"|'theme-color')[^>]*>/i;
   if (existing.test(html)) return html.replace(existing, () => meta);
   if (!html.includes('</head>')) return html;
   return html.replace('</head>', () => `${meta}\n</head>`);
@@ -166,9 +177,12 @@ export function prepareDistHtml(rawHtml: string, options: PrepareDistHtmlOptions
   html = html.replace(/ type="module"/g, '');
   html = html.replace(/<script /g, '<script defer ');
   html = html.replace(/<title>[^<]*<\/title>/i, () => `<title>${options.title}</title>`);
-  html = setHtmlLang(html, options.language ?? DEFAULT_BUILD_LANGUAGE);
+  // Normalize rather than `?? DEFAULT`: `??` lets an empty string
+  // through, and `<html lang="">` is worse than no attribute at all.
+  // executeBuild already normalizes, but this is exported.
+  html = setHtmlLang(html, normalizeBuildLanguage(options.language));
   if (options.themeColor) html = applyThemeColor(html, options.themeColor);
-  html = setNoscriptFallback(html, options.title);
+  html = setNoscriptFallback(html, options.storyName?.trim() || options.title);
   html = html.replace(/((?:src|href)=)"\/(assets\/[^"]+)"/g, '$1"./$2"');
   const storyJsonStr = JSON.stringify(options.storyData)
     .replace(/</g, '\\u003c')
