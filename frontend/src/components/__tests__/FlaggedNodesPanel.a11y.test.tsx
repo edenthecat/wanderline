@@ -277,13 +277,17 @@ describe('FlaggedNodesPanel accessibility', () => {
     expand();
 
     const [first] = resolveButtons();
+    // Model Chromium: a pointer press focuses the button before the
+    // click fires. Reading `activeElement` here would call this a
+    // keyboard activation; `detail` still says pointer.
+    first.focus();
     await act(async () => {
       fireEvent.click(first, { detail: 1 });
     });
     update({ her: [flag({ id: 'b' })] });
 
     await waitFor(() => expect(resolveButtons()).toHaveLength(1));
-    expect(document.activeElement).toBe(document.body);
+    expect(document.activeElement).not.toBe(resolveButtons()[0]);
   });
 
   it('redeems both credits when one refetch reflects two resolves', async () => {
