@@ -115,6 +115,13 @@ import { fallThroughTarget } from './fall-through';
 export { fallThroughTarget };
 
 const STORAGE_PREFIX = 'wanderline_';
+/** Per-device volume preferences, scoped to one story. */
+function volumesStorageKey(storyId: string): string {
+  return STORAGE_PREFIX + storyId + '_volumes';
+}
+/** The unscoped key this used to be. Read on load so an existing
+ *  listener keeps the volumes they chose; never written again. */
+const LEGACY_VOLUMES_KEY = STORAGE_PREFIX + 'volumes';
 
 // Safe storage helpers for file:// URL compatibility
 const safeGetItem = (storage: Storage, key: string): string | null => {
@@ -296,9 +303,6 @@ export default function App() {
   const [voiceoverVolume, setVoiceoverVolume] = useState(VOLUME_DEFAULTS.voiceover);
   const [userIndicatorVolume, setUserIndicatorVolume] = useState(VOLUME_DEFAULTS.indicator);
   const [userBgMusicVolume, setUserBgMusicVolume] = useState(VOLUME_DEFAULTS.backgroundMusic);
-  // False until the story's volume settings and any per-device override
-  // have been resolved. Guards the persist effect above.
-  const volumesHydratedRef = useRef(false);
   // Auto-continue used to be surfaced as a listener-facing toggle
   // (pre-start settings + in-story cog panel). Author feedback was
   // that most listeners want the paced audio-drama experience and
@@ -451,8 +455,19 @@ export default function App() {
         // author's choice: a 30% music default played at 9%, a 50%
         // indicator default at 25%. Voiceover escaped only because
         // its default is 100 and 1 x 1 = 1.
+        //
+        // The override is scoped by story id, like the auto-advance key
+        // above. It used
+        // to be one global key, so previewing project A and then
+        // project B from the editor handed B the volumes a listener had
+        // set for A — an author's mix silently not being the author's
+        // mix, which is the whole failure class here. The unscoped key
+        // is still read as a fallback so an existing listener's real
+        // preference survives the change.
         let overrides: VolumeOverrides | null = null;
-        const savedVolumes = safeGetItem(localStorage, STORAGE_PREFIX + 'volumes');
+        const savedVolumes =
+          safeGetItem(localStorage, volumesStorageKey(data.id)) ??
+          safeGetItem(localStorage, LEGACY_VOLUMES_KEY);
         if (savedVolumes) {
           try {
             overrides = JSON.parse(savedVolumes) as VolumeOverrides;
@@ -462,9 +477,6 @@ export default function App() {
         setVoiceoverVolume(resolved.voiceover);
         setUserIndicatorVolume(resolved.indicator);
         setUserBgMusicVolume(resolved.backgroundMusic);
-        // Resolution is complete; the listener's own changes from here
-        // on are theirs to keep.
-        volumesHydratedRef.current = true;
         setPlayerState('ready');
       })
       .catch(() => {
@@ -700,6 +712,29 @@ export default function App() {
     }
   }, [autoAdvance]);
 
+  // The listener's own volume control, and the ONLY thing that records
+  // a per-device preference. See the apply effect above for why
+  // persisting anywhere else silently freezes the author's defaults.
+  const chooseVolume = useCallback(
+    (channel: 'voiceover' | 'indicator' | 'bgMusic', value: number) => {
+      if (channel === 'voiceover') setVoiceoverVolume(value);
+      else if (channel === 'indicator') setUserIndicatorVolume(value);
+      else setUserBgMusicVolume(value);
+      if (!story) return;
+      safeSetItem(
+        localStorage,
+        volumesStorageKey(story.id),
+        JSON.stringify({
+          voiceover: voiceoverVolume,
+          indicator: userIndicatorVolume,
+          bgMusic: userBgMusicVolume,
+          [channel]: value,
+        }),
+      );
+    },
+    [story, voiceoverVolume, userIndicatorVolume, userBgMusicVolume],
+  );
+
   const chooseAutoAdvance = useCallback(
     (enabled: boolean) => {
       setAutoAdvance(enabled);
@@ -710,30 +745,20 @@ export default function App() {
     [story],
   );
 
-  // Save and apply volume settings.
+  // Apply the current volumes to whatever is already sounding.
   //
-  // Persisting is gated on the resolution chain having run. This effect
-  // fires on mount too, and it used to write the component's initial
-  // state (100 / 50 / 30) to localStorage before the story had loaded.
-  // The load handler then read those back as a per-device override and
-  // clobbered the author's chosen defaults with them — so on a first
-  // ever visit the author's settings could never win. It went unnoticed
-  // because it only shows when a default differs from the initial: a
-  // 60% voiceover played at 100%, while a 50% indicator (matching the
-  // initial) looked perfectly correct.
+  // Applying only — this effect used to persist as well, and that was
+  // the second half of the same fault the hydration gate was added for.
+  // The gate stopped it writing the INITIAL state, but not the RESOLVED
+  // state: the effect re-ran on the very setState that finished
+  // resolution and wrote the author's defaults to storage as though the
+  // listener had chosen them. A later change to those defaults could
+  // then never reach a returning listener, while the editor's
+  // in-context audition went on showing the new value. Auto-advance was
+  // fixed the same way — see chooseAutoAdvance: writing solely from the
+  // listener's own control means "the listener expressed a preference"
+  // is the only path that records one.
   useEffect(() => {
-    if (volumesHydratedRef.current) {
-      safeSetItem(
-        localStorage,
-        STORAGE_PREFIX + 'volumes',
-        JSON.stringify({
-          voiceover: voiceoverVolume,
-          indicator: userIndicatorVolume,
-          bgMusic: userBgMusicVolume,
-        }),
-      );
-    }
-    // Apply to currently playing audio
     if (audioRef.current) audioRef.current.volume = volumeToGain(voiceoverVolume);
     if (choice1IndicatorRef.current)
       choice1IndicatorRef.current.volume = volumeToGain(userIndicatorVolume);
@@ -1901,7 +1926,7 @@ export default function App() {
                   min="0"
                   max="100"
                   value={voiceoverVolume}
-                  onChange={(e) => setVoiceoverVolume(parseInt(e.target.value))}
+                  onChange={(e) => chooseVolume('voiceover', parseInt(e.target.value))}
                   style={styles.volumeSlider}
                   aria-label={'Narration volume ' + voiceoverVolume + ' percent'}
                 />
@@ -1917,7 +1942,7 @@ export default function App() {
                   min="0"
                   max="100"
                   value={userIndicatorVolume}
-                  onChange={(e) => setUserIndicatorVolume(parseInt(e.target.value))}
+                  onChange={(e) => chooseVolume('indicator', parseInt(e.target.value))}
                   style={styles.volumeSlider}
                   aria-label={'Indicators volume ' + userIndicatorVolume + ' percent'}
                 />
@@ -1933,7 +1958,7 @@ export default function App() {
                   min="0"
                   max="100"
                   value={userBgMusicVolume}
-                  onChange={(e) => setUserBgMusicVolume(parseInt(e.target.value))}
+                  onChange={(e) => chooseVolume('bgMusic', parseInt(e.target.value))}
                   style={styles.volumeSlider}
                   aria-label={'Background music volume ' + userBgMusicVolume + ' percent'}
                 />
@@ -2150,7 +2175,7 @@ export default function App() {
               min="0"
               max="100"
               value={voiceoverVolume}
-              onChange={(e) => setVoiceoverVolume(parseInt(e.target.value))}
+              onChange={(e) => chooseVolume('voiceover', parseInt(e.target.value))}
               style={styles.settingsSlider}
               aria-valuenow={voiceoverVolume}
               aria-valuemin={0}
@@ -2171,7 +2196,7 @@ export default function App() {
               min="0"
               max="100"
               value={userIndicatorVolume}
-              onChange={(e) => setUserIndicatorVolume(parseInt(e.target.value))}
+              onChange={(e) => chooseVolume('indicator', parseInt(e.target.value))}
               style={styles.settingsSlider}
               aria-valuenow={userIndicatorVolume}
               aria-valuemin={0}
@@ -2192,7 +2217,7 @@ export default function App() {
               min="0"
               max="100"
               value={userBgMusicVolume}
-              onChange={(e) => setUserBgMusicVolume(parseInt(e.target.value))}
+              onChange={(e) => chooseVolume('bgMusic', parseInt(e.target.value))}
               style={styles.settingsSlider}
               aria-valuenow={userBgMusicVolume}
               aria-valuemin={0}

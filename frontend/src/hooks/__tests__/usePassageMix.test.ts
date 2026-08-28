@@ -173,6 +173,27 @@ describe('usePassageMix', () => {
     expect(result.current.playing).toBe(false);
   });
 
+  // A synchronous throw unwinds the mix from inside the start loop.
+  // Anything started after that is referenced by nothing, loops
+  // forever, and no control can reach it.
+  it('starts nothing more once a synchronous failure has torn the mix down', async () => {
+    const originalCtor = globalThis.Audio;
+    globalThis.Audio = class extends MockAudio {
+      play(): Promise<void> {
+        if (this.src.includes('vo.mp3')) throw new Error('sync failure');
+        return super.play();
+      }
+    } as unknown as typeof Audio;
+    const { result } = renderHook(() => usePassageMix());
+    await act(async () => result.current.toggle(mixOf()));
+    globalThis.Audio = originalCtor;
+
+    expect(result.current.playing).toBe(false);
+    expect(MockAudio.instances.every((a) => a.paused)).toBe(true);
+    expect(bySrc('amb.mp3')[0].playCalls).toBe(0);
+    expect(bySrc('music.mp3')[0].playCalls).toBe(0);
+  });
+
   it('has nothing to play, and says so, for an empty mix', async () => {
     const { result } = renderHook(() => usePassageMix());
     await act(async () => result.current.toggle({ lead: null, beds: [] }));

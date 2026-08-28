@@ -148,3 +148,43 @@ describe('useProjectSettings — telling peers', () => {
     expect(signalTick(doc)).toBeUndefined();
   });
 });
+
+// Volumes tabs are conditionally rendered, so unmount lands mid-debounce
+// whenever an author releases a slider and clicks away. Dropping the
+// save was silent twice over: no error, and the optimistic value died
+// with the component, so the slider had reverted on return.
+describe('useProjectSettings — a debounced save survives the teardown', () => {
+  it('flushes a pending save on unmount instead of cancelling it', async () => {
+    vi.useFakeTimers();
+    mockedFetch.mockResolvedValueOnce({ settings: {} });
+    mockedUpdate.mockResolvedValue({ settings: { backgroundMusicVolume: 10 } });
+    const { result, unmount } = renderHook(() => useProjectSettings('p1'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    act(() => result.current.updateDebounced('backgroundMusicVolume', 10));
+    // Away before the 250ms debounce fires.
+    unmount();
+
+    expect(mockedUpdate).toHaveBeenCalledWith('p1', { backgroundMusicVolume: 10 });
+  });
+
+  it('sends a flushed key once, not twice', async () => {
+    vi.useFakeTimers();
+    mockedFetch.mockResolvedValueOnce({ settings: {} });
+    mockedUpdate.mockResolvedValue({ settings: { backgroundMusicVolume: 10 } });
+    const { result, unmount } = renderHook(() => useProjectSettings('p1'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    act(() => result.current.updateDebounced('backgroundMusicVolume', 10));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    unmount();
+
+    expect(mockedUpdate).toHaveBeenCalledTimes(1);
+  });
+});

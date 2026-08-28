@@ -378,6 +378,110 @@ describe('author-chosen default volumes are applied exactly once', () => {
   });
 });
 
+// A per-device volume is a thing the LISTENER chose. Resolving the
+// author's defaults into state used to write them to storage as
+// though the listener had chosen them, so the author could never
+// change their mind afterwards — and the editor, which reads the
+// project settings directly, would go on showing a mix no returning
+// listener could hear.
+describe('per-device volumes record only what the listener chose', () => {
+  const key = (id: string) => 'wanderline_' + id + '_volumes';
+
+  function storyWithMusic(settings: Record<string, unknown>, id = 'test-story') {
+    return makeStory({ id, backgroundMusic: ['bgm.mp3'], settings }) as Record<string, unknown>;
+  }
+
+  it('writes nothing on a first visit where the listener touched no slider', async () => {
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = storyWithMusic({
+      backgroundMusicVolume: 10,
+    });
+    render(<App />);
+    await startTheStory();
+    await waitFor(() => expect(audioInstances.some((a) => a.src.includes('bgm.mp3'))).toBe(true));
+
+    expect(localStorage.getItem(key('test-story'))).toBeNull();
+  });
+
+  it('lets the author raise a default that a listener never overrode', async () => {
+    // Visit one: the author's 10% is resolved and applied.
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = storyWithMusic({
+      backgroundMusicVolume: 10,
+    });
+    const first = render(<App />);
+    await startTheStory();
+    await waitFor(() => expect(audioInstances.some((a) => a.src.includes('bgm.mp3'))).toBe(true));
+    first.unmount();
+    audioInstances.length = 0;
+
+    // Visit two, after the author raised it. Storage must not be
+    // shouting the old value back at us.
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = storyWithMusic({
+      backgroundMusicVolume: 60,
+    });
+    render(<App />);
+    await startTheStory();
+    await waitFor(() => expect(audioInstances.some((a) => a.src.includes('bgm.mp3'))).toBe(true));
+    const bgm = [...audioInstances].reverse().find((a) => a.src.includes('bgm.mp3'))!;
+    expect(bgm.volume).toBeCloseTo(0.6, 5);
+  });
+
+  it("records the listener's own choice, under this story's key", async () => {
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = storyWithMusic({
+      backgroundMusicVolume: 10,
+    });
+    render(<App />);
+    fireEvent.change(await screen.findByLabelText(/Background music volume/), {
+      target: { value: '80' },
+    });
+
+    const saved = JSON.parse(localStorage.getItem(key('test-story'))!);
+    expect(saved.bgMusic).toBe(80);
+  });
+
+  // One global key meant previewing project A and then project B from
+  // the editor handed B the volumes a listener had set for A. Driven
+  // through the slider rather than a seeded key, so it holds whatever
+  // key the implementation picks.
+  it("does not hand one story's volumes to another", async () => {
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = storyWithMusic(
+      { backgroundMusicVolume: 30 },
+      'story-a',
+    );
+    const first = render(<App />);
+    fireEvent.change(await screen.findByLabelText(/Background music volume/), {
+      target: { value: '5' },
+    });
+    first.unmount();
+    audioInstances.length = 0;
+
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = storyWithMusic(
+      { backgroundMusicVolume: 70 },
+      'story-b',
+    );
+    render(<App />);
+    await startTheStory();
+
+    await waitFor(() => expect(audioInstances.some((a) => a.src.includes('bgm.mp3'))).toBe(true));
+    const bgm = [...audioInstances].reverse().find((a) => a.src.includes('bgm.mp3'))!;
+    expect(bgm.volume).toBeCloseTo(0.7, 5);
+  });
+
+  // Existing listeners chose those volumes for real; the rename must
+  // not throw them away.
+  it('still honours a preference saved under the old unscoped key', async () => {
+    localStorage.setItem('wanderline_volumes', JSON.stringify({ bgMusic: 5 }));
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = storyWithMusic({
+      backgroundMusicVolume: 70,
+    });
+    render(<App />);
+    await startTheStory();
+
+    await waitFor(() => expect(audioInstances.some((a) => a.src.includes('bgm.mp3'))).toBe(true));
+    const bgm = [...audioInstances].reverse().find((a) => a.src.includes('bgm.mp3'))!;
+    expect(bgm.volume).toBeCloseTo(0.05, 5);
+  });
+});
+
 // Choice cues and auto-advance interact: the cue branch runs first, so
 // a single-choice passage that has a cue would loop it forever and
 // never advance. It should play the cue once, then move on — while a

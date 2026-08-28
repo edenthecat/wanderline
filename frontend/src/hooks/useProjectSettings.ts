@@ -49,6 +49,9 @@ export function useProjectSettings(
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const debounceTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  // What each pending debounce is going to save, so a teardown can
+  // finish the work instead of dropping it.
+  const pendingSavesRef = useRef<Map<string, unknown>>(new Map());
 
   async function reload() {
     setLoading(true);
@@ -68,11 +71,33 @@ export function useProjectSettings(
     setError(null);
     setLoading(true);
     reload();
-    // Cancel any pending debounced saves when the project switches.
+    // Read the refs here rather than in the cleanup: both hold a Map
+    // that is never reassigned, so it is the same object either way,
+    // and the lint rule that warns about refs-in-cleanup is right to
+    // insist the closure not depend on that being true.
+    const timers = debounceTimersRef.current;
+    const pending = pendingSavesRef.current;
+    // FLUSH pending debounced saves on the way out — don't drop them.
+    // These sections are conditionally rendered, so releasing a slider
+    // and clicking another tab within the debounce window used to lose
+    // the change silently: no error, and the optimistic value died with
+    // the component, so the slider had quietly reverted on return. A
+    // dropped volume is worse than a dropped preference now that the
+    // node panel auditions passages at these numbers.
+    //
+    // `projectId` here is the one this effect ran for, which is what a
+    // project switch needs to save against. No live signal on this
+    // path: peers matter less than the save landing, and the collab
+    // doc may be torn down alongside us.
     return () => {
-      const timers = debounceTimersRef.current;
       timers.forEach((t) => clearTimeout(t));
       timers.clear();
+      if (pending.size > 0) {
+        const patch = Object.fromEntries(pending) as Partial<ProjectSettings>;
+        pending.clear();
+        // Nothing left to tell: this component is gone.
+        updateProjectSettings(projectId, patch).catch(() => {});
+      }
     };
   }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -114,9 +139,14 @@ export function useProjectSettings(
   ): void {
     setSettings((prev) => ({ ...(prev ?? {}), [key]: next }));
     const timers = debounceTimersRef.current;
+    const pending = pendingSavesRef.current;
     const existing = timers.get(key as string);
     if (existing) clearTimeout(existing);
+    pending.set(key as string, next);
     const t = setTimeout(async () => {
+      // Cleared before the request, not after: an unmount mid-flight
+      // must not send this key a second time.
+      pending.delete(key as string);
       try {
         const { settings: updated } = await updateProjectSettings(projectId, {
           [key]: next,

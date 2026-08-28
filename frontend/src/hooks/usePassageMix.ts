@@ -141,6 +141,12 @@ export function usePassageMix(): UsePassageMixResult {
       // lands a microtask later, at the earliest) always finds the state
       // it needs to unwind.
       for (const { el, isLead, index } of elements) {
+        // A play() that throws SYNCHRONOUSLY unwinds the mix from
+        // inside this loop: fail() -> stop() -> teardown(), which
+        // empties elementsRef. Anything started after that point is
+        // referenced by nothing and loops forever with no control able
+        // to reach it. The epoch moving is how we know that happened.
+        if (epochRef.current !== epoch) break;
         startPlayback(el, () => fail(index, isLead));
       }
     },
