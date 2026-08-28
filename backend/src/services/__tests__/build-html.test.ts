@@ -162,6 +162,17 @@ describe('prepareDistHtml', () => {
       const out = prepareDistHtml(withAttr, { title: 'X', storyData, language: 'de' });
       expect(out).toMatch(/<html data-x="1" lang="de"/i);
     });
+
+    // Missing a single-quoted attribute would fall through to the
+    // add-branch and emit `<html lang="de" lang='en'>`, where the
+    // browser honours the FIRST — so the stale tag would win.
+    it('rewrites a single-quoted lang rather than adding a second', () => {
+      const singleQuoted = baseHtml.replace('<html lang="en">', "<html lang='en'>");
+      const out = prepareDistHtml(singleQuoted, { title: 'X', storyData, language: 'de' });
+      const htmlTag = /<html[^>]*>/i.exec(out)![0];
+      expect(htmlTag).toMatch(/lang="de"/);
+      expect(htmlTag.match(/lang=/gi)).toHaveLength(1);
+    });
   });
 
   // The manifest already carried the author's themeColor; the HTML
@@ -192,6 +203,21 @@ describe('prepareDistHtml', () => {
       expect(noMeta).not.toContain('theme-color');
       const out = prepareDistHtml(noMeta, { title: 'X', storyData, themeColor: '#ffeedd' });
       expect(out).toMatch(/<meta name="theme-color" content="#ffeedd"[^>]*>[\s\S]*<\/head>/i);
+    });
+
+    // `name` is not required to come first. Missing that shape falls
+    // through to the add-branch and ships TWO metas; the browser
+    // honours the first, so the build silently reverts to the
+    // player's default navy.
+    it('rewrites the meta when name is not the first attribute', () => {
+      const reordered = baseHtml.replace(
+        '<meta name="theme-color" content="#1a1a2e" />',
+        '<meta content="#1a1a2e" name="theme-color" />',
+      );
+      const out = prepareDistHtml(reordered, { title: 'X', storyData, themeColor: '#ffeedd' });
+      expect(out.match(/name="theme-color"/gi)).toHaveLength(1);
+      expect(out).toMatch(/content="#ffeedd"/);
+      expect(out).not.toMatch(/content="#1a1a2e"/);
     });
   });
 

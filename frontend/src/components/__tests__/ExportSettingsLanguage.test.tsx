@@ -18,16 +18,14 @@ vi.mock('../../api/client', () => ({
 
 afterEach(cleanup);
 
+type Save = (patch: Partial<ProjectSettings>) => Promise<ProjectSettings>;
+
 function mount(settings: ProjectSettings = {}) {
   const onSave = vi.fn().mockResolvedValue(settings);
-  render(
-    <ExportSettings
-      projectId="p1"
-      settings={settings}
-      onSave={onSave as unknown as (patch: Partial<ProjectSettings>) => Promise<ProjectSettings>}
-    />,
+  const view = render(
+    <ExportSettings projectId="p1" settings={settings} onSave={onSave as unknown as Save} />,
   );
-  return { onSave };
+  return { onSave, view };
 }
 
 describe('ExportSettings — language', () => {
@@ -90,16 +88,55 @@ describe('ExportSettings — language', () => {
   // author walks away believing it took and ships an English build.
   it('surfaces a failed save instead of swallowing it', async () => {
     const onSave = vi.fn().mockRejectedValue(new Error('Network is down'));
-    render(
-      <ExportSettings
-        projectId="p1"
-        settings={{}}
-        onSave={onSave as unknown as (patch: Partial<ProjectSettings>) => Promise<ProjectSettings>}
-      />,
-    );
+    render(<ExportSettings projectId="p1" settings={{}} onSave={onSave as unknown as Save} />);
     const input = screen.getByLabelText(/language code/i);
     fireEvent.change(input, { target: { value: 'fr' } });
     fireEvent.blur(input);
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Network is down'));
+  });
+
+  // SettingsTab hands down a fresh settings object after every save
+  // from any control in the tab. Re-seeding on that would snap the
+  // rejected tag back and clear the error the moment the author
+  // touched an unrelated toggle — leaving them believing it took.
+  it('keeps the validation error when an unrelated setting is saved', async () => {
+    const onSave = vi.fn().mockResolvedValue({});
+    const { rerender } = render(
+      <ExportSettings projectId="p1" settings={{}} onSave={onSave as unknown as Save} />,
+    );
+    const input = screen.getByLabelText(/language code/i);
+    fireEvent.change(input, { target: { value: 'not a tag' } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
+
+    // A new object identity, as a save from any other control produces.
+    rerender(
+      <ExportSettings
+        projectId="p1"
+        settings={{ captionsDefault: true }}
+        onSave={onSave as unknown as Save}
+      />,
+    );
+    expect(screen.getByRole('alert')).toBeTruthy();
+    expect((screen.getByLabelText(/language code/i) as HTMLInputElement).value).toBe('not a tag');
+  });
+
+  it('still re-seeds when the parent swaps projects', () => {
+    const onSave = vi.fn().mockResolvedValue({});
+    const { rerender } = render(
+      <ExportSettings
+        projectId="p1"
+        settings={{ language: 'fr' }}
+        onSave={onSave as unknown as Save}
+      />,
+    );
+    rerender(
+      <ExportSettings
+        projectId="p2"
+        settings={{ language: 'de' }}
+        onSave={onSave as unknown as Save}
+      />,
+    );
+    expect((screen.getByLabelText(/language code/i) as HTMLInputElement).value).toBe('de');
   });
 });

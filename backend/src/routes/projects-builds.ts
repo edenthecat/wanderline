@@ -659,6 +659,15 @@ export function mountBuildRoutes(
         // ships lang="en", so without it a French build previews as
         // English. LEFT JOIN because a project with no settings row
         // must still preview.
+        //
+        // Deliberately the project's CURRENT language rather than the
+        // one the build shipped with. Recording it per build would
+        // mean either a new column or a new field inside
+        // story_snapshot — and the snapshot IS the payload that gets
+        // hashed into story_snapshot_hash, so adding to it would churn
+        // every project's hash. An author who changes the setting
+        // afterwards sees this preview disagree with that build's zip;
+        // that is a smaller wrong than every preview reading English.
         `SELECT pb.story_snapshot, pb.status, pb.build_number, pb.label,
                 pb.player_bundle_sri_hash,
                 p.name as project_name,

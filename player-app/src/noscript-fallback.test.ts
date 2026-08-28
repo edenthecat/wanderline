@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 // The scripting-disabled fallback, which is the only thing a reader
@@ -7,11 +8,12 @@ import { describe, expect, it } from 'vitest';
 // are easy to break by "improving" the styling, and both make the
 // message unreadable rather than merely ugly, so they are pinned here.
 //
-// Resolved from the vitest root (the player-app workspace) rather than
-// import.meta.url, which is an http:// URL under the jsdom environment.
-const read = (path: string) => readFileSync(resolve(process.cwd(), path), 'utf-8');
-const css = read('src/index.css');
-const indexHtml = read('index.html');
+// Resolved relative to this file (the pattern theme-contrast.test.ts
+// already uses) rather than process.cwd(), so the suite still finds
+// its fixtures when vitest is pointed at it from the monorepo root.
+const here = dirname(fileURLToPath(import.meta.url));
+const css = readFileSync(join(here, 'index.css'), 'utf-8');
+const indexHtml = readFileSync(join(here, '..', 'index.html'), 'utf-8');
 
 function ruleBody(selector: string): string {
   const start = css.indexOf(`${selector} {`);

@@ -44,7 +44,11 @@ export interface PrepareDistHtmlOptions {
  * the exported build.
  */
 export function setHtmlLang(html: string, language: string): string {
-  const withExistingLang = /<html([^>]*?)\slang="[^"]*"/i;
+  // Both quote styles: missing an existing `lang='en'` would fall
+  // through to the add-branch and emit `<html lang="fr" lang='en'>`,
+  // where the browser honours the FIRST — so the wrong tag would
+  // silently win.
+  const withExistingLang = /<html([^>]*?)\slang=("[^"]*"|'[^']*')/i;
   if (withExistingLang.test(html)) {
     return html.replace(
       withExistingLang,
@@ -65,7 +69,13 @@ export function setHtmlLang(html: string, language: string): string {
  */
 function applyThemeColor(html: string, themeColor: string): string {
   const meta = `<meta name="theme-color" content="${themeColor}" />`;
-  const existing = /<meta\s+name="theme-color"[^>]*>/i;
+  // `name` is not required to come first. Anchoring on it would miss
+  // `<meta content="#1a1a2e" name="theme-color" />` — the shape an
+  // attribute-reordering minifier or a hand edit can produce — and
+  // fall through to the add-branch, shipping TWO theme-color metas.
+  // Browsers honour the first, so the build would quietly revert to
+  // the player's default navy: the exact bug this function fixes.
+  const existing = /<meta[^>]*\sname="theme-color"[^>]*>/i;
   if (existing.test(html)) return html.replace(existing, () => meta);
   if (!html.includes('</head>')) return html;
   return html.replace('</head>', () => `${meta}\n</head>`);
@@ -74,8 +84,13 @@ function applyThemeColor(html: string, themeColor: string): string {
 /**
  * Replace the player's generic `<noscript>` with one naming the story,
  * or add one before `</body>` if the source document has none.
+ *
+ * Exported alongside setHtmlLang for the preview renderer: the
+ * shareable /public-preview link is listener-facing, and a listener
+ * with scripting off was reading "Wanderline Player" rather than the
+ * name of the story they had been sent.
  */
-function applyNoscript(html: string, title: string): string {
+export function setNoscriptFallback(html: string, title: string): string {
   const block = renderNoscriptFallback(title);
   if (/<noscript[\s>]/i.test(html)) {
     return html.replace(/<noscript[\s\S]*?<\/noscript>/i, () => block);
@@ -153,7 +168,7 @@ export function prepareDistHtml(rawHtml: string, options: PrepareDistHtmlOptions
   html = html.replace(/<title>[^<]*<\/title>/i, () => `<title>${options.title}</title>`);
   html = setHtmlLang(html, options.language ?? DEFAULT_BUILD_LANGUAGE);
   if (options.themeColor) html = applyThemeColor(html, options.themeColor);
-  html = applyNoscript(html, options.title);
+  html = setNoscriptFallback(html, options.title);
   html = html.replace(/((?:src|href)=)"\/(assets\/[^"]+)"/g, '$1"./$2"');
   const storyJsonStr = JSON.stringify(options.storyData)
     .replace(/</g, '\\u003c')

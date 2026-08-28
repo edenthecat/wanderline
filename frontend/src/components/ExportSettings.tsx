@@ -62,6 +62,19 @@ export default function ExportSettings({ projectId, settings, onSave }: Props) {
     setIconFilename(settings.appIcon?.filename ?? null);
     setBackground(settings.appIcon?.backgroundColor ?? DEFAULT_COLOR);
     setTheme(settings.appIcon?.themeColor ?? DEFAULT_COLOR);
+  }, [projectId, settings]);
+
+  // The language field re-seeds on a project swap ONLY. SettingsTab
+  // hands down a fresh settings object after every save from any
+  // control in the tab, so re-seeding on `settings` would snap a
+  // rejected tag back to the stored value and silently clear the
+  // validation error the moment the author touched an unrelated
+  // toggle — leaving them believing a tag took when it didn't, which
+  // is the failure the validation exists to prevent.
+  const seededProjectRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (seededProjectRef.current === projectId) return;
+    seededProjectRef.current = projectId;
     setLanguage(settings.language ?? '');
     setLanguageError(null);
   }, [projectId, settings]);

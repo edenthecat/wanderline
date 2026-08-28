@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 // The static manifest — the one the editor preview and a directly
@@ -7,10 +8,12 @@ import { describe, expect, it } from 'vitest';
 // backend/src/services/build-manifest.ts; this file is the other half
 // of the same contract and drifted from it before.
 
-// Resolved from the vitest root (the player-app workspace) rather than
-// import.meta.url, which is an http:// URL under the jsdom environment.
+// Resolved relative to this file (the pattern theme-contrast.test.ts
+// already uses) rather than process.cwd(), so the suite still finds
+// its fixture when vitest is pointed at it from the monorepo root.
+const here = dirname(fileURLToPath(import.meta.url));
 const manifest = JSON.parse(
-  readFileSync(resolve(process.cwd(), 'public/manifest.webmanifest'), 'utf-8'),
+  readFileSync(join(here, '..', 'public', 'manifest.webmanifest'), 'utf-8'),
 ) as Record<string, unknown>;
 
 describe('player manifest', () => {

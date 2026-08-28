@@ -13,7 +13,7 @@ import {
   useSignedUrlDownloads,
 } from '../services/storage.js';
 import { renderThemeForPreview, type ThemeConfig } from '../services/theme-render.js';
-import { setHtmlLang } from '../services/build-html.js';
+import { setHtmlLang, setNoscriptFallback } from '../services/build-html.js';
 import { normalizeBuildLanguage } from '../services/build-language.js';
 import { logger } from '../logger.js';
 
@@ -201,6 +201,13 @@ export function renderPreviewHtml(
 ): string {
   let html = getPlayerHtmlTemplate();
   html = setHtmlLang(html, normalizeBuildLanguage(language));
+  // Same reasoning as the language: a listener sent a preview link
+  // with scripting off would otherwise be told "Wanderline Player"
+  // instead of the name of the story they were sent. The story's own
+  // title is preferred over `title`, which carries the " - Preview" /
+  // " — Build #3" suffix meant for the tab.
+  const storyTitle = (storyData as { title?: string } | null)?.title;
+  html = setNoscriptFallback(html, escapeHtml(storyTitle?.trim() || title));
 
   // Rewrite asset paths to use the global player assets route (no auth required)
   // Handle both absolute (/assets/) and relative (./assets/) paths from Vite builds
