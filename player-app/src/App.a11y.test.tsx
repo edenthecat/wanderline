@@ -124,6 +124,18 @@ async function renderStory(story: unknown = threeChoiceStory) {
   await screen.findByRole('main');
 }
 
+/**
+ * The screen-reader-only status region that carries choice
+ * announcements — identified by content, since the player renders
+ * several `role="status"` elements (buffering, "The End").
+ */
+function choiceStatusRegion(): HTMLElement {
+  const regions = screen.getAllByRole('status');
+  const match = regions.find((r) => /choice/i.test(r.textContent ?? ''));
+  if (!match) throw new Error('no choice status region found');
+  return match;
+}
+
 /** Dispatch a keydown on `el` and report whether it was cancelled. */
 function keyDownAndCheckCancelled(el: Element, key: string): boolean {
   const event = createEvent.keyDown(el, { key, bubbles: true });
@@ -200,6 +212,48 @@ describe('keyboard access to on-screen controls', () => {
     );
   });
 
+  it('still cycles choices with the arrows while focus sits on a button', async () => {
+    // The bail is per key, not per element. A <button> consumes only
+    // Space and Enter, so the arrows must still reach the global
+    // handler — on a story whose author hid the visible choice list
+    // they are the only way to move the armed choice, and a listener
+    // who just tapped Play has focus sitting on that button.
+    await renderStory({ ...threeChoiceStory, settings: { showChoiceList: false } });
+
+    const playButton = screen.getByRole('button', { name: /^(Play|Pause|Loading) / });
+    const event = createEvent.keyDown(playButton, { key: 'ArrowDown', bubbles: true });
+    fireEvent(playButton, event);
+
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() => expect(choiceStatusRegion()).toHaveTextContent('Choice 2 of 3: Go right'));
+  });
+
+  it('still goes back on Backspace while focus sits on a button', async () => {
+    await renderStory();
+
+    fireEvent.click(screen.getByLabelText('Choice 2: Go right'));
+    await screen.findByText('You went right.');
+
+    const backButton = screen.getByLabelText('Go back to the previous part');
+    fireEvent.keyDown(backButton, { key: 'Backspace', bubbles: true });
+
+    expect(await screen.findByText('Welcome to the story.')).toBeInTheDocument();
+  });
+
+  it('still routes a headphone media key while a volume slider has focus', async () => {
+    // A range input is not text entry. Treating it as such dropped
+    // every headphone press until focus left the slider — the listener
+    // nudges the volume, then their earbud button does nothing.
+    await renderStory();
+    fireEvent.click(screen.getByLabelText('Settings'));
+    const slider = screen.getByLabelText(/narration volume/i);
+
+    vi.advanceTimersByTime(200);
+    fireEvent.keyDown(slider, { key: 'MediaTrackNext', bubbles: true });
+
+    expect(await screen.findByText('You went left.')).toBeInTheDocument();
+  });
+
   it('still routes a headphone media key while focus sits on a button', async () => {
     await renderStory();
 
@@ -239,35 +293,30 @@ describe('screen-reader structure', () => {
 });
 
 describe('choice announcements', () => {
-  function choiceStatus(): HTMLElement {
-    const regions = screen.getAllByRole('status');
-    const match = regions.find((r) => /choice/i.test(r.textContent ?? ''));
-    if (!match) throw new Error('no choice status region found');
-    return match;
-  }
-
   it('announces the whole choice list on arriving at a passage', async () => {
     await renderStory();
 
     await waitFor(() => {
-      expect(choiceStatus()).toHaveTextContent('3 choices: 1. Go left, 2. Go right, 3. Stay put');
+      expect(choiceStatusRegion()).toHaveTextContent(
+        '3 choices: 1. Go left, 2. Go right, 3. Stay put',
+      );
     });
   });
 
   it('announces the armed choice as it is cycled', async () => {
     await renderStory();
-    await waitFor(() => expect(choiceStatus()).toHaveTextContent(/3 choices/));
+    await waitFor(() => expect(choiceStatusRegion()).toHaveTextContent(/3 choices/));
 
     fireEvent.keyDown(document.body, { key: 'ArrowDown' });
 
     await waitFor(() => {
-      expect(choiceStatus()).toHaveTextContent('Choice 2 of 3: Go right');
+      expect(choiceStatusRegion()).toHaveTextContent('Choice 2 of 3: Go right');
     });
 
     fireEvent.keyDown(document.body, { key: 'ArrowDown' });
 
     await waitFor(() => {
-      expect(choiceStatus()).toHaveTextContent('Choice 3 of 3: Stay put');
+      expect(choiceStatusRegion()).toHaveTextContent('Choice 3 of 3: Stay put');
     });
   });
 
@@ -281,13 +330,15 @@ describe('choice announcements', () => {
     expect(screen.queryByRole('navigation', { name: 'Story choices' })).not.toBeInTheDocument();
     // ...but the listener is still told what is on offer.
     await waitFor(() => {
-      expect(choiceStatus()).toHaveTextContent('3 choices: 1. Go left, 2. Go right, 3. Stay put');
+      expect(choiceStatusRegion()).toHaveTextContent(
+        '3 choices: 1. Go left, 2. Go right, 3. Stay put',
+      );
     });
   });
 
   it('says nothing about choices on a passage that has none', async () => {
     await renderStory();
-    await waitFor(() => expect(choiceStatus()).toHaveTextContent(/3 choices/));
+    await waitFor(() => expect(choiceStatusRegion()).toHaveTextContent(/3 choices/));
 
     fireEvent.click(screen.getByLabelText('Choice 1: Go left'));
 
@@ -297,6 +348,65 @@ describe('choice announcements', () => {
         true,
       ),
     );
+  });
+});
+
+describe('live-region registration', () => {
+  /**
+   * Screen readers announce MUTATIONS to a live region they have
+   * already registered; text that is present the instant the region is
+   * inserted is not announced. The story screen mounts <main> and both
+   * regions in one commit, so an announcement written during that
+   * render is silent — and the passage it silences is the opening one,
+   * the only passage a listener has no other way to learn about.
+   *
+   * Assert the shape of the DOM change rather than its text: the
+   * announcement must arrive as a mutation whose target is the region
+   * itself, which can only happen if the region was already in the
+   * document when the text landed.
+   */
+  async function announcementArrivedAsMutation(
+    story: unknown,
+    findRegion: () => HTMLElement,
+    expected: RegExp,
+  ): Promise<boolean> {
+    (window as unknown as { __WANDERLINE_STORY__?: unknown }).__WANDERLINE_STORY__ = story;
+    render(<App />);
+    const startButton = await screen.findByLabelText('Start the story');
+
+    const records: MutationRecord[] = [];
+    const observer = new MutationObserver((rs) => records.push(...rs));
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+
+    fireEvent.click(startButton);
+    await waitFor(() => expect(findRegion()).toHaveTextContent(expected));
+
+    records.push(...observer.takeRecords());
+    observer.disconnect();
+
+    const region = findRegion();
+    return records.some(
+      (r) =>
+        r.target === region &&
+        Array.from(r.addedNodes).some((n) => expected.test(n.textContent ?? '')),
+    );
+  }
+
+  it('mounts the choice status region empty and announces into it', async () => {
+    expect(
+      await announcementArrivedAsMutation(threeChoiceStory, choiceStatusRegion, /3 choices/),
+    ).toBe(true);
+  });
+
+  it('mounts the captions-off passage line empty and announces into it', async () => {
+    const captionsOff = { ...threeChoiceStory, settings: { captionsDefault: false } };
+    const findLine = () => {
+      const narration = screen.getByRole('region', { name: 'Story narration' });
+      const p = narration.querySelector('p');
+      if (!p) throw new Error('no passage announcement line found');
+      return p as HTMLElement;
+    };
+    expect(await announcementArrivedAsMutation(captionsOff, findLine, /Now playing/)).toBe(true);
   });
 });
 
@@ -364,11 +474,14 @@ describe('settings disclosure', () => {
 
     const cog = screen.getByLabelText('Settings');
     expect(cog).toHaveAttribute('aria-expanded', 'false');
-    expect(cog).toHaveAttribute('aria-controls', 'settings-panel');
+    // aria-controls must not dangle while the panel is unrendered — an
+    // IDREF pointing at an absent id is invalid and axe flags it.
+    expect(cog).not.toHaveAttribute('aria-controls');
 
     fireEvent.click(cog);
 
     expect(cog).toHaveAttribute('aria-expanded', 'true');
+    expect(cog).toHaveAttribute('aria-controls', 'settings-panel');
     expect(document.getElementById('settings-panel')).not.toBeNull();
     // role="dialog" without any focus management is worse than no
     // dialog semantics at all, and this panel is not modal.

@@ -106,7 +106,7 @@ type PlayerState = 'loading' | 'ready' | 'playing' | 'paused' | 'ended' | 'error
 type PreloadState = 'idle' | 'loading' | 'complete' | 'error';
 
 import { fallThroughTarget } from './fall-through';
-import { isFromInteractiveElement } from './keyboard-target';
+import { keyBelongsToTarget } from './keyboard-target';
 export { fallThroughTarget };
 
 const STORAGE_PREFIX = 'wanderline_';
@@ -1669,14 +1669,19 @@ export default function App() {
     const handleKey = (e: KeyboardEvent) => {
       // Ignore keyboard shortcuts while instructions or password screen is visible
       if (showInstructions || !isAuthenticated) return;
-      // A keystroke aimed at a real control belongs to that control.
-      // This listener is on `window` and calls preventDefault() for
-      // Space / Enter / arrows / Backspace, which is exactly the set a
-      // button, checkbox or slider needs to receive: without this bail,
-      // tabbing to Settings and pressing Enter advanced the story
-      // instead of opening the panel, and the auto-advance checkbox
-      // could not be toggled by keyboard at all.
-      if (isFromInteractiveElement(e)) return;
+      // A keystroke the focused control acts on belongs to that
+      // control. This listener is on `window` and calls
+      // preventDefault() for Space / Enter / arrows / Backspace, which
+      // is exactly the set a button, checkbox or slider needs to
+      // receive: without this bail, tabbing to Settings and pressing
+      // Enter advanced the story instead of opening the panel, and the
+      // auto-advance checkbox could not be toggled by keyboard at all.
+      // Scoped per key rather than per element, because a <button>
+      // consumes only Space and Enter — yielding the arrows to it too
+      // would strand a listener on a story whose author hid the visible
+      // choice list, where the arrows are the only way to move the
+      // armed choice.
+      if (keyBelongsToTarget(e)) return;
 
       switch (e.key) {
         case ' ':
@@ -1792,6 +1797,27 @@ export default function App() {
       .trim();
   }, [currentNode]);
 
+  // Both announcements below are held in state and written from an
+  // effect, and both effects stand down until the story screen is up.
+  // Screen readers announce MUTATIONS to a live region they have
+  // already registered — text that is present the moment the region is
+  // inserted is not announced at all. The story screen mounts <main>
+  // and both regions in one commit, so populating them during render
+  // would have meant the opening passage, the very one a listener has
+  // no other way to hear about, was the one thing never spoken. Held
+  // empty through that commit, they get their first content on the
+  // following effect pass, which is a mutation the AT reports.
+  const storyScreenVisible = !showInstructions && isAuthenticated;
+
+  const [passageAnnouncement, setPassageAnnouncement] = useState('');
+  useEffect(() => {
+    if (!storyScreenVisible || captionsEnabled || !currentNode) {
+      setPassageAnnouncement('');
+      return;
+    }
+    setPassageAnnouncement(passageText ? `Now playing: ${passageText}` : 'Now playing');
+  }, [storyScreenVisible, captionsEnabled, currentNode, passageText]);
+
   // What the choice status region says. Cycling choices with a
   // headphone button — the product's signature interaction, phone in a
   // pocket — only moved `aria-current`, which a screen reader reads
@@ -1802,8 +1828,10 @@ export default function App() {
   const announcedChoicesForNodeRef = useRef<string | null>(null);
   useEffect(() => {
     const choices = currentNode?.choices ?? [];
-    if (!currentNode || choices.length === 0) {
-      announcedChoicesForNodeRef.current = currentNode?.id ?? null;
+    if (!storyScreenVisible || !currentNode || choices.length === 0) {
+      // Reset the marker while the story screen is down so returning to
+      // a passage from the instructions screen announces its list again.
+      announcedChoicesForNodeRef.current = storyScreenVisible ? (currentNode?.id ?? null) : null;
       setChoiceAnnouncement('');
       return;
     }
@@ -1822,7 +1850,7 @@ export default function App() {
     if (armed) {
       setChoiceAnnouncement(`Choice ${selectedChoice + 1} of ${choices.length}: ${armed.text}`);
     }
-  }, [currentNode, selectedChoice]);
+  }, [storyScreenVisible, currentNode, selectedChoice]);
 
   if (playerState === 'error' || !story) {
     return (
@@ -2132,6 +2160,8 @@ export default function App() {
           </button>
           <h1 style={styles.title}>{story?.title || 'Audio Story'}</h1>
           <div style={styles.headerBtnGroup} role="toolbar" aria-label="Story controls">
+            {/* aria-controls only while the panel exists: an IDREF
+                pointing at an absent id is invalid, and axe flags it. */}
             <button
               onClick={(e) => {
                 e.stopPropagation();
@@ -2140,7 +2170,7 @@ export default function App() {
               style={{ ...styles.headerBtn, ...(showSettings ? styles.headerBtnActive : {}) }}
               aria-pressed={showSettings}
               aria-expanded={showSettings}
-              aria-controls="settings-panel"
+              {...(showSettings ? { 'aria-controls': 'settings-panel' } : {})}
               aria-label="Settings"
             >
               <Settings width={18} height={18} />
@@ -2416,11 +2446,7 @@ export default function App() {
               for its whole length and announced nothing on any passage
               change. The screen-reader-only line below keeps the
               transcript available whatever the visual setting. */}
-          {!captionsEnabled && (
-            <p style={styles.srOnly}>
-              {passageText ? `Now playing: ${passageText}` : 'Now playing'}
-            </p>
-          )}
+          {!captionsEnabled && <p style={styles.srOnly}>{passageAnnouncement}</p>}
         </div>
 
         {/* The row shows if EITHER control has something to offer. Back
