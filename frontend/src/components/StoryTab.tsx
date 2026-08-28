@@ -114,6 +114,14 @@ export default function StoryTab({
   // surface (lets authors edit + save back to ink_source from the
   // same tab they're already in).
   const [view, setView] = useState<'nodes' | 'source'>('nodes');
+  // Read by jumpToNode, which must stay referentially stable — it's a
+  // dependency of the cross-tab jump effect below. Synced in an
+  // effect rather than during render; every jumpToNode caller runs
+  // after commit.
+  const viewRef = useRef(view);
+  useEffect(() => {
+    viewRef.current = view;
+  }, [view]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Track whether the InkSourceEditor has unsaved edits so the file-
   // upload flow can confirm with the user before discarding them.
@@ -347,11 +355,20 @@ export default function StoryTab({
   // ValidationPanel and StoryHealthPanel.
   const jumpToNode = useCallback(
     (nodeId: string) => {
+      // The node list only exists in the 'nodes' view, and jumps now
+      // arrive from the ⌘K palette while the author may be in the
+      // Source view. Leaving that view unmounts the editor and drops
+      // an unsaved draft, so ask first — same guard, and the same
+      // wording, as the "Replace story file" path below.
+      if (viewRef.current === 'source' && sourceDirtyRef.current) {
+        const ok = window.confirm(
+          'You have unsaved changes in the Source editor. Leave the Source view anyway?\n\n' +
+            'Your unsaved edits will be discarded.',
+        );
+        if (!ok) return;
+      }
       setSearch('');
       setTypeFilter('all');
-      // The node list only exists in the 'nodes' view. Jumps arrive
-      // from the palette too now, and landing on the raw-source
-      // editor with nothing highlighted isn't "jumping to" anything.
       setView('nodes');
       // Keep the editing stack in sync with expandedNodes so a
       // later toggleNode call doesn't drift. Jumping also focuses

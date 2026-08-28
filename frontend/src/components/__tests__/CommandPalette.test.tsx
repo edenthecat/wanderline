@@ -78,6 +78,14 @@ describe('CommandPalette', () => {
     expect(within(listbox).getAllByRole('option')).toHaveLength(3);
   });
 
+  it('wraps each set of commands in a labelled ARIA group', () => {
+    // A listbox's children have to be options or groups; a bare
+    // heading row makes AT miscount "option N of M".
+    renderPalette();
+    const group = screen.getByRole('group', { name: 'Passages' });
+    expect(within(group).getAllByRole('option')).toHaveLength(3);
+  });
+
   it('moves the highlight with the arrow keys, wrapping at both ends', () => {
     renderPalette();
     fireEvent.keyDown(input(), { key: 'ArrowDown' });

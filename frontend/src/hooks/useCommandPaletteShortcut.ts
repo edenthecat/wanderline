@@ -3,18 +3,32 @@
 // Document-level and capture-phase on purpose: the editor is full of
 // surfaces that swallow keys (CodeMirror in the source editors, the
 // ReactFlow canvas, every text input), and the shortcut has to work
-// from all of them. preventDefault is what stops Chrome from handing
-// Ctrl-K to the address bar.
+// from all of them.
+//
+// The chord is platform-gated rather than "either modifier". On macOS
+// Ctrl-K is emacs' kill-to-end-of-line, which CodeMirror's
+// defaultKeymap installs for real (via emacsStyleKeymap) in both
+// source editors — accepting it here would open the palette AND eat
+// the rest of the author's line behind the modal, because CodeMirror
+// dispatches from its own bubble-phase listener and never consults
+// defaultPrevented. stopPropagation on our own chord closes the same
+// door from the other side.
 
 import { useEffect } from 'react';
 
-export function isCommandPaletteChord(e: KeyboardEvent): boolean {
+/** Best-effort "is this an Apple keyboard layout" check. */
+export function isApplePlatform(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return /mac|iphone|ipad|ipod/i.test(navigator.platform || navigator.userAgent || '');
+}
+
+export function isCommandPaletteChord(e: KeyboardEvent, apple = isApplePlatform()): boolean {
   // `key` is 'k'/'K' depending on Shift; `code` would also match a
   // Dvorak user's physical K, which is not what they'd expect.
   if (e.key !== 'k' && e.key !== 'K') return false;
   if (e.altKey) return false;
-  // Exactly one of the two — Ctrl-⌘-K isn't our chord.
-  return e.metaKey !== e.ctrlKey;
+  // One modifier, the platform's own — never both.
+  return apple ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
 }
 
 /**
@@ -27,6 +41,7 @@ export function useCommandPaletteShortcut(onTrigger: () => void): void {
     function handleKeyDown(e: KeyboardEvent) {
       if (!isCommandPaletteChord(e)) return;
       e.preventDefault();
+      e.stopPropagation();
       onTrigger();
     }
     document.addEventListener('keydown', handleKeyDown, true);

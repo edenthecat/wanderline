@@ -5,7 +5,6 @@ import {
   nodeExcerpt,
   nodeMatchesQuery,
   normalizeQuery,
-  searchNodes,
   type SearchableNode,
 } from '../nodeSearch';
 
@@ -50,18 +49,6 @@ describe('nodeMatchesQuery', () => {
 
   it('survives a node with no content lines', () => {
     expect(nodeMatchesQuery({ id: 'n1' } as SearchableNode, 'anything')).toBe(false);
-  });
-});
-
-describe('searchNodes', () => {
-  const nodes = [node('intro', 'A cold morning.'), node('harbour', 'Gulls.'), node('gull_cry')];
-
-  it('returns every node for a blank query', () => {
-    expect(searchNodes(nodes, '  ')).toHaveLength(3);
-  });
-
-  it('filters by the shared rule and keeps input order', () => {
-    expect(searchNodes(nodes, 'gull').map((n) => n.id)).toEqual(['harbour', 'gull_cry']);
   });
 });
 

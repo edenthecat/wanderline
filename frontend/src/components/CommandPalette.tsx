@@ -17,7 +17,7 @@
 //   - the match count is announced through a polite live region
 //   - Escape closes, ↑/↓/Home/End move, Enter runs
 
-import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type { StoryGraph } from '../api/client';
 import {
@@ -57,10 +57,39 @@ export default function CommandPalette({
   const listboxId = `${baseId}-listbox`;
   const optionId = (index: number) => `${baseId}-option-${index}`;
 
+  // Fresh query every time it opens — a palette that remembers last
+  // week's search is a palette you have to clear before using. This
+  // is done during render rather than in an effect on purpose: the
+  // component stays mounted while closed, so an effect would let one
+  // frame paint with the previous query and its results, and let the
+  // live region announce that stale count before clearing it.
+  const wasOpenRef = useRef(open);
+  if (open !== wasOpenRef.current) {
+    wasOpenRef.current = open;
+    if (open) {
+      setQuery('');
+      setHighlight(0);
+    }
+  }
+
   const { commands, totalCount, truncated } = useMemo(
     () => buildCommands({ query, storyGraph, actions }, providers),
     [query, storyGraph, actions, providers],
   );
+
+  // Commands arrive grouped and contiguous from buildCommands, so a
+  // single pass turns the flat list into render groups while keeping
+  // each command's flat index — that index is what the highlight and
+  // aria-activedescendant count through.
+  const groups = useMemo(() => {
+    const out: { name: string; items: { command: PaletteCommand; index: number }[] }[] = [];
+    commands.forEach((command, index) => {
+      const last = out[out.length - 1];
+      if (last && last.name === command.group) last.items.push({ command, index });
+      else out.push({ name: command.group, items: [{ command, index }] });
+    });
+    return out;
+  }, [commands]);
 
   // Clamp rather than trust: the list shrinks as the author types and
   // a stale index would point past the end for one render.
@@ -68,14 +97,10 @@ export default function CommandPalette({
   const activeCommand: PaletteCommand | undefined =
     activeIndex >= 0 ? commands[activeIndex] : undefined;
 
-  // Fresh query every time it opens — a palette that remembers last
-  // week's search is a palette you have to clear before using.
   // Focus goes in on open and back to the invoker on close.
   useEffect(() => {
     if (!open) return;
     const invoker = document.activeElement as HTMLElement | null;
-    setQuery('');
-    setHighlight(0);
     inputRef.current?.focus();
     return () => {
       // Guard: the invoker may have been unmounted while we were open
@@ -159,10 +184,6 @@ export default function CommandPalette({
 
   if (!open) return null;
 
-  // Group headings: commands arrive grouped and contiguous from
-  // buildCommands, so a heading is emitted whenever the group changes.
-  let previousGroup: string | null = null;
-
   return (
     <div
       className="command-palette-backdrop"
@@ -223,40 +244,40 @@ export default function CommandPalette({
           className="command-palette-list"
           data-testid="command-palette-list"
         >
-          {commands.map((command, index) => {
-            const heading = command.group !== previousGroup ? command.group : null;
-            previousGroup = command.group;
-            const isActive = index === activeIndex;
-            return (
-              // Fragment, not a wrapper element: a listbox's options
-              // have to be its own children for AT to count them.
-              <Fragment key={command.id}>
-                {heading && (
-                  <div className="command-palette-group" role="presentation">
-                    {heading}
+          {groups.map((group) => (
+            // A real ARIA group, not a bare heading row: a listbox's
+            // children must be options or groups, or AT can miscount
+            // "option N of M".
+            <div key={group.name} role="group" aria-label={group.name}>
+              <div className="command-palette-group" aria-hidden="true">
+                {group.name}
+              </div>
+              {group.items.map(({ command, index }) => {
+                const isActive = index === activeIndex;
+                return (
+                  <div
+                    key={command.id}
+                    id={optionId(index)}
+                    role="option"
+                    aria-selected={isActive}
+                    className={`command-palette-option${isActive ? ' is-active' : ''}`}
+                    onMouseMove={() => setHighlight(index)}
+                    onMouseDown={(e) => {
+                      // Keep focus in the input so the close handler
+                      // restores to the real invoker, not this row.
+                      e.preventDefault();
+                      runCommand(command);
+                    }}
+                  >
+                    <span className="command-palette-option-label">{command.label}</span>
+                    {command.hint && (
+                      <span className="command-palette-option-hint">{command.hint}</span>
+                    )}
                   </div>
-                )}
-                <div
-                  id={optionId(index)}
-                  role="option"
-                  aria-selected={isActive}
-                  className={`command-palette-option${isActive ? ' is-active' : ''}`}
-                  onMouseMove={() => setHighlight(index)}
-                  onMouseDown={(e) => {
-                    // Keep focus in the input so the close handler
-                    // restores to the real invoker, not this row.
-                    e.preventDefault();
-                    runCommand(command);
-                  }}
-                >
-                  <span className="command-palette-option-label">{command.label}</span>
-                  {command.hint && (
-                    <span className="command-palette-option-hint">{command.hint}</span>
-                  )}
-                </div>
-              </Fragment>
-            );
-          })}
+                );
+              })}
+            </div>
+          ))}
         </div>
 
         {commands.length === 0 && <p className="command-palette-empty">No matches.</p>}

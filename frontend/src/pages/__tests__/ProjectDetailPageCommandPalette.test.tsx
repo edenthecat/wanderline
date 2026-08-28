@@ -107,8 +107,11 @@ async function renderPage() {
   await waitFor(() => expect(screen.getByTestId('story-tab')).toBeInTheDocument());
 }
 
+// The chord is platform-gated (⌘K on Apple, Ctrl-K elsewhere) and
+// jsdom reports an empty navigator.platform, so Ctrl is the chord
+// here. One test below pins the Mac side.
 function pressCommandK() {
-  fireEvent.keyDown(document, { key: 'k', metaKey: true });
+  fireEvent.keyDown(document, { key: 'k', ctrlKey: true });
 }
 
 const palette = () => screen.queryByTestId('command-palette');
@@ -119,6 +122,22 @@ beforeEach(() => {
 });
 
 describe('ProjectDetailPage ⌘K palette', () => {
+  it('opens on ⌘K when the author is on a Mac', async () => {
+    const original = Object.getOwnPropertyDescriptor(window.navigator, 'platform');
+    Object.defineProperty(window.navigator, 'platform', {
+      value: 'MacIntel',
+      configurable: true,
+    });
+    try {
+      await renderPage();
+      fireEvent.keyDown(document, { key: 'k', metaKey: true });
+      expect(palette()).toBeInTheDocument();
+    } finally {
+      if (original) Object.defineProperty(window.navigator, 'platform', original);
+      else delete (window.navigator as { platform?: string }).platform;
+    }
+  });
+
   it('is closed until the chord is pressed, and toggles back shut', async () => {
     await renderPage();
     expect(palette()).toBeNull();

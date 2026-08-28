@@ -49,13 +49,6 @@ export function nodeMatchesQuery(node: SearchableNode, normalizedQuery: string):
   return nodeContentText(node).toLowerCase().includes(normalizedQuery);
 }
 
-/** Convenience wrapper over `nodeMatchesQuery` for a whole list. */
-export function searchNodes<T extends SearchableNode>(nodes: T[], rawQuery: string): T[] {
-  const q = normalizeQuery(rawQuery);
-  if (!q) return nodes;
-  return nodes.filter((n) => nodeMatchesQuery(n, q));
-}
-
 /**
  * Rank buckets for a match, lowest first: an id that starts with the
  * query beats an id that merely contains it, which beats a

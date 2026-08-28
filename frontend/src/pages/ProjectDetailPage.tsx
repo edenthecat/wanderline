@@ -131,6 +131,9 @@ export default function ProjectDetailPage() {
       // existing expand + scroll path is the destination.
       const tab: Tab = activeTab === 'graph' ? 'graph' : 'story';
       setActiveTab(tab);
+      // Same housekeeping as pickTab: on mobile the group sheet would
+      // otherwise stay open on top of the passage we just jumped to.
+      setMobileSheet(null);
       setPassageJump({ nodeId, tab });
     },
     [activeTab],
