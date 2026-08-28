@@ -109,6 +109,28 @@ import { fallThroughTarget } from './fall-through';
 import { keyBelongsToTarget } from './keyboard-target';
 export { fallThroughTarget };
 
+/**
+ * A line of screen-reader-only text plus a monotonic sequence number.
+ *
+ * The number is not read out; it exists so consecutive announcements
+ * with identical wording still change the DOM. Assistive tech fires on
+ * a MUTATION inside a live region, and React skips the update entirely
+ * when a string is re-set to its current value — so in a hub-and-spoke
+ * story where two passages offer the same two choices, arrival at the
+ * second one was silent. Rendered as `<span key={seq}>`, so each
+ * announcement replaces the previous node rather than editing it.
+ */
+type Announcement = { text: string; seq: number };
+
+const EMPTY_ANNOUNCEMENT: Announcement = { text: '', seq: 0 };
+
+const speak =
+  (text: string) =>
+  (prev: Announcement): Announcement => ({ text, seq: prev.seq + 1 });
+
+const clearAnnouncement = (prev: Announcement): Announcement =>
+  prev.text === '' ? prev : { text: '', seq: prev.seq + 1 };
+
 const STORAGE_PREFIX = 'wanderline_';
 
 // Safe storage helpers for file:// URL compatibility
@@ -257,6 +279,9 @@ export default function App() {
   const [audioDuration, setAudioDuration] = useState(0);
   const [history, setHistory] = useState<string[]>([]);
   const [captionsEnabled, setCaptionsEnabled] = useState(true);
+  // Whether the author's hidden choice list is currently revealed
+  // because something inside it has keyboard focus.
+  const [choiceListFocused, setChoiceListFocused] = useState(false);
   const [audioError, setAudioError] = useState<string | null>(null);
   const [audioStalled, setAudioStalled] = useState(false);
   const [retryingAudio, setRetryingAudio] = useState(false);
@@ -1809,13 +1834,13 @@ export default function App() {
   // following effect pass, which is a mutation the AT reports.
   const storyScreenVisible = !showInstructions && isAuthenticated;
 
-  const [passageAnnouncement, setPassageAnnouncement] = useState('');
+  const [passageAnnouncement, setPassageAnnouncement] = useState(EMPTY_ANNOUNCEMENT);
   useEffect(() => {
     if (!storyScreenVisible || captionsEnabled || !currentNode) {
-      setPassageAnnouncement('');
+      setPassageAnnouncement(clearAnnouncement);
       return;
     }
-    setPassageAnnouncement(passageText ? `Now playing: ${passageText}` : 'Now playing');
+    setPassageAnnouncement(speak(passageText ? `Now playing: ${passageText}` : 'Now playing'));
   }, [storyScreenVisible, captionsEnabled, currentNode, passageText]);
 
   // What the choice status region says. Cycling choices with a
@@ -1824,31 +1849,41 @@ export default function App() {
   // solely when focus happens to sit on that button. Nothing announced
   // which option was armed, and nothing announced the options at all on
   // arriving at a passage.
-  const [choiceAnnouncement, setChoiceAnnouncement] = useState('');
-  const announcedChoicesForNodeRef = useRef<string | null>(null);
+  const [choiceAnnouncement, setChoiceAnnouncement] = useState(EMPTY_ANNOUNCEMENT);
+  const lastChoiceAnnouncedRef = useRef<{ nodeId: string; selected: number } | null>(null);
   useEffect(() => {
     const choices = currentNode?.choices ?? [];
     if (!storyScreenVisible || !currentNode || choices.length === 0) {
-      // Reset the marker while the story screen is down so returning to
-      // a passage from the instructions screen announces its list again.
-      announcedChoicesForNodeRef.current = storyScreenVisible ? (currentNode?.id ?? null) : null;
-      setChoiceAnnouncement('');
+      lastChoiceAnnouncedRef.current = null;
+      setChoiceAnnouncement(clearAnnouncement);
       return;
     }
-    // Arriving at a new passage: read the whole list once, so the
-    // listener knows what is on offer before cycling through it.
-    if (announcedChoicesForNodeRef.current !== currentNode.id) {
-      announcedChoicesForNodeRef.current = currentNode.id;
+    // Idempotent on purpose. StrictMode replays mount effects with refs
+    // intact, so a marker that only recorded "which node did I last
+    // speak for" saw itself on the second pass and downgraded the
+    // arrival announcement to a selection one — under `npm run dev` the
+    // opening choice list was never read. Recording the selection too
+    // makes the replay a no-op.
+    const last = lastChoiceAnnouncedRef.current;
+    if (last && last.nodeId === currentNode.id && last.selected === selectedChoice) return;
+    const arrived = !last || last.nodeId !== currentNode.id;
+    lastChoiceAnnouncedRef.current = { nodeId: currentNode.id, selected: selectedChoice };
+    if (arrived) {
+      // Read the whole list on arrival, so the listener knows what is
+      // on offer before cycling through it.
       setChoiceAnnouncement(
-        `${choices.length} choice${choices.length === 1 ? '' : 's'}: ` +
-          choices.map((c, i) => `${i + 1}. ${c.text}`).join(', '),
+        speak(
+          `${choices.length} choice${choices.length === 1 ? '' : 's'}: ` +
+            choices.map((c, i) => `${i + 1}. ${c.text}`).join(', '),
+        ),
       );
       return;
     }
-    // Selection moved within the same passage.
     const armed = choices[selectedChoice];
     if (armed) {
-      setChoiceAnnouncement(`Choice ${selectedChoice + 1} of ${choices.length}: ${armed.text}`);
+      setChoiceAnnouncement(
+        speak(`Choice ${selectedChoice + 1} of ${choices.length}: ${armed.text}`),
+      );
     }
   }, [storyScreenVisible, currentNode, selectedChoice]);
 
@@ -2104,6 +2139,7 @@ export default function App() {
   // continues into its next sibling. Not materialised by the parser, so
   // it has to be resolved here or a chapter's opening prose reads as
   // the end of the story.
+  const choiceListHidden = story?.settings?.showChoiceList === false;
   const fallThrough = story ? fallThroughTarget(currentNode.id, currentNode, story.nodes) : null;
   const isEnd =
     reachedEnding ||
@@ -2446,7 +2482,13 @@ export default function App() {
               for its whole length and announced nothing on any passage
               change. The screen-reader-only line below keeps the
               transcript available whatever the visual setting. */}
-          {!captionsEnabled && <p style={styles.srOnly}>{passageAnnouncement}</p>}
+          {!captionsEnabled && (
+            <p style={styles.srOnly}>
+              {passageAnnouncement.text ? (
+                <span key={passageAnnouncement.seq}>{passageAnnouncement.text}</span>
+              ) : null}
+            </p>
+          )}
         </div>
 
         {/* The row shows if EITHER control has something to offer. Back
@@ -2523,25 +2565,46 @@ export default function App() {
         )}
 
         {/* Announces the choice list on arrival and the armed choice as
-            it is cycled. Outside the <nav> on purpose: the choice list
-            can be hidden by the author (showChoiceList), and that is
-            exactly when a listener most needs to be told what is on
-            offer. `aria-current` on the buttons stays as the visual /
-            focused-navigation equivalent. */}
+            it is cycled. Separate from the <nav> because it tracks the
+            armed selection rather than focus: cycling with a headphone
+            button moves neither focus nor the page, so `aria-current`
+            alone — read only when focus happens to sit on that button —
+            told a listener with the screen off nothing at all. */}
         <div style={styles.srOnly} role="status" aria-live="polite" aria-atomic="true">
-          {choiceAnnouncement}
+          {choiceAnnouncement.text ? (
+            <span key={choiceAnnouncement.seq}>{choiceAnnouncement.text}</span>
+          ) : null}
         </div>
 
-        {currentNode.choices.length > 0 && story.settings?.showChoiceList !== false && (
+        {/* Rendered even when the author turns the visible list off.
+            Hiding it is a visual decision — the setting's own help text
+            calls it "headphone- / keyboard-only" — but dropping the
+            buttons from the DOM made the choices unreachable for anyone
+            in a screen reader's browse mode, which swallows the arrow
+            keys before the global shortcuts ever see them. Off-screen
+            until something inside takes focus, then shown, so a sighted
+            keyboard user can see where they are. */}
+        {currentNode.choices.length > 0 && (
           <nav
-            style={styles.choices}
+            style={choiceListHidden && !choiceListFocused ? styles.srOnly : styles.choices}
             role="navigation"
             aria-label="Story choices"
             data-theme-component="choiceButton"
+            onFocus={() => choiceListHidden && setChoiceListFocused(true)}
+            onBlur={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                setChoiceListFocused(false);
+              }
+            }}
           >
+            {/* Keyed by destination, not index. Keyed by index, the
+                same DOM button was reused across a navigation, so focus
+                stayed on it while its meaning changed: click a choice
+                with a mouse, press Space to pause, and the still-focused
+                button fired again and jumped forward instead. */}
             {currentNode.choices.map((c, i) => (
               <button
-                key={i}
+                key={`${c.target}|${c.text}|${i}`}
                 onClick={(e) => {
                   e.stopPropagation();
                   navigateToTarget(c.target);

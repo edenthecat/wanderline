@@ -1,3 +1,4 @@
+import { StrictMode } from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup, createEvent, waitFor } from '@testing-library/react';
 import App from './App';
@@ -87,6 +88,47 @@ const threeChoiceStory = {
       id: 'stay',
       type: 'knot',
       content: [{ text: 'You stayed put.' }],
+      choices: [],
+      divert: 'END',
+      tags: [],
+    },
+  },
+};
+
+const echoStory = {
+  id: 'echo-story',
+  title: 'Echo Story',
+  audioBaseUrl: './audio/',
+  startNode: 'hubA',
+  nodes: {
+    hubA: {
+      id: 'hubA',
+      type: 'knot',
+      content: [{ text: 'Room A.' }],
+      choices: [
+        { text: 'Look around', target: 'hubB' },
+        { text: 'Go back', target: 'done' },
+      ],
+      divert: null,
+      tags: [],
+      audio: { voiceover: 'a.mp3' },
+    },
+    hubB: {
+      id: 'hubB',
+      type: 'knot',
+      content: [{ text: 'Room B.' }],
+      choices: [
+        { text: 'Look around', target: 'done' },
+        { text: 'Go back', target: 'done' },
+      ],
+      divert: null,
+      tags: [],
+      audio: { voiceover: 'b.mp3' },
+    },
+    done: {
+      id: 'done',
+      type: 'knot',
+      content: [{ text: 'Done.' }],
       choices: [],
       divert: 'END',
       tags: [],
@@ -240,6 +282,28 @@ describe('keyboard access to on-screen controls', () => {
     expect(await screen.findByText('Welcome to the story.')).toBeInTheDocument();
   });
 
+  it('still pauses on Space while a volume slider has focus', async () => {
+    // A range input has no default action for Space or Enter, so
+    // yielding them to it meant Space did nothing at all — worse, the
+    // page scrolled — where it used to pause narration.
+    await renderStory();
+    fireEvent.click(screen.getByLabelText('Settings'));
+    const slider = screen.getByLabelText(/narration volume/i);
+
+    expect(keyDownAndCheckCancelled(slider, ' ')).toBe(true);
+  });
+
+  it('still confirms on Enter while the auto-advance checkbox has focus', async () => {
+    // A checkbox is toggled by Space and nothing else; Enter has no
+    // meaning on it outside a form, so the global shortcut keeps it.
+    await renderStory();
+    fireEvent.click(screen.getByLabelText('Settings'));
+    const checkbox = screen.getByRole('checkbox', { name: /advance automatically/i });
+
+    expect(keyDownAndCheckCancelled(checkbox, 'Enter')).toBe(true);
+    expect(await screen.findByText('You went left.')).toBeInTheDocument();
+  });
+
   it('still routes a headphone media key while a volume slider has focus', async () => {
     // A range input is not text entry. Treating it as such dropped
     // every headphone press until focus left the slider — the listener
@@ -326,9 +390,11 @@ describe('choice announcements', () => {
       settings: { showChoiceList: false },
     });
 
-    // No visible list...
-    expect(screen.queryByRole('navigation', { name: 'Story choices' })).not.toBeInTheDocument();
-    // ...but the listener is still told what is on offer.
+    // The list is clipped off-screen rather than removed...
+    const nav = screen.getByRole('navigation', { name: 'Story choices' });
+    expect(nav).toHaveStyle({ position: 'absolute', width: '1px', height: '1px' });
+    // ...and the listener is told what is on offer without having to
+    // find it.
     await waitFor(() => {
       expect(choiceStatusRegion()).toHaveTextContent(
         '3 choices: 1. Go left, 2. Go right, 3. Stay put',
@@ -407,6 +473,100 @@ describe('live-region registration', () => {
       return p as HTMLElement;
     };
     expect(await announcementArrivedAsMutation(captionsOff, findLine, /Now playing/)).toBe(true);
+  });
+});
+
+describe('repeated announcements', () => {
+  it('still fires when consecutive passages offer word-for-word identical choices', async () => {
+    // React skips the update when a string is re-set to its current
+    // value, so an identical announcement never mutated the region and
+    // assistive tech said nothing on arrival.
+    await renderStory(echoStory);
+    await waitFor(() =>
+      expect(choiceStatusRegion()).toHaveTextContent('2 choices: 1. Look around, 2. Go back'),
+    );
+
+    const region = choiceStatusRegion();
+    const records: MutationRecord[] = [];
+    const observer = new MutationObserver((rs) => records.push(...rs));
+    observer.observe(region, { childList: true, subtree: true, characterData: true });
+
+    fireEvent.click(screen.getByLabelText('Choice 1: Look around'));
+    await screen.findByText('Room B.');
+
+    records.push(...observer.takeRecords());
+    observer.disconnect();
+
+    expect(records.length).toBeGreaterThan(0);
+    // Same wording, same region, and it changed anyway.
+    expect(choiceStatusRegion()).toHaveTextContent('2 choices: 1. Look around, 2. Go back');
+  });
+
+  it('announces the opening choice list under StrictMode', async () => {
+    // StrictMode replays mount effects with refs intact. A marker that
+    // only recorded the node id saw itself on the replay and downgraded
+    // the arrival announcement to a selection one, so `npm run dev`
+    // never read the opening list.
+    (window as unknown as { __WANDERLINE_STORY__?: unknown }).__WANDERLINE_STORY__ =
+      threeChoiceStory;
+    render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    );
+    fireEvent.click(await screen.findByLabelText('Start the story'));
+
+    await waitFor(() =>
+      expect(choiceStatusRegion()).toHaveTextContent(
+        '3 choices: 1. Go left, 2. Go right, 3. Stay put',
+      ),
+    );
+  });
+});
+
+describe('choices when the author hides the visible list', () => {
+  const hiddenListStory = { ...threeChoiceStory, settings: { showChoiceList: false } };
+
+  it('keeps the choices operable rather than removing them', async () => {
+    // Browse mode swallows the arrow keys before the global shortcuts
+    // see them, so without real buttons a screen-reader user on one of
+    // these stories has no way to pick anything.
+    await renderStory(hiddenListStory);
+
+    fireEvent.click(screen.getByLabelText('Choice 2: Go right'));
+
+    expect(await screen.findByText('You went right.')).toBeInTheDocument();
+  });
+
+  it('reveals the list while it holds keyboard focus', async () => {
+    await renderStory(hiddenListStory);
+
+    const nav = screen.getByRole('navigation', { name: 'Story choices' });
+    expect(nav).toHaveStyle({ position: 'absolute' });
+
+    fireEvent.focus(screen.getByLabelText('Choice 1: Go left'));
+
+    // A sighted keyboard user must be able to see where focus went.
+    expect(nav).not.toHaveStyle({ position: 'absolute' });
+  });
+});
+
+describe('focus after choosing', () => {
+  it('replaces the choice buttons so focus does not linger on a reused one', async () => {
+    // Keyed by index, React reused the same DOM button across a
+    // navigation: focus stayed on it while its meaning changed, so a
+    // Space press meant to pause re-fired the button and jumped forward
+    // again.
+    await renderStory(echoStory);
+
+    const firstChoice = screen.getByLabelText('Choice 1: Look around');
+    firstChoice.focus();
+    fireEvent.click(firstChoice);
+
+    await screen.findByText('Room B.');
+
+    expect(document.body.contains(firstChoice)).toBe(false);
+    expect(document.activeElement).toBe(document.body);
   });
 });
 
