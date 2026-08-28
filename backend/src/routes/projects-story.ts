@@ -15,6 +15,8 @@ import {
   parseNewNodeId,
   repointReferences,
   TERMINAL_TARGETS,
+  TWEE_UNSAFE_NAME_DESCRIPTION,
+  TWEE_UNSAFE_NAME_RE,
   type GraphNodes,
   type SourceLanguage,
 } from '../services/story-node-ops.js';
@@ -1177,13 +1179,18 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
       // delimiters, and the parser rejects passage names containing
       // them at import — reject here too so a rename can't leave the
       // graph in a state that fails its own export.
+      // Shared with create-passage (story-node-ops.ts) so the two
+      // can't drift — a name the create endpoint refuses must not be
+      // reachable by renaming into it. That list also covers `{`/`}`,
+      // which are worse than the link delimiters: the header parser
+      // truncates a trailing brace group whether or not it parses as
+      // JSON, so `Cave {2}` silently comes back from a round-trip as
+      // `Cave` with every link to it dangling.
       if (sourceLanguage === 'twee') {
-        const unsafe = /[[\]|]|->|<-/;
-        if (unsafe.test(newId)) {
+        if (TWEE_UNSAFE_NAME_RE.test(newId)) {
           await client.query('ROLLBACK');
           res.status(400).json({
-            error:
-              'newId contains a character that is unsafe for Twee export (`[`, `]`, `|`, `->`, or `<-`). Choose a different name.',
+            error: `newId contains a character that is unsafe for Twee export (${TWEE_UNSAFE_NAME_DESCRIPTION}). Choose a different name.`,
           });
           return;
         }

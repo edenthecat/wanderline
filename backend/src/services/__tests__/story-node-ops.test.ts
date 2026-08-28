@@ -198,6 +198,11 @@ describe('parseNewNodeId', () => {
       parent: null,
     });
     expect(parseNewNodeId('A|B', 'twee')).toHaveProperty('error');
+    // `{` / `}` are the HEADER metadata delimiters. parsePassageHeader
+    // truncates a trailing brace group whether or not it parses as
+    // JSON, so `Cave {2}` would come back from a round-trip as `Cave`
+    // and every link to it would dangle.
+    expect(parseNewNodeId('Cave {2}', 'twee')).toHaveProperty('error');
     expect(parseNewNodeId('A->B', 'twee')).toHaveProperty('error');
     expect(parseNewNodeId('[A]', 'twee')).toHaveProperty('error');
     expect(parseNewNodeId('StoryData', 'twee')).toHaveProperty('error');

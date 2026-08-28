@@ -409,7 +409,19 @@ export default function StoryTab({
     return map;
   }, [otherPresence]);
 
-  const nodes = useMemo(() => (storyGraph ? Object.values(storyGraph.nodes) : []), [storyGraph]);
+  // Story order, not JSONB key order. `story_graph` is a jsonb column,
+  // and Postgres normalises object keys by length-then-bytes, so
+  // `Object.values` hands back an order unrelated to the story — which
+  // is also the order the "Place after" select would offer. Sorting by
+  // lineNumber is what makes the list, the placement control and Ink's
+  // fall-through all agree on which passage follows which.
+  const nodes = useMemo(
+    () =>
+      storyGraph
+        ? Object.values(storyGraph.nodes).sort((a, b) => (a.lineNumber ?? 0) - (b.lineNumber ?? 0))
+        : [],
+    [storyGraph],
+  );
 
   const childrenByParent = useMemo(() => {
     const map = new Map<string, typeof nodes>();

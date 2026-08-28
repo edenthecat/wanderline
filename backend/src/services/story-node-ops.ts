@@ -229,8 +229,28 @@ export const TWEE_RESERVED_NAMES = new Set([
   'StorySubtitle',
 ]);
 
-/** Characters with no defined escape in a Twee link / header. */
-const TWEE_UNSAFE_RE = /[[\]|]|->|<-/;
+/**
+ * Characters a Twee passage name cannot survive.
+ *
+ * `[`, `]`, `|`, `->` and `<-` are the LINK delimiters — a name
+ * carrying one of them corrupts `[[Text|Target]]` on emit, which is
+ * why the parser rejects them at import too.
+ *
+ * `{` and `}` are the HEADER metadata delimiters, and they are worse:
+ * `emitTwee` writes `:: Cave {2}`, and `parsePassageHeader` truncates
+ * `rest` at the trailing brace group WHETHER OR NOT the JSON parses
+ * (twee-parser.ts — the `JSON.parse` failure is swallowed and the
+ * slice happens anyway). So `Cave {2}` comes back from a round-trip
+ * as `Cave`, taking every link to it with it. Nothing warns.
+ *
+ * Exported so the rename endpoint applies the same rule — two copies
+ * of this list would drift, and a name rejected at creation must not
+ * be reachable by renaming into it.
+ */
+export const TWEE_UNSAFE_NAME_RE = /[[\]|{}]|->|<-/;
+
+/** Human-readable form of TWEE_UNSAFE_NAME_RE, for error messages. */
+export const TWEE_UNSAFE_NAME_DESCRIPTION = '`[`, `]`, `|`, `{`, `}`, `->`, or `<-`';
 
 /** Control characters: legal in JSONB, corrupting in both emitters. */
 // eslint-disable-next-line no-control-regex
@@ -258,10 +278,9 @@ export function parseNewNodeId(
   }
 
   if (sourceLanguage === 'twee') {
-    if (TWEE_UNSAFE_RE.test(nodeId)) {
+    if (TWEE_UNSAFE_NAME_RE.test(nodeId)) {
       return {
-        error:
-          'nodeId contains a character that is unsafe for Twee (`[`, `]`, `|`, `->`, or `<-`). Choose a different name.',
+        error: `nodeId contains a character that is unsafe for Twee (${TWEE_UNSAFE_NAME_DESCRIPTION}). Choose a different name.`,
       };
     }
     if (TWEE_RESERVED_NAMES.has(nodeId)) {

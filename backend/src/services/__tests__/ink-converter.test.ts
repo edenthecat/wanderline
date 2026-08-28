@@ -171,4 +171,84 @@ describe('convertStoryGraphToInk', () => {
     const ch2Pos = result.indexOf('=== chapter2 ===');
     expect(ch2Pos).toBeLessThan(ch1Pos);
   });
+
+  // Ink runs stitches in the order they appear: one that ends without
+  // a divert falls through to the next sibling. Emitting them
+  // alphabetically would rewrite the story on the next import — and
+  // silently discard where an author placed a newly created passage.
+  it('emits stitches in story order, not alphabetical order', () => {
+    const result = convertStoryGraphToInk({
+      id: 'test',
+      title: 'Test',
+      startNode: 'chapter1',
+      nodes: {
+        chapter1: {
+          id: 'chapter1',
+          type: 'knot',
+          content: [],
+          choices: [],
+          divert: null,
+          tags: [],
+          lineNumber: 1,
+        },
+        'chapter1.alpha': {
+          id: 'chapter1.alpha',
+          type: 'stitch',
+          content: [{ text: 'A', tags: [] }],
+          choices: [],
+          divert: null,
+          tags: [],
+          lineNumber: 2,
+        },
+        'chapter1.zulu': {
+          id: 'chapter1.zulu',
+          type: 'stitch',
+          content: [{ text: 'Z', tags: [] }],
+          choices: [],
+          divert: null,
+          tags: [],
+          lineNumber: 3,
+        },
+        'chapter1.beta': {
+          id: 'chapter1.beta',
+          type: 'stitch',
+          content: [{ text: 'B', tags: [] }],
+          choices: [],
+          divert: null,
+          tags: [],
+          lineNumber: 4,
+        },
+      },
+    });
+
+    expect(result.indexOf('= alpha')).toBeLessThan(result.indexOf('= zulu'));
+    expect(result.indexOf('= zulu')).toBeLessThan(result.indexOf('= beta'));
+  });
+
+  // Knots too — a chapter placed after another has to come out after
+  // it, whatever the two are called.
+  it('emits knots in story order after the start knot', () => {
+    const knot = (id: string, lineNumber: number) => ({
+      id,
+      type: 'knot' as const,
+      content: [],
+      choices: [],
+      divert: null,
+      tags: [],
+      lineNumber,
+    });
+    const result = convertStoryGraphToInk({
+      id: 'test',
+      title: 'Test',
+      startNode: 'intro',
+      nodes: {
+        intro: knot('intro', 1),
+        zulu: knot('zulu', 2),
+        alpha: knot('alpha', 3),
+      },
+    });
+
+    expect(result.indexOf('=== intro ===')).toBeLessThan(result.indexOf('=== zulu ==='));
+    expect(result.indexOf('=== zulu ===')).toBeLessThan(result.indexOf('=== alpha ==='));
+  });
 });

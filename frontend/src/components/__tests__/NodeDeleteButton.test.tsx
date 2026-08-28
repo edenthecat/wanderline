@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import NodeDeleteButton from '../NodeDeleteButton';
+import { ApiError } from '../../api/client';
 
 // Deleting a passage other passages link to is the case that matters:
 // the author has to say where those links go, and the answer travels
@@ -76,7 +77,10 @@ describe('NodeDeleteButton', () => {
     const onDelete = vi
       .fn()
       .mockRejectedValueOnce(
-        new Error('Can’t delete "kitchen" — 1 other passage still points at it: hall.'),
+        new ApiError(409, 'Can’t delete "kitchen" — 1 other passage still points at it: hall.', {
+          error: 'Can’t delete "kitchen" — 1 other passage still points at it: hall.',
+          referrers: [{ from: 'hall', via: 'divert', target: 'kitchen' }],
+        }),
       )
       .mockResolvedValueOnce(undefined);
     render(
@@ -95,6 +99,35 @@ describe('NodeDeleteButton', () => {
     fireEvent.change(select, { target: { value: 'hall' } });
     fireEvent.click(screen.getByText('Delete'));
     await waitFor(() => expect(onDelete).toHaveBeenLastCalledWith('kitchen', 'hall'));
+  });
+
+  it('does not offer a replacement for a 409 no replacement can answer', async () => {
+    // The start-passage refusal is also a 409, and its wording ("Point
+    // the story at a different passage…") reads like the referrer one.
+    // Offering the select there strands the author: every retry gets
+    // the same refusal.
+    const onDelete = vi
+      .fn()
+      .mockRejectedValue(
+        new ApiError(
+          409,
+          '"intro" is the story\'s start passage. Point the story at a different passage before deleting it.',
+          { error: 'start passage' },
+        ),
+      );
+    render(
+      <NodeDeleteButton
+        nodeId="intro"
+        doomedIds={['intro']}
+        referrers={[]}
+        allNodeIds={['hall', 'intro']}
+        onDelete={onDelete}
+      />,
+    );
+    open('Delete intro');
+    fireEvent.click(screen.getByText('Delete'));
+    await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
+    expect(screen.queryByLabelText('Replacement target')).toBeNull();
   });
 
   it('refuses up front for the start passage instead of offering a dead end', () => {

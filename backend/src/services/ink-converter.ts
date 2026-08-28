@@ -15,6 +15,10 @@ interface InkStoryGraph {
       choices: { text: string; target: string }[];
       divert: string | null;
       tags: string[];
+      /** Position in the story. Optional because older graphs and
+       * hand-built test fixtures omit it; see the ordering comment on
+       * `byStoryOrder` below. */
+      lineNumber?: number;
     }
   >;
   startNode: string;
@@ -168,11 +172,30 @@ export function convertStoryGraphToInk(storyGraph: InkStoryGraph): string {
     }
   }
 
-  // Sort knots, putting start node first
+  // Emission order follows the story, not the alphabet.
+  //
+  // Ink's implicit fall-through means the order stitches are WRITTEN
+  // IN is the order they run in: a stitch that ends without a divert
+  // continues into the next sibling (the rule
+  // player-app/src/fall-through.ts implements against `lineNumber`).
+  // Sorting by name instead would re-emit `= alpha / = zulu / = beta`
+  // as `alpha, beta, zulu` — a different story on the next import, and
+  // exactly what a hand-placed new passage would lose.
+  //
+  // localeCompare stays as the tie-break, for graphs whose nodes all
+  // carry the same lineNumber (compiled-Ink-JSON uploads set every
+  // node to 0) — there is no order to preserve there, so a stable
+  // deterministic one keeps the emit-cached column diff-friendly.
+  const lineOf = (nodeId: string) => nodes[nodeId]?.lineNumber ?? 0;
+  const byStoryOrder = (a: string, b: string) => lineOf(a) - lineOf(b) || a.localeCompare(b);
+
+  // Start node first regardless: Ink enters a story at the first knot
+  // in the file, so this is what makes the export start where the
+  // graph says it does.
   topLevelKnots.sort((a, b) => {
     if (a === storyGraph.startNode) return -1;
     if (b === storyGraph.startNode) return 1;
-    return a.localeCompare(b);
+    return byStoryOrder(a, b);
   });
 
   // Process knots and their stitches
@@ -181,14 +204,14 @@ export function convertStoryGraphToInk(storyGraph: InkStoryGraph): string {
 
     // Process stitches within this knot
     const stitches = knots[knotId] || [];
-    stitches.sort((a, b) => a.localeCompare(b));
+    stitches.sort(byStoryOrder);
     for (const stitchId of stitches) {
       processNode(stitchId, knotId);
     }
   }
 
   // Process any remaining nodes (gathers, etc.)
-  for (const nodeId of Object.keys(nodes)) {
+  for (const nodeId of Object.keys(nodes).sort(byStoryOrder)) {
     if (!processedNodes.has(nodeId)) {
       processNode(nodeId, null);
     }

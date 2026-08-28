@@ -44,7 +44,7 @@ export async function requestWithHeaders<T>(
 
   if (!res.ok) {
     const errorBody = await res.json().catch(() => ({ error: res.statusText }));
-    throw new ApiError(res.status, errorBody.error || res.statusText);
+    throw new ApiError(res.status, errorBody.error || res.statusText, errorBody);
   }
 
   const data = (await res.json()) as T;
@@ -53,9 +53,19 @@ export async function requestWithHeaders<T>(
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /**
+   * The whole parsed error body, not just its `error` string. Some
+   * endpoints answer a refusal with structured context the UI has to
+   * act on rather than merely display — DELETE /story/node returns the
+   * `referrers` that block a delete, which is what tells the delete
+   * dialog to offer a replacement target. Undefined when the response
+   * body wasn't JSON.
+   */
+  details?: unknown;
+  constructor(status: number, message: string, details?: unknown) {
     super(message);
     this.status = status;
+    this.details = details;
     this.name = 'ApiError';
   }
 }

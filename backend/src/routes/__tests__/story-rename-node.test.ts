@@ -317,6 +317,24 @@ describe('PATCH /:id/story/node/rename', () => {
     expect(res.body.error).toMatch(/Twee/);
   });
 
+  it('rejects a Twee name carrying the header metadata braces', async () => {
+    // `:: Cave {2}` re-parses as `Cave`: parsePassageHeader truncates
+    // the trailing brace group whether or not it is valid JSON. The
+    // rename would have looked like it worked and quietly broken every
+    // link to the passage on the next round-trip.
+    const storyGraph = graph('Home', { Home: { choices: [], divert: null, parent: null } });
+    const { pool } = makePool([
+      { match: 'BEGIN' },
+      { match: 'SELECT story_graph', rows: [{ story_graph: storyGraph, source_language: 'twee' }] },
+      { match: 'ROLLBACK' },
+    ]);
+    const res = await request(makeApp(pool))
+      .patch(`/api/projects/${projectId}/story/node/rename`)
+      .send({ oldId: 'Home', newId: 'Cave {2}' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Twee/);
+  });
+
   it('is prototype-safe on the old id (nodeId="toString" resolves to 404, not a crash)', async () => {
     const storyGraph = graph('Home', { Home: { choices: [], divert: null, parent: null } });
     const { pool } = makePool([

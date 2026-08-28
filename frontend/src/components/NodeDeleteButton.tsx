@@ -1,4 +1,22 @@
 import { useMemo, useState } from 'react';
+import { ApiError } from '../api/client';
+
+/**
+ * Did the server refuse because links still point at this passage, as
+ * opposed to any other 409?
+ *
+ * Keyed on the structured `referrers` array the delete route returns,
+ * not on the message text. The start-passage refusal is also a 409 and
+ * its wording ("Point the story at a different passage…") matches any
+ * reasonable substring guess — but no replacement target can unblock
+ * it, so offering the control there strands the author in a dialog
+ * that answers a question the server didn't ask.
+ */
+function isRepointableRefusal(err: unknown): boolean {
+  if (!(err instanceof ApiError) || err.status !== 409) return false;
+  const details = err.details as { referrers?: unknown } | null | undefined;
+  return Array.isArray(details?.referrers) && details.referrers.length > 0;
+}
 
 interface Props {
   /** Full node id (e.g. `foo` for a knot, `foo.bar` for a stitch). */
@@ -84,7 +102,7 @@ export default function NodeDeleteButton({
       setError(message);
       // The server found referrers we didn't — reveal the control so
       // the retry can answer the question it asked.
-      if (/point/i.test(message)) setRepointForced(true);
+      if (isRepointableRefusal(err)) setRepointForced(true);
       setSaving(false);
     }
   }
