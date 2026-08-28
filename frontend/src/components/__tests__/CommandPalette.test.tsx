@@ -105,6 +105,29 @@ describe('CommandPalette', () => {
     expect(activeOption()).toHaveTextContent('harbour_night');
   });
 
+  it('keeps the arrow keys working after the list shrinks underneath it', () => {
+    // A collaborator's save refetches the story while the palette is
+    // open: the list gets shorter with no keystroke from this author.
+    const three = ['a', 'b', 'c'];
+    const provider = (ids: string[]) => () =>
+      ids.map((id, i) => ({ id, group: 'Passages', label: id, rank: i, run: vi.fn() }));
+    const { rerender } = renderPalette({ providers: [provider(three)] });
+    fireEvent.keyDown(input(), { key: 'End' });
+    expect(activeOption()).toHaveTextContent('c');
+    rerender(
+      <CommandPalette
+        open
+        onClose={vi.fn()}
+        storyGraph={STORY}
+        actions={{ jumpToNode: vi.fn() }}
+        providers={[provider(['a', 'b'])]}
+      />,
+    );
+    expect(activeOption()).toHaveTextContent('b');
+    fireEvent.keyDown(input(), { key: 'ArrowUp' });
+    expect(activeOption()).toHaveTextContent('a');
+  });
+
   it('runs the highlighted command on Enter and closes', () => {
     const { jumpToNode, onClose } = renderPalette();
     fireEvent.keyDown(input(), { key: 'ArrowDown' });
@@ -117,6 +140,24 @@ describe('CommandPalette', () => {
     const { jumpToNode } = renderPalette();
     fireEvent.mouseDown(options()[1]);
     expect(jumpToNode).toHaveBeenCalledWith('harbour');
+  });
+
+  it('keeps focus in the input when its own chrome is clicked', () => {
+    // Otherwise the click blurs to <body>, and the arrow keys and the
+    // Tab trap both stop working with the modal still on screen.
+    renderPalette();
+    expect(fireEvent.mouseDown(screen.getByTestId('command-palette'))).toBe(false);
+    expect(fireEvent.mouseDown(options()[1])).toBe(false);
+    // ...but the input itself still gets its caret.
+    expect(fireEvent.mouseDown(input())).toBe(true);
+  });
+
+  it('leaves Enter and Escape to the IME while a candidate is composing', () => {
+    const { jumpToNode, onClose } = renderPalette();
+    fireEvent.keyDown(input(), { key: 'Enter', isComposing: true });
+    fireEvent.keyDown(input(), { key: 'Escape', isComposing: true });
+    expect(jumpToNode).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('closes on Escape', () => {

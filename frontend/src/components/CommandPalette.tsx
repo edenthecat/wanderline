@@ -23,6 +23,7 @@ import type { StoryGraph } from '../api/client';
 import {
   buildCommands,
   DEFAULT_PROVIDERS,
+  type CommandBuildResult,
   type CommandProvider,
   type PaletteActions,
   type PaletteCommand,
@@ -37,6 +38,8 @@ interface Props {
   /** Override point for tests and for future per-page command sets. */
   providers?: readonly CommandProvider[];
 }
+
+const EMPTY_RESULT: CommandBuildResult = { commands: [], totalCount: 0, truncated: false };
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -72,9 +75,11 @@ export default function CommandPalette({
     }
   }
 
+  // Nothing to build while it's shut — this memo would otherwise
+  // re-run on every storyGraph refetch behind a closed palette.
   const { commands, totalCount, truncated } = useMemo(
-    () => buildCommands({ query, storyGraph, actions }, providers),
-    [query, storyGraph, actions, providers],
+    () => (open ? buildCommands({ query, storyGraph, actions }, providers) : EMPTY_RESULT),
+    [open, query, storyGraph, actions, providers],
   );
 
   // Commands arrive grouped and contiguous from buildCommands, so a
@@ -123,6 +128,11 @@ export default function CommandPalette({
 
   const handleKeyDown = useCallback(
     (e: ReactKeyboardEvent<HTMLDivElement>) => {
+      // Mid-IME-composition, Enter and Escape belong to the input
+      // method (commit / cancel the candidate), not to us. Without
+      // this, confirming a Japanese or Chinese passage name would run
+      // whatever command happened to be highlighted.
+      if (e.nativeEvent.isComposing) return;
       if (e.key === 'Escape') {
         e.preventDefault();
         onClose();
@@ -151,12 +161,16 @@ export default function CommandPalette({
         return;
       }
       if (commands.length === 0) return;
+      // Step from activeIndex, not from the raw highlight state: the
+      // list can shrink under us (a collaborator's save refetches the
+      // graph) without the query changing, and stepping from a
+      // now-out-of-range state would leave ArrowUp looking frozen.
       if (e.key === 'ArrowDown') {
         e.preventDefault();
-        setHighlight((h) => (h + 1 >= commands.length ? 0 : h + 1));
+        setHighlight(activeIndex + 1 >= commands.length ? 0 : activeIndex + 1);
       } else if (e.key === 'ArrowUp') {
         e.preventDefault();
-        setHighlight((h) => (h <= 0 ? commands.length - 1 : h - 1));
+        setHighlight(activeIndex <= 0 ? commands.length - 1 : activeIndex - 1);
       } else if (e.key === 'Home') {
         e.preventDefault();
         setHighlight(0);
@@ -168,7 +182,7 @@ export default function CommandPalette({
         if (activeCommand) runCommand(activeCommand);
       }
     },
-    [activeCommand, commands.length, onClose, runCommand],
+    [activeCommand, activeIndex, commands.length, onClose, runCommand],
   );
 
   // Keep the highlighted row visible as the arrow keys walk past the
@@ -200,6 +214,14 @@ export default function CommandPalette({
         aria-label="Command palette"
         data-testid="command-palette"
         onKeyDown={handleKeyDown}
+        onMouseDown={(e) => {
+          // Clicking the palette's own chrome — padding, a group
+          // heading, a result row — would blur the input to <body>,
+          // which silently kills the arrow keys and lets the next Tab
+          // walk into the page behind the modal. Keep focus in the
+          // input for every mousedown that isn't aimed at it.
+          if (e.target !== inputRef.current) e.preventDefault();
+        }}
       >
         <input
           ref={inputRef}
@@ -262,12 +284,7 @@ export default function CommandPalette({
                     aria-selected={isActive}
                     className={`command-palette-option${isActive ? ' is-active' : ''}`}
                     onMouseMove={() => setHighlight(index)}
-                    onMouseDown={(e) => {
-                      // Keep focus in the input so the close handler
-                      // restores to the real invoker, not this row.
-                      e.preventDefault();
-                      runCommand(command);
-                    }}
+                    onMouseDown={() => runCommand(command)}
                   >
                     <span className="command-palette-option-label">{command.label}</span>
                     {command.hint && (

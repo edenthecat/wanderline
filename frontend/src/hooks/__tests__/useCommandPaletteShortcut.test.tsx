@@ -48,10 +48,15 @@ describe('isCommandPaletteChord', () => {
     expect(isCommandPaletteChord(chord({ metaKey: true }), false)).toBe(false);
   });
 
-  it('accepts a shifted K (caps lock, or a stray Shift)', () => {
+  it('accepts a capital K without Shift (caps lock)', () => {
+    expect(isCommandPaletteChord(chord({ key: 'K', metaKey: true }), true)).toBe(true);
+  });
+
+  it('rejects Shift-Mod-K, which CodeMirror binds to deleteLine', () => {
     expect(isCommandPaletteChord(chord({ key: 'K', metaKey: true, shiftKey: true }), true)).toBe(
-      true,
+      false,
     );
+    expect(isCommandPaletteChord(chord({ ctrlKey: true, shiftKey: true }), false)).toBe(false);
   });
 
   it('rejects a bare k so typing still works', () => {

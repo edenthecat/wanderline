@@ -5,7 +5,8 @@
 // ReactFlow canvas, every text input), and the shortcut has to work
 // from all of them.
 //
-// The chord is platform-gated rather than "either modifier". On macOS
+// The chord is exactly one modifier — the platform's own — plus K.
+// On macOS
 // Ctrl-K is emacs' kill-to-end-of-line, which CodeMirror's
 // defaultKeymap installs for real (via emacsStyleKeymap) in both
 // source editors — accepting it here would open the palette AND eat
@@ -24,9 +25,14 @@ export function isApplePlatform(): boolean {
 
 export function isCommandPaletteChord(e: KeyboardEvent, apple = isApplePlatform()): boolean {
   // `key` is 'k'/'K' depending on Shift; `code` would also match a
-  // Dvorak user's physical K, which is not what they'd expect.
+  // Dvorak user's physical K, which is not what they'd expect. Caps
+  // Lock reports 'K' with shiftKey false, so accepting both letters
+  // costs us nothing here.
   if (e.key !== 'k' && e.key !== 'K') return false;
-  if (e.altKey) return false;
+  // Shift-Mod-K is CodeMirror's deleteLine (defaultKeymap, installed
+  // in both source editors) and Firefox's Web Console. Exactly the
+  // modifier we want, and nothing else.
+  if (e.altKey || e.shiftKey) return false;
   // One modifier, the platform's own — never both.
   return apple ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
 }

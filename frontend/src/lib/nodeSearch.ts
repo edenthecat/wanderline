@@ -65,9 +65,23 @@ export function matchRank(node: SearchableNode, normalizedQuery: string): number
   return 3;
 }
 
-/** First ~N characters of a node's content, for a one-line preview. */
+/**
+ * First ~N characters of a node's content, for a one-line preview.
+ * Stops reading content lines as soon as it has enough of them — the
+ * palette asks for this once per matching passage on every keystroke,
+ * and a long knot's later lines can never reach the excerpt.
+ */
 export function nodeExcerpt(node: SearchableNode, maxLength = 120): string {
-  const text = nodeContentText(node).replace(/\s+/g, ' ').trim();
-  if (text.length <= maxLength) return text;
-  return `${text.slice(0, maxLength).trimEnd()}…`;
+  let text = '';
+  for (const line of node.content ?? []) {
+    text = text ? `${text} ${line.text}` : line.text;
+    if (collapse(text).length >= maxLength) break;
+  }
+  const collapsed = collapse(text);
+  if (collapsed.length <= maxLength) return collapsed;
+  return `${collapsed.slice(0, maxLength).trimEnd()}…`;
+}
+
+function collapse(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
 }
