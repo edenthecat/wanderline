@@ -552,6 +552,36 @@ describe('live-region registration', () => {
     );
   });
 
+  it('re-registers the region after a trip through the Help screen', async () => {
+    // Help puts the instructions screen back up, which unmounts <main>
+    // and the live region with it. A flag that latched on first sight of
+    // the story screen left the region re-inserted already populated on
+    // the way back, so the passage returned to was silent.
+    await renderStory();
+    await screen.findByText('Welcome to the story.');
+
+    fireEvent.click(screen.getByLabelText('Help and instructions'));
+    const startAgain = await screen.findByLabelText('Start the story');
+
+    const records: MutationRecord[] = [];
+    const observer = new MutationObserver((rs) => records.push(...rs));
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+
+    fireEvent.click(startAgain);
+    const narration = await screen.findByRole('region', { name: 'Story narration' });
+    await waitFor(() => expect(narration).toHaveTextContent('Welcome to the story.'));
+
+    records.push(...observer.takeRecords());
+    observer.disconnect();
+
+    const announcedIntoRegisteredRegion = records.some(
+      (r) =>
+        r.target === narration &&
+        Array.from(r.addedNodes).some((n) => /Welcome to the story/.test(n.textContent ?? '')),
+    );
+    expect(announcedIntoRegisteredRegion).toBe(true);
+  });
+
   it('mounts the caption card empty and announces into it', async () => {
     // Captions on is the default, and the caption card used to be
     // inserted into the region already carrying the opening passage —
@@ -734,6 +764,64 @@ describe('choices when the author hides the visible list', () => {
     expect(screen.getByRole('navigation', { name: 'Story choices' })).toHaveStyle({
       position: 'absolute',
     });
+  });
+});
+
+describe('focus and the armed choice', () => {
+  it('moves focus with the arrows once the list has focus', async () => {
+    // A <button> does not claim the arrows, so they still reach the
+    // global handler and move `selectedChoice`; Enter, which a button
+    // does claim, activates whatever has focus. Left unsynced, a
+    // listener who tabbed in and arrowed down twice heard "Choice 3 of
+    // 3", saw aria-current on the third button, and activated the first.
+    await renderStory();
+
+    const first = screen.getByLabelText('Choice 1: Go left');
+    first.focus();
+
+    fireEvent.keyDown(first, { key: 'ArrowDown', bubbles: true });
+
+    const second = screen.getByLabelText('Choice 2: Go right');
+    await waitFor(() => expect(document.activeElement).toBe(second));
+    expect(second).toHaveAttribute('aria-current', 'true');
+  });
+
+  it('arms the choice that receives focus', async () => {
+    await renderStory();
+
+    fireEvent.focus(screen.getByLabelText('Choice 3: Stay put'));
+
+    await waitFor(() =>
+      expect(screen.getByLabelText('Choice 3: Stay put')).toHaveAttribute('aria-current', 'true'),
+    );
+    expect(screen.getByLabelText('Choice 1: Go left')).not.toHaveAttribute('aria-current');
+  });
+
+  it('leaves focus alone when the list is cycled from a headphone button', async () => {
+    // Cycling with the screen off must not start moving focus around.
+    await renderStory();
+
+    fireEvent.keyDown(document.body, { key: 'ArrowDown', bubbles: true });
+
+    await waitFor(() =>
+      expect(screen.getByLabelText('Choice 2: Go right')).toHaveAttribute('aria-current', 'true'),
+    );
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it('stands the spoken status down while the list has focus', async () => {
+    // Assistive tech reads the focused button itself, so announcing the
+    // same thing again is just noise.
+    await renderStory();
+    await waitFor(() => expect(choiceStatusRegion()).toHaveTextContent(/3 choices/));
+
+    fireEvent.focus(screen.getByLabelText('Choice 1: Go left'));
+
+    await waitFor(() =>
+      expect(screen.getAllByRole('status').every((r) => !/choice/i.test(r.textContent ?? ''))).toBe(
+        true,
+      ),
+    );
   });
 });
 

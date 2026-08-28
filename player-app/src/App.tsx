@@ -137,10 +137,14 @@ const clearAnnouncement = (prev: Announcement): Announcement =>
  * clip. Reaching for pause while adjusting the volume is exactly what a
  * listener does; everything else belongs to the panel.
  *
- * An allowlist rather than a list of keys to block, because the keys
- * worth blocking are the destructive ones. `r` restarts the story AND
- * clears every save slot — from inside the save-slot UI, with focus on
- * a Load or Rename button, that was one keystroke away.
+ * An allowlist rather than a block-list, because the keys worth
+ * blocking are the ones that throw work away, and they are easy to miss
+ * when enumerating. `r` sends the story back to its start node and
+ * empties the history — from inside the save-slot UI, with focus on a
+ * Load or Rename button, that was one keystroke away. (The `r` handler
+ * resets in place and leaves the slots alone; the header's Restart
+ * button goes further and calls `restart()`, which clears every slot.
+ * Anyone tempted to collapse the two should keep this guard in mind.)
  */
 const SHORTCUTS_ALLOWED_IN_SETTINGS = new Set<string>([' ', 'Escape', 's', 'S']);
 
@@ -300,9 +304,12 @@ export default function App() {
   const [audioDuration, setAudioDuration] = useState(0);
   const [history, setHistory] = useState<string[]>([]);
   const [captionsEnabled, setCaptionsEnabled] = useState(true);
-  // Whether the author's hidden choice list is currently revealed
-  // because something inside it has keyboard focus.
-  const [choiceListFocused, setChoiceListFocused] = useState(false);
+  // Whether keyboard focus is inside the choice list. Drives two
+  // things: revealing an author-hidden list, and standing the spoken
+  // choice status down, since assistive tech already reads the focused
+  // button and would otherwise say it twice.
+  const [choiceNavFocused, setChoiceNavFocused] = useState(false);
+  const choiceNavRef = useRef<HTMLElement | null>(null);
   const [audioError, setAudioError] = useState<string | null>(null);
   const [audioStalled, setAudioStalled] = useState(false);
   const [retryingAudio, setRetryingAudio] = useState(false);
@@ -1866,11 +1873,15 @@ export default function App() {
   // pushes or pops history, so the pair always changes.
   const passageKey = `${currentNode?.id ?? ''}:${history.length}`;
 
-  // Held false for the story screen's first commit so the live region
-  // below is registered before it ever has content.
+  // False for the story screen's first commit so the live region below
+  // is registered before it ever has content. Tracks `storyScreenVisible`
+  // rather than latching: the Help button puts the instructions screen
+  // back up, which unmounts <main> and the region with it, and a latched
+  // flag would have re-inserted the region already populated on the way
+  // back — silent again, exactly what it exists to prevent.
   const [narrationRegistered, setNarrationRegistered] = useState(false);
   useEffect(() => {
-    if (storyScreenVisible) setNarrationRegistered(true);
+    setNarrationRegistered(storyScreenVisible);
   }, [storyScreenVisible]);
 
   // React's onBlur is focusout, which browsers do not fire when the
@@ -1879,8 +1890,22 @@ export default function App() {
   // choice list, once revealed, stayed on screen for the rest of the
   // session.
   useEffect(() => {
-    setChoiceListFocused(false);
+    setChoiceNavFocused(false);
   }, [currentNode, history]);
+
+  // Focus and the armed choice have to agree. The arrows move
+  // `selectedChoice` — a <button> does not claim them — while Enter goes
+  // to whatever has focus, so a listener who tabbed into the list and
+  // arrowed down twice heard "Choice 3 of 3", saw aria-current on the
+  // third button, and then activated the first. Only engages when focus
+  // is already inside the list: cycling from a headphone button with the
+  // screen off must not start moving focus around.
+  useEffect(() => {
+    const nav = choiceNavRef.current;
+    if (!nav || !nav.contains(document.activeElement)) return;
+    const target = nav.querySelectorAll('button')[selectedChoice];
+    if (target && target !== document.activeElement) target.focus();
+  }, [selectedChoice, currentNode]);
 
   // What the choice status region says. Cycling choices with a
   // headphone button — the product's signature interaction, phone in a
@@ -1896,7 +1921,7 @@ export default function App() {
   } | null>(null);
   useEffect(() => {
     const choices = currentNode?.choices ?? [];
-    if (!storyScreenVisible || !currentNode || choices.length === 0) {
+    if (!storyScreenVisible || !currentNode || choices.length === 0 || choiceNavFocused) {
       lastChoiceAnnouncedRef.current = null;
       setChoiceAnnouncement(clearAnnouncement);
       return;
@@ -1942,7 +1967,7 @@ export default function App() {
         speak(`Choice ${selectedChoice + 1} of ${choices.length}: ${armed.text}`),
       );
     }
-  }, [storyScreenVisible, currentNode, selectedChoice, history]);
+  }, [storyScreenVisible, choiceNavFocused, currentNode, selectedChoice, history]);
 
   if (playerState === 'error' || !story) {
     return (
@@ -2236,11 +2261,12 @@ export default function App() {
       </a>
       <header style={styles.header} role="banner" data-theme-component="header">
         <div style={styles.headerRow}>
+          {/* No stopPropagation on the header controls or the settings
+              panel: tap-to-play lives on <main> now, so nothing above it
+              has a click to swallow. The calls that remain inside <main>
+              are load-bearing. */}
           <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setCaptionsEnabled(!captionsEnabled);
-            }}
+            onClick={() => setCaptionsEnabled(!captionsEnabled)}
             style={{ ...styles.headerBtn, ...(captionsEnabled ? styles.headerBtnActive : {}) }}
             aria-pressed={captionsEnabled}
             aria-label={
@@ -2256,10 +2282,7 @@ export default function App() {
             {/* aria-controls only while the panel exists: an IDREF
                 pointing at an absent id is invalid, and axe flags it. */}
             <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setShowSettings(!showSettings);
-              }}
+              onClick={() => setShowSettings(!showSettings)}
               style={{ ...styles.headerBtn, ...(showSettings ? styles.headerBtnActive : {}) }}
               aria-pressed={showSettings}
               aria-expanded={showSettings}
@@ -2269,8 +2292,7 @@ export default function App() {
               <Settings width={18} height={18} />
             </button>
             <button
-              onClick={(e) => {
-                e.stopPropagation();
+              onClick={() => {
                 if (audioRef.current) {
                   audioRef.current.pause();
                   audioRef.current = null;
@@ -2283,10 +2305,7 @@ export default function App() {
               <ChatBubble width={18} height={18} />
             </button>
             <button
-              onClick={(e) => {
-                e.stopPropagation();
-                restart();
-              }}
+              onClick={() => restart()}
               style={styles.headerBtn}
               aria-label="Restart story from beginning"
             >
@@ -2311,7 +2330,6 @@ export default function App() {
           id={SETTINGS_PANEL_ID}
           style={styles.settingsPanel}
           data-theme-component="settingsPanel"
-          onClick={(e) => e.stopPropagation()}
           role="group"
           aria-labelledby="settings-title"
         >
@@ -2660,14 +2678,15 @@ export default function App() {
             keyboard user can see where they are. */}
         {currentNode.choices.length > 0 && (
           <nav
-            style={choiceListHidden && !choiceListFocused ? styles.srOnly : styles.choices}
+            ref={choiceNavRef}
+            style={choiceListHidden && !choiceNavFocused ? styles.srOnly : styles.choices}
             role="navigation"
             aria-label="Story choices"
             data-theme-component="choiceButton"
-            onFocus={() => choiceListHidden && setChoiceListFocused(true)}
+            onFocus={() => setChoiceNavFocused(true)}
             onBlur={(e) => {
               if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
-                setChoiceListFocused(false);
+                setChoiceNavFocused(false);
               }
             }}
           >
@@ -2687,6 +2706,7 @@ export default function App() {
                   e.currentTarget.blur();
                   navigateToTarget(c.target);
                 }}
+                onFocus={() => setSelectedChoice(i)}
                 style={{ ...styles.choice, ...(i === selectedChoice ? styles.choiceSelected : {}) }}
                 aria-label={'Choice ' + (i + 1) + ': ' + c.text}
                 aria-current={i === selectedChoice ? 'true' : undefined}
