@@ -249,9 +249,14 @@ export default function PreviewTab({
         Keyboard: <kbd>Space</kbd> play/pause · <kbd>↑</kbd>/<kbd>↓</kbd> choose · <kbd>Enter</kbd>{' '}
         select · <kbd>Backspace</kbd> back · <kbd>R</kbd> restart · <kbd>Esc</kbd> dismiss errors
       </p>
+      {/* A statement about what this preview OPENS on — which stays
+          true however the player is driven afterwards. It deliberately
+          doesn't claim where playback is right now: the player has its
+          own Restart and R key that jump to the story's start inside
+          the frame, and the editor gets no say in that. */}
       {pinnedNodeId && (
         <p className="text-sm preview-start-pin" role="status">
-          Starting from <code>{pinnedNodeId}</code>
+          This preview opens at <code>{pinnedNodeId}</code>
         </p>
       )}
       <div className="preview-frame-wrap">

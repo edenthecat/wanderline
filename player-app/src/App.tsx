@@ -18,6 +18,7 @@ import {
   AUTOSAVE_SLOT_ID,
   clearAllSlots,
   defaultManualSlotName,
+  hasStoredSlots,
   newSlotId,
   readSlotsWithMigration,
   removeSlot,
@@ -342,16 +343,23 @@ export function readSessionParams(): { start: string | null; fresh: boolean } {
  *     next plain preview opening mid-story.
  *   - Any review session that finds saves already here leaves them
  *     alone: neither recording over that listener's position nor wiping
- *     their slots is ours to do.
+ *     their slots is ours to do — including slots this build can no
+ *     longer use, which are still someone's data on disk.
  *   - A `?fresh=1` run on a device with no saves records normally.
  *     It starts at the beginning and plays forward — that IS a listen,
  *     and refusing to record it protects nothing.
  */
 export function resolveSessionStart(
   story: { startNode: string; nodes: Record<string, unknown> },
-  /** Every slot already on this device for this story, autosave included. */
+  /** The usable slots on this device for this story, autosave included. */
   savedSlots: { id: string; nodeId: string; history: string[] }[],
   params: { start: string | null; fresh: boolean },
+  /** Whether this device holds any stored save data at all, including
+   * slots the current graph can no longer use. Those are filtered out
+   * of `savedSlots` in memory but stay on disk, and Restart would still
+   * erase them — so "is there anything here to protect?" has to ask
+   * storage. Defaults to what `savedSlots` shows. */
+  hasStoredSaves: boolean = savedSlots.length > 0,
 ): {
   nodeId: string;
   history: string[];
@@ -368,7 +376,7 @@ export function resolveSessionStart(
   // closest thing to one.
   const resolved = requested ? resolveNodeReference(requested, story.nodes, story.startNode) : null;
   const reviewSession = Boolean(requested || params.fresh);
-  const protectSaves = reviewSession && (savedSlots.length > 0 || resolved !== null);
+  const protectSaves = reviewSession && (hasStoredSaves || resolved !== null);
   if (resolved) {
     // No history: we jumped in rather than walked here, so there is no
     // route back. An empty history is honest about that — Back does
@@ -593,7 +601,12 @@ export default function App() {
         // Every slot stays listed on the instructions screen either
         // way, so resuming is one click away even from a review
         // session.
-        const session = resolveSessionStart(data, loadedSlots, readSessionParams());
+        const session = resolveSessionStart(
+          data,
+          loadedSlots,
+          readSessionParams(),
+          hasStoredSlots(data.id),
+        );
         // Set BEFORE anything can navigate: it gates every autosave
         // write for the rest of the run.
         protectSavesRef.current = session.protectSaves;

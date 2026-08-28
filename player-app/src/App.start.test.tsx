@@ -443,6 +443,19 @@ describe('a review session leaves no trace', () => {
     expect(readAutosave()?.nodeId).toBe('tell_you.hallway');
   });
 
+  // readSlotsWithMigration hides slots whose passage the current story
+  // no longer has, but it hides them in memory only — they are still on
+  // disk, and Restart would still erase them. A review session must not
+  // be the thing that does.
+  it('does not wipe stored saves this build cannot use', async () => {
+    writeAutosave('a_passage_that_left', []);
+    openWith('fresh=1');
+    await renderAndStart();
+    await screen.findByText('The beginning.');
+    fireEvent.click(screen.getByLabelText('Restart story from beginning'));
+    expect(readAutosave()?.nodeId).toBe('a_passage_that_left');
+  });
+
   // The pre-existing contract for an ordinary listen: Restart means a
   // clean slate.
   it('still wipes the saves when Restart is pressed in an ordinary listen', async () => {

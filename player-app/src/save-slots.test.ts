@@ -3,6 +3,7 @@ import {
   AUTOSAVE_SLOT_ID,
   clearAllSlots,
   defaultManualSlotName,
+  hasStoredSlots,
   newSlotId,
   readSlotsWithMigration,
   removeSlot,
@@ -159,5 +160,32 @@ describe('save-slots', () => {
     ];
     writeSlots(STORY_ID, start);
     expect(readSlotsWithMigration(STORY_ID, validIds)).toEqual(start);
+  });
+});
+
+// readSlotsWithMigration filters unusable slots out of what it RETURNS
+// but leaves them on disk, so "is there anything here?" and "is there
+// anything usable here?" are different questions — and the one that
+// gates wiping saved state is the first.
+describe('hasStoredSlots', () => {
+  it('is false on a device with nothing stored', () => {
+    expect(hasStoredSlots(STORY_ID)).toBe(false);
+  });
+
+  it('is true once a slot has been written', () => {
+    writeSlots(STORY_ID, [makeSlot()]);
+    expect(hasStoredSlots(STORY_ID)).toBe(true);
+  });
+
+  it('is true for slots the current story can no longer use', () => {
+    writeSlots(STORY_ID, [makeSlot({ nodeId: 'a_passage_that_left' })]);
+    expect(readSlotsWithMigration(STORY_ID, validIds)).toHaveLength(0);
+    expect(hasStoredSlots(STORY_ID)).toBe(true);
+  });
+
+  it('is false again after a clear', () => {
+    writeSlots(STORY_ID, [makeSlot()]);
+    clearAllSlots(STORY_ID);
+    expect(hasStoredSlots(STORY_ID)).toBe(false);
   });
 });

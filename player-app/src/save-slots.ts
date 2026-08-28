@@ -136,6 +136,22 @@ export function readSlotsWithMigration(storyId: string, validNodeIds?: Set<strin
   return capSlots(slots);
 }
 
+/**
+ * Does this device hold ANY saved state for this story?
+ *
+ * Deliberately asks storage rather than the list readSlotsWithMigration
+ * returns. That list drops slots whose passage the current graph no
+ * longer has — in memory only; the entries stay on disk. So a device
+ * whose slots all point at passages removed by a re-upload reads back
+ * as "no saves", while clearAllSlots would still have something to
+ * erase. Anything deciding whether a session may WIPE saved state has
+ * to ask this, not the filtered list.
+ */
+export function hasStoredSlots(storyId: string): boolean {
+  if (parseSlots(safeGet(slotsStorageKey(storyId))).length > 0) return true;
+  return safeGet(legacyStorageKey(storyId)) !== null;
+}
+
 // Persist a slot list to localStorage, enforcing the manual-slot cap
 // before writing. Without this, upsertSlot() lets a session grow the
 // list past MAX_MANUAL_SLOTS — readSlotsWithMigration would trim on
