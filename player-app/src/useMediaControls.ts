@@ -1,4 +1,5 @@
 import { fallThroughTarget } from './fall-through';
+import { isFromTextEntry } from './keyboard-target';
 // extract MediaSession + keydown fallback from App.tsx.
 //
 // The bundle we lift here:
@@ -399,6 +400,13 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
       // toggling pause. Drop repeats — a deliberate press always
       // sends `repeat=false` for the first event.
       if (e.repeat) return;
+      // Stand down for keystrokes typed into a field. Deliberately
+      // narrower than the App-level shortcut guard: this handler only
+      // claims Media* keys, which no button or link consumes for
+      // activation, so bailing on any focused interactive element would
+      // silently kill headphone control the moment a listener tapped
+      // the on-screen Play button and left focus sitting on it.
+      if (isFromTextEntry(e)) return;
       const isPlayPause = MEDIA_KEYS_PLAY_PAUSE.has(e.key);
       const isNext = MEDIA_KEYS_NEXT.has(e.key);
       const isPrev = MEDIA_KEYS_PREVIOUS.has(e.key);

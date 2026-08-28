@@ -106,6 +106,7 @@ type PlayerState = 'loading' | 'ready' | 'playing' | 'paused' | 'ended' | 'error
 type PreloadState = 'idle' | 'loading' | 'complete' | 'error';
 
 import { fallThroughTarget } from './fall-through';
+import { isFromInteractiveElement } from './keyboard-target';
 export { fallThroughTarget };
 
 const STORAGE_PREFIX = 'wanderline_';
@@ -1668,6 +1669,14 @@ export default function App() {
     const handleKey = (e: KeyboardEvent) => {
       // Ignore keyboard shortcuts while instructions or password screen is visible
       if (showInstructions || !isAuthenticated) return;
+      // A keystroke aimed at a real control belongs to that control.
+      // This listener is on `window` and calls preventDefault() for
+      // Space / Enter / arrows / Backspace, which is exactly the set a
+      // button, checkbox or slider needs to receive: without this bail,
+      // tabbing to Settings and pressing Enter advanced the story
+      // instead of opening the panel, and the auto-advance checkbox
+      // could not be toggled by keyboard at all.
+      if (isFromInteractiveElement(e)) return;
 
       switch (e.key) {
         case ' ':
@@ -1770,6 +1779,51 @@ export default function App() {
     setSelectedChoice,
   });
 
+  // The passage as text, for the screen-reader-only announcement below.
+  // Mirrors the caption card's own precedence: an explicit transcript
+  // wins, otherwise the Ink content lines.
+  const passageText = useMemo(() => {
+    if (!currentNode) return '';
+    const transcript = currentNode.metadata?.transcript?.trim();
+    if (transcript) return transcript;
+    return currentNode.content
+      .map((c) => c.text)
+      .join(' ')
+      .trim();
+  }, [currentNode]);
+
+  // What the choice status region says. Cycling choices with a
+  // headphone button — the product's signature interaction, phone in a
+  // pocket — only moved `aria-current`, which a screen reader reads
+  // solely when focus happens to sit on that button. Nothing announced
+  // which option was armed, and nothing announced the options at all on
+  // arriving at a passage.
+  const [choiceAnnouncement, setChoiceAnnouncement] = useState('');
+  const announcedChoicesForNodeRef = useRef<string | null>(null);
+  useEffect(() => {
+    const choices = currentNode?.choices ?? [];
+    if (!currentNode || choices.length === 0) {
+      announcedChoicesForNodeRef.current = currentNode?.id ?? null;
+      setChoiceAnnouncement('');
+      return;
+    }
+    // Arriving at a new passage: read the whole list once, so the
+    // listener knows what is on offer before cycling through it.
+    if (announcedChoicesForNodeRef.current !== currentNode.id) {
+      announcedChoicesForNodeRef.current = currentNode.id;
+      setChoiceAnnouncement(
+        `${choices.length} choice${choices.length === 1 ? '' : 's'}: ` +
+          choices.map((c, i) => `${i + 1}. ${c.text}`).join(', '),
+      );
+      return;
+    }
+    // Selection moved within the same passage.
+    const armed = choices[selectedChoice];
+    if (armed) {
+      setChoiceAnnouncement(`Choice ${selectedChoice + 1} of ${choices.length}: ${armed.text}`);
+    }
+  }, [currentNode, selectedChoice]);
+
   if (playerState === 'error' || !story) {
     return (
       <div style={styles.container}>
@@ -1799,7 +1853,16 @@ export default function App() {
             <h2 style={styles.passwordTitle}>Enter Password</h2>
             <p style={styles.passwordSubtitle}>This story is password protected</p>
             <form onSubmit={handlePasswordSubmit} style={styles.passwordForm}>
+              {/* A placeholder is not a label: it is dropped as soon as
+                  the field has content and several screen readers never
+                  announce it, so this field used to read as an unnamed
+                  edit box. The label is visually hidden because the card
+                  heading already carries the visible wording. */}
+              <label htmlFor="story-password" style={styles.srOnly}>
+                Password
+              </label>
               <input
+                id="story-password"
                 type="password"
                 value={passwordInput}
                 onChange={(e) => {
@@ -1811,9 +1874,18 @@ export default function App() {
                   ...styles.passwordInput,
                   ...(passwordError ? styles.passwordInputError : {}),
                 }}
+                aria-invalid={passwordError || undefined}
+                aria-describedby={passwordError ? 'story-password-error' : undefined}
                 autoFocus
               />
-              {passwordError && <p style={styles.passwordErrorText}>Incorrect password</p>}
+              {/* role="alert" so a wrong password is spoken. Without it
+                  the only feedback was a red border and a paragraph
+                  nobody was told about. */}
+              {passwordError && (
+                <p id="story-password-error" role="alert" style={styles.passwordErrorText}>
+                  Incorrect password
+                </p>
+              )}
               <button type="submit" style={styles.passwordBtn}>
                 Enter
               </button>
@@ -2013,12 +2085,15 @@ export default function App() {
     currentNode.divert === 'DONE';
 
   return (
-    <div
-      style={styles.container}
-      onClick={() => playerState === 'ready' && !audioError && playVoiceover()}
-      role="application"
-      aria-label={(story?.title || 'Audio Story') + ' - Audio Story'}
-    >
+    // No role="application" here. It suppressed the screen-reader
+    // virtual cursor across the whole page, so a blind listener could
+    // not arrow through the caption text to re-read a passage and lost
+    // heading/landmark quick-nav — on an audio medium whose captions
+    // ARE the transcript, that removed the ability to read the story.
+    // Every control below is a real button or input, so nothing here
+    // needed the application role. The story title is announced by the
+    // <h1> and by the <main> landmark's label.
+    <div style={styles.container}>
       <OfflineControls support={offline} audioUrls={allAudioUrls} />
       <a
         href="#main-content"
@@ -2065,6 +2140,7 @@ export default function App() {
               style={{ ...styles.headerBtn, ...(showSettings ? styles.headerBtnActive : {}) }}
               aria-pressed={showSettings}
               aria-expanded={showSettings}
+              aria-controls="settings-panel"
               aria-label="Settings"
             >
               <Settings width={18} height={18} />
@@ -2097,14 +2173,24 @@ export default function App() {
         </div>
       </header>
 
+      {/* A disclosure, not a dialog. It claimed role="dialog" with no
+          focus management of any kind — nothing moved focus in, Escape
+          did not close it, and focus never returned to the cog — which
+          is a worse experience than no dialog semantics at all. It is
+          also genuinely not modal (aria-modal was already "false"): the
+          story keeps playing and every control behind it stays live, so
+          trapping focus would be wrong. The cog exposes aria-expanded
+          and aria-controls, and the panel is the next thing in DOM
+          order, which is the pattern that actually matches the
+          behaviour. */}
       {showSettings && (
         <div
+          id="settings-panel"
           style={styles.settingsPanel}
           data-theme-component="settingsPanel"
           onClick={(e) => e.stopPropagation()}
-          role="dialog"
+          role="group"
           aria-labelledby="settings-title"
-          aria-modal="false"
         >
           <h3 id="settings-title" style={styles.settingsTitle}>
             Settings
@@ -2261,7 +2347,19 @@ export default function App() {
         </div>
       )}
 
-      <main id="main-content" style={styles.main} role="main" aria-label="Story content">
+      {/* Tap-to-play lives on the story region rather than the page
+          root. Autoplay-blocked mobile needs a big forgiving target,
+          but hanging it off the root meant a stray tap on the header
+          or footer chrome started narration. Keyboard users reach the
+          same action via Space and the Play button, so this handler
+          carries no keyboard duty of its own. */}
+      <main
+        id="main-content"
+        style={styles.main}
+        role="main"
+        aria-label={(story?.title || 'Audio Story') + ' - story content'}
+        onClick={() => playerState === 'ready' && !audioError && playVoiceover()}
+      >
         <div aria-live="polite" aria-atomic="true" role="region" aria-label="Story narration">
           {captionsEnabled && (
             <article
@@ -2311,6 +2409,17 @@ export default function App() {
                 ))
               )}
             </article>
+          )}
+          {/* Captions are a project setting (captionsDefault), and the
+              caption card used to be this live region's only child — so
+              a story shipped with captions off left the region empty
+              for its whole length and announced nothing on any passage
+              change. The screen-reader-only line below keeps the
+              transcript available whatever the visual setting. */}
+          {!captionsEnabled && (
+            <p style={styles.srOnly}>
+              {passageText ? `Now playing: ${passageText}` : 'Now playing'}
+            </p>
           )}
         </div>
 
@@ -2386,6 +2495,16 @@ export default function App() {
               )}
           </div>
         )}
+
+        {/* Announces the choice list on arrival and the armed choice as
+            it is cycled. Outside the <nav> on purpose: the choice list
+            can be hidden by the author (showChoiceList), and that is
+            exactly when a listener most needs to be told what is on
+            offer. `aria-current` on the buttons stays as the visual /
+            focused-navigation equivalent. */}
+        <div style={styles.srOnly} role="status" aria-live="polite" aria-atomic="true">
+          {choiceAnnouncement}
+        </div>
 
         {currentNode.choices.length > 0 && story.settings?.showChoiceList !== false && (
           <nav

@@ -1,0 +1,377 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, cleanup, createEvent, waitFor } from '@testing-library/react';
+import App from './App';
+
+// Accessibility regressions found by audit against a released build.
+// Each block below fails on the pre-fix code:
+//
+//   - The window keydown handler called preventDefault() for Space,
+//     Enter, the arrows and Backspace without ever looking at the event
+//     target, so every button, checkbox and slider in the player was
+//     dead to the keyboard — pressing Enter on the Settings cog
+//     advanced the story instead of opening Settings.
+//   - role="application" on the root suppressed the screen-reader
+//     virtual cursor, and the captions ARE the transcript of an audio
+//     medium.
+//   - Cycling choices announced nothing, and with captions off a
+//     passage change announced nothing either.
+//   - The password field had no accessible name and its error was
+//     never spoken.
+
+class MockAudio {
+  src: string;
+  preload = '';
+  volume = 1;
+  loop = false;
+  paused = true;
+  currentTime = 0;
+  duration = 0;
+  oncanplaythrough: (() => void) | null = null;
+  onended: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  ontimeupdate: (() => void) | null = null;
+  onpause: (() => void) | null = null;
+  constructor(src?: string) {
+    this.src = src ?? '';
+  }
+  play(): Promise<void> {
+    this.paused = false;
+    return Promise.resolve();
+  }
+  pause() {
+    this.paused = true;
+  }
+  load() {
+    setTimeout(() => this.oncanplaythrough?.(), 0);
+  }
+  addEventListener() {}
+  removeEventListener() {}
+}
+
+const threeChoiceStory = {
+  id: 'a11y-story',
+  title: 'A11y Story',
+  audioBaseUrl: './audio/',
+  startNode: 'start',
+  nodes: {
+    start: {
+      id: 'start',
+      type: 'knot',
+      content: [{ text: 'Welcome to the story.' }],
+      choices: [
+        { text: 'Go left', target: 'left' },
+        { text: 'Go right', target: 'right' },
+        { text: 'Stay put', target: 'stay' },
+      ],
+      divert: null,
+      tags: [],
+      audio: { voiceover: 'start.mp3' },
+    },
+    left: {
+      id: 'left',
+      type: 'knot',
+      content: [{ text: 'You went left.' }],
+      choices: [],
+      divert: 'END',
+      tags: [],
+    },
+    right: {
+      id: 'right',
+      type: 'knot',
+      content: [{ text: 'You went right.' }],
+      choices: [],
+      divert: 'END',
+      tags: [],
+    },
+    stay: {
+      id: 'stay',
+      type: 'knot',
+      content: [{ text: 'You stayed put.' }],
+      choices: [],
+      divert: 'END',
+      tags: [],
+    },
+  },
+};
+
+const originalAudio = globalThis.Audio;
+
+beforeEach(() => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  globalThis.Audio = MockAudio as unknown as typeof Audio;
+  localStorage.clear();
+  sessionStorage.clear();
+});
+
+afterEach(() => {
+  // startStory arms a bare setTimeout(300). With real timers it fires
+  // after teardown against jsdom's Audio and throws an uncaught error
+  // that fails CI with every test still reported as passing. Drain
+  // before cleanup.
+  vi.runOnlyPendingTimers();
+  cleanup();
+  vi.useRealTimers();
+  globalThis.Audio = originalAudio;
+  vi.restoreAllMocks();
+  delete (window as unknown as { __WANDERLINE_STORY__?: unknown }).__WANDERLINE_STORY__;
+});
+
+async function renderStory(story: unknown = threeChoiceStory) {
+  (window as unknown as { __WANDERLINE_STORY__?: unknown }).__WANDERLINE_STORY__ = story;
+  render(<App />);
+  const startButton = await screen.findByLabelText('Start the story');
+  fireEvent.click(startButton);
+  await screen.findByRole('main');
+}
+
+/** Dispatch a keydown on `el` and report whether it was cancelled. */
+function keyDownAndCheckCancelled(el: Element, key: string): boolean {
+  const event = createEvent.keyDown(el, { key, bubbles: true });
+  fireEvent(el, event);
+  return event.defaultPrevented;
+}
+
+describe('keyboard access to on-screen controls', () => {
+  it('does not cancel Enter aimed at a button while the passage has choices', async () => {
+    await renderStory();
+
+    const settingsCog = screen.getByLabelText('Settings');
+    const cancelled = keyDownAndCheckCancelled(settingsCog, 'Enter');
+
+    // The browser turns an uncancelled Enter on a button into a click.
+    // Cancelling it left the cog unopenable by keyboard.
+    expect(cancelled).toBe(false);
+    // And the global "confirm the armed choice" shortcut must not have
+    // hijacked the press: we are still on the opening passage.
+    expect(screen.getByText('Welcome to the story.')).toBeInTheDocument();
+    expect(screen.queryByText('You went left.')).not.toBeInTheDocument();
+  });
+
+  it('does not cancel Enter aimed at a choice button', async () => {
+    await renderStory();
+
+    const choice = screen.getByLabelText('Choice 3: Stay put');
+    expect(keyDownAndCheckCancelled(choice, 'Enter')).toBe(false);
+    // Enter must not have navigated via the armed choice (index 0).
+    expect(screen.queryByText('You went left.')).not.toBeInTheDocument();
+  });
+
+  it('does not cancel Space aimed at the auto-advance checkbox', async () => {
+    await renderStory();
+
+    fireEvent.click(screen.getByLabelText('Settings'));
+    const checkbox = screen.getByRole('checkbox', { name: /advance automatically/i });
+
+    // Space is the only key that toggles a checkbox. Cancelling it made
+    // this control impossible to change by keyboard at all.
+    expect(keyDownAndCheckCancelled(checkbox, ' ')).toBe(false);
+  });
+
+  it('does not cancel the arrow keys aimed at a volume slider', async () => {
+    await renderStory();
+
+    fireEvent.click(screen.getByLabelText('Settings'));
+    const slider = screen.getByLabelText(/narration volume/i);
+
+    expect(keyDownAndCheckCancelled(slider, 'ArrowDown')).toBe(false);
+    expect(keyDownAndCheckCancelled(slider, 'ArrowUp')).toBe(false);
+  });
+
+  it('still handles global shortcuts when nothing interactive is focused', async () => {
+    await renderStory();
+
+    // Enter on the page body confirms the armed choice (index 0).
+    const event = createEvent.keyDown(document.body, { key: 'Enter', bubbles: true });
+    fireEvent(document.body, event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(await screen.findByText('You went left.')).toBeInTheDocument();
+  });
+
+  it('still handles the arrow keys globally to cycle choices', async () => {
+    await renderStory();
+
+    const event = createEvent.keyDown(document.body, { key: 'ArrowDown', bubbles: true });
+    fireEvent(document.body, event);
+
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() =>
+      expect(screen.getByLabelText('Choice 2: Go right')).toHaveAttribute('aria-current', 'true'),
+    );
+  });
+
+  it('still routes a headphone media key while focus sits on a button', async () => {
+    await renderStory();
+
+    // A listener taps the on-screen Play button, which leaves focus on
+    // it, then presses the inline button on their earbuds. Media keys
+    // are not consumed by buttons, so the transport fallback must keep
+    // working here — guarding it as broadly as the shortcut handler
+    // would silently kill the product's signature interaction.
+    const playButton = screen.getByRole('button', { name: /^(Play|Pause|Loading) / });
+    // The transport dedupe compares against performance.now(), which the
+    // fake clock starts at 0 — without this the very first press looks
+    // like a duplicate of a press at time zero and is dropped.
+    vi.advanceTimersByTime(200);
+    fireEvent.keyDown(playButton, { key: 'MediaTrackNext', bubbles: true });
+
+    expect(await screen.findByText('You went left.')).toBeInTheDocument();
+  });
+});
+
+describe('screen-reader structure', () => {
+  it('does not put role="application" on the page', async () => {
+    await renderStory();
+
+    // role="application" suppresses the NVDA/JAWS virtual cursor, so a
+    // blind listener cannot arrow through the caption text — the only
+    // transcript of an audio medium — or use heading/landmark quick-nav.
+    expect(document.querySelector('[role="application"]')).toBeNull();
+  });
+
+  it('keeps the story landmarks and heading reachable', async () => {
+    await renderStory();
+
+    expect(screen.getByRole('banner')).toBeInTheDocument();
+    expect(screen.getByRole('main')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'A11y Story' })).toBeInTheDocument();
+  });
+});
+
+describe('choice announcements', () => {
+  function choiceStatus(): HTMLElement {
+    const regions = screen.getAllByRole('status');
+    const match = regions.find((r) => /choice/i.test(r.textContent ?? ''));
+    if (!match) throw new Error('no choice status region found');
+    return match;
+  }
+
+  it('announces the whole choice list on arriving at a passage', async () => {
+    await renderStory();
+
+    await waitFor(() => {
+      expect(choiceStatus()).toHaveTextContent('3 choices: 1. Go left, 2. Go right, 3. Stay put');
+    });
+  });
+
+  it('announces the armed choice as it is cycled', async () => {
+    await renderStory();
+    await waitFor(() => expect(choiceStatus()).toHaveTextContent(/3 choices/));
+
+    fireEvent.keyDown(document.body, { key: 'ArrowDown' });
+
+    await waitFor(() => {
+      expect(choiceStatus()).toHaveTextContent('Choice 2 of 3: Go right');
+    });
+
+    fireEvent.keyDown(document.body, { key: 'ArrowDown' });
+
+    await waitFor(() => {
+      expect(choiceStatus()).toHaveTextContent('Choice 3 of 3: Stay put');
+    });
+  });
+
+  it('announces choices even when the author hides the visible list', async () => {
+    await renderStory({
+      ...threeChoiceStory,
+      settings: { showChoiceList: false },
+    });
+
+    // No visible list...
+    expect(screen.queryByRole('navigation', { name: 'Story choices' })).not.toBeInTheDocument();
+    // ...but the listener is still told what is on offer.
+    await waitFor(() => {
+      expect(choiceStatus()).toHaveTextContent('3 choices: 1. Go left, 2. Go right, 3. Stay put');
+    });
+  });
+
+  it('says nothing about choices on a passage that has none', async () => {
+    await renderStory();
+    await waitFor(() => expect(choiceStatus()).toHaveTextContent(/3 choices/));
+
+    fireEvent.click(screen.getByLabelText('Choice 1: Go left'));
+
+    await screen.findByText('You went left.');
+    await waitFor(() =>
+      expect(screen.getAllByRole('status').every((r) => !/choice/i.test(r.textContent ?? ''))).toBe(
+        true,
+      ),
+    );
+  });
+});
+
+describe('passage announcements with captions off', () => {
+  it('announces the passage inside the live region when captions are off', async () => {
+    await renderStory({
+      ...threeChoiceStory,
+      settings: { captionsDefault: false },
+    });
+
+    const narration = screen.getByRole('region', { name: 'Story narration' });
+    // No visible caption card...
+    expect(narration.querySelector('article')).toBeNull();
+    // ...but the live region is not empty, so the passage change is
+    // still spoken.
+    await waitFor(() => expect(narration).toHaveTextContent('Now playing: Welcome to the story.'));
+  });
+
+  it('re-announces on the next passage with captions off', async () => {
+    await renderStory({
+      ...threeChoiceStory,
+      settings: { captionsDefault: false },
+    });
+
+    fireEvent.click(screen.getByLabelText('Choice 2: Go right'));
+
+    const narration = screen.getByRole('region', { name: 'Story narration' });
+    await waitFor(() => expect(narration).toHaveTextContent('Now playing: You went right.'));
+  });
+});
+
+describe('password screen', () => {
+  const passwordStory = { ...threeChoiceStory, settings: { password: 'secret123' } };
+
+  it('gives the password field an accessible name', async () => {
+    (window as unknown as { __WANDERLINE_STORY__?: unknown }).__WANDERLINE_STORY__ = passwordStory;
+    render(<App />);
+
+    // A placeholder is not an accessible name; getByLabelText only
+    // matches a real label / aria-label association.
+    expect(await screen.findByLabelText('Password')).toBeInTheDocument();
+  });
+
+  it('announces a wrong password and marks the field invalid', async () => {
+    (window as unknown as { __WANDERLINE_STORY__?: unknown }).__WANDERLINE_STORY__ = passwordStory;
+    render(<App />);
+
+    const input = await screen.findByLabelText('Password');
+    expect(input).not.toHaveAttribute('aria-invalid', 'true');
+
+    fireEvent.change(input, { target: { value: 'wrong' } });
+    const form = input.closest('form');
+    if (form) fireEvent.submit(form);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Incorrect password');
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(input).toHaveAttribute('aria-describedby', alert.id);
+  });
+});
+
+describe('settings disclosure', () => {
+  it('is a disclosure rather than an unmanaged dialog', async () => {
+    await renderStory();
+
+    const cog = screen.getByLabelText('Settings');
+    expect(cog).toHaveAttribute('aria-expanded', 'false');
+    expect(cog).toHaveAttribute('aria-controls', 'settings-panel');
+
+    fireEvent.click(cog);
+
+    expect(cog).toHaveAttribute('aria-expanded', 'true');
+    expect(document.getElementById('settings-panel')).not.toBeNull();
+    // role="dialog" without any focus management is worse than no
+    // dialog semantics at all, and this panel is not modal.
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+  });
+});
