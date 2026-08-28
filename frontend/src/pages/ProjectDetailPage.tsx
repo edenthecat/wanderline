@@ -116,13 +116,13 @@ export default function ProjectDetailPage() {
   // then hand the target passage to whichever tab took over.
   const [paletteOpen, setPaletteOpen] = useState(false);
   const togglePalette = useCallback(() => setPaletteOpen((v) => !v), []);
-  // Only bind the chord once there's a project to search. Before that
-  // it would flip a palette nothing renders — and would arrive already
-  // open when the fetch lands — while swallowing the browser's own
-  // Ctrl-K for nothing on the error page.
-  // Same condition as the render guards below — a silent refetch
-  // failure leaves `project` set while showing the error page, and an
-  // id change leaves it set while loading the next one.
+  // Only bind the chord when there is actually a palette to show, and
+  // on the same condition the render guards below use. Otherwise it
+  // flips a palette nothing renders — which then arrives already open
+  // when the fetch lands — and swallows the browser's own Ctrl-K for
+  // nothing on the error page. `project !== null` alone isn't enough:
+  // a silent refetch failure leaves it set behind the error page, and
+  // an id change leaves it set while the next one loads.
   useCommandPaletteShortcut(togglePalette, project !== null && !loading && !error);
   // Focus lands here when a jump unmounts the button that opened the
   // palette (it switched tabs). tabIndex={-1} makes the region
