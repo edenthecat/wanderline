@@ -99,6 +99,16 @@ describe('collectDeletionSet', () => {
     expect(collectDeletionSet('ch1', nodes, 'ink').sort()).toEqual(['ch1', 'ch1.a', 'ch1.b']);
   });
 
+  it('falls back to the dot rule when `type` is missing', () => {
+    // Older and hand-edited rows can be missing `type`. Keying on it
+    // alone would leave the stitches of a knot behind, orphaned.
+    const nodes = inkGraph();
+    delete nodes.ch1.type;
+    delete nodes['ch1.a'].type;
+    expect(collectDeletionSet('ch1', nodes, 'ink').sort()).toEqual(['ch1', 'ch1.a', 'ch1.b']);
+    expect(collectDeletionSet('ch1.a', nodes, 'ink')).toEqual(['ch1.a']);
+  });
+
   it('never cascades in a Twee graph, where a dot is just a character', () => {
     const nodes: GraphNodes = {
       ch1: { id: 'ch1', type: 'knot', parent: null, choices: [], divert: null, lineNumber: 1 },

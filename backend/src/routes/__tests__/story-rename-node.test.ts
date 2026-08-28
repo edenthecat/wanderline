@@ -317,6 +317,52 @@ describe('PATCH /:id/story/node/rename', () => {
     expect(res.body.error).toMatch(/Twee/);
   });
 
+  it('rejects a rename to __proto__, which would store nothing at all', async () => {
+    // The graph is a JSON.parse product, so it carries
+    // Object.prototype: `nodes['__proto__'] = renamedNode` runs the
+    // prototype setter, creates no own property, and would commit a
+    // graph that is silently missing the renamed node.
+    const storyGraph = graph('Home', { Home: { choices: [], divert: null, parent: null } });
+    const { pool } = makePool([
+      { match: 'BEGIN' },
+      { match: 'SELECT story_graph', rows: [{ story_graph: storyGraph, source_language: 'ink' }] },
+      { match: 'ROLLBACK' },
+    ]);
+    const res = await request(makeApp(pool))
+      .patch(`/api/projects/${projectId}/story/node/rename`)
+      .send({ oldId: 'Home', newId: '__proto__' });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a rename onto a reserved Twee special-passage name', async () => {
+    // `:: StoryData` is metadata to the parser, so exporting this and
+    // re-importing would swallow the passage and every link to it.
+    const storyGraph = graph('Home', { Home: { choices: [], divert: null, parent: null } });
+    const { pool } = makePool([
+      { match: 'BEGIN' },
+      { match: 'SELECT story_graph', rows: [{ story_graph: storyGraph, source_language: 'twee' }] },
+      { match: 'ROLLBACK' },
+    ]);
+    const res = await request(makeApp(pool))
+      .patch(`/api/projects/${projectId}/story/node/rename`)
+      .send({ oldId: 'Home', newId: 'StoryData' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/reserved/);
+  });
+
+  it('rejects a rename to an id longer than the side tables can key on', async () => {
+    const storyGraph = graph('Home', { Home: { choices: [], divert: null, parent: null } });
+    const { pool } = makePool([
+      { match: 'BEGIN' },
+      { match: 'SELECT story_graph', rows: [{ story_graph: storyGraph, source_language: 'ink' }] },
+      { match: 'ROLLBACK' },
+    ]);
+    const res = await request(makeApp(pool))
+      .patch(`/api/projects/${projectId}/story/node/rename`)
+      .send({ oldId: 'Home', newId: 'a'.repeat(256) });
+    expect(res.status).toBe(400);
+  });
+
   it('rejects a Twee name carrying the header metadata braces', async () => {
     // `:: Cave {2}` re-parses as `Cave`: parsePassageHeader truncates
     // the trailing brace group whether or not it is valid JSON. The

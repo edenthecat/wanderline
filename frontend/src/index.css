@@ -751,10 +751,40 @@ textarea:focus,
    being clickable. While one is open, put the slot back in normal flow
    so the row grows to fit it. Browsers without :has() keep the old
    behaviour rather than breaking. */
-.node-group:has(.node-delete-confirm) {
+Scoped
+  with
+  `
+  > `
+  to
+  the
+  group's OWN slot: a stitch's
+  confirm
+  lives
+  in
+  .node-children
+  inside
+  the
+  same
+  .node-group,
+and
+  an
+  unscoped
+  :has()
+  would
+  fire
+  on
+  it
+  too
+  —
+  yanking
+  the
+  knot's rename and delete buttons
+   out of the corner while the author is answering a dialog about a
+   different passage. */
+.node-group:has(> .node-rename-slot > .node-delete-confirm) {
   overflow: visible;
 }
-.node-group:has(.node-delete-confirm) .node-rename-slot {
+.node-group:has(> .node-rename-slot > .node-delete-confirm) > .node-rename-slot {
   position: static;
   justify-content: flex-end;
   padding: 0 8px 8px;
@@ -775,8 +805,11 @@ textarea:focus,
   font-size: 12px;
   height: auto;
 }
-/* Sits beside the close button on the graph's detail rail. */
-.graph-detail-actions {
+/* Sits beside the close button on the graph's
+  detail
+  rail.
+  */
+  .graph-detail-actions {
   display: flex;
   align-items: center;
   gap: 4px;

@@ -290,6 +290,77 @@ export const TWEE_UNSAFE_NAME_DESCRIPTION = '`[`, `]`, `|`, `{`, `}`, `->`, or `
 const CONTROL_CHAR_RE = /[\x00-\x1f\x7f]/;
 
 /**
+ * Rules a node id must satisfy to be STORABLE, whatever put it there.
+ * Shared by create-passage and rename so a name one refuses cannot be
+ * reached through the other. Returns an error message, or null when
+ * the id is fine.
+ *
+ * `label` names the request field so the message reads correctly on
+ * both endpoints ("nodeId" / "newId").
+ *
+ * Deliberately NOT included: the Ink identifier rule. Graphs already
+ * hold names the Ink parser would never produce (a Twee import, a
+ * hand-edited row), and refusing to rename those would trap whoever
+ * owns them. Creation is the one moment a stricter rule costs nothing,
+ * so `parseNewNodeId` adds it on top of this.
+ */
+export function storableNodeIdError(
+  nodeId: string,
+  sourceLanguage: SourceLanguage,
+  label = 'nodeId',
+): string | null {
+  if (!nodeId) return `${label} must be a non-empty string`;
+  if (nodeId.length > MAX_NODE_ID_LENGTH) {
+    return `${label} must be ${MAX_NODE_ID_LENGTH} characters or fewer`;
+  }
+  if (CONTROL_CHAR_RE.test(nodeId)) {
+    return `${label} must not contain control characters`;
+  }
+  if (TERMINAL_TARGETS.has(nodeId)) {
+    return `"${nodeId}" is a reserved target name and cannot be used as a node id`;
+  }
+  // `__proto__` is a legal Ink name under `\w+` and a legal Twee
+  // title, but it is not a storable key: the graph arrives from JSONB
+  // via JSON.parse, so it carries Object.prototype, and assigning
+  // `nodes['__proto__']` runs the prototype SETTER instead of creating
+  // an own property. The node would be reported as written, appear in
+  // no listing, and defeat every `Object.hasOwn` check afterwards —
+  // with the graph's own prototype swapped for it. `defineNode` makes
+  // the write itself safe; refusing the name keeps a passage that can
+  // never be exported out of the graph in the first place.
+  if (nodeId === '__proto__') {
+    return '"__proto__" cannot be used as a node id';
+  }
+  if (sourceLanguage === 'twee') {
+    if (TWEE_UNSAFE_NAME_RE.test(nodeId)) {
+      return `${label} contains a character that is unsafe for Twee (${TWEE_UNSAFE_NAME_DESCRIPTION}). Choose a different name.`;
+    }
+    if (TWEE_RESERVED_NAMES.has(nodeId)) {
+      // The parser reads these as metadata rather than passages, so
+      // exporting one emits a second `:: StoryData` block and
+      // re-importing swallows the passage and every link to it.
+      return `"${nodeId}" is a reserved Twee passage name`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Write `node` under `key`, creating an own property even for a key
+ * Object.prototype defines an accessor for. See the `__proto__` note
+ * on `storableNodeIdError`: a plain assignment there stores nothing
+ * and swaps the map's prototype instead.
+ */
+export function defineNode(nodes: GraphNodes, key: string, node: GraphNodeShape): void {
+  Object.defineProperty(nodes, key, {
+    value: node,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+}
+
+/**
  * Validate a requested id and work out what kind of node it describes.
  * Returns an error string instead of throwing so the route can map it
  * straight to a 400 body.
@@ -299,40 +370,10 @@ export function parseNewNodeId(
   sourceLanguage: SourceLanguage,
 ): { error: string } | NewNodeId {
   const nodeId = rawId.trim();
-  if (!nodeId) return { error: 'nodeId must be a non-empty string' };
-  if (nodeId.length > MAX_NODE_ID_LENGTH) {
-    return { error: `nodeId must be ${MAX_NODE_ID_LENGTH} characters or fewer` };
-  }
-  if (CONTROL_CHAR_RE.test(nodeId)) {
-    return { error: 'nodeId must not contain control characters' };
-  }
-  if (TERMINAL_TARGETS.has(nodeId)) {
-    return { error: `"${nodeId}" is a reserved target name and cannot be used as a node id` };
-  }
-  // `__proto__` is a legal Ink name under `\w+` and a legal Twee
-  // title, but it is not a storable key: the graph arrives from JSONB
-  // via JSON.parse, so it carries Object.prototype, and assigning
-  // `nodes['__proto__']` runs the prototype SETTER instead of creating
-  // an own property. The node would be reported as created, appear in
-  // no listing, defeat the duplicate check (Object.hasOwn stays
-  // false), and — with the graph's prototype swapped — could be
-  // adopted as a startNode that names nothing. insertNodeOrdered
-  // writes via defineProperty so this can't happen silently either
-  // way, but a name that can never be exported is better refused than
-  // quietly accepted.
-  if (nodeId === '__proto__') {
-    return { error: '"__proto__" cannot be used as a node id' };
-  }
+  const storableError = storableNodeIdError(nodeId, sourceLanguage);
+  if (storableError) return { error: storableError };
 
   if (sourceLanguage === 'twee') {
-    if (TWEE_UNSAFE_NAME_RE.test(nodeId)) {
-      return {
-        error: `nodeId contains a character that is unsafe for Twee (${TWEE_UNSAFE_NAME_DESCRIPTION}). Choose a different name.`,
-      };
-    }
-    if (TWEE_RESERVED_NAMES.has(nodeId)) {
-      return { error: `"${nodeId}" is a reserved Twee passage name` };
-    }
     // Twee has no hierarchy — every passage is top-level, and a dot is
     // an ordinary character in a title.
     return { nodeId, type: 'knot', parent: null };
@@ -449,18 +490,7 @@ export function insertNodeOrdered(
   }
 
   order.splice(position, 0, newId);
-  // defineProperty, not `nodes[newId] = newNode`: the graph comes back
-  // from JSONB through JSON.parse and so carries Object.prototype, and
-  // a plain assignment to `__proto__` would invoke the prototype setter
-  // instead of creating an own property — reporting success while
-  // storing nothing. parseNewNodeId refuses that name, and this makes
-  // the write safe for any caller that doesn't.
-  Object.defineProperty(nodes, newId, {
-    value: newNode,
-    writable: true,
-    enumerable: true,
-    configurable: true,
-  });
+  defineNode(nodes, newId, newNode);
   for (let i = 0; i < order.length; i++) {
     const node = nodes[order[i]];
     if (node) node.lineNumber = i + 1;

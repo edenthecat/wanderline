@@ -457,7 +457,14 @@ export default function StoryTab({
   const doomedIdsFor = useCallback(
     (nodeId: string) => {
       const node = storyGraph?.nodes[nodeId];
-      if (!node || node.type !== 'knot' || sourceLanguage === 'twee') return [nodeId];
+      if (!node || sourceLanguage === 'twee') return [nodeId];
+      // Same fallback the server uses when `type` is missing (older or
+      // hand-edited rows): a stitch id contains a dot, a knot's does
+      // not. Keying on `type` alone would under-report what is about
+      // to go and leave the doomed stitches in the "send them to"
+      // list, where choosing one earns a 400 nothing explains.
+      const isKnot = node.type ? node.type === 'knot' : !nodeId.includes('.');
+      if (!isKnot) return [nodeId];
       const prefix = `${nodeId}.`;
       const doomed = new Set([nodeId]);
       for (const child of childrenByParent.get(nodeId) ?? []) doomed.add(child.id);

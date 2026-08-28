@@ -795,6 +795,57 @@ describe('DELETE /:id/story/node', () => {
     expect(poolCalls.some((c) => c.sql.includes('INSERT INTO project_snapshots'))).toBe(false);
   });
 
+  it('does not leave a rollback point behind when the replacement target is unusable', async () => {
+    // The pre-check has to model every refusal the transaction can
+    // reach, not just the referrer one — otherwise the noise it exists
+    // to keep out of History comes back through the other doors.
+    const storyGraph = graph('intro', {
+      intro: {
+        id: 'intro',
+        type: 'knot',
+        parent: null,
+        choices: [{ text: 'go', target: 'kitchen' }],
+        divert: null,
+        lineNumber: 1,
+      },
+      kitchen: {
+        id: 'kitchen',
+        type: 'knot',
+        parent: null,
+        choices: [],
+        divert: null,
+        lineNumber: 2,
+      },
+    });
+    const { pool, poolCalls } = makePool(
+      [
+        { match: 'BEGIN' },
+        {
+          match: 'SELECT story_graph',
+          rows: [{ story_graph: storyGraph, source_language: 'ink' }],
+        },
+        { match: 'ROLLBACK' },
+      ],
+      [
+        {
+          match: 'SELECT story_graph',
+          rows: [{ story_graph: storyGraph, source_language: 'ink' }],
+        },
+        {
+          match: 'SELECT ps.story_graph',
+          rows: [{ story_graph: storyGraph, ink_source: null, node_metadata: {} }],
+        },
+        { match: 'INSERT INTO project_snapshots', rows: [{ id: 's1', created_at: 'now' }] },
+      ],
+    );
+    const res = await request(makeApp(pool))
+      .delete(`/api/projects/${projectId}/story/node`)
+      .send({ nodeId: 'kitchen', repointTo: 'nowhere' });
+
+    expect(res.status).toBe(400);
+    expect(poolCalls.some((c) => c.sql.includes('INSERT INTO project_snapshots'))).toBe(false);
+  });
+
   it('refuses when a Twee special passage links to it, since repointing cannot reach raw text', async () => {
     // StoryInit / PassageHeader bodies are stored verbatim and never
     // parsed into nodes, so a nav menu linking here is invisible to
@@ -817,11 +868,27 @@ describe('DELETE /:id/story/node', () => {
       validation: { valid: true, errors: [], warnings: [] },
       twee: { specials: { PassageHeader: 'Menu: [[Map->Cave]]' } },
     };
-    const { pool } = makePool([
-      { match: 'BEGIN' },
-      { match: 'SELECT story_graph', rows: [{ story_graph: storyGraph, source_language: 'twee' }] },
-      { match: 'ROLLBACK' },
-    ]);
+    const { pool, poolCalls } = makePool(
+      [
+        { match: 'BEGIN' },
+        {
+          match: 'SELECT story_graph',
+          rows: [{ story_graph: storyGraph, source_language: 'twee' }],
+        },
+        { match: 'ROLLBACK' },
+      ],
+      [
+        {
+          match: 'SELECT story_graph',
+          rows: [{ story_graph: storyGraph, source_language: 'twee' }],
+        },
+        {
+          match: 'SELECT ps.story_graph',
+          rows: [{ story_graph: storyGraph, ink_source: null, node_metadata: {} }],
+        },
+        { match: 'INSERT INTO project_snapshots', rows: [{ id: 's1', created_at: 'now' }] },
+      ],
+    );
     const res = await request(makeApp(pool))
       .delete(`/api/projects/${projectId}/story/node`)
       .send({ nodeId: 'Cave', repointTo: 'Start' });
@@ -829,6 +896,8 @@ describe('DELETE /:id/story/node', () => {
     expect(res.status).toBe(409);
     expect(res.body.specialReferrers).toEqual(['PassageHeader']);
     expect(res.body.error).toMatch(/PassageHeader/);
+    // And no rollback point, since nothing was written.
+    expect(poolCalls.some((c) => c.sql.includes('INSERT INTO project_snapshots'))).toBe(false);
   });
 
   it('404s on an unknown node', async () => {

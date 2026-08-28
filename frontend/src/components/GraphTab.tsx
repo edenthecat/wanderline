@@ -967,7 +967,11 @@ function GraphTabInner({
     // Twee has no hierarchy: every passage is top-level and a dot is
     // an ordinary character in a title, so `Ch1.Scene` is not a child
     // of `Ch1` and must not be dragged in.
-    if (selected?.type !== 'knot' || sourceLanguage === 'twee') return [selectedNodeId];
+    if (sourceLanguage === 'twee') return [selectedNodeId];
+    // Same fallback the server uses when `type` is missing (older or
+    // hand-edited rows): a stitch id contains a dot, a knot's does not.
+    const isKnot = selected?.type ? selected.type === 'knot' : !selectedNodeId.includes('.');
+    if (!isKnot) return [selectedNodeId];
     const prefix = `${selectedNodeId}.`;
     const doomed = new Set([selectedNodeId]);
     for (const [id, node] of Object.entries(storyGraph.nodes)) {

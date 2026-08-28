@@ -10,18 +10,41 @@ import { captureSnapshot } from './projects-snapshots.js';
 import { invalidateRoom } from '../services/collab-server.js';
 import {
   collectDeletionSet,
+  defineNode,
   findInboundReferences,
   insertNodeOrdered,
   parseNewNodeId,
   pruneValidation,
   repointReferences,
+  storableNodeIdError,
   TERMINAL_TARGETS,
-  TWEE_UNSAFE_NAME_DESCRIPTION,
-  TWEE_UNSAFE_NAME_RE,
   type GraphNodes,
   type GraphValidation,
   type SourceLanguage,
 } from '../services/story-node-ops.js';
+
+/**
+ * Twee special passages (StoryInit, PassageHeader, ...) whose raw body
+ * links into `deleteSet`.
+ *
+ * Specials are stored verbatim on `graph.twee.specials` and never
+ * parsed into nodes, so a nav menu linking at a passage is invisible to
+ * the graph walk — deleting anyway would leave the dangling link the
+ * delete endpoint exists to prevent. Shared between the endpoint's own
+ * check and the pre-check that decides whether to take a snapshot, so
+ * the two agree on which requests are going to be refused.
+ */
+function specialPassagesLinkingInto(
+  deleteSet: ReadonlySet<string>,
+  specials: Record<string, unknown> | undefined,
+): string[] {
+  if (!specials) return [];
+  return Object.keys(specials).filter((name) => {
+    const body = specials[name];
+    if (typeof body !== 'string') return false;
+    return extractLinkTargets(body).some((target) => deleteSet.has(target));
+  });
+}
 
 export function mountStoryRoutes(router: Router, pool: Pool): void {
   /**
@@ -1177,25 +1200,23 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
         }
       }
 
-      // Twee 3 has no defined escape for the link/tag/metadata
-      // delimiters, and the parser rejects passage names containing
-      // them at import — reject here too so a rename can't leave the
-      // graph in a state that fails its own export.
-      // Shared with create-passage (story-node-ops.ts) so the two
-      // can't drift — a name the create endpoint refuses must not be
-      // reachable by renaming into it. That list also covers `{`/`}`,
-      // which are worse than the link delimiters: the header parser
-      // truncates a trailing brace group whether or not it parses as
-      // JSON, so `Cave {2}` silently comes back from a round-trip as
-      // `Cave` with every link to it dangling.
-      if (sourceLanguage === 'twee') {
-        if (TWEE_UNSAFE_NAME_RE.test(newId)) {
-          await client.query('ROLLBACK');
-          res.status(400).json({
-            error: `newId contains a character that is unsafe for Twee export (${TWEE_UNSAFE_NAME_DESCRIPTION}). Choose a different name.`,
-          });
-          return;
-        }
+      // The same storability rules create-passage applies, from one
+      // shared function — a name that endpoint refuses must not be
+      // reachable by renaming into it. It covers the Twee link and
+      // header delimiters (including `{`/`}`, where the header parser
+      // truncates a trailing brace group whether or not it is valid
+      // JSON, so `Cave {2}` comes back from a round-trip as `Cave`),
+      // the reserved special-passage names, the side tables' 255-char
+      // node_id limit, control characters, END/DONE, and `__proto__`.
+      const unstorable = storableNodeIdError(
+        newId,
+        sourceLanguage === 'twee' ? 'twee' : 'ink',
+        'newId',
+      );
+      if (unstorable) {
+        await client.query('ROLLBACK');
+        res.status(400).json({ error: unstorable });
+        return;
       }
 
       // Rewrite the graph. Renaming a knot has to cascade through:
@@ -1213,7 +1234,11 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
       const renamedNode = storyGraph.nodes[oldId];
       renamedNode.id = newId;
       delete storyGraph.nodes[oldId];
-      storyGraph.nodes[newId] = renamedNode;
+      // defineNode, not a plain assignment: see storableNodeIdError on
+      // why `__proto__` would store nothing here. The name is refused
+      // above; this keeps the write itself incapable of failing
+      // silently.
+      defineNode(storyGraph.nodes, newId, renamedNode);
       if (storyGraph.startNode === oldId) {
         storyGraph.startNode = newId;
       }
@@ -1228,7 +1253,7 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
           const stitch = storyGraph.nodes[nodeKey];
           if (stitch.id === nodeKey) stitch.id = newStitchKey;
           delete storyGraph.nodes[nodeKey];
-          storyGraph.nodes[newStitchKey] = stitch;
+          defineNode(storyGraph.nodes, newStitchKey, stitch);
         }
       }
       const rewriteReference = (
@@ -1752,17 +1777,33 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
         [id],
       );
       const previewGraph = preview.rows[0]?.story_graph as
-        { nodes?: GraphNodes; startNode?: string } | undefined;
+        | {
+            nodes?: GraphNodes;
+            startNode?: string;
+            twee?: { specials?: Record<string, unknown> };
+          }
+        | undefined;
       const previewNodes = previewGraph?.nodes;
       if (previewNodes && Object.hasOwn(previewNodes, nodeId)) {
         const previewLanguage: SourceLanguage =
           preview.rows[0].source_language === 'twee' ? 'twee' : 'ink';
         const previewSet = new Set(collectDeletionSet(nodeId, previewNodes, previewLanguage));
+        // Every refusal the transaction can reach, modelled here — a
+        // rollback point for an edit that never happened is the noise
+        // this pre-check exists to keep out of History, so missing one
+        // of them defeats the point.
         const blockedByStart = previewSet.has(previewGraph?.startNode ?? '');
         const blockedByRefs =
           repointTo === null &&
           findInboundReferences(previewSet, previewNodes, previewLanguage).length > 0;
-        if (!blockedByStart && !blockedByRefs) {
+        const blockedBySpecials =
+          previewLanguage === 'twee' &&
+          specialPassagesLinkingInto(previewSet, previewGraph?.twee?.specials).length > 0;
+        const blockedByRepoint =
+          repointTo !== null &&
+          !TERMINAL_TARGETS.has(repointTo) &&
+          (!Object.hasOwn(previewNodes, repointTo) || previewSet.has(repointTo));
+        if (!blockedByStart && !blockedByRefs && !blockedBySpecials && !blockedByRepoint) {
           await captureSnapshot({
             pool,
             projectId: id,
@@ -1841,12 +1882,7 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
       // the special passage — which the author can edit in the Source
       // tab, then retry.
       if (sourceLanguage === 'twee') {
-        const specials = (storyGraph.twee?.specials ?? {}) as Record<string, unknown>;
-        const blocking = Object.keys(specials).filter((name) => {
-          const body = specials[name];
-          if (typeof body !== 'string') return false;
-          return extractLinkTargets(body).some((target) => deleteSet.has(target));
-        });
+        const blocking = specialPassagesLinkingInto(deleteSet, storyGraph.twee?.specials);
         if (blocking.length > 0) {
           await client.query('ROLLBACK');
           res.status(409).json({
