@@ -270,6 +270,10 @@ export default function ProjectDetailPage() {
   const handleExport = useCallback(
     (type: 'archive' | 'ink' | 'json') => {
       setShowExportMenu(false);
+      // Closing unmounts the item that was just activated — hand
+      // focus back to the trigger, as the Escape path does, instead
+      // of dropping it on <body>.
+      exportBtnRef.current?.focus();
       const base = `/api/projects/${id}`;
       const urls = {
         archive: `${base}/export`,

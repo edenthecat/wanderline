@@ -158,6 +158,21 @@ describe('ProjectDetailPage navigation accessibility', () => {
     expect(screen.queryAllByRole('menuitem')).toHaveLength(0);
   });
 
+  it('returns focus to the Export button after choosing an export', async () => {
+    vi.spyOn(window, 'open').mockReturnValue(null);
+    await renderPage();
+
+    const exportBtn = screen.getByRole('button', { name: 'Export' });
+    fireEvent.click(exportBtn);
+    const item = screen.getByRole('button', { name: 'Export JSON' });
+    item.focus();
+    // Choosing unmounts the item that was just activated.
+    fireEvent.click(item);
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Export JSON' })).toBeNull());
+    expect(document.activeElement).toBe(exportBtn);
+  });
+
   it('moves focus into the sheet on open and back to the trigger on Escape', async () => {
     await renderPage();
 

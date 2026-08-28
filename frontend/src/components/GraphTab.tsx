@@ -840,6 +840,10 @@ function GraphTabInner({
   /** Set while we move focus programmatically, so the restore doesn't
    * read as "the user tabbed here" and put a preview card up. */
   const suppressFocusPreviewRef = useRef(false);
+  /** Whether the node that currently holds focus got it from the
+   * keyboard. Clicking a node focuses it too, and only the keyboard
+   * case wants the card handed back when the pointer wanders off. */
+  const nodeFocusIsKeyboardRef = useRef(false);
   const hoverRafRef = useRef<number | null>(null);
   const latestHoverPosRef = useRef<{ x: number; y: number } | null>(null);
   const cancelHoverRaf = useCallback(() => {
@@ -1322,8 +1326,9 @@ function GraphTabInner({
             // pointer is actually on: a mouse left resting over one
             // card must not kill the preview for every node the user
             // then tabs to.
-            if (hoverSourceRef.current === 'pointer' && hoverNodeId === id) return;
-            if (suppressFocusPreviewRef.current) return;
+            const fromPointer = hoverSourceRef.current === 'pointer' && hoverNodeId === id;
+            nodeFocusIsKeyboardRef.current = !fromPointer && !suppressFocusPreviewRef.current;
+            if (fromPointer || suppressFocusPreviewRef.current) return;
             cancelHoverRaf();
             // Same preview the mouse gets, anchored to the node box
             // instead of the pointer. Without this, everything in the
@@ -1402,7 +1407,7 @@ function GraphTabInner({
               const active = document.activeElement;
               const focusedEl = active?.closest('.react-flow__node') ?? null;
               const focusedId = focusedEl ? nodeIdOfEventTarget(active) : null;
-              if (focusedId && focusedEl) {
+              if (focusedId && focusedEl && nodeFocusIsKeyboardRef.current) {
                 hoverSourceRef.current = 'focus';
                 setHoverNodeId(focusedId);
                 queueHoverRect(focusedEl);

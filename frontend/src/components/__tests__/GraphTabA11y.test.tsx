@@ -247,6 +247,24 @@ describe('GraphTab keyboard and screen-reader access', () => {
     expect(container.querySelector('.graph-hover-card')).toBeTruthy();
   });
 
+  // Clicking a node focuses it, so "is a node focused?" alone would
+  // hand the card to the keyboard on every mouse click — and then the
+  // card has no way to dismiss, because the pointer has already left.
+  it('does not keep the card up after a mouse click on a node', async () => {
+    const { container } = renderGraph();
+    await waitFor(() => expect(nodeEl(container, 'corridor')).toBeTruthy());
+
+    fireEvent.mouseEnter(nodeEl(container, 'corridor'), { clientX: 5, clientY: 5 });
+    await waitFor(() => expect(container.querySelector('.graph-hover-card')).toBeTruthy());
+
+    // A real browser focuses the node on mousedown; jsdom doesn't.
+    nodeEl(container, 'corridor').focus();
+    fireEvent.click(nodeEl(container, 'corridor'));
+    fireEvent.mouseLeave(nodeEl(container, 'corridor'));
+
+    await waitFor(() => expect(container.querySelector('.graph-hover-card')).toBeNull());
+  });
+
   // "The pointer owns the card" has to mean the node the pointer is
   // actually on. A mouse left resting over one card must not kill the
   // preview for every node the user then tabs to.
