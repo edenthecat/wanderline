@@ -234,6 +234,75 @@ describe('FlaggedNodesPanel accessibility', () => {
     expect(screen.getByTestId('flagged-panel-status').textContent).toBe('');
   });
 
+  it('carries two overlapping resolves through to focus and speech', async () => {
+    // `resolving` is a Set on purpose: a second resolve can start while
+    // the first is in flight, and each refetch removes one row. A
+    // single-slot record would let the second resolve overwrite the
+    // first, then be spent by the first refetch — leaving the removal
+    // that empties the list with nothing queued and nothing to say.
+    vi.spyOn(client, 'resolveNodeFlag').mockResolvedValue(undefined as never);
+    const { update } = renderPanel({ her: [flag({ id: 'a' }), flag({ id: 'b' })] });
+    expand();
+
+    const [ra, rb] = resolveButtons();
+    ra.focus();
+    await act(async () => {
+      fireEvent.click(ra);
+    });
+    rb.focus();
+    await act(async () => {
+      fireEvent.click(rb);
+    });
+
+    update({ her: [flag({ id: 'b' })] });
+    await waitFor(() => expect(resolveButtons()).toHaveLength(1));
+
+    update({});
+    await waitFor(() => expect(screen.queryByTestId('flagged-panel')).toBeNull());
+    // The author cleared their whole queue; silence here would be the
+    // bug the announcement exists to fix.
+    expect(screen.getByTestId('flagged-panel-status').textContent).toBe('Flag resolved.');
+  });
+
+  it('does not move focus for a click that never focused the button', async () => {
+    // Safari leaves activeElement on <body> after a mouse click on a
+    // button — the same place a disable-blur leaves it. Moving focus
+    // onto the next Resolve button there would put the mouse user's
+    // next Space, pressed to scroll, on a flag they never read.
+    vi.spyOn(client, 'resolveNodeFlag').mockResolvedValue(undefined as never);
+    const { update } = renderPanel({ her: [flag({ id: 'a' }), flag({ id: 'b' })] });
+    expand();
+
+    const [first] = resolveButtons();
+    // No .focus() — the click arrives with focus still on <body>.
+    expect(document.activeElement).toBe(document.body);
+    await act(async () => {
+      fireEvent.click(first);
+    });
+    update({ her: [flag({ id: 'b' })] });
+
+    await waitFor(() => expect(resolveButtons()).toHaveLength(1));
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it('still reports a failure when the list empties in the same breath', async () => {
+    // A collaborator clears the last flag while the author's Resolve
+    // for it is in flight: the request 404s at the same moment the
+    // refetch reports `{}`. If the alert went away with the panel the
+    // click would have produced no outcome at all.
+    vi.spyOn(client, 'resolveNodeFlag').mockRejectedValue(new Error('Already resolved'));
+    const { update } = renderPanel({ her: [flag({ id: 'a' })] });
+    expand();
+
+    await act(async () => {
+      fireEvent.click(resolveButtons()[0]);
+    });
+    update({});
+
+    await waitFor(() => expect(screen.queryByTestId('flagged-panel')).toBeNull());
+    expect(screen.getByRole('alert')).toHaveTextContent('Already resolved');
+  });
+
   it('has no axe violations, collapsed or expanded', async () => {
     const { container } = renderPanel({
       her: [flag({ id: 'a', note: 'wrong take' })],
