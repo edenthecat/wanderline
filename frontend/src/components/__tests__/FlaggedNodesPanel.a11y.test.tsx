@@ -175,6 +175,35 @@ describe('FlaggedNodesPanel accessibility', () => {
     expect(screen.getByTestId('flagged-panel-status').textContent).toBe('');
   });
 
+  it('does not spend the resolve credit on a later empty list', async () => {
+    // Resolving one flag while a collaborator raises another leaves the
+    // total flat — and the summary string with it. The credit for that
+    // resolve has to be spent on the refetch that carried it, or it
+    // survives to be attached to the next empty list, which is also
+    // what a failed fetch looks like.
+    vi.spyOn(client, 'resolveNodeFlag').mockResolvedValue(undefined as never);
+    const { update } = renderPanel({ her: [flag({ id: 'a' }), flag({ id: 'b' })] });
+    expand();
+
+    const [first] = resolveButtons();
+    await act(async () => {
+      fireEvent.click(first);
+    });
+
+    // 'a' resolved, 'c' raised elsewhere: two flags before, two after.
+    update({ her: [flag({ id: 'b' }), flag({ id: 'c' })] });
+    await waitFor(() => expect(resolveButtons()).toHaveLength(2));
+    // Silence here would read as "your click did nothing".
+    expect(screen.getByTestId('flagged-panel-status').textContent).toBe(
+      'Flag resolved. 2 open flags across 1 passage.',
+    );
+
+    // Now the flags fetch drops and reports `{}`.
+    update({});
+    await waitFor(() => expect(screen.queryByTestId('flagged-panel')).toBeNull());
+    expect(screen.getByTestId('flagged-panel-status').textContent).toBe('');
+  });
+
   it('has no axe violations, collapsed or expanded', async () => {
     const { container } = renderPanel({
       her: [flag({ id: 'a', note: 'wrong take' })],

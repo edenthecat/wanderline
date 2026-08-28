@@ -12,10 +12,11 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { resolveNodeFlag, type NodeFlag } from '../api/client';
 import { FLAG_REASON_LABELS } from './flagLabels';
 
-// How long a queued focus move stays valid. Long enough for a refetch
-// on a slow connection, short enough that it can't attach itself to an
-// unrelated change minutes later.
-const STALE_FOCUS_MS = 5000;
+// How long a just-resolved record — the queued focus move, and the
+// credit that lets the panel say "Flag resolved." — stays valid. Long
+// enough for a refetch on a slow connection, short enough that neither
+// can attach itself to an unrelated change minutes later.
+const RECENT_RESOLVE_MS = 5000;
 
 interface Props {
   projectId: string;
@@ -64,9 +65,10 @@ export default function FlaggedNodesPanel({
   // failure used to leave the author at the top of the document,
   // looking at an error about a button they'd have to hunt for again.
   const refocusOnFailure = useRef<string | null>(null);
-  // Whether the next drop in the count is one we watched happen, as
-  // opposed to one the refreshed props merely arrived with.
-  const resolvedHere = useRef(false);
+  // When we last watched a resolve succeed. A drop in the count is
+  // only ours to take credit for if it follows one of these closely;
+  // anything older is a coincidence.
+  const resolvedHere = useRef<number | null>(null);
 
   const entries = useMemo(() => {
     return (
@@ -109,18 +111,30 @@ export default function FlaggedNodesPanel({
   const lastTotal = useRef<number | null>(null);
   useEffect(() => {
     // Consumed on the first run after a resolve, whatever that run
-    // finds. Holding it past that would let it attach to some later,
-    // unrelated drop — a resolve that coincides with a collaborator
-    // raising a flag keeps the total flat, and the credit must not
-    // survive to be spent on the next empty list we see.
-    const ours = resolvedHere.current;
-    resolvedHere.current = false;
+    // finds — and only honoured if it is recent. Both guards matter,
+    // and for different reasons. Resolving one flag while a
+    // collaborator raises another leaves the total *and* the summary
+    // string untouched, so `flagIdKey` is in the deps below to make
+    // sure this effect still runs and spends the credit; and if the
+    // refetch comes back byte-identical it doesn't run at all, so the
+    // credit has to be able to go stale on its own. Without either,
+    // the next empty list — which is also what a failed fetch looks
+    // like — would be announced as a resolve that never happened.
+    const stamp = resolvedHere.current;
+    resolvedHere.current = null;
+    const ours = stamp !== null && Date.now() - stamp <= RECENT_RESOLVE_MS;
     // The state on arrival isn't news; only announce changes to it.
     if (lastTotal.current === null) {
       lastTotal.current = total;
       return;
     }
-    if (lastTotal.current === total) return;
+    if (lastTotal.current === total) {
+      // The count can hold steady across a resolve — someone else
+      // raised one in the same breath. Staying silent there reads as
+      // "your click did nothing", so say both halves.
+      if (ours) setAnnouncement(`Flag resolved. ${openSummary}`);
+      return;
+    }
     lastTotal.current = total;
     if (total === 0) {
       // An empty list is also what a *failed* flags fetch looks like —
@@ -132,7 +146,7 @@ export default function FlaggedNodesPanel({
       return;
     }
     setAnnouncement(openSummary);
-  }, [total, openSummary]);
+  }, [flagIdKey, total, openSummary]);
 
   // Once the resolved flag is gone from the list, re-home focus.
   useEffect(() => {
@@ -145,7 +159,7 @@ export default function FlaggedNodesPanel({
     // (a flag raised from NodeDetail, a collaborator's resolve) would
     // fire it and yank focus out of whatever the author moved on to.
     pendingFocus.current = null;
-    if (Date.now() - pending.at > STALE_FOCUS_MS) return;
+    if (Date.now() - pending.at > RECENT_RESOLVE_MS) return;
     if (flagIds.includes(pending.resolvedId)) return;
     const next = pending.nextId ? resolveButtons.current.get(pending.nextId) : undefined;
     // Next Resolve button, else the panel's own toggle, else the status
@@ -174,7 +188,7 @@ export default function FlaggedNodesPanel({
     try {
       await resolveNodeFlag(projectId, flagId);
       const at = flagIds.indexOf(flagId);
-      resolvedHere.current = true;
+      resolvedHere.current = Date.now();
       pendingFocus.current = {
         resolvedId: flagId,
         // Prefer the flag below; at the end of the list, step back up.

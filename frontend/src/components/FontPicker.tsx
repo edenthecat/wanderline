@@ -205,7 +205,17 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
           data-testid={testId ? `${testId}-dropdown` : undefined}
         >
           {filtered.length === 0 ? (
-            <div style={{ padding: '10px 12px', color: 'var(--color-muted, #888)' }}>
+            // A listbox whose only child is a plain div is an
+            // `aria-required-children` violation, and the message was
+            // reachable by sight only. As a disabled option it is a
+            // legal child and it sits inside the list the combobox
+            // says it controls, so it can actually be read.
+            <div
+              role="option"
+              aria-disabled="true"
+              aria-selected="false"
+              style={{ padding: '10px 12px', color: 'var(--color-muted, #888)' }}
+            >
               No matches — keep typing to use a family that&apos;s not in our catalog.
             </div>
           ) : (
@@ -226,7 +236,15 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
                   // value is announced by the "(current font)" text
                   // below instead of competing for this attribute.
                   aria-selected={highlighted}
-                  onMouseEnter={() => setHighlight(i)}
+                  onMouseEnter={() => {
+                    // Clear rather than merely not-set: arrowing into
+                    // an end stop calls setHighlight with the value it
+                    // already has, React bails out, and the effect
+                    // never runs to clear the flag itself. A hover
+                    // arriving after that would inherit it and scroll.
+                    scrollNextHighlight.current = false;
+                    setHighlight(i);
+                  }}
                   onMouseDown={(e) => {
                     e.preventDefault();
                     pick(entry);

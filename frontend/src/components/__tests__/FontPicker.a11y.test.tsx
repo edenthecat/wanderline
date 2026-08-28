@@ -81,6 +81,16 @@ describe('FontPicker accessibility', () => {
       scrollIntoView.mockClear();
       fireEvent.mouseEnter(screen.getAllByRole('option')[3]);
       expect(scrollIntoView).not.toHaveBeenCalled();
+
+      // Not even after arrowing into an end stop, where setHighlight is
+      // a no-op, React bails out of the render, and the "next move is
+      // keyboard-driven" flag never gets cleared by the effect.
+      fireEvent.change(input, { target: { value: 'Roboto' } });
+      const last = screen.getAllByRole('option').length - 1;
+      for (let i = 0; i <= last + 2; i++) fireEvent.keyDown(input, { key: 'ArrowDown' });
+      scrollIntoView.mockClear();
+      fireEvent.mouseEnter(screen.getAllByRole('option')[0]);
+      expect(scrollIntoView).not.toHaveBeenCalled();
     } finally {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       delete (Element.prototype as any).scrollIntoView;
@@ -111,8 +121,22 @@ describe('FontPicker accessibility', () => {
     expect(input).toBeInTheDocument();
   });
 
-  it('has no axe violations, open or closed', async () => {
+  it('keeps the no-matches message inside the list, as a disabled option', async () => {
+    const { input } = open();
+    fireEvent.change(input, { target: { value: 'Nothing By This Name' } });
+    const empty = screen.getByRole('option', { name: /No matches/ });
+    expect(empty).toHaveAttribute('aria-disabled', 'true');
+    // A listbox whose only child is a plain div is an
+    // aria-required-children violation, and the message was reachable
+    // by sight only.
+    expect(input).toHaveAttribute('aria-expanded', 'true');
+    expect(input).not.toHaveAttribute('aria-activedescendant');
+  });
+
+  it('has no axe violations, open, empty, or closed', async () => {
     const { container, input } = open('Roboto');
+    await expectNoAxeViolations(container);
+    fireEvent.change(input, { target: { value: 'Nothing By This Name' } });
     await expectNoAxeViolations(container);
     fireEvent.keyDown(input, { key: 'Tab' });
     await expectNoAxeViolations(container);
