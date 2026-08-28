@@ -176,7 +176,16 @@ export function extractColors(value: string): Rgba[] {
   if (typeof value !== 'string') return [];
   const single = parseColor(value);
   if (single) return [single];
-  const tokens = value.match(/#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)/g) ?? [];
+  // `[^()]` rather than `[^)]`: this scans an author-controlled string
+  // from every start position, and with `[^)]*` an input like
+  // `rgb(rgb(rgb(…` with no closing paren makes each `rgb(` consume
+  // the rest of the string before failing — quadratic, and reachable
+  // from a stored theme value (CodeQL js/polynomial-redos). Stopping
+  // at the next paren bounds the work per start position, and costs
+  // nothing: CSS colour functions don't nest parens, and anything that
+  // does (`rgb(calc(…))`) wasn't parseable here anyway and is reported
+  // as unmeasurable.
+  const tokens = value.match(/#[0-9a-fA-F]{3,8}\b|rgba?\([^()]*\)|hsla?\([^()]*\)/g) ?? [];
   const out: Rgba[] = [];
   for (const token of tokens) {
     const parsed = parseColor(token);

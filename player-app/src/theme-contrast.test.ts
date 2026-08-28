@@ -545,6 +545,19 @@ describe('colours the parser cannot read are reported, never passed', () => {
     expect(checks.find((c) => c.id === 'text-on-page')!.ratio).toBeNull();
   });
 
+  // The colour scanner runs over an author-controlled string on every
+  // build. With `[^)]*` in the token pattern, `rgb(` repeated with no
+  // closing paren made each start position consume the rest of the
+  // string before failing — quadratic, and reachable from a stored
+  // theme value (CodeQL js/polynomial-redos).
+  it('does not degrade on an unclosed colour function repeated at length', () => {
+    const hostile = 'rgb('.repeat(20000);
+    const started = Date.now();
+    const checks = evaluateThemeContrast({ variables: { pageBackground: hostile } });
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(checks.find((c) => c.id === 'text-on-page')!.ratio).toBeNull();
+  });
+
   it('still resolves a translucent surface against the page it shows through', () => {
     // The default card is rgba(255,255,255,0.1), so an unsamplable
     // page genuinely does leave its readability unknown.
