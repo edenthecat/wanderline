@@ -47,6 +47,7 @@
 import type { StoryGraph } from '../api/client';
 import { PANEL_ANCHORS } from './panelAnchors';
 import { computeStoryHealth } from './storyHealth';
+import { readValidation } from './storyValidation';
 
 export type ReadinessSeverity = 'blocking' | 'review';
 
@@ -123,13 +124,11 @@ export function computeReadiness(inputs: ReadinessInputs): ReadinessSummary {
   // No story at all leaves both graph-derived counts genuinely
   // unknown rather than zero — an empty project is not a clean one.
   //
-  // `validation` is typed as required but comes from a JSONB column
-  // written by whatever parser version was current at upload, so it is
-  // read defensively: a stored graph without the blob should report
-  // "couldn't check", not take the Ship tab down with it.
-  const parserErrors = Array.isArray(storyGraph?.validation?.errors)
-    ? storyGraph.validation.errors.length
-    : null;
+  // The blob is read through lib/storyValidation, which the Story tab's
+  // ValidationPanel call site shares: a graph missing it should cost
+  // the author a "couldn't check" here and an absent panel there, not
+  // a crash in either.
+  const parserErrors = readValidation(storyGraph)?.errors.length ?? null;
   const unreachable = storyGraph ? health.unreachableNodes.length : null;
 
   const checks: ReadinessCheck[] = [

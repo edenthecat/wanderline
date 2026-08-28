@@ -225,7 +225,21 @@ export default function ProjectDetailPage() {
   // matters because both Audio anchors sit behind AudioTab's own load.
   useEffect(() => {
     if (!readinessAnchor) return;
-    return scrollToSelector(`#${readinessAnchor}`);
+    const cancel = scrollToSelector(`#${readinessAnchor}`);
+    // An author who starts reading before the destination finishes
+    // loading has chosen where they are; a scroll that lands seconds
+    // later is an interruption, not help. Deliberately not the
+    // `scroll` event — our own smooth scrollIntoView fires that, and
+    // would cancel itself mid-animation. These three are intent.
+    window.addEventListener('wheel', cancel, { once: true, passive: true });
+    window.addEventListener('touchmove', cancel, { once: true, passive: true });
+    window.addEventListener('keydown', cancel, { once: true });
+    return () => {
+      cancel();
+      window.removeEventListener('wheel', cancel);
+      window.removeEventListener('touchmove', cancel);
+      window.removeEventListener('keydown', cancel);
+    };
   }, [readinessAnchor, activeTab]);
 
   const handleExport = useCallback(

@@ -69,6 +69,19 @@ describe('scrollToSelector', () => {
     expect(document.getElementById('late')!.scrollIntoView).not.toHaveBeenCalled();
   });
 
+  // The cancel is what lets a caller drop the watch when the author
+  // starts navigating on their own; a stale watch landing seconds
+  // later is an interruption, not help.
+  it('can be cancelled after the watch is already armed', async () => {
+    vi.useFakeTimers();
+    const cancel = scrollToSelector('#slow');
+    vi.advanceTimersByTime(3000);
+    cancel();
+    document.body.innerHTML = '<div id="slow"></div>';
+    await flush();
+    expect(document.getElementById('slow')!.scrollIntoView).not.toHaveBeenCalled();
+  });
+
   // index.css already disables the start-node animation for readers
   // who ask for less motion; this is now the only scroll path in the
   // editor, so it is the only place that can honour them here.

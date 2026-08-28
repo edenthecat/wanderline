@@ -14,6 +14,7 @@ import InkSourceEditor from './InkSourceEditor';
 import TweeSourceEditor from './TweeSourceEditor';
 import { PANEL_ANCHORS } from '../lib/panelAnchors';
 import { scrollToSelector } from '../lib/scrollToPanel';
+import { readValidation } from '../lib/storyValidation';
 import { useVocab } from '../hooks/useVocab';
 import type { Nomenclature, NomenclaturePreference } from '../lib/nomenclature';
 import NodeDetail, { hasCustomTiming } from './NodeDetail';
@@ -88,6 +89,7 @@ export default function StoryTab({
 }: Props) {
   const vocab = useVocab(sourceLanguage, nomenclaturePreference);
   const useTweeEditor = sourceLanguage === 'twee';
+  const storedValidation = readValidation(storyGraph);
   // subscribe to the collaborative Y.Doc for this project.
   // The doc is shared with anyone else who has this project open;
   // we pass it down so NodeDetail can bind editable text fields to
@@ -118,6 +120,15 @@ export default function StoryTab({
   // Cancels the in-flight "scroll to this node when it renders" watch,
   // so a second jump (or leaving the tab) abandons the first.
   const cancelScrollRef = useRef<(() => void) | null>(null);
+  // Consumed once. The Ship tab's readiness summary sets `expandPanelId`
+  // to say "the author came here to see that panel" — true of the
+  // arrival, not of the rest of the visit. Toggling to the Source view
+  // and back remounts these panels, and one the author has since
+  // collapsed should stay collapsed.
+  const [expandOnArrival, setExpandOnArrival] = useState(expandPanelId);
+  useEffect(() => {
+    if (expandOnArrival) setExpandOnArrival(null);
+  }, [expandOnArrival]);
 
   // guard against source-tab STARTER_TEMPLATE data loss.
   // Every graph-mutating PATCH clears both ink_source and twee_source
@@ -568,9 +579,12 @@ export default function StoryTab({
         </div>
       ) : (
         <>
+          {/* Read through the same accessor the Ship tab's readiness
+              summary uses — see lib/storyValidation for why the blob
+              cannot be trusted to exist. */}
           <ValidationPanel
-            errors={storyGraph.validation.errors}
-            warnings={storyGraph.validation.warnings}
+            errors={storedValidation?.errors ?? []}
+            warnings={storedValidation?.warnings ?? []}
             onNodeJump={jumpToNode}
           />
           <FlaggedNodesPanel
@@ -580,12 +594,12 @@ export default function StoryTab({
             onJumpToNode={jumpToNode}
             onFlagsChanged={refreshFlags}
             truncated={flagsTruncated}
-            startExpanded={expandPanelId === PANEL_ANCHORS.flaggedNodes}
+            startExpanded={expandOnArrival === PANEL_ANCHORS.flaggedNodes}
           />
           <StoryHealthPanel
             storyGraph={storyGraph}
             onJumpToNode={jumpToNode}
-            startExpanded={expandPanelId === PANEL_ANCHORS.storyHealth}
+            startExpanded={expandOnArrival === PANEL_ANCHORS.storyHealth}
           />
           {/* Stats */}
           <div className="stats-row">
