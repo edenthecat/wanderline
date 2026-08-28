@@ -1202,6 +1202,7 @@ function GraphTabInner({
               projectId={projectId}
               nodeAudio={editor.audioByNode[selectedNodeId]}
               audioNames={editor.audioNames}
+              mixContext={editor.mixContext}
               flags={editor.flagsByNode[selectedNodeId]}
               onFlagsChanged={editor.refreshFlags}
               characters={editor.characters}

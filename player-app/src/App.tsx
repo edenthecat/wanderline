@@ -15,6 +15,12 @@ import {
   WarningTriangle,
 } from 'iconoir-react';
 import {
+  VOLUME_DEFAULTS,
+  resolveVolumes,
+  volumeToGain,
+  type VolumeOverrides,
+} from '@wanderline/shared';
+import {
   AUTOSAVE_SLOT_ID,
   clearAllSlots,
   defaultManualSlotName,
@@ -281,13 +287,15 @@ export default function App() {
   // adding it there would re-run the audio effect and restart
   // narration under a listener who toggled mid-passage.
   const autoAdvanceRef = useRef(false);
-  const [voiceoverVolume, setVoiceoverVolume] = useState(100);
-  const [userIndicatorVolume, setUserIndicatorVolume] = useState(50);
-  // Fallbacks are the last link in the resolution chain below, so they
-  // must match the editor's own defaults (frontend VolumesTab): 100 /
-  // 30 / 50. This one said 100, and only looked right because the
-  // apply sites were multiplying by the project setting a second time.
-  const [userBgMusicVolume, setUserBgMusicVolume] = useState(30);
+  // Fallbacks are the last link in the resolution chain below, and the
+  // editor shows the same numbers on its sliders and in its in-context
+  // audition — so they live in @wanderline/shared rather than as
+  // literals here. Background music said 100 once, and only looked
+  // right because the apply sites were multiplying by the project
+  // setting a second time.
+  const [voiceoverVolume, setVoiceoverVolume] = useState(VOLUME_DEFAULTS.voiceover);
+  const [userIndicatorVolume, setUserIndicatorVolume] = useState(VOLUME_DEFAULTS.indicator);
+  const [userBgMusicVolume, setUserBgMusicVolume] = useState(VOLUME_DEFAULTS.backgroundMusic);
   // False until the story's volume settings and any per-device override
   // have been resolved. Guards the persist effect above.
   const volumesHydratedRef = useRef(false);
@@ -412,27 +420,12 @@ export default function App() {
           setCurrentNodeId(data.startNode);
         }
 
-        // Volume resolution order: per-device localStorage override
-        // wins (the listener set it explicitly), otherwise the
-        // project's author-chosen default from settings, otherwise
-        // the hardcoded fallback.
-        //
-        // The state these seed IS the effective volume — apply it as
-        // `state / 100` and nothing else. The apply sites used to
-        // multiply by story.settings a second time, squaring the
-        // author's choice: a 30% music default played at 9%, a 50%
-        // indicator default at 25%. Voiceover escaped only because
-        // its default is 100 and 1 x 1 = 1.
         const s = (data.settings ?? {}) as {
           voiceoverVolume?: number;
           backgroundMusicVolume?: number;
           indicatorVolume?: number;
           autoAdvance?: boolean;
         };
-        if (typeof s.voiceoverVolume === 'number') setVoiceoverVolume(s.voiceoverVolume);
-        if (typeof s.indicatorVolume === 'number') setUserIndicatorVolume(s.indicatorVolume);
-        if (typeof s.backgroundMusicVolume === 'number')
-          setUserBgMusicVolume(s.backgroundMusicVolume);
         // Auto-advance resolves the same way, but per story rather than
         // per device: it is a fact about how this story reads, and a
         // standalone build is its own origin anyway.
@@ -445,15 +438,30 @@ export default function App() {
           setAutoAdvance(savedAutoAdvance === 'true');
         }
 
+        // Volume resolution order: per-device localStorage override
+        // wins (the listener set it explicitly), otherwise the
+        // project's author-chosen default from settings, otherwise the
+        // hardcoded fallback. resolveVolumes owns that chain — the
+        // editor's in-context audition resolves through the same
+        // function, so the two can't drift.
+        //
+        // The state it seeds IS the effective volume: apply it with
+        // volumeToGain and nothing else. The apply sites used to
+        // multiply by story.settings a second time, squaring the
+        // author's choice: a 30% music default played at 9%, a 50%
+        // indicator default at 25%. Voiceover escaped only because
+        // its default is 100 and 1 x 1 = 1.
+        let overrides: VolumeOverrides | null = null;
         const savedVolumes = safeGetItem(localStorage, STORAGE_PREFIX + 'volumes');
         if (savedVolumes) {
           try {
-            const volumes = JSON.parse(savedVolumes);
-            if (volumes.voiceover !== undefined) setVoiceoverVolume(volumes.voiceover);
-            if (volumes.indicator !== undefined) setUserIndicatorVolume(volumes.indicator);
-            if (volumes.bgMusic !== undefined) setUserBgMusicVolume(volumes.bgMusic);
+            overrides = JSON.parse(savedVolumes) as VolumeOverrides;
           } catch {}
         }
+        const resolved = resolveVolumes(s, overrides);
+        setVoiceoverVolume(resolved.voiceover);
+        setUserIndicatorVolume(resolved.indicator);
+        setUserBgMusicVolume(resolved.backgroundMusic);
         // Resolution is complete; the listener's own changes from here
         // on are theirs to keep.
         volumesHydratedRef.current = true;
@@ -613,7 +621,7 @@ export default function App() {
 
       const trackIndex = bgMusicIndexRef.current % story.backgroundMusic.length;
       const trackUrl = story.audioBaseUrl + story.backgroundMusic[trackIndex];
-      const volume = userBgMusicVolume / 100;
+      const volume = volumeToGain(userBgMusicVolume);
 
       // Use cached audio if available
       const audio = getCachedAudio('bgm_' + trackIndex, trackUrl);
@@ -726,10 +734,12 @@ export default function App() {
       );
     }
     // Apply to currently playing audio
-    if (audioRef.current) audioRef.current.volume = voiceoverVolume / 100;
-    if (choice1IndicatorRef.current) choice1IndicatorRef.current.volume = userIndicatorVolume / 100;
-    if (choice2IndicatorRef.current) choice2IndicatorRef.current.volume = userIndicatorVolume / 100;
-    if (bgMusicRef.current) bgMusicRef.current.volume = userBgMusicVolume / 100;
+    if (audioRef.current) audioRef.current.volume = volumeToGain(voiceoverVolume);
+    if (choice1IndicatorRef.current)
+      choice1IndicatorRef.current.volume = volumeToGain(userIndicatorVolume);
+    if (choice2IndicatorRef.current)
+      choice2IndicatorRef.current.volume = volumeToGain(userIndicatorVolume);
+    if (bgMusicRef.current) bgMusicRef.current.volume = volumeToGain(userBgMusicVolume);
   }, [voiceoverVolume, userIndicatorVolume, userBgMusicVolume]);
 
   const currentNode = story && currentNodeId ? story.nodes[currentNodeId] : null;
@@ -1061,7 +1071,7 @@ export default function App() {
     playedIndicatorsRef.current = { choice1: false, choice2: false };
 
     // Use cached indicator audio elements if available
-    const indicatorVol = userIndicatorVolume / 100;
+    const indicatorVol = volumeToGain(userIndicatorVolume);
     if (story.indicatorAudio?.choice1) {
       const url = story.audioBaseUrl + story.indicatorAudio.choice1;
       choice1IndicatorRef.current = getCachedAudio('ind_c1', url);
@@ -1088,7 +1098,7 @@ export default function App() {
     const audioUrl = story.audioBaseUrl + currentNode.audio.voiceover;
     // Use cached voiceover audio if available
     const audio = getCachedAudio('vo_' + currentNodeId, audioUrl);
-    audio.volume = voiceoverVolume / 100;
+    audio.volume = volumeToGain(voiceoverVolume);
     audio.onloadstart = () => {
       if (!isStale()) setPlayerState('loading');
     };

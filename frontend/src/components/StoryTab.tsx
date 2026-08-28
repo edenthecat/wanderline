@@ -196,6 +196,7 @@ export default function StoryTab({
     metadataLoaded,
     audioByNode,
     audioNames,
+    mixContext,
     characters,
     flagsByNode,
     flagsTruncated,
@@ -679,6 +680,7 @@ export default function StoryTab({
                     flags={flagsByNode[node.id]}
                     onFlagsChanged={refreshFlags}
                     audioNames={audioNames}
+                    mixContext={mixContext}
                     characters={characters}
                     metadataLoaded={metadataLoaded}
                     nodeIdSet={nodeIdSet}
@@ -801,6 +803,7 @@ export default function StoryTab({
                           flags={flagsByNode[knot.id]}
                           onFlagsChanged={refreshFlags}
                           audioNames={audioNames}
+                          mixContext={mixContext}
                           characters={characters}
                           metadataLoaded={metadataLoaded}
                           nodeIdSet={nodeIdSet}
@@ -860,6 +863,7 @@ export default function StoryTab({
                               flags={flagsByNode[child.id]}
                               onFlagsChanged={refreshFlags}
                               audioNames={audioNames}
+                              mixContext={mixContext}
                               characters={characters}
                               metadataLoaded={metadataLoaded}
                               nodeIdSet={nodeIdSet}

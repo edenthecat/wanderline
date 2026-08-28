@@ -17,13 +17,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as Y from 'yjs';
 import { ReactNode } from 'react';
+import { resolveVolumes } from '@wanderline/shared';
 import {
   addChoice,
   deleteChoice,
   fetchAudioAssignments,
+  fetchAudioFiles,
   fetchCharacters,
   fetchNodeFlags,
   fetchMetadata,
+  fetchProjectSettings,
   renameNode,
   swapChoices,
   updateChoiceTarget,
@@ -38,6 +41,7 @@ import {
   type StoryGraph,
 } from '../api/client';
 import { bumpLiveSignal, useLiveSignal } from './useLiveSignal';
+import type { MixContext } from '../lib/passageMix';
 
 const METADATA_SIGNAL = 'metadata';
 // Bumped by AudioTab whenever a clip is assigned, unassigned or
@@ -62,6 +66,11 @@ export interface UseNodeEditorResult {
   audioByNode: AudioAssignments;
   /** audio_file_id -> the name the author uploaded, for labelling. */
   audioNames: Record<string, string>;
+  /** Project volumes + first music track, for NodeDetail's in-context
+   * audition. Null until both lookups land, and null for good if either
+   * fails: a mix assembled from half the truth would be a plausible,
+   * silently wrong answer to the one question the control is asked. */
+  mixContext: MixContext | null;
   /** Characters defined on this project, for the per-node picker.
    * Empty if the lookup failed — the picker then doesn't render. */
   characters: Character[];
@@ -117,6 +126,10 @@ export function useNodeEditor({
   const [audioByNode, setAudioByNode] = useState<AudioAssignments>({});
   // audio_file_id -> the name the author uploaded, for labelling.
   const [audioNames, setAudioNames] = useState<Record<string, string>>({});
+  // Everything the in-context audition needs that isn't per-node: the
+  // resolved project volumes and the background-music track a listener
+  // would have playing underneath.
+  const [mixContext, setMixContext] = useState<MixContext | null>(null);
   // Characters available to assign to a node. The column, the API and
   // the player's per-character theming have all existed since the
   // baseline migration; only the editor control was missing.
@@ -164,6 +177,7 @@ export function useNodeEditor({
     setMetadataError(null);
     setAudioByNode({});
     setAudioNames({});
+    setMixContext(null);
     setCharacters([]);
     setFlagsByNode({});
     setFlagsTruncated(false);
@@ -189,6 +203,42 @@ export function useNodeEditor({
       })
       .catch(() => {
         if (!cancelled) setAudioByNode({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, audioSignal]);
+
+  // The project half of the in-context mix: the author's volumes, and
+  // the music track the player starts its playlist with.
+  //
+  // Both lookups have to succeed. Falling back to defaults on a failed
+  // settings fetch would put an authoritative-looking mix in front of
+  // an author at volumes that aren't theirs — and mixing at the wrong
+  // volumes, silently, is the exact fault this control exists to catch.
+  // Better to offer nothing than to lie.
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([fetchProjectSettings(projectId), fetchAudioFiles(projectId)])
+      .then(([{ settings }, { audioFiles }]) => {
+        if (cancelled) return;
+        // Alphabetical by uploaded name, matching the build pipeline's
+        // sort (backend story-data-builder) and MusicTab's listing; the
+        // player starts that playlist at index 0.
+        const firstTrack = (audioFiles ?? [])
+          .filter((f) => f.category === 'music')
+          .sort((a, b) => a.original_name.localeCompare(b.original_name))[0];
+        setMixContext({
+          // No per-device overrides: those belong to a listener's
+          // device, not to what the author is authoring.
+          volumes: resolveVolumes(settings),
+          backgroundMusic: firstTrack
+            ? { fileId: firstTrack.id, name: firstTrack.original_name }
+            : null,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setMixContext(null);
       });
     return () => {
       cancelled = true;
@@ -488,6 +538,7 @@ export function useNodeEditor({
     metadataLoaded,
     audioByNode,
     audioNames,
+    mixContext,
     characters,
     flagsByNode,
     flagsTruncated,

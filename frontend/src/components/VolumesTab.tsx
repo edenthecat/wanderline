@@ -1,19 +1,20 @@
+import { VOLUME_DEFAULTS } from '@wanderline/shared';
 import { useProjectSettings } from '../hooks/useProjectSettings';
 
 interface Props {
   projectId: string;
 }
 
-// Defaults the player applies when a setting is unset. Kept in sync
-// with player-app/src/App.tsx's `?? <value>` fallbacks so the slider
-// reflects the same number the listener experiences before any
-// override.
+// Defaults the player applies when a setting is unset. These used to be
+// literals repeated here; they now come from the same constant the
+// player seeds its state from, so a slider can't claim one number while
+// the listener hears another.
 function defaultVolume(
   key: 'voiceoverVolume' | 'backgroundMusicVolume' | 'indicatorVolume',
 ): number {
-  if (key === 'voiceoverVolume') return 100;
-  if (key === 'backgroundMusicVolume') return 30;
-  return 50;
+  if (key === 'voiceoverVolume') return VOLUME_DEFAULTS.voiceover;
+  if (key === 'backgroundMusicVolume') return VOLUME_DEFAULTS.backgroundMusic;
+  return VOLUME_DEFAULTS.indicator;
 }
 
 const ROWS = [

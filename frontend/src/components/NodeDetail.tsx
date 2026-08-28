@@ -18,6 +18,8 @@ import {
   type NodeMetadata,
 } from '../api/client';
 import { useAudition } from '../hooks/useAudition';
+import { usePassageMix } from '../hooks/usePassageMix';
+import { buildPassageMix, type MixContext } from '../lib/passageMix';
 import { FLAG_REASON_LABELS } from './flagLabels';
 import AuditionButton from './AuditionButton';
 import CollabChoiceTextInput from './CollabChoiceTextInput';
@@ -112,6 +114,10 @@ export interface NodeDetailProps {
   nodeAudio?: AudioAssignments[string];
   /** audio_file_id -> uploaded name, for labelling the play rows. */
   audioNames?: Record<string, string>;
+  /** Project volumes + background music, so this passage can be
+   * auditioned as a mix. Omitted (or null) hides that control — see
+   * useNodeEditor for why a half-known mix isn't offered. */
+  mixContext?: MixContext | null;
   /** Click a "Reachable from" entry to jump the canvas / list to it. */
   onJumpToNode?: (nodeId: string) => void;
   /**: shared Y.Doc for this project (null until connected).
@@ -148,6 +154,7 @@ export default function NodeDetail({
   onFlagsChanged,
   nodeAudio,
   audioNames,
+  mixContext,
   reachableFrom,
   onJumpToNode,
   yDoc,
@@ -590,7 +597,12 @@ export default function NodeDetail({
           </select>
         </div>
       )}
-      <NodeAudioPreview projectId={projectId} nodeAudio={nodeAudio} audioNames={audioNames} />
+      <NodeAudioPreview
+        projectId={projectId}
+        nodeAudio={nodeAudio}
+        audioNames={audioNames}
+        mixContext={mixContext}
+      />
       {reachableFrom && reachableFrom.length > 0 && (
         <div className="node-reachable-from">
           <h4 className="node-reachable-from-title">Reachable from</h4>
@@ -700,12 +712,20 @@ function AddChoiceRow({ defaultTarget, nodeIdOptions, onSubmit }: AddChoiceRowPr
   );
 }
 
-// The clips attached to this node, with a play control for each.
+// The clips attached to this node, with a play control for each, plus
+// "Play in context" — the same passage as a mix.
 //
 // Authors were previously assigning audio in the Audio tab and then had
 // no way to confirm they'd attached the RIGHT take without running a
 // preview build of the whole story. Reuses useAudition, so only one
 // clip plays at a time and switching rows stops the previous one.
+//
+// Clip by clip still isn't how anyone hears the story. The in-context
+// control plays the passage's voiceover over its ambience and the
+// project's background music at the resolved project volumes, so a
+// narration buried under its own bed is audible here rather than after
+// a build. It is not a preview: no navigation, no choice prompt,
+// nothing advances. Just this passage, as it will sound.
 const AUDIO_SLOTS: { key: 'voiceover' | 'ambience' | 'choice1' | 'choice2'; label: string }[] = [
   { key: 'voiceover', label: 'Voiceover' },
   { key: 'ambience', label: 'Ambience' },
@@ -717,12 +737,31 @@ function NodeAudioPreview({
   projectId,
   nodeAudio,
   audioNames,
+  mixContext,
 }: {
   projectId: string;
   nodeAudio?: AudioAssignments[string];
   audioNames?: Record<string, string>;
+  mixContext?: MixContext | null;
 }) {
-  const { playingId, toggle } = useAudition();
+  const { playingId, toggle, stop: stopAudition } = useAudition();
+  const mixPlayer = usePassageMix();
+
+  // One thing sounds at a time, which useAudition guarantees only
+  // within itself. The mix is a second player alongside it, so the two
+  // are crossed over explicitly: whichever the author starts silences
+  // the other, rather than layering an isolated clip on top of a mix
+  // that is supposed to represent the whole passage.
+  const auditionClip = (id: string, url: string) => {
+    mixPlayer.stop();
+    toggle(id, url);
+  };
+  const plan = mixContext ? buildPassageMix(projectId, nodeAudio, mixContext, audioNames) : null;
+  const toggleMix = () => {
+    if (!plan) return;
+    stopAudition();
+    mixPlayer.toggle(plan.mix);
+  };
 
   if (!nodeAudio) return null;
   const rows = AUDIO_SLOTS.map((slot) => ({ ...slot, fileId: nodeAudio[slot.key] })).filter(
@@ -739,7 +778,7 @@ function NodeAudioPreview({
         url={audioFileUrl(projectId, fileId)}
         label={label}
         playingId={playingId}
-        toggle={toggle}
+        toggle={auditionClip}
       />
       <span className="node-audio-label">{label}</span>
       <span className="node-audio-file text-muted">{audioNames?.[fileId] ?? fileId}</span>
@@ -753,6 +792,32 @@ function NodeAudioPreview({
         {rows.map((r) => renderRow(`${r.key}:${r.fileId}`, r.fileId, r.label))}
         {sfx.map((fileId, i) => renderRow(`sfx-${i}:${fileId}`, fileId, `SFX ${i + 1}`))}
       </ul>
+      {plan && (
+        <div className="node-audio-context">
+          <button
+            type="button"
+            className="btn btn-sm node-audio-context-btn"
+            onClick={toggleMix}
+            aria-label={mixPlayer.playing ? 'Stop in-context playback' : 'Play in context'}
+          >
+            {mixPlayer.playing ? '■ Stop' : '▶ Play in context'}
+          </button>
+          {/* The percentages are on screen deliberately. A mix applied
+              at the wrong level is the fault this control exists to
+              surface, and a number an author can read beats one they
+              can only try to hear. */}
+          <ul className="node-audio-context-layers">
+            {plan.layers.map((layer) => (
+              <li key={layer.key}>
+                <span className="node-audio-context-layer">{layer.label}</span>{' '}
+                <span className="text-muted">
+                  {layer.volume}%{layer.name ? ` · ${layer.name}` : ''}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
