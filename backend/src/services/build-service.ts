@@ -820,17 +820,22 @@ export function renderSmokeHtml(storyData: unknown): string {
   // win in the player's CSS, so checking only the globals would sign
   // off on a palette the listener never sees.
   const theme = (storyData as { settings?: { theme?: ThemeInput } }).settings?.theme;
-  const contrastProblems = evaluateThemeContrast(theme)
-    .filter((check) => !check.passes)
-    .map((check) =>
-      // A value we couldn't parse is reported as its own problem
-      // rather than dropped. A green tick for a check that never ran
-      // is the one outcome worse than no check.
-      check.ratio === null
-        ? `${check.label}: could not read ${check.unparsed.join(', ')} — use a hex, rgb() or hsl() value`
-        : `${check.label}: ${check.ratio.toFixed(2)}:1 (needs ${check.required}:1)`,
-    );
-  const contrastJson = JSON.stringify(contrastProblems).replace(/</g, '\\u003c');
+  const contrastChecks = evaluateThemeContrast(theme);
+  const contrastProblems = contrastChecks
+    .filter((check) => check.ratio !== null && !check.passes)
+    .map((check) => `${check.label}: ${check.ratio!.toFixed(2)}:1 (needs ${check.required}:1)`);
+  // Colours we couldn't read are surfaced as advice, not as a failed
+  // check. They aren't a pass — the page says plainly that they went
+  // unmeasured — but a page background written as `url(...)` is a
+  // supported, sensible choice, and failing every build that uses one
+  // would train authors to ignore the whole page.
+  const contrastUnknown = contrastChecks
+    .filter((check) => check.ratio === null)
+    .map((check) => `${check.label}: could not read ${check.unparsed.join(', ')}`);
+  const contrastJson = JSON.stringify({
+    problems: contrastProblems,
+    unknown: contrastUnknown,
+  }).replace(/</g, '\\u003c');
 
   // The runner is inlined as a regular <script> so file:// pages can
   // execute it without module-loader gymnastics.
@@ -846,6 +851,9 @@ export function renderSmokeHtml(storyData: unknown): string {
     .check { padding: 0.5rem 0.75rem; border-radius: 6px; margin: 0.5rem 0; }
     .check.pass { background: rgba(76,175,80,0.15); border-left: 3px solid #4caf50; }
     .check.fail { background: rgba(244,67,54,0.15); border-left: 3px solid #f44336; }
+    /* Advisory, not a verdict: things nobody could measure. */
+    .check.note { background: rgba(255,193,7,0.12); border-left: 3px solid #ffc107; }
+    .note-help { margin: 0.4rem 0 0; font-size: 0.85rem; opacity: 0.85; }
     .check h2 { margin: 0 0 0.25rem; font-size: 1rem; }
     ul.problems { margin: 0.25rem 0 0; padding-left: 1.25rem; font-size: 0.85rem; opacity: 0.85; }
     code { background: rgba(255,255,255,0.07); padding: 0 0.25rem; border-radius: 3px; }
@@ -871,6 +879,11 @@ export function renderSmokeHtml(storyData: unknown): string {
       var ok = problems.length === 0;
       if (ok) passCount++;
       checks.push({ label: label, ok: ok, problems: problems });
+    }
+    function escapeText(s) {
+      return String(s).replace(/[<>&]/g, function (ch) {
+        return ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[ch];
+      });
     }
 
     // 1) Node completeness
@@ -912,8 +925,8 @@ export function renderSmokeHtml(storyData: unknown): string {
 
     // 2b) Theme readability, computed at build time from the same
     // rules the editor's Theme tab warns with.
-    record('Theme colours meet WCAG AA contrast',
-      (window.__WANDERLINE_CONTRAST__ || []).slice());
+    var contrast = window.__WANDERLINE_CONTRAST__ || { problems: [], unknown: [] };
+    record('Theme colours meet WCAG AA contrast', (contrast.problems || []).slice());
 
     // 3) Audio reachability — fire HEAD requests in parallel and wait.
     var audioRefs = [];
@@ -949,18 +962,28 @@ export function renderSmokeHtml(storyData: unknown): string {
       out.innerHTML = checks.map(function (c) {
         var problemHtml = c.problems.length
           ? '<ul class="problems">' + c.problems.map(function (p) {
-              return '<li><code>' + p.replace(/[<>&]/g, function (ch) {
-                return ({ '<':'&lt;', '>':'&gt;', '&':'&amp;' })[ch];
-              }) + '</code></li>';
+              return '<li><code>' + escapeText(p) + '</code></li>';
             }).join('') + '</ul>'
           : '';
         return '<div class="check ' + (c.ok ? 'pass' : 'fail') + '">' +
           '<h2>' + (c.ok ? '✓ ' : '✗ ') + c.label + '</h2>' + problemHtml + '</div>';
       }).join('');
+      // Colours nobody could measure are said out loud rather than
+      // folded into the tick above — but they don't fail the build,
+      // because a url() page background is a legitimate choice.
+      var unknown = contrast.unknown || [];
+      if (unknown.length) {
+        out.innerHTML += '<div class="check note"><h2>! Theme colours that could not be measured' +
+          '</h2><ul class="problems">' + unknown.map(function (p) {
+            return '<li><code>' + escapeText(p) + '</code></li>';
+          }).join('') + '</ul>' +
+          '<p class="note-help">Use a hex, rgb() or hsl() value if you want these checked.</p></div>';
+      }
       // Also log to console so headless smoke runners can capture it.
       console.log('[wanderline-smoke]', JSON.stringify({
         passing: passCount, total: checks.length,
-        problems: checks.filter(function (c) { return !c.ok; })
+        problems: checks.filter(function (c) { return !c.ok; }),
+        unmeasured: unknown
       }));
     }
   })();

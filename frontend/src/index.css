@@ -1927,6 +1927,17 @@ details[open] > .audio-section-summary {
   background-image: linear-gradient(rgba(203, 213, 225, 0.75), rgba(203, 213, 225, 0.75));
   filter: saturate(0.35);
 }
+/* The wash is translucent, so it needs an opaque card under it. Every
+   other state gives it one, but `.is-start` paints its violet tint
+   with the `background` shorthand, which resets `background-color` to
+   transparent — a start node excluded by a graph search would have had
+   the wash composite over the canvas instead of over a card, on a
+   surface none of the measured ratios cover. Higher specificity than
+   `.is-start`, and scoped so it only applies while dimmed. */
+.graph-node-card.is-start.is-dim,
+.graph-node-card.is-start.is-unmatched {
+  background-color: #ffffff;
+}
 /* The footer is the one piece of card text that isn't near-black;
    #6b7280 under the wash is 4.15:1, so darken it to clear AA. */
 .graph-node-card.is-dim .graph-node-card-footer,

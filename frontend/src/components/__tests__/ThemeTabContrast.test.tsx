@@ -73,7 +73,13 @@ describe('Theme tab contrast warning', () => {
   // player's CSS, so a check that looked only at the global knobs
   // would clear a palette the listener can't read.
   it('warns about a per-component override, not just the global knobs', async () => {
-    mount({ components: { page: { background: '#ffffff' } } });
+    // The globals on their own are fine here; only the Page → Text
+    // color override makes this unreadable, and it is the one the
+    // player's `var(--wl-page-textColor, ...)` chain actually uses.
+    mount({
+      variables: { pageBackground: '#ffffff', textColor: '#111827' },
+      components: { page: { textColor: '#eeeeee' } },
+    });
     const warning = await screen.findByTestId('theme-contrast-warning');
     expect(warning).toHaveTextContent(/Body text on the page background/);
   });

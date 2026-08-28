@@ -41,7 +41,7 @@ export const PLAYER_THEME_DEFAULTS: Required<ThemePalette> = {
   cardBackground: 'rgba(255,255,255,0.1)',
   textColor: '#eeeeee',
   headingColor: '#f5f5f5',
-  chromeColor: 'rgba(255,255,255,0.05)',
+  chromeColor: 'rgba(30,30,50,0.95)',
   accentColor: '#4ecdc4',
 };
 
@@ -82,32 +82,79 @@ interface PairSpec {
 }
 
 // How the player resolves each surface, mirroring the `var(...)`
-// chains in styles.ts and index.css.
-const PAGE_BACKGROUND: Source[] = [
-  // body sets `background-image: var(--wl-page-backgroundImage, ...)`,
-  // so an author's page image or gradient is what gets painted.
-  { component: 'page', prop: 'backgroundImage' },
-  { component: 'page', prop: 'background' },
-  { variable: 'pageBackground' },
-];
+// chains in styles.ts and index.css. Each of these was read off the
+// declaration it models; a chain invented from the knob names would
+// measure combinations the player never renders.
+
+// body: `color: var(--wl-page-textColor, var(--wl-text))`.
 const BODY_TEXT: Source[] = [{ component: 'page', prop: 'textColor' }, { variable: 'textColor' }];
+// styles.card: `var(--wl-storyCard-background, var(--wl-card-bg, ...))`.
 const CARD_BACKGROUND: Source[] = [
   { component: 'storyCard', prop: 'background' },
   { variable: 'cardBackground' },
 ];
+// styles.card: `color: var(--wl-storyCard-textColor, var(--wl-text, inherit))`.
+// Note --wl-page-textColor is NOT in this chain: a Page → Text color
+// override does not reach the card.
 const CARD_TEXT: Source[] = [
   { component: 'storyCard', prop: 'textColor' },
-  { component: 'page', prop: 'textColor' },
   { variable: 'textColor' },
 ];
-const CHROME_BACKGROUND: Source[] = [
+// styles.settingsPanel:
+// `var(--wl-settingsPanel-background, var(--wl-chrome, rgba(30,30,50,0.95)))`.
+const PANEL_BACKGROUND: Source[] = [
   { component: 'settingsPanel', prop: 'background' },
   { variable: 'chromeColor' },
 ];
+const PANEL_TEXT: Source[] = [
+  { component: 'settingsPanel', prop: 'textColor' },
+  { variable: 'textColor' },
+];
+// styles.title: `color: var(--wl-header-textColor, var(--wl-heading))`.
 const HEADING_TEXT: Source[] = [
   { component: 'header', prop: 'textColor' },
   { variable: 'headingColor' },
 ];
+
+/** Does this CSS value paint an image layer rather than a flat colour? */
+function isImageValue(value: string): boolean {
+  return /(^|[\s,])(?:repeating-)?(?:linear|radial|conic)-gradient\(|url\(/i.test(value);
+}
+
+/**
+ * What the page actually looks like, which needs more than a fallback
+ * chain because the player paints it with two declarations:
+ *
+ *   background:       var(--wl-page-background,      var(--wl-page-bg));
+ *   background-image: var(--wl-page-backgroundImage, var(--wl-page-bg));
+ *
+ * The second always wins the visible layer when it resolves to a real
+ * image. When it resolves to a *colour* the declaration is invalid at
+ * computed-value time, so `background-image` falls back to `none` and
+ * the shorthand's colour is what shows. Which means Page → Background
+ * (a colour) is only visible when `--wl-page-bg` is itself a colour —
+ * with the shipped default, a gradient, it is covered. Modelling this
+ * as "component beats variable" would have passed a white page with
+ * near-white text, and failed a dark page that renders fine.
+ */
+function resolvePageSurface(theme: ThemeInput | undefined): string {
+  const image = theme?.components?.page?.backgroundImage?.trim();
+  const color = theme?.components?.page?.background?.trim();
+  const variable = isSet(theme?.variables?.pageBackground)
+    ? theme!.variables!.pageBackground!.trim()
+    : PLAYER_THEME_DEFAULTS.pageBackground;
+
+  if (isSet(image) && image.toLowerCase() !== 'none') return image;
+  if (isSet(image)) {
+    // Explicitly cleared: the shorthand's background-color shows. If
+    // that came from a gradient it was never a colour at all, so the
+    // browser canvas (white) is what's behind the text.
+    if (isSet(color)) return color;
+    return isImageValue(variable) ? '#ffffff' : variable;
+  }
+  if (isImageValue(variable)) return variable;
+  return isSet(color) ? color : variable;
+}
 
 // The surfaces text actually lands on in the player. Headings are
 // rendered large (>=1.5rem), so they're held to the large-text bar.
@@ -127,24 +174,21 @@ const PAIRS: PairSpec[] = [
     required: AA_NORMAL_TEXT,
   },
   {
-    id: 'text-on-chrome',
-    label: 'Body text on the player chrome',
-    foreground: BODY_TEXT,
-    layers: [CHROME_BACKGROUND],
+    id: 'text-on-settings-panel',
+    label: 'Text on the settings panel',
+    foreground: PANEL_TEXT,
+    layers: [PANEL_BACKGROUND],
     required: AA_NORMAL_TEXT,
   },
   {
+    // The story title and section headers sit on the page, not on the
+    // card — there is no header-coloured text on the story card, so
+    // measuring that combination would warn about something nobody
+    // ever sees.
     id: 'heading-on-page',
     label: 'Headings on the page background',
     foreground: HEADING_TEXT,
     layers: [],
-    required: AA_LARGE_TEXT,
-  },
-  {
-    id: 'heading-on-card',
-    label: 'Headings on the story card',
-    foreground: HEADING_TEXT,
-    layers: [CARD_BACKGROUND],
     required: AA_LARGE_TEXT,
   },
   {
@@ -172,9 +216,8 @@ function resolveSource(theme: ThemeInput | undefined, chain: Source[]): string |
     if ('literal' in source) return source.literal;
     if ('component' in source) {
       const value = theme?.components?.[source.component]?.[source.prop];
-      // `none` is the documented way to clear a background image, and
-      // it falls through to the colour underneath rather than being a
-      // value we failed to understand.
+      // `none` means "no override", not "a value we couldn't read", so
+      // it falls through to whatever is underneath.
       if (isSet(value) && value.trim().toLowerCase() !== 'none') return value.trim();
       continue;
     }
@@ -196,12 +239,11 @@ function resolveSource(theme: ThemeInput | undefined, chain: Source[]): string |
 export function evaluateThemeContrast(theme: ThemeInput | undefined): ThemeContrastCheck[] {
   const results: ThemeContrastCheck[] = [];
 
-  const pageValue = resolveSource(theme, PAGE_BACKGROUND);
-  const pageStops = isSet(pageValue) ? extractColors(pageValue) : [];
+  const pageValue = resolvePageSurface(theme);
+  const pageStops = extractColors(pageValue);
 
   for (const pair of PAIRS) {
     const unparsed: string[] = [];
-    if (pageStops.length === 0) unparsed.push(pageValue ?? '(unset)');
 
     const fgValue = resolveSource(theme, pair.foreground);
     const fg = isSet(fgValue) ? parseColor(fgValue) : null;
@@ -213,6 +255,24 @@ export function evaluateThemeContrast(theme: ThemeInput | undefined): ThemeContr
       if (!parsed) unparsed.push(value ?? '(unset)');
       return parsed;
     });
+
+    // The page only matters when it can show through. The start
+    // button's accent fill is opaque, so a page written as `url(...)`
+    // — which we can't sample and never will be able to — has no
+    // bearing on whether its label is readable, and reporting it as
+    // unmeasurable there would fail the smoke check on every build
+    // that uses a background image.
+    const bottom = layers[0];
+    const pageIsVisible = layers.length === 0 || (bottom !== null && bottom.alpha < 1);
+    const bases: Rgb[] = pageIsVisible
+      ? // A translucent page resolves over white — the browser's own
+        // canvas — before anything stacks on it.
+        pageStops.map((stop) => flatten([stop], [255, 255, 255]))
+      : bottom
+        ? [bottom.rgb]
+        : [];
+    const stacked = pageIsVisible ? layers : layers.slice(1);
+    if (pageIsVisible && pageStops.length === 0) unparsed.push(pageValue);
 
     if (unparsed.length > 0) {
       results.push({
@@ -227,11 +287,9 @@ export function evaluateThemeContrast(theme: ThemeInput | undefined): ThemeContr
     }
 
     let worst = Infinity;
-    for (const stop of pageStops) {
-      // A translucent page background resolves over white — the
-      // browser's own canvas — before anything stacks on it.
-      let surface: Rgb = flatten([stop], [255, 255, 255]);
-      for (const layer of layers) surface = composite(layer!.rgb, surface, layer!.alpha);
+    for (const base of bases) {
+      let surface: Rgb = base;
+      for (const layer of stacked) surface = composite(layer!.rgb, surface, layer!.alpha);
       const ink = composite(fg!.rgb, surface, fg!.alpha);
       worst = Math.min(worst, contrastRatio(ink, surface));
     }

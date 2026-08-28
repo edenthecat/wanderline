@@ -367,13 +367,18 @@ describe('author-chosen palettes are checked, not just the defaults', () => {
 });
 
 // The per-component panels sit in the same Theme tab as the global
-// knobs and win in the player's CSS: body copy resolves
-// `var(--wl-page-textColor, var(--wl-text))`, so a component override
-// is what the listener actually gets. Checking only the globals would
-// hand a green light to a palette nobody can read.
-describe('per-component overrides are checked ahead of the globals they beat', () => {
-  it('flags a component page background the global text no longer suits', () => {
-    const failures = failingThemeContrast({ components: { page: { background: '#ffffff' } } });
+// knobs, and for several surfaces they are what the player actually
+// paints: body copy resolves `var(--wl-page-textColor, var(--wl-text))`
+// and the card resolves `var(--wl-storyCard-background, ...)`.
+// Checking only the globals would hand a green light to a palette
+// nobody can read.
+describe('per-component overrides are checked alongside the globals', () => {
+  it('flags a Page text override the page background no longer suits', () => {
+    // Globals alone would pass here; the override is the whole defect.
+    const failures = failingThemeContrast({
+      variables: { pageBackground: '#ffffff', textColor: '#111827' },
+      components: { page: { textColor: '#eeeeee' } },
+    });
     expect(failures.map((f) => f.id)).toContain('text-on-page');
   });
 
@@ -394,6 +399,96 @@ describe('per-component overrides are checked ahead of the globals they beat', (
     expect(failures.map((f) => f.id)).toContain('text-on-card');
   });
 
+  it('honours a start-button label override', () => {
+    const failures = failingThemeContrast({
+      variables: { accentColor: '#1f2937' },
+      components: { startButton: { textColor: '#ffffff' } },
+    });
+    expect(failures.map((f) => f.id)).not.toContain('start-button');
+  });
+
+  // The settings panel resolves
+  // `var(--wl-settingsPanel-background, var(--wl-chrome, ...))`, so
+  // both the component override and the global Chrome knob reach it.
+  it('measures the settings panel through both of the knobs that reach it', () => {
+    const viaChrome = failingThemeContrast({ variables: { chromeColor: '#eeeeee' } });
+    expect(viaChrome.map((f) => f.id)).toContain('text-on-settings-panel');
+
+    const viaComponent = failingThemeContrast({
+      components: { settingsPanel: { background: '#eeeeee' } },
+    });
+    expect(viaComponent.map((f) => f.id)).toContain('text-on-settings-panel');
+
+    // And the component override is the one that wins.
+    const both = failingThemeContrast({
+      variables: { chromeColor: '#eeeeee' },
+      components: { settingsPanel: { background: '#1a1a2e' } },
+    });
+    expect(both.map((f) => f.id)).not.toContain('text-on-settings-panel');
+  });
+});
+
+// The settings panel used to hardcode a near-black fill with no
+// variable in its chain, so an author who moved to a light theme got
+// their dark body text on it at 1.25:1 and no global knob could fix
+// it — the Chrome knob, whose own label claims this surface, was read
+// by nothing at all.
+describe('the Chrome knob reaches the surface its label claims', () => {
+  it('puts --wl-chrome in the settings panel chain', () => {
+    expect(styles.settingsPanel.background).toContain('--wl-chrome');
+  });
+
+  it('keeps the untouched panel looking exactly as it did', () => {
+    // The :root default has to equal the colour the panel previously
+    // hardcoded, or this becomes a silent restyle of every story.
+    const rootDefault = declaration(indexCss, ':root', '--wl-chrome');
+    expect(parseColor(rootDefault!)).toEqual(parseColor('rgba(30,30,50,0.95)'));
+    expect(styles.settingsPanel.background).toContain('rgba(30,30,50,0.95)');
+  });
+
+  it('follows a light theme once the author sets it', () => {
+    const failures = failingThemeContrast({
+      variables: { pageBackground: '#ffffff', textColor: '#111827', chromeColor: '#f1f5f9' },
+    });
+    expect(failures.map((f) => f.id)).not.toContain('text-on-settings-panel');
+  });
+});
+
+// The page is painted by two declarations, and which one wins is not
+// "component beats variable":
+//
+//   background:       var(--wl-page-background,      var(--wl-page-bg));
+//   background-image: var(--wl-page-backgroundImage, var(--wl-page-bg));
+//
+// `background-image` wins the visible layer whenever it resolves to a
+// real image. When it resolves to a colour the declaration is invalid
+// at computed-value time and falls back to `none`, letting the
+// shorthand's colour through. Getting this wrong in either direction
+// means warning about a page nobody sees, or clearing one they do.
+describe('the page surface follows the player, not the knob names', () => {
+  it('lets the page-bg gradient cover a Page → Background colour', () => {
+    // Default --wl-page-bg is a dark gradient, which paints over the
+    // white component colour, so #eee body text is still fine.
+    const failures = failingThemeContrast({ components: { page: { background: '#ffffff' } } });
+    expect(failures.map((f) => f.id)).not.toContain('text-on-page');
+  });
+
+  it('shows a Page → Background colour once the page variable is a flat colour', () => {
+    const failures = failingThemeContrast({
+      variables: { pageBackground: '#1a1a2e', textColor: '#1a1a2e' },
+      components: { page: { background: '#1a1a2e' } },
+    });
+    expect(failures.map((f) => f.id)).toContain('text-on-page');
+  });
+
+  it('measures a Page → Background image ahead of everything else', () => {
+    const failures = failingThemeContrast({
+      variables: { pageBackground: '#1a1a2e', textColor: '#eeeeee' },
+      components: { page: { backgroundImage: 'linear-gradient(#ffffff, #ffffff)' } },
+    });
+    expect(failures.map((f) => f.id)).toContain('text-on-page');
+  });
+
   it('falls through a background image cleared with `none`', () => {
     // `none` is how an author clears the image layer; it isn't a
     // colour we failed to read, and the colour underneath is what
@@ -403,14 +498,6 @@ describe('per-component overrides are checked ahead of the globals they beat', (
       components: { page: { backgroundImage: 'none' } },
     });
     expect(checks.find((c) => c.id === 'text-on-page')!.ratio).not.toBeNull();
-  });
-
-  it('honours a start-button label override', () => {
-    const failures = failingThemeContrast({
-      variables: { accentColor: '#1f2937' },
-      components: { startButton: { textColor: '#ffffff' } },
-    });
-    expect(failures.map((f) => f.id)).not.toContain('start-button');
   });
 });
 
@@ -442,5 +529,28 @@ describe('colours the parser cannot read are reported, never passed', () => {
   it('still measures the pairs the unreadable value has nothing to do with', () => {
     const checks = evaluateThemeContrast({ variables: { textColor: 'oklch(0.7 0.1 200)' } });
     expect(checks.find((c) => c.id === 'heading-on-page')!.ratio).not.toBeNull();
+  });
+
+  // A `url()` page background is a first-class option in the Theme
+  // tab. We can't sample it and never will, but it sits *behind* every
+  // opaque surface — so it says nothing about whether the start
+  // button's label is readable, and reporting it there would mark the
+  // build's smoke check failed on every story that uses one.
+  it('does not let an unsamplable page poison pairs it sits behind', () => {
+    const checks = evaluateThemeContrast({
+      components: { page: { backgroundImage: 'url(bg.jpg)' } },
+    });
+    expect(checks.find((c) => c.id === 'start-button')!.ratio).not.toBeNull();
+    // The pairs that really do sit on the page are still honest about it.
+    expect(checks.find((c) => c.id === 'text-on-page')!.ratio).toBeNull();
+  });
+
+  it('still resolves a translucent surface against the page it shows through', () => {
+    // The default card is rgba(255,255,255,0.1), so an unsamplable
+    // page genuinely does leave its readability unknown.
+    const checks = evaluateThemeContrast({
+      components: { page: { backgroundImage: 'url(bg.jpg)' } },
+    });
+    expect(checks.find((c) => c.id === 'text-on-card')!.ratio).toBeNull();
   });
 });

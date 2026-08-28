@@ -391,7 +391,15 @@ export const styles: Record<string, React.CSSProperties> = {
   },
   // Settings panel styles
   settingsPanel: {
-    background: 'var(--wl-settingsPanel-background, rgba(30,30,50,0.95))',
+    // `--wl-chrome` in the middle of the chain. Its Theme-tab knob is
+    // labelled "Player UI surfaces (header, settings panel)" but no
+    // style read the variable, so the knob did nothing and this panel
+    // stayed hardcoded dark: an author moving to a light theme got
+    // their dark body text on a near-black panel (1.25:1) with no
+    // global control that could fix it. The :root default for
+    // --wl-chrome is this same colour, so the untouched appearance is
+    // unchanged.
+    background: 'var(--wl-settingsPanel-background, var(--wl-chrome, rgba(30,30,50,0.95)))',
     color: 'var(--wl-settingsPanel-textColor, var(--wl-text, inherit))',
     borderRadius: 'var(--wl-settingsPanel-borderRadius, 12px)',
     padding: 'var(--wl-settingsPanel-padding, 1rem 1.5rem)',

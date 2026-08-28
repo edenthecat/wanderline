@@ -122,6 +122,20 @@ describe('dimmed graph nodes stay readable', () => {
       expect(declaration(selector, 'box-shadow'), `${selector} box-shadow`).toBeNull();
     }
   });
+
+  // A translucent wash needs an opaque card under it. Every state
+  // provides one except .is-start, which paints its violet tint with
+  // the `background` shorthand — that resets background-color to
+  // transparent, so a start node excluded by a search would have had
+  // the wash composite over the ReactFlow canvas instead of a card.
+  it('gives the start node an opaque fill to be washed over', () => {
+    const fill = declaration('.graph-node-card.is-start.is-dim', 'background-color');
+    expect(fill, 'a dimmed start node needs an opaque background-color').not.toBeNull();
+    expect(parseColor(fill!)!.alpha).toBe(1);
+    expect(contrastRatio(NODE_TITLE, dimSurfaceOver(rgb(fill!)))).toBeGreaterThanOrEqual(
+      AA_NORMAL_TEXT,
+    );
+  });
 });
 
 describe('graph overlay borders carry enough contrast to mean something', () => {

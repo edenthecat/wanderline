@@ -427,14 +427,17 @@ describe('build-service unit', () => {
     // module the editor's Theme tab warns with — so the build and the
     // editor can't disagree about whether a story is readable.
     describe('theme contrast check', () => {
-      function contrastPayload(html: string): string[] {
-        const match = /window\.__WANDERLINE_CONTRAST__=(\[[^\n]*\]);/.exec(html);
+      function contrastPayload(html: string): { problems: string[]; unknown: string[] } {
+        const match = /window\.__WANDERLINE_CONTRAST__=(\{[^\n]*\});/.exec(html);
         expect(match).not.toBeNull();
-        return JSON.parse(match![1]) as string[];
+        return JSON.parse(match![1]) as { problems: string[]; unknown: string[] };
       }
 
       it('reports no problems for a story with no theme', () => {
-        expect(contrastPayload(renderSmokeHtml(sampleStory))).toEqual([]);
+        expect(contrastPayload(renderSmokeHtml(sampleStory))).toEqual({
+          problems: [],
+          unknown: [],
+        });
       });
 
       it('reports no problems for a readable author palette', () => {
@@ -445,15 +448,17 @@ describe('build-service unit', () => {
               variables: {
                 pageBackground: '#ffffff',
                 textColor: '#111827',
-                // Headings have to move with the page too — leaving
-                // the dark-theme default here is itself a failure the
-                // check reports, which is the point.
+                // Headings and the settings panel have to move with
+                // the page too — leaving either at its dark-theme
+                // default is itself a failure the check reports, which
+                // is the point.
                 headingColor: '#111827',
+                chromeColor: '#f1f5f9',
               },
             },
           },
         };
-        expect(contrastPayload(renderSmokeHtml(story))).toEqual([]);
+        expect(contrastPayload(renderSmokeHtml(story))).toEqual({ problems: [], unknown: [] });
       });
 
       it('reports the pair and the measured ratio when a palette fails', () => {
@@ -461,7 +466,7 @@ describe('build-service unit', () => {
           ...sampleStory,
           settings: { theme: { variables: { pageBackground: '#336699', textColor: '#336699' } } },
         };
-        const problems = contrastPayload(renderSmokeHtml(story));
+        const { problems } = contrastPayload(renderSmokeHtml(story));
         expect(problems.length).toBeGreaterThan(0);
         expect(problems.join('\n')).toMatch(/Body text on the page background: 1\.00:1/);
         expect(problems.join('\n')).toMatch(/needs 4\.5:1/);
@@ -474,35 +479,68 @@ describe('build-service unit', () => {
           ...sampleStory,
           settings: { theme: { variables: { pageBackground: '#ffffff' } } },
         };
-        expect(contrastPayload(renderSmokeHtml(story)).join('\n')).toMatch(
+        expect(contrastPayload(renderSmokeHtml(story)).problems.join('\n')).toMatch(
           /Body text on the page background/,
         );
       });
 
-      // The per-component panels win in the player's CSS, so a check
-      // that read only `variables` would stamp a green tick on a
-      // palette the listener can't read.
+      // The per-component panels are what the player's `var()` chains
+      // actually resolve to, so a check that read only `variables`
+      // would stamp a green tick on a palette the listener can't read.
       it('checks per-component overrides, not just the global variables', () => {
         const story = {
           ...sampleStory,
-          settings: { theme: { components: { page: { background: '#ffffff' } } } },
+          settings: {
+            theme: {
+              variables: { pageBackground: '#ffffff', textColor: '#111827' },
+              components: { page: { textColor: '#eeeeee' } },
+            },
+          },
         };
-        expect(contrastPayload(renderSmokeHtml(story)).join('\n')).toMatch(
+        expect(contrastPayload(renderSmokeHtml(story)).problems.join('\n')).toMatch(
           /Body text on the page background/,
         );
       });
 
       // A check that quietly didn't run is indistinguishable from one
       // that passed, on a page whose whole job is to say "this build is
-      // fine".
-      it('reports a colour it could not read instead of passing it', () => {
+      // fine" — so it gets said out loud.
+      it('names a colour it could not read rather than passing it', () => {
         const story = {
           ...sampleStory,
           settings: { theme: { variables: { pageBackground: 'oklch(0.95 0.02 250)' } } },
         };
-        const problems = contrastPayload(renderSmokeHtml(story));
-        expect(problems.length).toBeGreaterThan(0);
-        expect(problems.join('\n')).toMatch(/could not read oklch\(0\.95 0\.02 250\)/);
+        const { problems, unknown } = contrastPayload(renderSmokeHtml(story));
+        expect(unknown.join('\n')).toMatch(/could not read oklch\(0\.95 0\.02 250\)/);
+        // But it is advice, not a verdict: an unreadable value is not
+        // evidence of a contrast failure.
+        expect(problems).toEqual([]);
+      });
+
+      // A url() page background is a supported choice. Failing the
+      // smoke check on every build that uses one would teach authors
+      // to ignore the page.
+      it('does not fail the check over a page background it cannot sample', () => {
+        const story = {
+          ...sampleStory,
+          settings: { theme: { components: { page: { backgroundImage: 'url(bg.jpg)' } } } },
+        };
+        const { problems, unknown } = contrastPayload(renderSmokeHtml(story));
+        expect(problems).toEqual([]);
+        expect(unknown.join('\n')).toMatch(/Body text on the page background/);
+        // The opaque surfaces that sit in front of it are unaffected.
+        expect(unknown.join('\n')).not.toMatch(/Start button/);
+      });
+
+      it('renders the unmeasurable list without failing a check', () => {
+        const story = {
+          ...sampleStory,
+          settings: { theme: { components: { page: { backgroundImage: 'url(bg.jpg)' } } } },
+        };
+        const html = renderSmokeHtml(story);
+        expect(html).toMatch(/Theme colours that could not be measured/);
+        // The pass/fail check still only counts measured failures.
+        expect(html).toMatch(/record\('Theme colours meet WCAG AA contrast', \(contrast\.problems/);
       });
 
       it('keeps the payload from closing the inline script', () => {
