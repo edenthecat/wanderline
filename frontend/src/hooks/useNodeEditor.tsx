@@ -71,9 +71,10 @@ export interface UseNodeEditorResult {
   /** audio_file_id -> the name the author uploaded, for labelling. */
   audioNames: Record<string, string>;
   /** Project volumes + first music track, for NodeDetail's in-context
-   * audition. Null until both lookups land, and null for good if either
-   * fails: a mix assembled from half the truth would be a plausible,
-   * silently wrong answer to the one question the control is asked. */
+   * audition. Null until both lookups land, and null if the FIRST
+   * attempt fails: a mix assembled from half the truth would be a
+   * plausible, silently wrong answer to the one question the control is
+   * asked. A later refetch failing keeps the last resolved value. */
   mixContext: MixContext | null;
   /** Characters defined on this project, for the per-node picker.
    * Empty if the lookup failed — the picker then doesn't render. */
@@ -249,7 +250,14 @@ export function useNodeEditor({
         });
       })
       .catch(() => {
-        if (!cancelled) setMixContext(null);
+        // Keep whatever last resolved. "Better to offer nothing than to
+        // lie" applies to never having known — the initial state is
+        // already null, so a first failure leaves the control hidden.
+        // A blipped REFETCH is different: the context we hold was true
+        // when the server last answered, and a failed refresh doesn't
+        // make it false. Clearing it here would take the control away
+        // mid-session, with no error and nothing to retry it until
+        // another signal fired.
       });
     return () => {
       cancelled = true;

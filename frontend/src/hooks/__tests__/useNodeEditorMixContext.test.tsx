@@ -145,6 +145,36 @@ describe('useNodeEditor — mix context', () => {
     await waitFor(() => expect(result.current.mixContext?.volumes.backgroundMusic).toBe(10));
   });
 
+  // Losing the control mid-session, with no error and nothing to retry
+  // it, is worse than holding the last answer the server gave.
+  it('keeps the last resolved mix when a later refetch blips', async () => {
+    vi.mocked(client.fetchProjectSettings)
+      .mockResolvedValueOnce({ settings: { backgroundMusicVolume: 30 } })
+      .mockRejectedValue(new Error('offline'));
+    vi.mocked(client.updateProjectSettings).mockResolvedValue({ settings: {} });
+    const { result } = mountEditor();
+    await waitFor(() => expect(result.current.mixContext?.volumes.backgroundMusic).toBe(30));
+
+    // Something in this tab saves, which re-triggers the lookup.
+    const settings = renderHook(() => useProjectSettings('p1'));
+    await waitFor(() => expect(settings.result.current.loading).toBe(false));
+
+    // Call counts accumulate across tests here, so measure the delta.
+    const calls = () => vi.mocked(client.fetchProjectSettings).mock.calls.length;
+    const before = calls();
+    await act(async () => {
+      await settings.result.current.updateOne('backgroundMusicVolume', 10);
+    });
+    await waitFor(() => expect(calls()).toBeGreaterThan(before));
+    // And it settles rather than retrying in a loop.
+    await act(async () => {});
+    const settled = calls();
+    await act(async () => {});
+    expect(calls()).toBe(settled);
+
+    expect(result.current.mixContext?.volumes.backgroundMusic).toBe(30);
+  });
+
   it.each([['fetchProjectSettings'], ['fetchAudioFiles']] as const)(
     'offers no mix at all when %s fails, rather than a plausible wrong one',
     async (failing) => {

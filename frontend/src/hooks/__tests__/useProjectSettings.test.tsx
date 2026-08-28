@@ -241,3 +241,30 @@ describe('useProjectSettings — hearing a save it did not make', () => {
     expect(reader.result.current.loading).toBe(false);
   });
 });
+
+// The flush has to reach collaborators too, not just this tab. The
+// mount effect's closure holds the yDoc from the FIRST render, which
+// useYjs documents as always null — captured there, the peer signal
+// would silently never fire.
+describe('useProjectSettings — a flushed save reaches peers', () => {
+  it('signals through the doc as it stands at teardown', async () => {
+    mockedFetch.mockResolvedValue({ settings: {} });
+    mockedUpdate.mockResolvedValue({ settings: { backgroundMusicVolume: 10 } });
+    const doc = new Y.Doc();
+    // Null on the first render, exactly as useYjs is.
+    let current: Y.Doc | null = null;
+    const { result, rerender, unmount } = renderHook(() => useProjectSettings('p1', current));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    current = doc;
+    rerender();
+
+    // Away before the debounce fires, so the save leaves through the
+    // teardown flush.
+    act(() => result.current.updateDebounced('backgroundMusicVolume', 10));
+    unmount();
+
+    await waitFor(() =>
+      expect(typeof doc.getMap<number>('__signals__').get(PROJECT_SETTINGS_SIGNAL)).toBe('number'),
+    );
+  });
+});

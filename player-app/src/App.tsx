@@ -471,21 +471,21 @@ export default function App() {
         // its default is 100 and 1 x 1 = 1.
         //
         // The override is scoped by story id, like the auto-advance key
-        // above and like save slots. That id is re-minted on every ink
-        // upload, so a listener's volumes reset when the author
-        // re-uploads the story — accepted, and arguably right: every
-        // other per-story preference already behaves that way, and the
-        // alternative is the unscoped key, which handed project B the
-        // volumes a listener set for project A. It used
-        // to be one global key, so previewing project A and then
-        // project B from the editor handed B the volumes a listener had
-        // set for A — an author's mix silently not being the author's
-        // mix, which is the whole failure class here. The unscoped key
-        // is still read as a fallback so an existing listener's real
-        // preference survives the change.
-        // Untrustworthy by construction — see LEGACY_VOLUMES_KEY.
-        // Cleared rather than left lying around, so no later version
-        // can mistake it for a record of anything.
+        // above and like save slots. It used to be one global key, so
+        // previewing project A and then project B from the editor
+        // handed B the volumes a listener had set for A — an author's
+        // mix silently not being the author's mix, which is the whole
+        // failure class here.
+        //
+        // That id is re-minted on every ink upload, so a listener's
+        // volumes reset when the author re-uploads the story. Accepted,
+        // and arguably right: every other per-story preference already
+        // behaves that way, and the alternative is the global key above.
+        //
+        // That global key is untrustworthy by construction — see
+        // LEGACY_VOLUMES_KEY — so it is cleared rather than read, and
+        // rather than left lying around for a later version to mistake
+        // for a record of something.
         safeRemoveItem(localStorage, LEGACY_VOLUMES_KEY);
         const savedVolumes = safeGetItem(localStorage, volumesStorageKey(data.id));
         let overrides: VolumeOverrides | null = null;

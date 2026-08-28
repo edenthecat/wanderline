@@ -92,6 +92,12 @@ export function useProjectSettings(
   // and advanced by our own saves so we don't chase our own tail.
   const tick = useProjectSettingsTick();
   const handledTickRef = useRef(tick);
+  // The mount effect's closure would capture the yDoc from the FIRST
+  // render, which useYjs documents as always null — so the flush below
+  // would silently never reach peers. A ref reads the doc as it stands
+  // at teardown, which is when the flush needs it.
+  const yDocRef = useRef(yDoc);
+  yDocRef.current = yDoc;
   // What each pending debounce is going to save, so a teardown can
   // finish the work instead of dropping it.
   const pendingSavesRef = useRef<Map<string, unknown>>(new Map());
@@ -143,12 +149,12 @@ export function useProjectSettings(
         // This component is gone, so there is no local state to
         // update — but the tab replacing it may already have read the
         // pre-flush settings, and so may a collaborator, so both still
-        // have to be told. The doc is captured here rather than read
-        // later: ProjectDetailPage holds the ref-counted entry for the
-        // whole page, so a tab switch doesn't destroy it, but a full
-        // project switch does and a bump then is a no-op we'd rather
-        // not throw on.
-        const doc = yDoc;
+        // have to be told. The doc is read as it stands NOW, not as it
+        // was on the first render: ProjectDetailPage holds the
+        // ref-counted entry for the whole page, so a tab switch leaves
+        // it alive, but a full project switch tears it down and a bump
+        // then is a no-op we'd rather not throw on.
+        const doc = yDocRef.current;
         updateProjectSettings(projectId, patch)
           .then(() => {
             bumpProjectSettingsTick();
