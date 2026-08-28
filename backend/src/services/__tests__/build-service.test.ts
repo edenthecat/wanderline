@@ -468,22 +468,45 @@ describe('build-service unit', () => {
     // "Running…" forever with no explanation.
     it('explains itself when JavaScript is unavailable', () => {
       const html = renderSmokeHtml(sampleStory);
-      const block = /<noscript>[\s\S]*?<\/noscript>/i.exec(html);
-      expect(block).not.toBeNull();
-      expect(block![0]).toMatch(/needs JavaScript/i);
+      const blocks = html.match(/<noscript>[\s\S]*?<\/noscript>/gi) ?? [];
+      expect(blocks.join('\n')).toMatch(/needs JavaScript/i);
+    });
+
+    // The status region would otherwise assert "Running…" forever for
+    // work that never starts.
+    it('hides the live regions when JavaScript is unavailable', () => {
+      const html = renderSmokeHtml(sampleStory);
+      expect(html).toMatch(
+        /<noscript><style>#summary, #results \{ display: none; \}<\/style><\/noscript>/,
+      );
+    });
+
+    // No second <h1>: the page heading renders with scripting off too,
+    // so a fallback that repeats it announces the title twice.
+    it('does not repeat the page heading in the fallback', () => {
+      const html = renderSmokeHtml(sampleStory);
+      expect(html.match(/<h1>/g)).toHaveLength(1);
     });
 
     describe('lang', () => {
-      it('carries the project language', () => {
-        expect(renderSmokeHtml(sampleStory, 'fr')).toMatch(/<html lang="fr">/);
+      // The page's own chrome — "Running…", the check labels,
+      // "Passed:" — is English whatever the story is written in, so
+      // tagging the document with the project language would have a
+      // screen reader read our diagnostics with the wrong phonetics.
+      it('leaves the document in English, since its chrome is English', () => {
+        expect(renderSmokeHtml(sampleStory, 'ja')).toMatch(/<html lang="en">/);
+      });
+
+      it('tags the story title with the project language', () => {
+        expect(renderSmokeHtml(sampleStory, 'fr')).toMatch(/<h1><span lang="fr">/);
       });
 
       it('defaults to en when unset', () => {
-        expect(renderSmokeHtml(sampleStory)).toMatch(/<html lang="en">/);
+        expect(renderSmokeHtml(sampleStory)).toMatch(/<h1><span lang="en">/);
       });
 
       it('falls back to en rather than emitting a malformed tag', () => {
-        expect(renderSmokeHtml(sampleStory, 'en" onload="x')).toMatch(/<html lang="en">/);
+        expect(renderSmokeHtml(sampleStory, 'en" onload="x')).toMatch(/<h1><span lang="en">/);
       });
     });
   });

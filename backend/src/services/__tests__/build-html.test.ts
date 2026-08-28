@@ -183,6 +183,16 @@ describe('prepareDistHtml', () => {
       const out = prepareDistHtml(baseHtml, { title: 'X', storyData, themeColor: '#ffeedd' });
       expect(out.match(/name="theme-color"/gi)).toHaveLength(1);
     });
+
+    // Otherwise dropping the tag from player-app/index.html would
+    // silently reinstate the bug: chrome painted the player's default
+    // navy while the manifest carried the author's colour.
+    it('adds the meta when the source document has none', () => {
+      const noMeta = baseHtml.replace('<meta name="theme-color" content="#1a1a2e" />\n', '');
+      expect(noMeta).not.toContain('theme-color');
+      const out = prepareDistHtml(noMeta, { title: 'X', storyData, themeColor: '#ffeedd' });
+      expect(out).toMatch(/<meta name="theme-color" content="#ffeedd"[^>]*>[\s\S]*<\/head>/i);
+    });
   });
 
   // With JS off, or the bundle failing to load (routine for a file://
@@ -217,6 +227,29 @@ describe('prepareDistHtml', () => {
       const out = prepareDistHtml(baseHtml, { title: 'Cost $& $1 $$', storyData });
       const block = /<noscript>[\s\S]*?<\/noscript>/i.exec(out);
       expect(block![0]).toContain('Cost $& $1 $$');
+    });
+
+    // The message is ours and it is English; the document around it is
+    // tagged with the story's language, so without this a French story
+    // has its fallback read aloud with French phonetics.
+    it('marks the English message as English', () => {
+      const out = prepareDistHtml(baseHtml, { title: 'Le Fantôme', storyData, language: 'fr' });
+      const block = /<noscript>[\s\S]*?<\/noscript>/i.exec(out)![0];
+      expect(block).toMatch(/<p lang="en">/);
+      // The story title is not ours to relabel — it stays in the
+      // document's language.
+      expect(block).toMatch(/<h1>Le Fantôme<\/h1>/);
+    });
+
+    // The preview endpoint serves this same document under a CSP whose
+    // style-src has no 'unsafe-inline' (buildPreviewCsp in
+    // backend/src/routes/projects-preview.ts), so a style="..."
+    // attribute here renders unstyled plus console violations.
+    it('styles the fallback with classes, not inline style attributes', () => {
+      const out = prepareDistHtml(baseHtml, { title: 'Ghost Radio', storyData });
+      const block = /<noscript>[\s\S]*?<\/noscript>/i.exec(out)![0];
+      expect(block).not.toMatch(/style="/);
+      expect(block).toContain('class="wl-noscript"');
     });
   });
 });

@@ -84,4 +84,22 @@ describe('ExportSettings — language', () => {
     fireEvent.blur(screen.getByLabelText(/language code/i));
     expect(onSave).not.toHaveBeenCalled();
   });
+
+  // Without this the rejection lands in a discarded promise: no
+  // "Saved", no error, and the field still shows the tag — so the
+  // author walks away believing it took and ships an English build.
+  it('surfaces a failed save instead of swallowing it', async () => {
+    const onSave = vi.fn().mockRejectedValue(new Error('Network is down'));
+    render(
+      <ExportSettings
+        projectId="p1"
+        settings={{}}
+        onSave={onSave as unknown as (patch: Partial<ProjectSettings>) => Promise<ProjectSettings>}
+      />,
+    );
+    const input = screen.getByLabelText(/language code/i);
+    fireEvent.change(input, { target: { value: 'fr' } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Network is down'));
+  });
 });

@@ -48,15 +48,20 @@ function applyLanguage(html: string, language: string): string {
 }
 
 /**
- * Point the `theme-color` meta at the author's colour. `themeColor`
- * has already been through the manifest's hex validation, so it can't
- * contain a quote that would break out of the attribute.
+ * Point the `theme-color` meta at the author's colour, adding the meta
+ * when the source document has none — otherwise dropping the tag from
+ * player-app/index.html would silently reinstate the bug this fixes
+ * (browser chrome painted the player's default navy while the manifest
+ * carried the author's colour). `themeColor` has already been through
+ * the manifest's hex validation, so it can't contain a quote that
+ * would break out of the attribute.
  */
 function applyThemeColor(html: string, themeColor: string): string {
-  return html.replace(
-    /<meta\s+name="theme-color"[^>]*>/i,
-    () => `<meta name="theme-color" content="${themeColor}" />`,
-  );
+  const meta = `<meta name="theme-color" content="${themeColor}" />`;
+  const existing = /<meta\s+name="theme-color"[^>]*>/i;
+  if (existing.test(html)) return html.replace(existing, () => meta);
+  if (!html.includes('</head>')) return html;
+  return html.replace('</head>', () => `${meta}\n</head>`);
 }
 
 /**
@@ -64,7 +69,7 @@ function applyThemeColor(html: string, themeColor: string): string {
  * or add one before `</body>` if the source document has none.
  */
 function applyNoscript(html: string, title: string): string {
-  const block = renderNoscriptFallback(title, PLAYER_NOSCRIPT_MESSAGE);
+  const block = renderNoscriptFallback(title);
   if (/<noscript[\s>]/i.test(html)) {
     return html.replace(/<noscript[\s\S]*?<\/noscript>/i, () => block);
   }
@@ -73,30 +78,37 @@ function applyNoscript(html: string, title: string): string {
 }
 
 /**
- * The JavaScript-disabled fallback baked into every build.
+ * The scripting-disabled fallback baked into every build.
  *
  * The player is a single `<div id="root">` filled by React, so with
- * scripting off — or with the bundle failing to load, which is not
- * exotic for a `file://` build or a stale offline cache — the reader
- * got a blank white page and no explanation. `title` must already be
- * HTML-escaped.
+ * scripting off the reader got a blank white page and no explanation.
+ * (This covers scripting being *disabled* only — a `<noscript>` stays
+ * hidden when scripting is on and the bundle merely fails to load.)
  *
- * Styled inline rather than through the player's stylesheet so the
- * message still renders legibly if the CSS bundle is the thing that
- * failed.
+ * `title` must already be HTML-escaped. It is the story's own title, so
+ * it inherits the document's `lang`; the message beneath it is our
+ * English text and says so, or a French story's fallback would be read
+ * aloud with French phonetics.
+ *
+ * Styled through the player's stylesheet rather than `style="..."`
+ * attributes: the preview endpoint serves this same document under a
+ * strict CSP whose `style-src` has no `'unsafe-inline'`, so inline
+ * styles are dropped there (see buildPreviewCsp in
+ * backend/src/routes/projects-preview.ts). With no stylesheet at all
+ * the block still renders as legible default-styled text.
  */
-export function renderNoscriptFallback(title: string, message: string): string {
+export function renderNoscriptFallback(title: string): string {
   return `<noscript>
-      <div style="background: #1a1a2e; color: #f5f5f5; padding: 3rem 1.5rem; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
-        <div style="max-width: 34rem; margin: 0 auto;">
-          <h1 style="font-size: 1.5rem; line-height: 1.3; margin-top: 0;">${title}</h1>
-          <p style="line-height: 1.6;">${message}</p>
+      <div class="wl-noscript">
+        <div class="wl-noscript-inner">
+          <h1>${title}</h1>
+          <p lang="en">${PLAYER_NOSCRIPT_MESSAGE}</p>
         </div>
       </div>
     </noscript>`;
 }
 
-/** The player's own no-JavaScript message. */
+/** The player's own no-JavaScript message. Kept in step with the copy in player-app/index.html. */
 export const PLAYER_NOSCRIPT_MESSAGE =
   'This audio narrative needs JavaScript to play. Turn JavaScript on in your browser settings, then reload this page.';
 

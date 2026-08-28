@@ -102,7 +102,16 @@ export default function ExportSettings({ projectId, settings, onSave }: Props) {
     }
     setLanguageError(null);
     if (trimmed === (settings.language ?? '')) return;
-    await onSave({ language: trimmed });
+    try {
+      await onSave({ language: trimmed });
+    } catch (err) {
+      // Without this the rejection lands in a discarded promise: no
+      // "Saved", no error, and the input still shows the tag — so the
+      // author walks away believing the language is set and ships an
+      // English-tagged build.
+      setLanguageError(err instanceof Error ? err.message : 'Could not save the language.');
+      return;
+    }
     setLanguageSaved(true);
     if (languageTimerRef.current !== null) clearTimeout(languageTimerRef.current);
     languageTimerRef.current = setTimeout(() => setLanguageSaved(false), 2000);

@@ -32,7 +32,7 @@ import {
 } from './build-manifest.js';
 import { storyHash } from './story-hash.js';
 import { bundleGoogleFonts, renderThemeCss, type ThemeConfig } from './theme-render.js';
-import { prepareDistHtml, renderNoscriptFallback } from './build-html.js';
+import { prepareDistHtml } from './build-html.js';
 import { DEFAULT_BUILD_LANGUAGE, normalizeBuildLanguage } from './build-language.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -821,14 +821,18 @@ export function renderSmokeHtml(storyData: unknown, language?: string): string {
     .replace(/</g, '\\u003c')
     .replace(/\u2028/g, '\\u2028')
     .replace(/\u2029/g, '\\u2029');
-  const title = escapeHtml(
-    ((storyData as { title?: string }).title ?? 'Wanderline build') + ' — smoke test',
-  );
+  const storyTitle = escapeHtml((storyData as { title?: string }).title ?? 'Wanderline build');
+  const title = `${storyTitle} — smoke test`;
+  // The document is our diagnostic tool and every word of its chrome is
+  // English, so `<html lang>` stays 'en'. Only the story's own title
+  // carries the project language — tagging the whole page with it would
+  // have a screen reader read "Every divert / choice target resolves"
+  // with, say, Japanese phonetics.
   const lang = normalizeBuildLanguage(language ?? DEFAULT_BUILD_LANGUAGE);
   // The runner is inlined as a regular <script> so file:// pages can
   // execute it without module-loader gymnastics.
   return `<!doctype html>
-<html lang="${lang}">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <!-- Authors are told (in the build README) to open this page to
@@ -859,19 +863,24 @@ export function renderSmokeHtml(storyData: unknown, language?: string): string {
       clip-path: inset(50%); white-space: nowrap;
     }
   </style>
+  <!-- Nothing below runs without scripting, so hide the containers
+       rather than leave a live region asserting "Running…" for work
+       that will never start. -->
+  <noscript><style>#summary, #results { display: none; }</style></noscript>
 </head>
 <body>
-  <h1>${title}</h1>
+  <h1><span lang="${lang}">${storyTitle}</span> — smoke test</h1>
   <!-- The audio-reachability check is a real network round-trip, so
        "Running…" can sit here for a while. Without a live region a
        screen-reader user is never told the checks finished. -->
   <div class="summary" id="summary" role="status" aria-live="polite">Running…</div>
   <div id="results" role="status" aria-live="polite"></div>
-  ${renderNoscriptFallback(
-    title,
-    'This page runs the build&rsquo;s checks in your browser, so it needs JavaScript. ' +
-      'Turn JavaScript on in your browser settings, then reload this page.',
-  )}
+  <!-- No heading here: the page heading above renders with scripting
+       off too, and repeating it would announce the title twice. -->
+  <noscript>
+    <p>This page runs the build&rsquo;s checks in your browser, so it needs JavaScript.
+       Turn JavaScript on in your browser settings, then reload this page.</p>
+  </noscript>
   <script>window.__WANDERLINE_STORY__=${storyJsonStr};</script>
   <script>
   (function () {

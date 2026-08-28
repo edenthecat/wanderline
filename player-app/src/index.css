@@ -245,3 +245,32 @@ button:disabled {
     background: rgba(20, 20, 30, 0.88);
   }
 }
+
+/* Scripting-disabled fallback (the <noscript> in index.html, and the
+   copy the build pipeline substitutes into it — see
+   renderNoscriptFallback in backend/src/services/build-html.ts).
+
+   Classes rather than `style="..."` attributes: the preview endpoint
+   serves this same document under a CSP whose style-src has no
+   'unsafe-inline', so inline styles are dropped there. Colours come
+   from the theme variables so a light-themed story doesn't get light
+   text on its own light surface. */
+.wl-noscript {
+  padding: 3rem 1.5rem;
+  color: var(--wl-text);
+  font-family: var(--wl-font-body);
+}
+.wl-noscript-inner {
+  max-width: 34rem;
+  margin: 0 auto;
+}
+.wl-noscript h1 {
+  font-family: var(--wl-font-heading);
+  color: var(--wl-heading);
+  font-size: 1.5rem;
+  line-height: 1.3;
+  margin-bottom: 1rem;
+}
+.wl-noscript p {
+  line-height: 1.6;
+}
