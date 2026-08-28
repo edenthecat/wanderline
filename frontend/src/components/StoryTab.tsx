@@ -999,17 +999,24 @@ export default function StoryTab({
                             />
                           </div>
                         ))}
-                        {/* Sub-nodes only exist in Ink — vocab.subNode
-                            is empty for a Twee project, where every
-                            passage is created at the top level. */}
-                        {vocab.subNode.singular && (
+                        {/* Sub-nodes only exist in Ink. Gated on the
+                            project's actual format, NOT on the vocab:
+                            nomenclature is a display preference a user
+                            can pin to either skin, so an Ink project
+                            reading in Twee words still has stitches,
+                            and a Twee project reading in Ink words
+                            still has none — offering the form there
+                            would post `Passage.scene` and silently
+                            create an unrelated top-level passage with
+                            a dot in its name. */}
+                        {sourceLanguage === 'ink' && (
                           <div className="node-child-add">
                             <NodeCreateButton
-                              label={vocab.subNode.singular}
+                              label={vocab.subNode.singular || 'stitch'}
                               parentId={knot.id}
                               firstAnchorId={knot.id}
                               siblings={children.map((c) => c.id)}
-                              siblingNoun={vocab.subNode.singular}
+                              siblingNoun={vocab.subNode.singular || 'stitch'}
                               onCreate={handleCreateNode}
                               nodeIdSet={nodeIdSet}
                             />

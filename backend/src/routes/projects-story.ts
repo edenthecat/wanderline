@@ -1618,11 +1618,21 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
     }
 
     // The live Y.Doc has no entry for the new node and every peer's
-    // nodes map is now a passage short; a shadow-save from one of them
-    // would write the pre-insert graph straight back over us. Drop the
-    // room so peers reseed. Awaited (the choice endpoints do the same)
-    // so an in-flight save settles first, but a collab hiccup must not
-    // turn a committed insert into a 500 — hence the catch.
+    // nodes map is now a passage short; the next shadow-save would
+    // write the pre-insert graph straight back over us. Dropping the
+    // room makes peers reconnect and reseed from the row we just
+    // wrote, which closes that for every save after this point.
+    //
+    // It does NOT close the narrow race where a save was already
+    // in flight: `destroy()` awaits an in-flight persist but cannot
+    // cancel it, so an UPDATE that blocked on our `FOR UPDATE` lock
+    // still lands after COMMIT and can undo the insert. Every
+    // graph-mutating endpoint here has that window; closing it needs
+    // the saver to carry a version check, not more awaiting.
+    //
+    // Awaited so the reseed is under way before the author's client
+    // refetches, but a collab hiccup must not turn a committed insert
+    // into a 500 — hence the catch.
     try {
       await invalidateRoom(id);
     } catch (err) {
@@ -1820,15 +1830,15 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
          WHERE project_id = $2`,
         [JSON.stringify(storyGraph), id],
       );
-      // Side tables keyed by (project_id, node_id). Left behind they
-      // would re-attach silently the moment an author created a
-      // passage with the same name, so they go in the same
-      // transaction as the graph write. `= ANY($2)` covers the knot
-      // and every stitch that went with it in one statement.
+      // Side tables keyed by (project_id, node_id). Left behind, an
+      // assignment or a timing override would re-attach silently the
+      // moment an author created a passage with the same name, so they
+      // go in the same transaction as the graph write. `= ANY($2)`
+      // covers the knot and every stitch that went with it in one
+      // statement.
       for (const table of [
         'node_audio_assignments',
         'node_metadata',
-        'node_flags',
         'audio_assignment_audit_acks',
       ] as const) {
         await client.query(`DELETE FROM ${table} WHERE project_id = $1 AND node_id = ANY($2)`, [
@@ -1836,6 +1846,26 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
           deletedIds,
         ]);
       }
+      // Flags are review history, not configuration, and the schema
+      // says so out loud: node_flags.node_id is "deliberately not a
+      // foreign key … a flag on a passage that was renamed or deleted
+      // is exactly the kind of thing a reviewer needs to still see"
+      // (1752000000000_node_flags.sql). Deleting them would throw away
+      // the record of someone having questioned this passage.
+      //
+      // But an OPEN flag on a passage that no longer exists is a task
+      // nobody can do: the editor lists it with a jump control that
+      // goes nowhere. So the delete resolves them instead — they leave
+      // the open list the editor reads on every render, and stay
+      // readable through `GET /flags?include=resolved`, which is what
+      // that history is for. Attributed to whoever deleted the
+      // passage, because that is who closed them.
+      await client.query(
+        `UPDATE node_flags
+         SET resolved_at = CURRENT_TIMESTAMP, resolved_by = $3
+         WHERE project_id = $1 AND node_id = ANY($2) AND resolved_at IS NULL`,
+        [id, deletedIds, req.session?.userId ?? null],
+      );
       await client.query('UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1', [id]);
       await client.query('COMMIT');
       reducedGraph = storyGraph;
@@ -1848,10 +1878,11 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
       client.release();
     }
 
-    // Peers still hold the deleted node in their Y.Doc; a shadow-save
-    // from one of them would resurrect it. Drop the room so they
-    // reseed from the reduced graph. See the create handler above for
-    // why this is awaited but never allowed to fail the request.
+    // Peers still hold the deleted node in their Y.Doc; the next
+    // shadow-save would resurrect it. Drop the room so they reseed
+    // from the reduced graph. See the create handler above for why
+    // this is awaited, why it can't fail the request, and which race
+    // it does not close.
     try {
       await invalidateRoom(id);
     } catch (err) {

@@ -104,8 +104,8 @@ const deleteScript = (storyGraph: unknown, sourceLanguage = 'ink'): ScriptedQuer
   { match: /UPDATE project_stories/ },
   { match: /DELETE FROM node_audio_assignments/ },
   { match: /DELETE FROM node_metadata/ },
-  { match: /DELETE FROM node_flags/ },
   { match: /DELETE FROM audio_assignment_audit_acks/ },
+  { match: /UPDATE node_flags/ },
   { match: /UPDATE projects/ },
   { match: 'COMMIT' },
 ];
@@ -359,12 +359,40 @@ describe('DELETE /:id/story/node', () => {
     expect(res.body.repointed).toBe(0);
     expect(Object.keys(res.body.story_graph.nodes)).toEqual(['intro']);
     const sideTableCalls = calls.filter((c) => c.sql.startsWith('DELETE FROM'));
-    expect(sideTableCalls).toHaveLength(4);
+    expect(sideTableCalls.map((c) => c.sql.split(/\s+/)[2])).toEqual([
+      'node_audio_assignments',
+      'node_metadata',
+      'audio_assignment_audit_acks',
+    ]);
     for (const call of sideTableCalls) {
       expect(call.params).toEqual([projectId, ['spare']]);
     }
     expect(mockInvalidateRoom).toHaveBeenCalledWith(projectId);
     expect(consumedAll()).toBe(true);
+  });
+
+  it('resolves flags on the deleted passage rather than destroying the review history', async () => {
+    // node_flags.node_id is "deliberately not a foreign key … a flag
+    // on a passage that was renamed or deleted is exactly the kind of
+    // thing a reviewer needs to still see". So the rows survive — but
+    // they close, because an open flag on a passage that is gone is a
+    // task nobody can act on.
+    const storyGraph = graph('intro', {
+      intro: { id: 'intro', type: 'knot', parent: null, choices: [], divert: null, lineNumber: 1 },
+      spare: { id: 'spare', type: 'knot', parent: null, choices: [], divert: null, lineNumber: 2 },
+    });
+    const { pool, calls } = makePool(deleteScript(storyGraph));
+    const res = await request(makeApp(pool))
+      .delete(`/api/projects/${projectId}/story/node`)
+      .send({ nodeId: 'spare' });
+
+    expect(res.status).toBe(200);
+    expect(calls.some((c) => c.sql.includes('DELETE FROM node_flags'))).toBe(false);
+    const resolve = calls.find((c) => c.sql.includes('UPDATE node_flags'));
+    expect(resolve?.sql).toMatch(/resolved_at = CURRENT_TIMESTAMP/);
+    // Already-resolved flags keep their original timestamp and author.
+    expect(resolve?.sql).toMatch(/resolved_at IS NULL/);
+    expect(resolve?.params.slice(0, 2)).toEqual([projectId, ['spare']]);
   });
 
   it('takes a knot’s stitches with it and cascades their side rows too', async () => {
@@ -388,8 +416,12 @@ describe('DELETE /:id/story/node', () => {
     expect(res.status).toBe(200);
     expect(res.body.deleted.sort()).toEqual(['ch1', 'ch1.a']);
     expect(Object.keys(res.body.story_graph.nodes)).toEqual(['intro']);
-    const flagsDelete = calls.find((c) => c.sql.includes('DELETE FROM node_flags'));
-    expect(flagsDelete?.params[1]).toEqual(['ch1', 'ch1.a']);
+    // Every side-table statement covers the knot AND its stitches.
+    for (const call of calls.filter(
+      (c) => c.sql.startsWith('DELETE FROM') || c.sql.includes('UPDATE node_flags'),
+    )) {
+      expect(call.params[1]).toEqual(['ch1', 'ch1.a']);
+    }
   });
 
   it('refuses rather than orphaning when other passages still point at it', async () => {

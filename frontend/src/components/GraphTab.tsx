@@ -1211,7 +1211,15 @@ function GraphTabInner({
                 <span className="text-muted text-sm">{selected.type}</span>
               </div>
               <div className="graph-detail-actions">
+                {/* Keyed by the selected node: the rail itself stays
+                    mounted while the canvas is still clickable, so
+                    without this an open confirmation (and its stale
+                    error and repoint choice) would carry over to
+                    whichever node the author clicked next — one more
+                    click would delete a passage they never asked
+                    about. */}
                 <NodeDeleteButton
+                  key={selectedNodeId}
                   nodeId={selectedNodeId}
                   doomedIds={doomedIds}
                   referrers={railReferrers}
