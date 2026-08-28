@@ -116,7 +116,15 @@ export default function ProjectDetailPage() {
   // then hand the target passage to whichever tab took over.
   const [paletteOpen, setPaletteOpen] = useState(false);
   const togglePalette = useCallback(() => setPaletteOpen((v) => !v), []);
-  useCommandPaletteShortcut(togglePalette);
+  // Only bind the chord once there's a project to search. Before that
+  // it would flip a palette nothing renders — and would arrive already
+  // open when the fetch lands — while swallowing the browser's own
+  // Ctrl-K for nothing on the error page.
+  useCommandPaletteShortcut(togglePalette, project !== null);
+  // Focus lands here when a jump unmounts the button that opened the
+  // palette (it switched tabs). tabIndex={-1} makes the region
+  // programmatically focusable without adding a tab stop.
+  const workspaceMainRef = useRef<HTMLElement>(null);
   const closePalette = useCallback(() => setPaletteOpen(false), []);
   // One-shot jump request handed to a tab. `tab` says who should
   // consume it; the consumer calls onJumpHandled and we clear it, so
@@ -293,7 +301,7 @@ export default function ProjectDetailPage() {
           </nav>
         </aside>
 
-        <main className="workspace-main">
+        <main className="workspace-main" ref={workspaceMainRef} tabIndex={-1}>
           <header className="workspace-toolbar">
             <div className="workspace-toolbar-title">
               <Link to="/" className="workspace-toolbar-back" aria-label="Back to projects">
@@ -453,6 +461,7 @@ export default function ProjectDetailPage() {
         onClose={closePalette}
         storyGraph={project.story_graph}
         actions={paletteActions}
+        fallbackFocusRef={workspaceMainRef}
       />
 
       {/* Mobile bottom navigation: 4 group buttons; tapping opens a

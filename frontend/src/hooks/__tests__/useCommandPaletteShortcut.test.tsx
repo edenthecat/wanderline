@@ -83,8 +83,8 @@ describe('isCommandPaletteChord', () => {
   });
 });
 
-function Host({ onTrigger }: { onTrigger: () => void }) {
-  useCommandPaletteShortcut(onTrigger);
+function Host({ onTrigger, enabled }: { onTrigger: () => void; enabled?: boolean }) {
+  useCommandPaletteShortcut(onTrigger, enabled);
   return <input aria-label="somewhere else" />;
 }
 
@@ -123,6 +123,29 @@ describe('useCommandPaletteShortcut', () => {
     });
     expect(onTrigger).toHaveBeenCalled();
     expect(bubbleListener).not.toHaveBeenCalled();
+  });
+
+  it('ignores auto-repeat while the chord is held down', () => {
+    // The host toggles, so a held chord would strobe the palette.
+    const onTrigger = vi.fn();
+    render(<Host onTrigger={onTrigger} />);
+    withPlatform('MacIntel', () => {
+      fireEvent.keyDown(document, { key: 'k', metaKey: true });
+      fireEvent.keyDown(document, { key: 'k', metaKey: true, repeat: true });
+      fireEvent.keyDown(document, { key: 'k', metaKey: true, repeat: true });
+    });
+    expect(onTrigger).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not bind at all when disabled, leaving the browser default alone', () => {
+    const onTrigger = vi.fn();
+    render(<Host onTrigger={onTrigger} enabled={false} />);
+    withPlatform('MacIntel', () => {
+      const event = chord({ metaKey: true });
+      document.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+    });
+    expect(onTrigger).not.toHaveBeenCalled();
   });
 
   it('ignores ordinary typing', () => {

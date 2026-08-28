@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import CommandPalette from '../CommandPalette';
@@ -164,6 +164,47 @@ describe('CommandPalette', () => {
     const { onClose } = renderPalette();
     fireEvent.keyDown(input(), { key: 'Escape' });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('ignores non-primary mouse buttons', () => {
+    // A right-click is reaching for a context menu, not activating.
+    const { jumpToNode, onClose } = renderPalette();
+    fireEvent.mouseDown(options()[1], { button: 2 });
+    fireEvent.mouseDown(screen.getByTestId('command-palette-backdrop'), { button: 2 });
+    expect(jumpToNode).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a given region when the invoker is gone on close', () => {
+    // A jump that switches tabs unmounts the button that opened the
+    // palette; without the fallback, focus lands on <body>.
+    function Host() {
+      const [open, setOpen] = useState(false);
+      const [invokerGone, setInvokerGone] = useState(false);
+      const fallback = useRef<HTMLElement>(null);
+      return (
+        <main ref={fallback} tabIndex={-1} data-testid="fallback">
+          {!invokerGone && <button onClick={() => setOpen(true)}>Open</button>}
+          <CommandPalette
+            open={open}
+            onClose={() => {
+              setOpen(false);
+              setInvokerGone(true);
+            }}
+            storyGraph={STORY}
+            actions={{ jumpToNode: vi.fn() }}
+            fallbackFocusRef={fallback}
+          />
+        </main>
+      );
+    }
+    render(<Host />);
+    const opener = screen.getByRole('button', { name: 'Open' });
+    opener.focus();
+    fireEvent.click(opener);
+    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter' });
+    expect(screen.queryByRole('button', { name: 'Open' })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByTestId('fallback'));
   });
 
   it('closes when the backdrop is clicked but not the dialog', () => {

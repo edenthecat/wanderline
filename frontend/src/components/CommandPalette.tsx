@@ -18,7 +18,7 @@
 //   - Escape closes, ↑/↓/Home/End move, Enter runs
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from 'react';
 import type { StoryGraph } from '../api/client';
 import {
   buildCommands,
@@ -37,6 +37,12 @@ interface Props {
   actions: PaletteActions;
   /** Override point for tests and for future per-page command sets. */
   providers?: readonly CommandProvider[];
+  /** Where focus goes when the element that opened the palette is no
+   * longer on screen — a command that switches tabs unmounts its own
+   * invoker. Point this at a `tabIndex={-1}` region that survives.
+   * Without it focus falls to <body> and the author loses their
+   * place in the tab order. */
+  fallbackFocusRef?: RefObject<HTMLElement | null>;
 }
 
 const EMPTY_RESULT: CommandBuildResult = { commands: [], totalCount: 0, truncated: false };
@@ -50,6 +56,7 @@ export default function CommandPalette({
   storyGraph,
   actions,
   providers = DEFAULT_PROVIDERS,
+  fallbackFocusRef,
 }: Props) {
   const [query, setQuery] = useState('');
   const [highlight, setHighlight] = useState(0);
@@ -102,17 +109,25 @@ export default function CommandPalette({
   const activeCommand: PaletteCommand | undefined =
     activeIndex >= 0 ? commands[activeIndex] : undefined;
 
+  // The fallback is read at close time, not bound at open time.
+  const fallbackRef = useRef(fallbackFocusRef);
+  useEffect(() => {
+    fallbackRef.current = fallbackFocusRef;
+  }, [fallbackFocusRef]);
+
   // Focus goes in on open and back to the invoker on close.
   useEffect(() => {
     if (!open) return;
     const invoker = document.activeElement as HTMLElement | null;
     inputRef.current?.focus();
     return () => {
-      // Guard: the invoker may have been unmounted while we were open
-      // (a tab switch), and jsdom-only elements may lack focus().
-      if (invoker && typeof invoker.focus === 'function' && document.contains(invoker)) {
-        invoker.focus();
-      }
+      // Running a command and closing are one commit, so by now the
+      // invoker may already be gone — a jump that switches tabs
+      // unmounts the button that opened us. Fall back rather than
+      // dropping focus on <body>. (jsdom elements may lack focus().)
+      const target =
+        invoker && document.contains(invoker) ? invoker : (fallbackRef.current?.current ?? null);
+      if (target && typeof target.focus === 'function') target.focus();
     };
   }, [open]);
 
@@ -203,7 +218,9 @@ export default function CommandPalette({
       className="command-palette-backdrop"
       data-testid="command-palette-backdrop"
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        // Primary button only — a right-click on the dimmed backdrop
+        // is reaching for a context menu, not dismissing the palette.
+        if (e.button === 0 && e.target === e.currentTarget) onClose();
       }}
     >
       <div
@@ -284,7 +301,9 @@ export default function CommandPalette({
                     aria-selected={isActive}
                     className={`command-palette-option${isActive ? ' is-active' : ''}`}
                     onMouseMove={() => setHighlight(index)}
-                    onMouseDown={() => runCommand(command)}
+                    onMouseDown={(e) => {
+                      if (e.button === 0) runCommand(command);
+                    }}
                   >
                     <span className="command-palette-option-label">{command.label}</span>
                     {command.hint && (

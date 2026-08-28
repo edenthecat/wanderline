@@ -945,9 +945,17 @@ function GraphTabInner({
   // dagre has placed the node retries once the nodes land.
   useEffect(() => {
     if (!jumpRequest) return;
+    // Not in the story at all — a deleted passage, or no story loaded.
+    // Acknowledge instead of waiting forever: an unacknowledged
+    // request would re-fire the next time this tab mounts, which is
+    // exactly the stale jump onJumpHandled exists to prevent.
+    if (!storyGraph?.nodes[jumpRequest.nodeId]) {
+      onJumpHandled?.();
+      return;
+    }
     if (!focusNode(jumpRequest.nodeId)) return;
     onJumpHandled?.();
-  }, [jumpRequest, focusNode, onJumpHandled]);
+  }, [jumpRequest, storyGraph, focusNode, onJumpHandled]);
 
   if (!storyGraph) {
     return (

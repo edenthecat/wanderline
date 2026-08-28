@@ -41,16 +41,23 @@ export function isCommandPaletteChord(e: KeyboardEvent, apple = isApplePlatform(
  * @param onTrigger called every time the chord fires — including
  *   while the palette is already open, so the host can toggle. Keep
  *   it stable (useCallback) or the listener re-binds every render.
+ * @param enabled bind at all. False while the host has no palette to
+ *   show, so the chord keeps its browser default (Firefox's quick
+ *   find) instead of being swallowed for nothing.
  */
-export function useCommandPaletteShortcut(onTrigger: () => void): void {
+export function useCommandPaletteShortcut(onTrigger: () => void, enabled = true): void {
   useEffect(() => {
+    if (!enabled) return;
     function handleKeyDown(e: KeyboardEvent) {
       if (!isCommandPaletteChord(e)) return;
       e.preventDefault();
       e.stopPropagation();
+      // Holding the chord down auto-repeats; since the host toggles,
+      // that would strobe the palette at the key-repeat rate.
+      if (e.repeat) return;
       onTrigger();
     }
     document.addEventListener('keydown', handleKeyDown, true);
     return () => document.removeEventListener('keydown', handleKeyDown, true);
-  }, [onTrigger]);
+  }, [onTrigger, enabled]);
 }

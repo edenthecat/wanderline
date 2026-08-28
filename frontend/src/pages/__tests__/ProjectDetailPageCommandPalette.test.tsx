@@ -52,6 +52,8 @@ vi.mock('../../api/client', () => ({
   fetchProject: vi.fn(() => Promise.resolve({ project })),
 }));
 
+import { fetchProject } from '../../api/client';
+
 vi.mock('react-router-dom', () => ({
   useParams: () => ({ id: 'p1' }),
   Link: ({ children, ...rest }: React.ComponentProps<'a'>) => <a {...rest}>{children}</a>,
@@ -136,6 +138,26 @@ describe('ProjectDetailPage ⌘K palette', () => {
       if (original) Object.defineProperty(window.navigator, 'platform', original);
       else delete (window.navigator as { platform?: string }).platform;
     }
+  });
+
+  it('leaves the chord alone while the project is still loading', async () => {
+    // Nothing to search yet: flipping the state here would surface an
+    // already-open palette the moment the fetch lands, and swallowing
+    // the key buys the author nothing in the meantime.
+    let resolve: (value: { project: ProjectDetail }) => void = () => {};
+    vi.mocked(fetchProject).mockReturnValueOnce(
+      new Promise((r) => {
+        resolve = r;
+      }),
+    );
+    render(<ProjectDetailPage />);
+    const event = new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, cancelable: true });
+    document.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+    expect(palette()).toBeNull();
+    resolve({ project });
+    await waitFor(() => expect(screen.getByTestId('story-tab')).toBeInTheDocument());
+    expect(palette()).toBeNull();
   });
 
   it('is closed until the chord is pressed, and toggles back shut', async () => {
