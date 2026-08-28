@@ -230,9 +230,13 @@ export default function CommandPalette({
     const el = listRef.current?.querySelector<HTMLElement>(`#${CSS.escape(optionId(activeIndex))}`);
     // jsdom doesn't implement scrollIntoView.
     if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' });
+    // `commands` is a dep even though it isn't read: a keystroke can
+    // rebuild the list without moving activeIndex (it resets to 0,
+    // which it often already was), leaving a hand-scrolled listbox
+    // showing mid-list rows and no visible selection.
     // optionId is derived from baseId, which is stable for this instance.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, activeIndex, baseId]);
+  }, [open, activeIndex, commands, baseId]);
 
   if (!open) return null;
 

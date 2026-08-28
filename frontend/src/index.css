@@ -3150,6 +3150,16 @@ details[open] > .audio-section-summary {
   display: none;
 }
 
+/* The workspace region takes focus programmatically when the command
+   palette closes and the element that opened it is gone. It's a
+   container, not a control, so a 2px ring around the whole editor is
+   noise — and Chrome would draw one, because it carries focus-visible
+   over from the palette input the focus came from. */
+.workspace-main:focus,
+.workspace-main:focus-visible {
+  outline: none;
+}
+
 .workspace-mobile-sheet-backdrop {
   display: none;
 }
@@ -3750,6 +3760,13 @@ which is context rather than a problem. */ .node-flag-badge {
 .command-palette-option-label {
   font-weight: 600;
   white-space: nowrap;
+  /* Without min-width a nowrap flex item refuses to shrink, so a long
+     knot id squeezes the excerpt to nothing and then gets clipped by
+     the palette's own overflow with no ellipsis of its own. */
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .command-palette-option-hint {

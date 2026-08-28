@@ -133,6 +133,19 @@ describe('CommandPalette', () => {
     expect(activeOption()).toHaveTextContent('a');
   });
 
+  it('re-asserts the scroll when a keystroke rebuilds the list', () => {
+    // The author can hand-scroll the listbox; a keystroke then narrows
+    // it without moving the highlight (it resets to 0, which it often
+    // already was), so nothing would pull the selected row back into
+    // view and Enter would run a match they cannot see.
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    renderPalette();
+    scrollIntoView.mockClear();
+    fireEvent.change(input(), { target: { value: 'harbour' } });
+    expect(scrollIntoView).toHaveBeenCalled();
+  });
+
   it('runs the highlighted command on Enter and closes', () => {
     const { jumpToNode, onClose } = renderPalette();
     fireEvent.keyDown(input(), { key: 'ArrowDown' });
