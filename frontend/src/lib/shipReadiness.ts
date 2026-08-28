@@ -63,7 +63,9 @@ export type ReadinessCheckId =
  * panel's root element. */
 export interface ReadinessTarget {
   tab: 'story' | 'audio';
-  anchorId: string;
+  /** Omitted when there is nothing to scroll to — see the unknown
+   * group in ShipReadinessPanel. */
+  anchorId?: string;
 }
 
 export interface ReadinessCheck {
@@ -128,7 +130,7 @@ export function computeReadiness(inputs: ReadinessInputs): ReadinessSummary {
   // ValidationPanel call site shares: a graph missing it should cost
   // the author a "couldn't check" here and an absent panel there, not
   // a crash in either.
-  const parserErrors = readValidation(storyGraph)?.errors.length ?? null;
+  const parserErrors = readValidation(storyGraph).errors?.length ?? null;
   const unreachable = storyGraph ? health.unreachableNodes.length : null;
 
   const checks: ReadinessCheck[] = [

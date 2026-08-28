@@ -120,15 +120,22 @@ export default function StoryTab({
   // Cancels the in-flight "scroll to this node when it renders" watch,
   // so a second jump (or leaving the tab) abandons the first.
   const cancelScrollRef = useRef<(() => void) | null>(null);
-  // Consumed once. The Ship tab's readiness summary sets `expandPanelId`
-  // to say "the author came here to see that panel" — true of the
-  // arrival, not of the rest of the visit. Toggling to the Source view
-  // and back remounts these panels, and one the author has since
-  // collapsed should stay collapsed.
+  // The Ship tab's readiness summary sets `expandPanelId` to say "the
+  // author came here to see that panel" — true of the arrival, not of
+  // the rest of the visit: toggling to the Source view and back
+  // remounts these panels, and one the author has since collapsed
+  // should stay collapsed.
+  //
+  // Cleared when they leave the node list rather than on first render,
+  // because FlaggedNodesPanel does not exist yet on first render — its
+  // flags arrive from a fetch and it returns null until they do, so an
+  // immediate reset would mean the flags row never expanded anything.
+  // Leaving the list is also the only thing that remounts these panels,
+  // which makes it the exact moment the arrival stops being true.
   const [expandOnArrival, setExpandOnArrival] = useState(expandPanelId);
   useEffect(() => {
-    if (expandOnArrival) setExpandOnArrival(null);
-  }, [expandOnArrival]);
+    if (view !== 'nodes') setExpandOnArrival(null);
+  }, [view]);
 
   // guard against source-tab STARTER_TEMPLATE data loss.
   // Every graph-mutating PATCH clears both ink_source and twee_source
@@ -583,8 +590,8 @@ export default function StoryTab({
               summary uses — see lib/storyValidation for why the blob
               cannot be trusted to exist. */}
           <ValidationPanel
-            errors={storedValidation?.errors ?? []}
-            warnings={storedValidation?.warnings ?? []}
+            errors={storedValidation.errors ?? []}
+            warnings={storedValidation.warnings ?? []}
             onNodeJump={jumpToNode}
           />
           <FlaggedNodesPanel

@@ -153,6 +153,20 @@ describe('ShipReadinessPanel', () => {
     expect(client.fetchAudioCoverage).not.toHaveBeenCalled();
   });
 
+  // The panel that owns an unanswered count is usually fed by the very
+  // lookup that failed — ValidationPanel renders nothing with nothing
+  // to list, and the coverage list is gated on that same fetch. So the
+  // row offers the tab and no anchor, rather than arming a watch for
+  // an element that cannot appear.
+  it('sends an unanswered check to the tab without promising a panel', async () => {
+    stubLookups();
+    vi.spyOn(client, 'fetchAudioCoverage').mockRejectedValue(new Error('500'));
+    const onNavigate = vi.fn();
+    render(<ShipReadinessPanel projectId="p1" storyGraph={graph()} onNavigate={onNavigate} />);
+    await userEvent.click(await screen.findByText('Nodes with no voiceover'));
+    expect(onNavigate).toHaveBeenCalledWith({ tab: 'audio' });
+  });
+
   // Every lookup trivially answers zero for a story with no nodes.
   // "Ready to ship" is the one thing that must not appear above the
   // Build button for a project with nothing in it.

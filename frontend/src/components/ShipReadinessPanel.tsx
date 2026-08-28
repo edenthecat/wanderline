@@ -51,8 +51,10 @@ const STATUS_LABEL: Record<ReadinessSummary['status'], string> = {
 
 // Each check's own `detail` says why the finding matters, which is a
 // claim we have no right to make about a lookup that never answered.
-// The unknown group substitutes this.
-const UNKNOWN_DETAIL = 'This check didn’t answer. Open the panel to look for yourself.';
+// The unknown group substitutes this — and does not promise a panel,
+// because the surface that owns the count is usually fed by the same
+// lookup that just failed.
+const UNKNOWN_DETAIL = 'This check didn’t answer. Open the tab and see for yourself.';
 
 /** A count the server sent, or null if it did not send one. */
 function asCount(value: unknown): number | null {
@@ -67,11 +69,14 @@ function asLength(value: unknown): number | null {
 function CheckRow({
   check,
   detail,
+  target,
   onNavigate,
 }: {
   check: ReadinessCheck;
   /** Overrides the check's own copy. */
   detail?: string;
+  /** Overrides where the row navigates to. */
+  target?: ReadinessTarget;
   onNavigate: (target: ReadinessTarget) => void;
 }) {
   return (
@@ -79,7 +84,7 @@ function CheckRow({
       <button
         type="button"
         className="readiness-item-button"
-        onClick={() => onNavigate(check.target)}
+        onClick={() => onNavigate(target ?? check.target)}
       >
         <span className="readiness-item-label">{check.label}</span>
         <span className="readiness-item-detail">{detail ?? check.detail}</span>
@@ -223,7 +228,20 @@ export default function ShipReadinessPanel({ projectId, storyGraph, onNavigate }
               <h3 className="readiness-group-title">Couldn&rsquo;t check</h3>
               <ul className="readiness-list">
                 {summary.unknown.map((c) => (
-                  <CheckRow key={c.id} check={c} detail={UNKNOWN_DETAIL} onNavigate={onNavigate} />
+                  <CheckRow
+                    key={c.id}
+                    check={c}
+                    detail={UNKNOWN_DETAIL}
+                    target={{ tab: c.target.tab }}
+                    // Tab only, no anchor. The panel that would answer
+                    // this often cannot render either — ValidationPanel
+                    // returns null with nothing to list, and the
+                    // coverage list is gated on the very fetch that
+                    // failed. Arming a watch for an element that cannot
+                    // appear just leaves an observer scanning the
+                    // document until it times out.
+                    onNavigate={onNavigate}
+                  />
                 ))}
               </ul>
             </div>

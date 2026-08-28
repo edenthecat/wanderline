@@ -216,7 +216,11 @@ export default function ProjectDetailPage() {
   const goToReadinessTarget = useCallback((target: ReadinessTarget) => {
     setActiveTab(target.tab);
     setMobileSheet(null);
-    setReadinessAnchor(target.anchorId);
+    // A row can send the author to a tab without naming a panel — see
+    // the unknown group, whose owning panel may not have rendered
+    // either. The tab switch is the useful half; the scroll effect and
+    // the destination's arrival behaviour both no-op on a null anchor.
+    setReadinessAnchor(target.anchorId ?? null);
   }, []);
 
   // Scrolling from an effect rather than the click handler, so the

@@ -9,19 +9,25 @@
 // counts the errors and the Story tab renders them. Guarding only the
 // count would leave a "couldn't check" row linking to a panel that
 // throws on the graph the guard exists for.
+//
+// Per field, not all-or-nothing. A blob with a usable `errors` array
+// and a broken `warnings` one still knows about real parser errors on
+// a story someone is about to build; dropping both halves because one
+// is malformed would make those errors silently invisible.
 
 import type { StoryGraph, ValidationMessage } from '../api/client';
 
 export interface StoredValidation {
-  errors: ValidationMessage[];
-  warnings: ValidationMessage[];
+  /** `null` when the blob carries no usable array — which means "we do
+   * not know", not "there are none". */
+  errors: ValidationMessage[] | null;
+  warnings: ValidationMessage[] | null;
 }
 
-/** The blob, or null when the graph does not carry a usable one. */
-export function readValidation(graph: StoryGraph | null | undefined): StoredValidation | null {
-  const validation = graph?.validation;
-  if (!validation || !Array.isArray(validation.errors) || !Array.isArray(validation.warnings)) {
-    return null;
-  }
-  return { errors: validation.errors, warnings: validation.warnings };
+export function readValidation(graph: StoryGraph | null | undefined): StoredValidation {
+  const validation = graph?.validation as Partial<StoryGraph['validation']> | undefined;
+  return {
+    errors: Array.isArray(validation?.errors) ? validation.errors : null,
+    warnings: Array.isArray(validation?.warnings) ? validation.warnings : null,
+  };
 }
