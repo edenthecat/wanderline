@@ -193,6 +193,39 @@ export function repointReferences(
   }
 }
 
+/** The validation block as it sits on a persisted graph. */
+export interface GraphValidation {
+  valid?: boolean;
+  errors?: { type?: string; nodeId?: string }[];
+  warnings?: { type?: string; nodeId?: string }[];
+}
+
+/**
+ * Drop validation messages a graph edit has provably invalidated.
+ *
+ * Neither endpoint re-runs the validator — that means re-parsing, and
+ * these are surgical single-node edits. But leaving the stored block
+ * untouched is worse than leaving it stale: the editor renders
+ * `validation.errors` verbatim, so an author who creates the story's
+ * first passage keeps being told "No start node found", and one who
+ * deletes a passage keeps seeing errors about a node that is gone.
+ *
+ * Only removal, never addition: `keep` decides what is still true, and
+ * anything this can't reason about stays. Under-reporting is the safe
+ * direction — the client-side story health panel recomputes
+ * reachability from the graph itself.
+ */
+export function pruneValidation(
+  validation: GraphValidation | null | undefined,
+  keep: (message: { type?: string; nodeId?: string }) => boolean,
+): void {
+  if (!validation) return;
+  if (Array.isArray(validation.errors)) validation.errors = validation.errors.filter(keep);
+  if (Array.isArray(validation.warnings)) validation.warnings = validation.warnings.filter(keep);
+  // `valid` is defined as "no errors", so it has to move with them.
+  if (Array.isArray(validation.errors)) validation.valid = validation.errors.length === 0;
+}
+
 export interface NewNodeId {
   nodeId: string;
   type: 'knot' | 'stitch';
@@ -276,6 +309,20 @@ export function parseNewNodeId(
   if (TERMINAL_TARGETS.has(nodeId)) {
     return { error: `"${nodeId}" is a reserved target name and cannot be used as a node id` };
   }
+  // `__proto__` is a legal Ink name under `\w+` and a legal Twee
+  // title, but it is not a storable key: the graph arrives from JSONB
+  // via JSON.parse, so it carries Object.prototype, and assigning
+  // `nodes['__proto__']` runs the prototype SETTER instead of creating
+  // an own property. The node would be reported as created, appear in
+  // no listing, defeat the duplicate check (Object.hasOwn stays
+  // false), and — with the graph's prototype swapped — could be
+  // adopted as a startNode that names nothing. insertNodeOrdered
+  // writes via defineProperty so this can't happen silently either
+  // way, but a name that can never be exported is better refused than
+  // quietly accepted.
+  if (nodeId === '__proto__') {
+    return { error: '"__proto__" cannot be used as a node id' };
+  }
 
   if (sourceLanguage === 'twee') {
     if (TWEE_UNSAFE_NAME_RE.test(nodeId)) {
@@ -342,11 +389,20 @@ function unitMembers(
  *
  * The original source line numbers are lost, which costs nothing: any
  * graph edit already nulls `ink_source`, so the numbers no longer
- * refer to text anyone has.
+ * refer to text anyone has. In an all-zero graph the order this bakes
+ * in is the graph's own key order — which is what every consumer was
+ * already reading via the stable sort, so the story does not change;
+ * what changes is that the Ink export now agrees with the player
+ * instead of alphabetising.
  *
- * `afterId` places the node directly after that unit. Without it the
- * node appends — to the end of its parent knot's stitches for a
- * stitch, or to the end of the graph for a knot / Twee passage.
+ * `afterId` places the node directly after that unit, EXCEPT when it
+ * names the new stitch's own knot: that means "first stitch", i.e.
+ * immediately after the knot header and before its existing stitches.
+ * A knot runs by its lowest-lineNumber stitch, so that slot is how a
+ * chapter gets a new opening scene, and "after the whole knot unit"
+ * would put it last instead. Without `afterId` the node appends — to
+ * the end of its parent knot's stitches for a stitch, or to the end of
+ * the graph for a knot / Twee passage.
  */
 export function insertNodeOrdered(
   nodes: GraphNodes,
@@ -378,7 +434,12 @@ export function insertNodeOrdered(
   };
 
   let position: number;
-  if (afterId) {
+  if (afterId && parent && afterId === parent) {
+    // "First stitch": directly after the knot header, ahead of the
+    // stitches it already owns.
+    const knotIndex = order.indexOf(parent);
+    position = knotIndex === -1 ? order.length : knotIndex + 1;
+  } else if (afterId) {
     position = endOfUnit(afterId);
   } else if (parent) {
     // Append to the end of the parent knot's stitches.
@@ -388,7 +449,18 @@ export function insertNodeOrdered(
   }
 
   order.splice(position, 0, newId);
-  nodes[newId] = newNode;
+  // defineProperty, not `nodes[newId] = newNode`: the graph comes back
+  // from JSONB through JSON.parse and so carries Object.prototype, and
+  // a plain assignment to `__proto__` would invoke the prototype setter
+  // instead of creating an own property — reporting success while
+  // storing nothing. parseNewNodeId refuses that name, and this makes
+  // the write safe for any caller that doesn't.
+  Object.defineProperty(nodes, newId, {
+    value: newNode,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
   for (let i = 0; i < order.length; i++) {
     const node = nodes[order[i]];
     if (node) node.lineNumber = i + 1;

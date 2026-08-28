@@ -447,13 +447,26 @@ export default function StoryTab({
   // takes its stitches with it — a stitch has nowhere to live once its
   // knot is gone. Twee passages are flat, so this is always just the
   // one (childrenByParent is empty for them).
+  //
+  // Membership is the union of `parent` and the `<knot>.` key prefix,
+  // matching collectDeletionSet on the server. They agree in a
+  // parser-produced graph, but a stitch carrying one without the other
+  // would otherwise go missing from the confirmation AND stay in the
+  // "send them to" list — where picking it earns a 400 the author has
+  // no way to interpret.
   const doomedIdsFor = useCallback(
     (nodeId: string) => {
       const node = storyGraph?.nodes[nodeId];
-      if (!node || node.type !== 'knot') return [nodeId];
-      return [nodeId, ...(childrenByParent.get(nodeId) ?? []).map((c) => c.id)];
+      if (!node || node.type !== 'knot' || sourceLanguage === 'twee') return [nodeId];
+      const prefix = `${nodeId}.`;
+      const doomed = new Set([nodeId]);
+      for (const child of childrenByParent.get(nodeId) ?? []) doomed.add(child.id);
+      for (const id of Object.keys(storyGraph?.nodes ?? {})) {
+        if (id.startsWith(prefix)) doomed.add(id);
+      }
+      return Array.from(doomed);
     },
-    [storyGraph, childrenByParent],
+    [storyGraph, childrenByParent, sourceLanguage],
   );
 
   // Who still points into that set, from outside it. Links between two
@@ -994,6 +1007,7 @@ export default function StoryTab({
                             <NodeCreateButton
                               label={vocab.subNode.singular}
                               parentId={knot.id}
+                              firstAnchorId={knot.id}
                               siblings={children.map((c) => c.id)}
                               siblingNoun={vocab.subNode.singular}
                               onCreate={handleCreateNode}

@@ -28,6 +28,7 @@ import { useNodeEditor } from '../hooks/useNodeEditor';
 import { uploadInk } from '../api/client';
 import { useYjs } from '../hooks/useYjs';
 import { useYjsSeedReady } from '../hooks/useStoryYDoc';
+import type { Nomenclature } from '../lib/nomenclature';
 
 interface Props {
   projectId: string;
@@ -45,6 +46,12 @@ interface Props {
   /** Called after this tab's source-editor Save lands so the parent
    * bumps sourceResetKey for the other tabs' editors. */
   onSourceReplaced: () => void;
+  /** Which format the project is authored in. Only the delete
+   * affordance reads it, and only to know whether a dotted node id
+   * means a knot/stitch path (Ink) or is just a name with a dot in it
+   * (Twee) — getting that backwards would offer to delete unrelated
+   * passages along with the selected one. */
+  sourceLanguage: Nomenclature;
 }
 
 // Node sizing — fed into both the dagre layout and the React Flow render.
@@ -548,6 +555,7 @@ function GraphTabInner({
   sourceResetKey,
   onStoryUpdated,
   onSourceReplaced,
+  sourceLanguage,
 }: Props) {
   // Same Y.Doc as StoryTab so collaborative choice-text edits stay in
   // sync across whichever tab is open. Note: useYjs maintains a
@@ -949,16 +957,24 @@ function GraphTabInner({
   // Delete affordance for the node the rail is showing. Ink takes a
   // knot's stitches with it, so the confirmation has to name them and
   // the "send links to" list has to exclude them.
-  const doomedIds = selectedNodeId
-    ? selected?.type === 'knot'
-      ? [
-          selectedNodeId,
-          ...Object.values(storyGraph.nodes)
-            .filter((n) => n.parent === selectedNodeId)
-            .map((n) => n.id),
-        ]
-      : [selectedNodeId]
-    : [];
+  //
+  // Union of `parent` and the `<knot>.` key prefix, matching
+  // collectDeletionSet on the server — a stitch carrying one without
+  // the other would be missing from the confirmation and still offered
+  // as a repoint target the server then rejects.
+  const doomedIds = (() => {
+    if (!selectedNodeId) return [];
+    // Twee has no hierarchy: every passage is top-level and a dot is
+    // an ordinary character in a title, so `Ch1.Scene` is not a child
+    // of `Ch1` and must not be dragged in.
+    if (selected?.type !== 'knot' || sourceLanguage === 'twee') return [selectedNodeId];
+    const prefix = `${selectedNodeId}.`;
+    const doomed = new Set([selectedNodeId]);
+    for (const [id, node] of Object.entries(storyGraph.nodes)) {
+      if (node.parent === selectedNodeId || id.startsWith(prefix)) doomed.add(id);
+    }
+    return Array.from(doomed);
+  })();
   const doomedSet = new Set(doomedIds);
   const railReferrers = Array.from(
     new Set(

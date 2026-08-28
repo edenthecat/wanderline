@@ -74,14 +74,12 @@ function makePool(script: ScriptedQuery[]) {
   };
 }
 
-function graph(startNode: string, nodes: Record<string, unknown>) {
-  return {
-    startNode,
-    nodes,
-    id: 'g1',
-    title: 'T',
-    validation: { valid: true, errors: [], warnings: [] },
-  };
+function graph(
+  startNode: string,
+  nodes: Record<string, unknown>,
+  validation: unknown = { valid: true, errors: [], warnings: [] },
+) {
+  return { startNode, nodes, id: 'g1', title: 'T', validation };
 }
 
 /** The transaction every successful create runs, in order. */
@@ -180,8 +178,37 @@ describe('POST /:id/story/node', () => {
     expect(order).toEqual(['ch1', 'ch1.a', 'ch1.mid', 'ch1.b']);
   });
 
+  it('places a stitch first when anchored on its own knot', async () => {
+    // A knot runs by its lowest-lineNumber stitch, so "after the knot
+    // header" is the only way to give a chapter a new opening scene.
+    const storyGraph = graph('ch1', {
+      ch1: { id: 'ch1', type: 'knot', parent: null, choices: [], divert: null, lineNumber: 1 },
+      'ch1.a': {
+        id: 'ch1.a',
+        type: 'stitch',
+        parent: 'ch1',
+        choices: [],
+        divert: null,
+        lineNumber: 2,
+      },
+    });
+    const { pool } = makePool(createScript(storyGraph));
+    const res = await request(makeApp(pool))
+      .post(`/api/projects/${projectId}/story/node`)
+      .send({ nodeId: 'ch1.opening', afterNodeId: 'ch1' });
+
+    expect(res.status).toBe(200);
+    const nodes = res.body.story_graph.nodes;
+    const order = Object.keys(nodes).sort((a, b) => nodes[a].lineNumber - nodes[b].lineNumber);
+    expect(order).toEqual(['ch1', 'ch1.opening', 'ch1.a']);
+  });
+
   it('adopts the new node as the start when the story never had a usable one', async () => {
-    const storyGraph = graph('', {});
+    const storyGraph = graph(
+      '',
+      {},
+      { valid: false, errors: [{ type: 'missing_start' }], warnings: [] },
+    );
     const { pool } = makePool(createScript(storyGraph));
     const res = await request(makeApp(pool))
       .post(`/api/projects/${projectId}/story/node`)
@@ -189,6 +216,44 @@ describe('POST /:id/story/node', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.story_graph.startNode).toBe('opening');
+    // The stored validation block is rendered verbatim by the editor,
+    // so leaving `missing_start` behind would keep reporting the
+    // problem this request just fixed.
+    expect(res.body.story_graph.validation.errors).toEqual([]);
+    expect(res.body.story_graph.validation.valid).toBe(true);
+  });
+
+  it('rejects __proto__ rather than reporting a node it did not store', async () => {
+    const storyGraph = graph('intro', {
+      intro: { id: 'intro', type: 'knot', parent: null, choices: [], divert: null, lineNumber: 1 },
+    });
+    const { pool } = makePool([
+      { match: 'BEGIN' },
+      { match: 'SELECT story_graph', rows: [{ story_graph: storyGraph, source_language: 'ink' }] },
+      { match: 'ROLLBACK' },
+    ]);
+    const res = await request(makeApp(pool))
+      .post(`/api/projects/${projectId}/story/node`)
+      .send({ nodeId: '__proto__' });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('400s (not 500s) when the named parent is stored as null', async () => {
+    // Stored graphs do contain null nodes; Object.hasOwn is true for
+    // them, so a bare `.type` deref would surface as a 500.
+    const storyGraph = graph('intro', {
+      intro: { id: 'intro', type: 'knot', parent: null, choices: [], divert: null, lineNumber: 1 },
+      chapter: null,
+    });
+    const { pool } = makePool(createScript(storyGraph));
+    const res = await request(makeApp(pool))
+      .post(`/api/projects/${projectId}/story/node`)
+      .send({ nodeId: 'chapter.scene' });
+
+    // A null parent isn't a stitch, so the create proceeds rather than
+    // crashing — what matters is that it never 500s.
+    expect(res.status).toBe(200);
   });
 
   it('refuses an id that is already taken, without writing', async () => {
@@ -550,6 +615,51 @@ describe('DELETE /:id/story/node', () => {
 
     expect(res.status).toBe(409);
     expect(res.body.error).toMatch(/start passage/);
+  });
+
+  it('drops validation messages that name a deleted passage', async () => {
+    const storyGraph = graph(
+      'intro',
+      {
+        intro: {
+          id: 'intro',
+          type: 'knot',
+          parent: null,
+          choices: [],
+          divert: null,
+          lineNumber: 1,
+        },
+        spare: {
+          id: 'spare',
+          type: 'knot',
+          parent: null,
+          choices: [],
+          divert: null,
+          lineNumber: 2,
+        },
+      },
+      {
+        valid: false,
+        errors: [{ type: 'empty_node', nodeId: 'spare' }],
+        warnings: [
+          { type: 'unreachable_node', nodeId: 'spare' },
+          { type: 'unreachable_node', nodeId: 'intro' },
+        ],
+      },
+    );
+    const { pool } = makePool(deleteScript(storyGraph));
+    const res = await request(makeApp(pool))
+      .delete(`/api/projects/${projectId}/story/node`)
+      .send({ nodeId: 'spare' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.story_graph.validation.errors).toEqual([]);
+    // Messages about surviving passages are untouched — nothing here
+    // re-validates, it only removes what is provably stale.
+    expect(res.body.story_graph.validation.warnings).toEqual([
+      { type: 'unreachable_node', nodeId: 'intro' },
+    ]);
+    expect(res.body.story_graph.validation.valid).toBe(true);
   });
 
   it('404s on an unknown node', async () => {

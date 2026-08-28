@@ -42,6 +42,30 @@ describe('NodeCreateButton', () => {
     await waitFor(() => expect(onCreate).toHaveBeenCalledWith('ch1.mid', { afterNodeId: 'ch1.a' }));
   });
 
+  it('offers "first", anchored on the knot itself', async () => {
+    // A knot runs by its lowest-lineNumber stitch. Without this option
+    // the opening slot of an existing chapter is unreachable from the
+    // editor: every other choice appends after something.
+    const onCreate = vi.fn().mockResolvedValue(undefined);
+    render(
+      <NodeCreateButton
+        label="stitch"
+        parentId="ch1"
+        firstAnchorId="ch1"
+        siblings={['ch1.a']}
+        onCreate={onCreate}
+        nodeIdSet={new Set(['ch1', 'ch1.a'])}
+      />,
+    );
+    fireEvent.click(screen.getByText('+ stitch'));
+    fireEvent.change(screen.getByLabelText('stitch'), { target: { value: 'opening' } });
+    fireEvent.change(screen.getByLabelText(/Place after/), { target: { value: 'ch1' } });
+    fireEvent.click(screen.getByText('Add'));
+    await waitFor(() =>
+      expect(onCreate).toHaveBeenCalledWith('ch1.opening', { afterNodeId: 'ch1' }),
+    );
+  });
+
   it('catches a duplicate id before the round-trip', async () => {
     const onCreate = vi.fn();
     render(

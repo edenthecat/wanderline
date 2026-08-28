@@ -3,6 +3,7 @@ import {
   findInboundReferences,
   insertNodeOrdered,
   parseNewNodeId,
+  pruneValidation,
   repointReferences,
   resolveTargetId,
   MAX_NODE_ID_LENGTH,
@@ -175,6 +176,14 @@ describe('parseNewNodeId', () => {
     expect(parseNewNodeId('DONE', 'twee')).toHaveProperty('error');
   });
 
+  it('rejects __proto__, which is a legal name in both formats but not a storable key', () => {
+    // The graph reaches us through JSON.parse, so it carries
+    // Object.prototype: `nodes['__proto__'] = node` runs the prototype
+    // SETTER and stores nothing, while reporting success.
+    expect(parseNewNodeId('__proto__', 'ink')).toHaveProperty('error');
+    expect(parseNewNodeId('__proto__', 'twee')).toHaveProperty('error');
+  });
+
   it('rejects ids too long for the side tables node_id column', () => {
     const long = 'a'.repeat(MAX_NODE_ID_LENGTH + 1);
     expect(parseNewNodeId(long, 'twee')).toHaveProperty('error');
@@ -259,6 +268,37 @@ describe('insertNodeOrdered', () => {
     expect(orderOf(nodes)).toEqual(['intro', 'ch1', 'ch1.a', 'ch1.mid', 'ch1.b']);
   });
 
+  it('places a stitch FIRST when anchored on its own knot', () => {
+    // A knot runs by its lowest-lineNumber stitch, so this is the only
+    // way to give a chapter a new opening scene.
+    const nodes = inkGraph();
+    insertNodeOrdered(
+      nodes,
+      'ch1.opening',
+      { id: 'ch1.opening', type: 'stitch', parent: 'ch1' },
+      { afterId: 'ch1', parent: 'ch1', sourceLanguage: 'ink' },
+    );
+    expect(orderOf(nodes)).toEqual(['intro', 'ch1', 'ch1.opening', 'ch1.a', 'ch1.b']);
+  });
+
+  it('writes through a prototype-poisoning key without swapping the prototype', () => {
+    // parseNewNodeId refuses `__proto__`, but the write must be safe
+    // for any caller that doesn't check: a plain assignment would
+    // store nothing and leave the map's prototype replaced.
+    const nodes: GraphNodes = {
+      a: { id: 'a', type: 'knot', parent: null, lineNumber: 1 },
+    };
+    insertNodeOrdered(
+      nodes,
+      '__proto__',
+      { id: '__proto__', type: 'knot', parent: null },
+      { parent: null, sourceLanguage: 'ink' },
+    );
+    expect(Object.hasOwn(nodes, '__proto__')).toBe(true);
+    expect(Object.getPrototypeOf(nodes)).toBe(Object.prototype);
+    expect(JSON.parse(JSON.stringify(nodes))['__proto__']).toBeDefined();
+  });
+
   it('appends a stitch to the end of its own knot, not the end of the story', () => {
     const nodes = inkGraph();
     nodes.ch2 = { id: 'ch2', type: 'knot', parent: null, lineNumber: 20 };
@@ -300,5 +340,29 @@ describe('insertNodeOrdered', () => {
       { afterId: 'ch1.a', parent: 'ch1', sourceLanguage: 'ink' },
     );
     expect(orderOf(nodes).filter((id) => id !== 'ch1.mid')).toEqual(before);
+  });
+});
+
+describe('pruneValidation', () => {
+  it('drops the messages the caller says are stale and moves `valid` with them', () => {
+    const validation = {
+      valid: false,
+      errors: [{ type: 'missing_start' }, { type: 'missing_target', nodeId: 'gone' }],
+      warnings: [{ type: 'unreachable_node', nodeId: 'gone' }],
+    };
+    pruneValidation(validation, (m) => m.nodeId !== 'gone' && m.type !== 'missing_start');
+    expect(validation.errors).toEqual([]);
+    expect(validation.warnings).toEqual([]);
+    // `valid` is defined as "no errors", so clearing the last error
+    // has to flip it — otherwise the editor keeps the invalid banner.
+    expect(validation.valid).toBe(true);
+  });
+
+  it('leaves messages it was not told to drop, and tolerates a missing block', () => {
+    const validation = { valid: false, errors: [{ type: 'syntax_error' }] };
+    pruneValidation(validation, (m) => m.type !== 'missing_start');
+    expect(validation.errors).toHaveLength(1);
+    expect(validation.valid).toBe(false);
+    expect(() => pruneValidation(undefined, () => true)).not.toThrow();
   });
 });

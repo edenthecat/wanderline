@@ -13,11 +13,13 @@ import {
   findInboundReferences,
   insertNodeOrdered,
   parseNewNodeId,
+  pruneValidation,
   repointReferences,
   TERMINAL_TARGETS,
   TWEE_UNSAFE_NAME_DESCRIPTION,
   TWEE_UNSAFE_NAME_RE,
   type GraphNodes,
+  type GraphValidation,
   type SourceLanguage,
 } from '../services/story-node-ops.js';
 
@@ -1477,6 +1479,7 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
       const storyGraph = storyResult.rows[0].story_graph as {
         nodes: GraphNodes;
         startNode: string;
+        validation?: GraphValidation;
       };
       const sourceLanguage: SourceLanguage =
         storyResult.rows[0].source_language === 'twee' ? 'twee' : 'ink';
@@ -1511,7 +1514,11 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
         // A stitch under a stitch has no Ink syntax: the emitter would
         // write `= a_b` inside the grandparent knot and the parser
         // would read it back as a sibling, silently reparenting it.
-        if (nodes[parent].type === 'stitch') {
+        //
+        // Optional chaining because `Object.hasOwn` is also true for a
+        // key whose stored value is null, which stored graphs do
+        // contain — a bare `.type` there would 500 on what is a 400.
+        if (nodes[parent]?.type === 'stitch') {
           await client.query('ROLLBACK');
           res.status(400).json({ error: `"${parent}" is a stitch — stitches cannot own stitches` });
           return;
@@ -1530,11 +1537,18 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
         // fall-through never crosses from one knot's stitches into
         // another's, so "after a node in a different knot" has no
         // ordering answer to give.
+        //
+        // The owning knot itself is the exception, and a necessary
+        // one: a knot runs by its LOWEST-lineNumber stitch, so
+        // "after the knot header" is how an author gives a chapter a
+        // new opening scene. Without it the only reachable placements
+        // are after an existing stitch or last, and the first slot
+        // would be unreachable from the editor forever.
         const anchor = nodes[afterId];
         const anchorParent =
-          anchor.parent ??
+          anchor?.parent ??
           (sourceLanguage === 'ink' && afterId.includes('.') ? afterId.split('.')[0] : null);
-        if (anchorParent !== parent) {
+        if (anchorParent !== parent && afterId !== parent) {
           await client.query('ROLLBACK');
           res.status(400).json({
             error:
@@ -1572,11 +1586,15 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
       // A story whose startNode never resolved (an upload that failed
       // its `missing_start` validation) gets one as soon as there's a
       // top-level node to be it — the same rule the parsers apply.
+      // The stored `missing_start` message goes with it: the editor
+      // renders validation verbatim, so leaving it would keep
+      // reporting the problem the author just fixed.
       if (
         parent === null &&
         (!storyGraph.startNode || !Object.hasOwn(nodes, storyGraph.startNode))
       ) {
         storyGraph.startNode = nodeId;
+        pruneValidation(storyGraph.validation, (m) => m.type !== 'missing_start');
       }
 
       await client.query(
@@ -1721,6 +1739,7 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
       const storyGraph = storyResult.rows[0].story_graph as {
         nodes: GraphNodes;
         startNode: string;
+        validation?: GraphValidation;
       };
       const sourceLanguage: SourceLanguage =
         storyResult.rows[0].source_language === 'twee' ? 'twee' : 'ink';
@@ -1788,6 +1807,11 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
       for (const doomed of deletedIds) {
         delete nodes[doomed];
       }
+      // Validation messages naming a passage that no longer exists
+      // are noise the editor would keep rendering — an unreachable-node
+      // warning about a node the author just removed reads as a new
+      // problem. Only those are dropped; nothing here re-validates.
+      pruneValidation(storyGraph.validation, (m) => !m.nodeId || !deleteSet.has(m.nodeId));
 
       await client.query(
         `UPDATE project_stories

@@ -371,6 +371,7 @@ export default function ProjectDetailPage() {
                 storyGraph={project.story_graph}
                 inkSource={project.ink_source}
                 sourceResetKey={sourceResetKey}
+                sourceLanguage={project.source_language}
                 onStoryUpdated={() => loadProject({ silent: true })}
                 onSourceReplaced={bumpSourceResetKey}
               />

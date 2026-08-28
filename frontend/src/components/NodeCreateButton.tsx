@@ -18,6 +18,16 @@ interface Props {
    * control and appends.
    */
   siblings?: string[];
+  /**
+   * Anchor that means "first" — the owning knot, which the server
+   * reads as "immediately after the knot header". A knot runs by its
+   * lowest-lineNumber stitch, so this is the slot that gives a chapter
+   * a new opening scene; without it the first position would be
+   * unreachable from the editor. Omitted for top-level nodes, where
+   * "first" would mean changing the story's start passage — a
+   * different operation with no endpoint.
+   */
+  firstAnchorId?: string;
   /** Fires the POST. Resolves once the parent has refetched. */
   onCreate: (
     nodeId: string,
@@ -44,6 +54,7 @@ export default function NodeCreateButton({
   label,
   parentId,
   siblings = [],
+  firstAnchorId,
   onCreate,
   nodeIdSet,
   siblingNoun = 'node',
@@ -129,7 +140,7 @@ export default function NodeCreateButton({
         aria-label={label}
         className="node-rename-input"
       />
-      {siblings.length > 0 && (
+      {(siblings.length > 0 || firstAnchorId) && (
         <label className="node-create-placement">
           Place after
           <select
@@ -140,6 +151,7 @@ export default function NodeCreateButton({
             aria-label={`Place after which ${siblingNoun}`}
           >
             <option value="">(last)</option>
+            {firstAnchorId && <option value={firstAnchorId}>(first)</option>}
             {siblings.map((id) => (
               <option key={id} value={id}>
                 {id}
