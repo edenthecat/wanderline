@@ -108,10 +108,13 @@ button:disabled {
 /* Visible focus for the password gate. styles.ts used to set
    `outline: none` inline with no replacement, on the only control
    standing between a listener and the story. */
+/* Outline only, no border-color: the field's border is an inline
+   style from styles.ts, which a plain declaration here could not
+   override anyway. A 2px accent ring at 2px offset (8.82:1 against the
+   default page) is a complete focus indicator on its own. */
 .wl-password-input:focus-visible {
   outline: 2px solid var(--wl-accent, #4ecdc4);
   outline-offset: 2px;
-  border-color: var(--wl-accent, #4ecdc4);
 }
 
 /* Motion preference. Vestibular disorders, migraine and motion

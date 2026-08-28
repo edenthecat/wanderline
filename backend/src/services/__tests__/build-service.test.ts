@@ -479,6 +479,32 @@ describe('build-service unit', () => {
         );
       });
 
+      // The per-component panels win in the player's CSS, so a check
+      // that read only `variables` would stamp a green tick on a
+      // palette the listener can't read.
+      it('checks per-component overrides, not just the global variables', () => {
+        const story = {
+          ...sampleStory,
+          settings: { theme: { components: { page: { background: '#ffffff' } } } },
+        };
+        expect(contrastPayload(renderSmokeHtml(story)).join('\n')).toMatch(
+          /Body text on the page background/,
+        );
+      });
+
+      // A check that quietly didn't run is indistinguishable from one
+      // that passed, on a page whose whole job is to say "this build is
+      // fine".
+      it('reports a colour it could not read instead of passing it', () => {
+        const story = {
+          ...sampleStory,
+          settings: { theme: { variables: { pageBackground: 'oklch(0.95 0.02 250)' } } },
+        };
+        const problems = contrastPayload(renderSmokeHtml(story));
+        expect(problems.length).toBeGreaterThan(0);
+        expect(problems.join('\n')).toMatch(/could not read oklch\(0\.95 0\.02 250\)/);
+      });
+
       it('keeps the payload from closing the inline script', () => {
         const story = {
           ...sampleStory,

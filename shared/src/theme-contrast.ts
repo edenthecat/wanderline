@@ -24,6 +24,12 @@ export interface ThemePalette {
   accentColor?: string;
 }
 
+/** The `{ variables, components }` shape the Theme tab edits and stores. */
+export interface ThemeInput {
+  variables?: ThemePalette;
+  components?: Record<string, Record<string, string | undefined> | undefined>;
+}
+
 /**
  * What the player actually renders when a knob is left unset — read
  * off the `:root` block in player-app/src/index.css, not off the
@@ -42,21 +48,66 @@ export const PLAYER_THEME_DEFAULTS: Required<ThemePalette> = {
 export interface ThemeContrastCheck {
   id: string;
   label: string;
-  /** Worst ratio over every page-background stop, to 2dp. */
-  ratio: number;
   required: number;
+  /**
+   * Worst ratio over every page-background stop, to 2dp — or null when
+   * one of the colours involved could not be parsed. A null ratio is
+   * NOT a pass; see `unevaluatedThemeContrast`.
+   */
+  ratio: number | null;
+  /** True only when the check actually ran and cleared `required`. */
   passes: boolean;
+  /** The value(s) that defeated the parser, when `ratio` is null. */
+  unparsed: string[];
 }
+
+/**
+ * Where a colour comes from, in the order the player's own `var()`
+ * fallback chains consult them. A per-component override beats the
+ * global variable — both are edited in the same Theme tab, and the
+ * component panels are the ones that win in the CSS, so checking only
+ * the globals would clear a palette the listener never sees.
+ */
+type Source =
+  { component: string; prop: string } | { variable: keyof ThemePalette } | { literal: string };
 
 interface PairSpec {
   id: string;
   label: string;
-  /** A palette key, or a literal colour the player hardcodes. */
-  foreground: keyof ThemePalette | { literal: string };
-  /** Surfaces stacked over the page, bottom-to-top. */
-  layers: Array<keyof ThemePalette>;
+  /** First value the author set wins. */
+  foreground: Source[];
+  /** Surfaces stacked over the page, bottom-to-top; one chain each. */
+  layers: Source[][];
   required: number;
 }
+
+// How the player resolves each surface, mirroring the `var(...)`
+// chains in styles.ts and index.css.
+const PAGE_BACKGROUND: Source[] = [
+  // body sets `background-image: var(--wl-page-backgroundImage, ...)`,
+  // so an author's page image or gradient is what gets painted.
+  { component: 'page', prop: 'backgroundImage' },
+  { component: 'page', prop: 'background' },
+  { variable: 'pageBackground' },
+];
+const BODY_TEXT: Source[] = [{ component: 'page', prop: 'textColor' }, { variable: 'textColor' }];
+const CARD_BACKGROUND: Source[] = [
+  { component: 'storyCard', prop: 'background' },
+  { variable: 'cardBackground' },
+];
+const CARD_TEXT: Source[] = [
+  { component: 'storyCard', prop: 'textColor' },
+  { component: 'page', prop: 'textColor' },
+  { variable: 'textColor' },
+];
+const CHROME_BACKGROUND: Source[] = [
+  { component: 'settingsPanel', prop: 'background' },
+  { variable: 'chromeColor' },
+];
+const HEADING_TEXT: Source[] = [
+  { component: 'header', prop: 'textColor' },
+  { variable: 'headingColor' },
+];
 
 // The surfaces text actually lands on in the player. Headings are
 // rendered large (>=1.5rem), so they're held to the large-text bar.
@@ -64,83 +115,116 @@ const PAIRS: PairSpec[] = [
   {
     id: 'text-on-page',
     label: 'Body text on the page background',
-    foreground: 'textColor',
+    foreground: BODY_TEXT,
     layers: [],
     required: AA_NORMAL_TEXT,
   },
   {
     id: 'text-on-card',
     label: 'Body text on the story card',
-    foreground: 'textColor',
-    layers: ['cardBackground'],
+    foreground: CARD_TEXT,
+    layers: [CARD_BACKGROUND],
     required: AA_NORMAL_TEXT,
   },
   {
     id: 'text-on-chrome',
     label: 'Body text on the player chrome',
-    foreground: 'textColor',
-    layers: ['chromeColor'],
+    foreground: BODY_TEXT,
+    layers: [CHROME_BACKGROUND],
     required: AA_NORMAL_TEXT,
   },
   {
     id: 'heading-on-page',
     label: 'Headings on the page background',
-    foreground: 'headingColor',
+    foreground: HEADING_TEXT,
     layers: [],
     required: AA_LARGE_TEXT,
   },
   {
     id: 'heading-on-card',
     label: 'Headings on the story card',
-    foreground: 'headingColor',
-    layers: ['cardBackground'],
+    foreground: HEADING_TEXT,
+    layers: [CARD_BACKGROUND],
     required: AA_LARGE_TEXT,
   },
   {
-    // The start button paints its label #1a1a2e regardless of what the
-    // accent is set to (see styles.ts startBtn), so a dark accent
+    // The start button's label defaults to #1a1a2e regardless of what
+    // the accent is set to (see styles.ts startBtn), so a dark accent
     // makes the one control that begins the story unreadable.
     id: 'start-button',
     label: 'Start button label on the accent fill',
-    foreground: { literal: '#1a1a2e' },
-    layers: ['accentColor'],
+    foreground: [{ component: 'startButton', prop: 'textColor' }, { literal: '#1a1a2e' }],
+    layers: [[{ component: 'startButton', prop: 'background' }, { variable: 'accentColor' }]],
     required: AA_NORMAL_TEXT,
   },
 ];
 
-/** Fall back to the player default for any knob the author left blank. */
-export function resolvePalette(palette: ThemePalette | undefined): Required<ThemePalette> {
-  const out = { ...PLAYER_THEME_DEFAULTS };
-  for (const key of Object.keys(PLAYER_THEME_DEFAULTS) as Array<keyof ThemePalette>) {
-    const value = palette?.[key];
-    if (typeof value === 'string' && value.trim()) out[key] = value.trim();
+function isSet(value: string | undefined): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+/**
+ * Walk a fallback chain and return the first value the author set,
+ * or the player's own default for the global variable ending it.
+ */
+function resolveSource(theme: ThemeInput | undefined, chain: Source[]): string | undefined {
+  for (const source of chain) {
+    if ('literal' in source) return source.literal;
+    if ('component' in source) {
+      const value = theme?.components?.[source.component]?.[source.prop];
+      // `none` is the documented way to clear a background image, and
+      // it falls through to the colour underneath rather than being a
+      // value we failed to understand.
+      if (isSet(value) && value.trim().toLowerCase() !== 'none') return value.trim();
+      continue;
+    }
+    const value = theme?.variables?.[source.variable];
+    return isSet(value) ? value.trim() : PLAYER_THEME_DEFAULTS[source.variable];
   }
-  return out;
+  return undefined;
 }
 
 /**
  * Evaluate every text/surface pair the player renders.
  *
- * Pairs whose colours we can't parse (a `var()`, an unsupported colour
- * function) are omitted rather than guessed at — a check nobody can
- * verify is worse than no check.
+ * A pair whose colours can't be parsed comes back with `ratio: null`
+ * and `passes: false` rather than being dropped. Silently omitting it
+ * would let an unreadable palette written in a syntax this doesn't
+ * model render as a clean bill of health, and an affirmative pass for
+ * a check that never ran is worse than no check at all.
  */
-export function evaluateThemeContrast(palette: ThemePalette | undefined): ThemeContrastCheck[] {
-  const resolved = resolvePalette(palette);
-  // A gradient page is checked at every stop: text has to stay
-  // readable the whole way down, not just at the top.
-  const pageStops = extractColors(resolved.pageBackground);
-  if (pageStops.length === 0) return [];
-
+export function evaluateThemeContrast(theme: ThemeInput | undefined): ThemeContrastCheck[] {
   const results: ThemeContrastCheck[] = [];
-  for (const pair of PAIRS) {
-    const fgValue =
-      typeof pair.foreground === 'object' ? pair.foreground.literal : resolved[pair.foreground];
-    const fg = parseColor(fgValue);
-    if (!fg) continue;
 
-    const layers = pair.layers.map((key) => parseColor(resolved[key]));
-    if (layers.some((l) => l === null)) continue;
+  const pageValue = resolveSource(theme, PAGE_BACKGROUND);
+  const pageStops = isSet(pageValue) ? extractColors(pageValue) : [];
+
+  for (const pair of PAIRS) {
+    const unparsed: string[] = [];
+    if (pageStops.length === 0) unparsed.push(pageValue ?? '(unset)');
+
+    const fgValue = resolveSource(theme, pair.foreground);
+    const fg = isSet(fgValue) ? parseColor(fgValue) : null;
+    if (!fg) unparsed.push(fgValue ?? '(unset)');
+
+    const layers = pair.layers.map((chain) => {
+      const value = resolveSource(theme, chain);
+      const parsed = isSet(value) ? parseColor(value) : null;
+      if (!parsed) unparsed.push(value ?? '(unset)');
+      return parsed;
+    });
+
+    if (unparsed.length > 0) {
+      results.push({
+        id: pair.id,
+        label: pair.label,
+        required: pair.required,
+        ratio: null,
+        passes: false,
+        unparsed,
+      });
+      continue;
+    }
 
     let worst = Infinity;
     for (const stop of pageStops) {
@@ -148,7 +232,7 @@ export function evaluateThemeContrast(palette: ThemePalette | undefined): ThemeC
       // browser's own canvas — before anything stacks on it.
       let surface: Rgb = flatten([stop], [255, 255, 255]);
       for (const layer of layers) surface = composite(layer!.rgb, surface, layer!.alpha);
-      const ink = composite(fg.rgb, surface, fg.alpha);
+      const ink = composite(fg!.rgb, surface, fg!.alpha);
       worst = Math.min(worst, contrastRatio(ink, surface));
     }
 
@@ -156,15 +240,26 @@ export function evaluateThemeContrast(palette: ThemePalette | undefined): ThemeC
     results.push({
       id: pair.id,
       label: pair.label,
-      ratio,
       required: pair.required,
+      ratio,
       passes: ratio >= pair.required,
+      unparsed: [],
     });
   }
+
   return results;
 }
 
-/** Just the pairs that fail — what a warning UI wants. */
-export function failingThemeContrast(palette: ThemePalette | undefined): ThemeContrastCheck[] {
-  return evaluateThemeContrast(palette).filter((c) => !c.passes);
+/** Pairs that were measured and came up short — what a warning UI wants. */
+export function failingThemeContrast(theme: ThemeInput | undefined): ThemeContrastCheck[] {
+  return evaluateThemeContrast(theme).filter((c) => c.ratio !== null && !c.passes);
+}
+
+/**
+ * Pairs that couldn't be measured at all. Reported separately because
+ * "this is too low" and "nobody can tell whether this is too low" call
+ * for different words in front of an author.
+ */
+export function unevaluatedThemeContrast(theme: ThemeInput | undefined): ThemeContrastCheck[] {
+  return evaluateThemeContrast(theme).filter((c) => c.ratio === null);
 }

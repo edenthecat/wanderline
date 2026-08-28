@@ -1905,27 +1905,38 @@ details[open] > .audio-section-summary {
    author couldn't read them, so the setting quietly became "hide".
 
    Recessing the fill keeps the de-emphasis obvious while the ink stays
-   at full strength: title 15.31:1, footer 6.5:1 on the new surface.
-   `saturate()` stays because the sRGB saturation matrix is built from
-   the luminance coefficients, so it drains hue without moving
-   luminance — it costs no contrast. */
+   at full strength. `saturate()` stays because the sRGB saturation
+   matrix is built from the luminance coefficients, so it drains hue
+   without moving luminance — it costs no contrast. */
 .graph-node-card.is-dim,
 .graph-node-card.is-unmatched {
-  background: #e9eef5;
-  border-color: #cbd5e1;
-  box-shadow: none;
+  /* A wash *over* the card, expressed as `background-image` so it
+     leaves `background-color` alone. These selectors have the same
+     specificity as .is-error / .is-warning / .is-missing / .is-selected
+     / :hover / .is-ending and sit later in the file, so setting
+     `background`, `border-color` or `box-shadow` here would win
+     outright: an unreachable node with a validation error would lose
+     its red border and pink wash and become indistinguishable from a
+     healthy one, and a selected dimmed node would lose its ring. The
+     old `opacity` approach had preserved all of those, faded.
+
+     Layering instead keeps every state's own colour showing through.
+     Measured over the three card fills this can land on (white,
+     #fef2f2 error, #fffbeb warning): title 13.0–13.4:1, footer
+     5.5–5.7:1, on-path border 3.66–3.75:1. */
+  background-image: linear-gradient(rgba(203, 213, 225, 0.75), rgba(203, 213, 225, 0.75));
   filter: saturate(0.35);
 }
 /* The footer is the one piece of card text that isn't near-black;
-   #6b7280 on the recessed fill is 4.15:1, so darken it to clear AA. */
+   #6b7280 under the wash is 4.15:1, so darken it to clear AA. */
 .graph-node-card.is-dim .graph-node-card-footer,
 .graph-node-card.is-unmatched .graph-node-card-footer {
   color: #475569;
 }
 /* #f59e0b measured 2.15:1 on the card — under the 3:1 WCAG 1.4.11
    asks of a boundary that carries meaning. #b45309 is 5.02:1 on white
-   and 4.47:1 on the recessed dim fill. Path membership also gets the
-   `path` chip in StoryCardNode so it is not signalled by colour
+   and 3.66:1 at worst under the dim wash. Path membership also gets
+   the `path` chip in StoryCardNode so it is not signalled by colour
    alone. */
 .graph-node-card.is-on-path {
   border-color: #b45309;

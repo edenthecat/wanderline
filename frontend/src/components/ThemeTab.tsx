@@ -8,10 +8,11 @@ import {
 import { promoteWeight, toggleWeight } from '../lib/font-weights';
 import {
   COMPONENT_SPECS,
-  failingThemeContrast,
+  evaluateThemeContrast,
   type ComponentId,
   type ComponentSpec,
   type ComponentPropSpec,
+  type ThemeContrastCheck,
 } from '@wanderline/shared';
 import FontPicker from './FontPicker';
 
@@ -205,6 +206,24 @@ export default function ThemeTab({ projectId }: Props) {
   const [activeComponent, setActiveComponent] = useState<ComponentId | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [contrast, setContrast] = useState<ThemeContrastCheck[]>([]);
+
+  // Debounced so the warning doesn't churn per keystroke. `updateGlobalVariable`
+  // fires on every character typed into a colour field and continuously while
+  // a native colour picker is dragged; recomputing inline meant the list
+  // appeared and disappeared through `#3` → `#33` → `#336`, and since it is a
+  // live region a screen reader would interrupt the author on every one of
+  // those. Settling first means one announcement, of the answer.
+  useEffect(() => {
+    const timer = setTimeout(() => setContrast(evaluateThemeContrast(theme)), 400);
+    return () => clearTimeout(timer);
+  }, [theme]);
+
+  const contrastWarnings = contrast.filter((c) => c.ratio !== null && !c.passes);
+  // Values we couldn't parse are reported separately: telling an author
+  // their colours are fine when we never managed to measure them is
+  // worse than admitting we couldn't.
+  const contrastUnknown = contrast.filter((c) => c.ratio === null);
 
   useEffect(() => {
     let cancelled = false;
@@ -340,7 +359,6 @@ export default function ThemeTab({ projectId }: Props) {
 
   const vars = theme.variables ?? {};
   const components = theme.components ?? {};
-  const contrastWarnings = failingThemeContrast(vars);
 
   // Use a CSS class instead of an inline grid-template-columns so we
   // can collapse to a single column on narrow viewports. The class is
@@ -372,20 +390,42 @@ export default function ThemeTab({ projectId }: Props) {
                 in the editor or the backend looked at the pair, and the
                 first person to find out was a listener who couldn't
                 read the story. Unset knobs are measured against the
-                player's real defaults, and a gradient page is measured
-                at every stop. */}
+                player's real defaults, per-component overrides are
+                measured ahead of the globals they beat in the CSS, and
+                a gradient page is measured at every stop.
+
+                `role="status"` rather than "alert": this is worth
+                hearing, but not worth cutting off whatever the author
+                is in the middle of typing. */}
             {contrastWarnings.length > 0 && (
               <div
                 className="alert alert-warning"
                 data-testid="theme-contrast-warning"
-                role="alert"
+                role="status"
               >
                 <strong>Hard to read for some listeners.</strong> These pairs fall below the WCAG AA
                 minimum:
                 <ul>
                   {contrastWarnings.map((w) => (
                     <li key={w.id}>
-                      {w.label} — {w.ratio.toFixed(2)}:1, needs {w.required}:1
+                      {w.label} — {w.ratio!.toFixed(2)}:1, needs {w.required}:1
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {contrastUnknown.length > 0 && (
+              <div
+                className="alert alert-warning"
+                data-testid="theme-contrast-unknown"
+                role="status"
+              >
+                <strong>Couldn&apos;t check these.</strong> Use a hex, <code>rgb()</code> or{' '}
+                <code>hsl()</code> value if you want them measured:
+                <ul>
+                  {contrastUnknown.map((w) => (
+                    <li key={w.id}>
+                      {w.label} — {w.unparsed.join(', ')}
                     </li>
                   ))}
                 </ul>

@@ -8,6 +8,7 @@ import {
   contrastRatio,
   evaluateThemeContrast,
   failingThemeContrast,
+  unevaluatedThemeContrast,
   parseColor,
   type Rgb,
 } from '@wanderline/shared';
@@ -316,7 +317,9 @@ describe('author-chosen palettes are checked, not just the defaults', () => {
   });
 
   it('flags text and background set to the same colour', () => {
-    const failures = failingThemeContrast({ textColor: '#336699', pageBackground: '#336699' });
+    const failures = failingThemeContrast({
+      variables: { textColor: '#336699', pageBackground: '#336699' },
+    });
     expect(failures.map((f) => f.id)).toContain('text-on-page');
     expect(failures.find((f) => f.id === 'text-on-page')!.ratio).toBe(1);
   });
@@ -324,7 +327,7 @@ describe('author-chosen palettes are checked, not just the defaults', () => {
   // The exact trap the character-theme bug came from: a light page
   // under a palette whose text colour was chosen for a dark one.
   it('flags a light page left with dark-theme text', () => {
-    const failures = failingThemeContrast({ pageBackground: '#ffffff' });
+    const failures = failingThemeContrast({ variables: { pageBackground: '#ffffff' } });
     expect(failures.map((f) => f.id)).toContain('text-on-page');
   });
 
@@ -332,29 +335,112 @@ describe('author-chosen palettes are checked, not just the defaults', () => {
   // top stop.
   it('checks every stop of a gradient page background', () => {
     const failures = failingThemeContrast({
-      pageBackground: 'linear-gradient(180deg, #ffffff 0%, #000000 100%)',
-      textColor: '#ffffff',
+      variables: {
+        pageBackground: 'linear-gradient(180deg, #ffffff 0%, #000000 100%)',
+        textColor: '#ffffff',
+      },
     });
     expect(failures.map((f) => f.id)).toContain('text-on-page');
   });
 
   it('flags an accent dark enough to swallow the start button label', () => {
     // startBtn paints its label #1a1a2e no matter what the accent is.
-    const failures = failingThemeContrast({ accentColor: '#1f2937' });
+    const failures = failingThemeContrast({ variables: { accentColor: '#1f2937' } });
     expect(failures.map((f) => f.id)).toContain('start-button');
   });
 
   it('resolves translucent surfaces against the page rather than guessing', () => {
     // A near-transparent card must inherit the page's readability
     // instead of being treated as opaque white.
-    const onDark = evaluateThemeContrast({ cardBackground: 'rgba(255,255,255,0.05)' });
+    const onDark = evaluateThemeContrast({
+      variables: { cardBackground: 'rgba(255,255,255,0.05)' },
+    });
     expect(onDark.find((c) => c.id === 'text-on-card')!.passes).toBe(true);
   });
 
-  it('stays silent on values it cannot parse instead of inventing a number', () => {
-    const checks = evaluateThemeContrast({ textColor: 'var(--something-else)' });
-    expect(checks.some((c) => c.id === 'text-on-page')).toBe(false);
-    // Pairs that don't involve the unparseable value still report.
-    expect(checks.some((c) => c.id === 'heading-on-page')).toBe(true);
+  it('understands hsl() as well as hex and rgb()', () => {
+    const failures = failingThemeContrast({
+      variables: { pageBackground: 'hsl(0, 0%, 100%)', textColor: 'hsl(0 0% 96%)' },
+    });
+    expect(failures.map((f) => f.id)).toContain('text-on-page');
+  });
+});
+
+// The per-component panels sit in the same Theme tab as the global
+// knobs and win in the player's CSS: body copy resolves
+// `var(--wl-page-textColor, var(--wl-text))`, so a component override
+// is what the listener actually gets. Checking only the globals would
+// hand a green light to a palette nobody can read.
+describe('per-component overrides are checked ahead of the globals they beat', () => {
+  it('flags a component page background the global text no longer suits', () => {
+    const failures = failingThemeContrast({ components: { page: { background: '#ffffff' } } });
+    expect(failures.map((f) => f.id)).toContain('text-on-page');
+  });
+
+  it('lets a component text override clear a warning the globals would raise', () => {
+    // The mirror case: without this the author would be warned forever
+    // with no way to satisfy the check.
+    const failures = failingThemeContrast({
+      variables: { pageBackground: '#ffffff' },
+      components: { page: { textColor: '#111827' } },
+    });
+    expect(failures.map((f) => f.id)).not.toContain('text-on-page');
+  });
+
+  it('measures the story card override rather than the global card colour', () => {
+    const failures = failingThemeContrast({
+      components: { storyCard: { background: '#ffffff' } },
+    });
+    expect(failures.map((f) => f.id)).toContain('text-on-card');
+  });
+
+  it('falls through a background image cleared with `none`', () => {
+    // `none` is how an author clears the image layer; it isn't a
+    // colour we failed to read, and the colour underneath is what
+    // gets painted.
+    const checks = evaluateThemeContrast({
+      variables: { pageBackground: '#ffffff', textColor: '#111827' },
+      components: { page: { backgroundImage: 'none' } },
+    });
+    expect(checks.find((c) => c.id === 'text-on-page')!.ratio).not.toBeNull();
+  });
+
+  it('honours a start-button label override', () => {
+    const failures = failingThemeContrast({
+      variables: { accentColor: '#1f2937' },
+      components: { startButton: { textColor: '#ffffff' } },
+    });
+    expect(failures.map((f) => f.id)).not.toContain('start-button');
+  });
+});
+
+// A check that silently didn't run reads exactly like a check that
+// passed, and the place it surfaces is a page captioned "Theme colours
+// meet WCAG AA contrast ✓".
+describe('colours the parser cannot read are reported, never passed', () => {
+  it('marks the pair unevaluated rather than dropping or passing it', () => {
+    const checks = evaluateThemeContrast({ variables: { textColor: 'oklch(0.7 0.1 200)' } });
+    const check = checks.find((c) => c.id === 'text-on-page');
+    expect(check).toBeDefined();
+    expect(check!.ratio).toBeNull();
+    expect(check!.passes).toBe(false);
+    expect(check!.unparsed).toContain('oklch(0.7 0.1 200)');
+  });
+
+  it('names the unreadable value so the author knows which one to change', () => {
+    const unknown = unevaluatedThemeContrast({ variables: { pageBackground: 'lightgray' } });
+    expect(unknown.length).toBeGreaterThan(0);
+    expect(unknown.every((c) => c.unparsed.includes('lightgray'))).toBe(true);
+  });
+
+  it('keeps unevaluated pairs out of the "too low" list', () => {
+    const theme = { variables: { textColor: 'oklch(0.7 0.1 200)' } };
+    expect(failingThemeContrast(theme).map((c) => c.id)).not.toContain('text-on-page');
+    expect(unevaluatedThemeContrast(theme).map((c) => c.id)).toContain('text-on-page');
+  });
+
+  it('still measures the pairs the unreadable value has nothing to do with', () => {
+    const checks = evaluateThemeContrast({ variables: { textColor: 'oklch(0.7 0.1 200)' } });
+    expect(checks.find((c) => c.id === 'heading-on-page')!.ratio).not.toBeNull();
   });
 });

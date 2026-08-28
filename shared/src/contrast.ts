@@ -68,10 +68,12 @@ function parseAlpha(raw: string | undefined): number {
 
 /**
  * Parse a single CSS colour. Supports #rgb / #rgba / #rrggbb /
- * #rrggbbaa, rgb()/rgba() in both comma and space syntax, and a small
- * set of keywords. Returns null for anything else (gradients,
- * `var(...)`, colour functions we don't model) so callers can say
- * "can't check this" instead of inventing a number.
+ * #rrggbbaa, rgb()/rgba() and hsl()/hsla() in both comma and space
+ * syntax, and a small set of keywords. Returns null for anything else
+ * (gradients, `var(...)`, colour functions we don't model) so callers
+ * can say "can't check this" instead of inventing a number — see
+ * `unevaluatedThemeContrast`, which makes that state visible rather
+ * than letting it read as a pass.
  */
 export function parseColor(input: string): Rgba | null {
   if (typeof input !== 'string') return null;
@@ -100,22 +102,67 @@ export function parseColor(input: string): Rgba | null {
     return { rgb, alpha };
   }
 
-  const fn = /^rgba?\(([^)]*)\)$/.exec(value);
-  if (fn) {
+  const rgbFn = /^rgba?\(([^)]*)\)$/.exec(value);
+  if (rgbFn) {
     // `rgb(0 0 0 / 50%)` and `rgba(0, 0, 0, 0.5)` both land here.
-    const [rgbPart, alphaPart] = fn[1].split('/');
-    const parts = rgbPart
-      .split(/[,\s]+/)
-      .map((p) => p.trim())
-      .filter(Boolean);
-    if (parts.length !== 3 && parts.length !== 4) return null;
-    const channels = parts.slice(0, 3).map(parseChannel);
+    const parts = splitColorArgs(rgbFn[1]);
+    if (!parts) return null;
+    const channels = parts.values.map(parseChannel);
     if (channels.some((c) => c === null)) return null;
-    const alpha = parseAlpha(alphaPart ?? parts[3]);
-    return { rgb: channels as Rgb, alpha };
+    return { rgb: channels as Rgb, alpha: parts.alpha };
+  }
+
+  const hslFn = /^hsla?\(([^)]*)\)$/.exec(value);
+  if (hslFn) {
+    const parts = splitColorArgs(hslFn[1]);
+    if (!parts) return null;
+    const [h, s, l] = parts.values.map((p) => Number.parseFloat(p));
+    if (![h, s, l].every(Number.isFinite)) return null;
+    return { rgb: hslToRgb(h, s / 100, l / 100), alpha: parts.alpha };
   }
 
   return null;
+}
+
+/**
+ * Split the argument list of an rgb()/hsl() function into its three
+ * components plus an alpha, accepting both the comma syntax and the
+ * space + `/` syntax.
+ */
+function splitColorArgs(args: string): { values: [string, string, string]; alpha: number } | null {
+  const [head, alphaPart] = args.split('/');
+  const parts = head
+    .split(/[,\s]+/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (parts.length !== 3 && parts.length !== 4) return null;
+  return {
+    values: parts.slice(0, 3) as [string, string, string],
+    alpha: parseAlpha(alphaPart ?? parts[3]),
+  };
+}
+
+/** CSS Color 3 hsl() → sRGB. Hue in degrees, s/l as 0–1 fractions. */
+function hslToRgb(hue: number, s: number, l: number): Rgb {
+  const sat = clamp(s, 0, 1);
+  const light = clamp(l, 0, 1);
+  const h = ((hue % 360) + 360) % 360;
+  const c = (1 - Math.abs(2 * light - 1)) * sat;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = light - c / 2;
+  const [r, g, b] =
+    h < 60
+      ? [c, x, 0]
+      : h < 120
+        ? [x, c, 0]
+        : h < 180
+          ? [0, c, x]
+          : h < 240
+            ? [0, x, c]
+            : h < 300
+              ? [x, 0, c]
+              : [c, 0, x];
+  return [(r + m) * 255, (g + m) * 255, (b + m) * 255];
 }
 
 /**
@@ -129,7 +176,7 @@ export function extractColors(value: string): Rgba[] {
   if (typeof value !== 'string') return [];
   const single = parseColor(value);
   if (single) return [single];
-  const tokens = value.match(/#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)/g) ?? [];
+  const tokens = value.match(/#[0-9a-fA-F]{3,8}\b|rgba?\([^)]*\)|hsla?\([^)]*\)/g) ?? [];
   const out: Rgba[] = [];
   for (const token of tokens) {
     const parsed = parseColor(token);

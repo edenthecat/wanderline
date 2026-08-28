@@ -31,7 +31,7 @@ import {
 } from './build-manifest.js';
 import { storyHash } from './story-hash.js';
 import { bundleGoogleFonts, renderThemeCss, type ThemeConfig } from './theme-render.js';
-import { evaluateThemeContrast } from '@wanderline/shared';
+import { evaluateThemeContrast, type ThemeInput } from '@wanderline/shared';
 import { prepareDistHtml } from './build-html.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -815,13 +815,21 @@ export function renderSmokeHtml(storyData: unknown): string {
 
   // Contrast is resolved at build time — the palette is already known
   // and the maths needs no DOM, so shipping the answer beats shipping
-  // a second copy of the algorithm into the inline script.
-  const themeVariables = (
-    storyData as { settings?: { theme?: { variables?: Record<string, string | undefined> } } }
-  ).settings?.theme?.variables;
-  const contrastProblems = evaluateThemeContrast(themeVariables)
+  // a second copy of the algorithm into the inline script. The whole
+  // theme goes in, not just `variables`: the per-component overrides
+  // win in the player's CSS, so checking only the globals would sign
+  // off on a palette the listener never sees.
+  const theme = (storyData as { settings?: { theme?: ThemeInput } }).settings?.theme;
+  const contrastProblems = evaluateThemeContrast(theme)
     .filter((check) => !check.passes)
-    .map((check) => `${check.label}: ${check.ratio.toFixed(2)}:1 (needs ${check.required}:1)`);
+    .map((check) =>
+      // A value we couldn't parse is reported as its own problem
+      // rather than dropped. A green tick for a check that never ran
+      // is the one outcome worse than no check.
+      check.ratio === null
+        ? `${check.label}: could not read ${check.unparsed.join(', ')} — use a hex, rgb() or hsl() value`
+        : `${check.label}: ${check.ratio.toFixed(2)}:1 (needs ${check.required}:1)`,
+    );
   const contrastJson = JSON.stringify(contrastProblems).replace(/</g, '\\u003c');
 
   // The runner is inlined as a regular <script> so file:// pages can

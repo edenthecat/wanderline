@@ -28,8 +28,8 @@ const { fetchProjectSettings, updateProjectSettings } = await import('../../api/
 const mockedFetch = vi.mocked(fetchProjectSettings);
 const mockedUpdate = vi.mocked(updateProjectSettings);
 
-function mount(variables: Record<string, string> = {}) {
-  const settings = { theme: { variables } };
+function mount(theme: Record<string, unknown> = {}) {
+  const settings = { theme };
   mockedFetch.mockResolvedValue({ settings } as never);
   mockedUpdate.mockResolvedValue({ settings } as never);
   return render(<ThemeTab projectId="p1" />);
@@ -46,11 +46,12 @@ describe('Theme tab contrast warning', () => {
   it('stays quiet on the shipped defaults', async () => {
     mount();
     await waitFor(() => expect(screen.getByText('Colors (global)')).toBeInTheDocument());
-    expect(screen.queryByTestId('theme-contrast-warning')).toBeNull();
+    await waitFor(() => expect(screen.queryByTestId('theme-contrast-warning')).toBeNull());
+    expect(screen.queryByTestId('theme-contrast-unknown')).toBeNull();
   });
 
   it('warns when body text and page background are the same colour', async () => {
-    mount({ textColor: '#336699', pageBackground: '#336699' });
+    mount({ variables: { textColor: '#336699', pageBackground: '#336699' } });
     const warning = await screen.findByTestId('theme-contrast-warning');
     expect(warning).toHaveTextContent(/Body text on the page background/);
     // The measured ratio is shown, so the author can see how far off
@@ -63,14 +64,33 @@ describe('Theme tab contrast warning', () => {
     // The unset-knob case: nothing in `variables` says what the text
     // colour is, so the check has to resolve it to the player default
     // rather than treat it as absent.
-    mount({ pageBackground: '#ffffff' });
+    mount({ variables: { pageBackground: '#ffffff' } });
     const warning = await screen.findByTestId('theme-contrast-warning');
     expect(warning).toHaveTextContent(/Body text on the page background/);
   });
 
-  it('announces the warning to assistive tech', async () => {
-    mount({ textColor: '#336699', pageBackground: '#336699' });
+  // The per-component panels live in this same tab and win in the
+  // player's CSS, so a check that looked only at the global knobs
+  // would clear a palette the listener can't read.
+  it('warns about a per-component override, not just the global knobs', async () => {
+    mount({ components: { page: { background: '#ffffff' } } });
     const warning = await screen.findByTestId('theme-contrast-warning');
-    expect(warning).toHaveAttribute('role', 'alert');
+    expect(warning).toHaveTextContent(/Body text on the page background/);
+  });
+
+  it('says so when it could not read a colour, rather than staying silent', async () => {
+    mount({ variables: { pageBackground: 'oklch(0.95 0.02 250)' } });
+    const unknown = await screen.findByTestId('theme-contrast-unknown');
+    expect(unknown).toHaveTextContent(/oklch\(0\.95 0\.02 250\)/);
+    // And it isn't dressed up as a measured failure.
+    expect(screen.queryByTestId('theme-contrast-warning')).toBeNull();
+  });
+
+  // Polite, not assertive: this recomputes as the author types into a
+  // colour field, and an alert would cut them off mid-word.
+  it('announces politely rather than interrupting', async () => {
+    mount({ variables: { textColor: '#336699', pageBackground: '#336699' } });
+    const warning = await screen.findByTestId('theme-contrast-warning');
+    expect(warning).toHaveAttribute('role', 'status');
   });
 });

@@ -6,6 +6,8 @@ import {
   AA_NON_TEXT,
   AA_NORMAL_TEXT,
   contrastRatio,
+  extractColors,
+  flatten,
   parseColor,
   type Rgb,
 } from '@wanderline/shared';
@@ -57,35 +59,68 @@ const SURFACE = rgb('#ffffff'); // --color-surface
 const PAGE = rgb('#f9fafb'); // --color-bg
 const NODE_TITLE = rgb('#0f172a'); // .graph-node-card-title
 
+// Every card fill the dim wash can land on: the plain card, plus the
+// state washes that .is-error / .is-missing and .is-warning set.
+const CARD_FILLS: Array<[string, Rgb]> = [
+  ['plain card', SURFACE],
+  ['error card', rgb('#fef2f2')],
+  ['warning card', rgb('#fffbeb')],
+];
+
+/** The dim wash composited over one of the card fills. */
+function dimSurfaceOver(base: Rgb): Rgb {
+  const wash = declaration('.graph-node-card.is-dim', 'background-image');
+  expect(wash, 'the dim state should paint a wash').not.toBeNull();
+  const stops = extractColors(wash!);
+  expect(stops.length).toBeGreaterThan(0);
+  return flatten([stops[0]], base);
+}
+
 describe('dimmed graph nodes stay readable', () => {
   // The whole point of the fix: de-emphasis is a property of the
   // surface, not of the ink. `opacity` on the card takes the text with
   // it and there is no floor at which both the title and the muted
   // footer survive.
   for (const selector of ['.graph-node-card.is-dim', '.graph-node-card.is-unmatched']) {
-    it(`${selector} recesses the surface instead of fading the whole card`, () => {
+    it(`${selector} washes the surface instead of fading the whole card`, () => {
       expect(declaration(selector, 'opacity')).toBeNull();
-      const background = declaration(selector, 'background');
-      expect(background).not.toBeNull();
-
-      const surface = rgb(background!);
-      expect(contrastRatio(NODE_TITLE, surface)).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
+      expect(declaration(selector, 'background-image')).not.toBeNull();
+      for (const [name, base] of CARD_FILLS) {
+        const ratio = contrastRatio(NODE_TITLE, dimSurfaceOver(base));
+        expect(ratio, `node title on a dimmed ${name}`).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
+      }
     });
   }
 
-  it('darkens the muted footer to clear AA on the recessed surface', () => {
-    // #6b7280 (--color-text-muted) is only 4.15:1 on the dim fill, so
+  it('darkens the muted footer to clear AA under the wash', () => {
+    // #6b7280 (--color-text-muted) is only 4.15:1 under the wash, so
     // the dim state has to override it rather than inherit it.
-    const surface = rgb(declaration('.graph-node-card.is-dim', 'background')!);
     const footer = rgb(declaration('.graph-node-card.is-dim .graph-node-card-footer', 'color')!);
-    expect(contrastRatio(footer, surface)).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
+    for (const [name, base] of CARD_FILLS) {
+      const ratio = contrastRatio(footer, dimSurfaceOver(base));
+      expect(ratio, `footer on a dimmed ${name}`).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
+    }
   });
 
   it('is still visibly recessed against an undimmed card', () => {
-    // A readable dim state that looks identical to a normal one would
+    // A readable dim state that looked identical to a normal one would
     // have traded one problem for another.
-    const dim = rgb(declaration('.graph-node-card.is-dim', 'background')!);
-    expect(contrastRatio(dim, SURFACE)).toBeGreaterThan(1.05);
+    expect(contrastRatio(dimSurfaceOver(SURFACE), SURFACE)).toBeGreaterThan(1.15);
+  });
+
+  // The dim selectors have the same specificity as .is-error,
+  // .is-warning, .is-selected and :hover but come later in the file,
+  // so any `background`, `border-color` or `box-shadow` here would win
+  // outright — a dimmed error node would lose the red border that says
+  // it's broken, and a dimmed selected node would lose its ring. The
+  // wash goes on `background-image`, which leaves `background-color`
+  // and the borders to the state rules.
+  it('leaves the state rules alone so an error or a selection survives dimming', () => {
+    for (const selector of ['.graph-node-card.is-dim', '.graph-node-card.is-unmatched']) {
+      expect(declaration(selector, 'background'), `${selector} background`).toBeNull();
+      expect(declaration(selector, 'border-color'), `${selector} border-color`).toBeNull();
+      expect(declaration(selector, 'box-shadow'), `${selector} box-shadow`).toBeNull();
+    }
   });
 });
 
@@ -94,8 +129,12 @@ describe('graph overlay borders carry enough contrast to mean something', () => 
   it('the on-path border clears the non-text minimum', () => {
     const border = rgb(declaration('.graph-node-card.is-on-path', 'border-color')!);
     expect(contrastRatio(border, SURFACE)).toBeGreaterThanOrEqual(AA_NON_TEXT);
-    const dim = rgb(declaration('.graph-node-card.is-dim', 'background')!);
-    expect(contrastRatio(border, dim)).toBeGreaterThanOrEqual(AA_NON_TEXT);
+    // A node can be on the path and dimmed at the same time, so the
+    // border has to clear the bar under the wash too.
+    for (const [name, base] of CARD_FILLS) {
+      const ratio = contrastRatio(border, dimSurfaceOver(base));
+      expect(ratio, `on-path border on a dimmed ${name}`).toBeGreaterThanOrEqual(AA_NON_TEXT);
+    }
   });
 
   it('the search-match border clears the non-text minimum', () => {
