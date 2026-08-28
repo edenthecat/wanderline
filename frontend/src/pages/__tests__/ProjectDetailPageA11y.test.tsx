@@ -183,7 +183,16 @@ describe('ProjectDetailPage navigation accessibility', () => {
     fireEvent.click(shipBtn);
     await waitFor(() => expect(document.activeElement).not.toBe(shipBtn));
 
-    fireEvent.mouseDown(container.querySelector('.workspace-mobile-sheet-backdrop')!);
+    // fireEvent returns false when the handler called preventDefault.
+    // That matters here and jsdom won't show it any other way: a real
+    // browser's mousedown default action focuses the hit target's
+    // nearest focusable ancestor, and the scrim has none — so without
+    // preventDefault the focus restore below is undone a beat later
+    // and the user still lands on <body>.
+    const notPrevented = fireEvent.mouseDown(
+      container.querySelector('.workspace-mobile-sheet-backdrop')!,
+    );
+    expect(notPrevented).toBe(false);
     await waitFor(() => expect(document.querySelector('.workspace-mobile-sheet')).toBeNull());
     expect(document.activeElement).toBe(shipBtn);
   });

@@ -207,6 +207,43 @@ describe('GraphTab keyboard and screen-reader access', () => {
     await waitFor(() => expect(document.activeElement).toBe(nodeEl(container, 'corridor')));
   });
 
+  // How the rail was opened doesn't decide how it gets closed: a rail
+  // opened with the mouse can still be closed by tabbing to the ✕ and
+  // pressing Enter, which unmounts the focused button.
+  it('hands focus back to the node even when the rail was opened by click', async () => {
+    const { container } = renderGraph();
+    await waitFor(() => expect(nodeEl(container, 'corridor')).toBeTruthy());
+
+    fireEvent.click(nodeEl(container, 'corridor'));
+    await screen.findByRole('complementary', { name: 'Node detail: corridor' });
+
+    const close = screen.getByRole('button', { name: 'Close detail' });
+    close.focus();
+    fireEvent.click(close);
+    await waitFor(() => expect(document.activeElement).toBe(nodeEl(container, 'corridor')));
+  });
+
+  // focusout bubbles to the canvas wrapper and fires before the
+  // matching focusin, so an untargeted handler tears down the card the
+  // pointer just put up on the node being clicked.
+  it('leaves a pointer-owned preview alone when focus moves off a node', async () => {
+    const { container } = renderGraph();
+    await waitFor(() => expect(nodeEl(container, '_intro')).toBeTruthy());
+
+    fireEvent.focus(nodeEl(container, '_intro'));
+    await waitFor(() => expect(container.querySelector('.graph-hover-card')).toBeTruthy());
+
+    // Pointer moves onto the other node and takes over the card.
+    fireEvent.mouseEnter(nodeEl(container, 'corridor'), { clientX: 10, clientY: 10 });
+    await waitFor(() =>
+      expect(container.querySelector('.graph-hover-card')).toHaveTextContent('corridor'),
+    );
+
+    // Clicking blurs the previously focused node — the card must stay.
+    fireEvent.blur(nodeEl(container, '_intro'));
+    expect(container.querySelector('.graph-hover-card')).toBeTruthy();
+  });
+
   // The hover card carried the only untruncated prose preview and the
   // tag list, and it rendered from onNodeMouseEnter alone — content
   // available to a pointer and to nothing else.

@@ -830,6 +830,11 @@ function GraphTabInner({
   // first call's snapshot.
   const [hoverNodeId, setHoverNodeId] = useState<string | null>(null);
   const [hoverPos, setHoverPos] = useState<{ x: number; y: number } | null>(null);
+  /** Which input put the card up. The pointer wins — a click focuses
+   * the node it just entered, and focusout on the old node arrives
+   * before focusin on the new one, so neither event can be read on its
+   * own without stealing or tearing down the pointer's card. */
+  const hoverSourceRef = useRef<'pointer' | 'focus' | null>(null);
   const hoverRafRef = useRef<number | null>(null);
   const latestHoverPosRef = useRef<{ x: number; y: number } | null>(null);
   const cancelHoverRaf = useCallback(() => {
@@ -1041,10 +1046,11 @@ function GraphTabInner({
         { zoom: 1, duration: 300 },
       );
       setSelectedNodeId(targetId);
-      // Opened from the toolbar, not from a node — there's no node to
-      // hand focus back to when the rail closes, and focus belongs on
-      // the "next match" button the user is still clicking.
-      returnFocusNodeIdRef.current = null;
+      // Focus belongs on the "next match" button the user is still
+      // clicking, so don't pull it into the rail — but if they later
+      // Tab in and close the rail, the node they jumped to is where
+      // focus should land.
+      returnFocusNodeIdRef.current = targetId;
       pendingRailFocusRef.current = false;
     }
     setMatchCursor((c) => c + 1);
@@ -1080,7 +1086,10 @@ function GraphTabInner({
     // Opening the detail rail evicts the source panel — they
     // occupy the same right-side region of the canvas.
     setSourceOpen(false);
-    returnFocusNodeIdRef.current = fromKeyboard ? nodeId : null;
+    // Set regardless of how the rail was opened: a rail opened with
+    // the mouse can still be closed from the keyboard (Tab to the ✕,
+    // Enter), and that unmounts the focused button.
+    returnFocusNodeIdRef.current = nodeId;
     // The focus effect is keyed on selectedNodeId, so re-activating
     // the node the rail is ALREADY showing wouldn't re-run it: focus
     // now instead, rather than leaving the flag set for whatever
@@ -1127,6 +1136,7 @@ function GraphTabInner({
     // WCAG 2.1 1.4.13: content shown on focus has to be dismissible
     // without moving focus. Escape hides the preview card.
     if (event.key === 'Escape') {
+      hoverSourceRef.current = null;
       cancelHoverRaf();
       setHoverNodeId(null);
       setHoverPos(null);
@@ -1286,18 +1296,25 @@ function GraphTabInner({
             const el = id ? (event.target as Element).closest('.react-flow__node') : null;
             if (!el) return;
             // Clicking a node focuses it too, but the pointer entered
-            // it first — so this node is already previewed, anchored
-            // to the cursor. Re-anchoring here would snap that card
+            // it first — so the pointer owns the card and it's already
+            // anchored to the cursor. Re-anchoring here would snap it
             // to the node's corner mid-click.
-            if (hoverNodeId === id) return;
+            if (hoverSourceRef.current === 'pointer') return;
             cancelHoverRaf();
             // Same preview the mouse gets, anchored to the node box
             // instead of the pointer. Without this, everything in the
             // hover card is mouse-only information.
+            hoverSourceRef.current = 'focus';
             setHoverNodeId(id);
             queueHoverRect(el);
           }}
           onBlur={() => {
+            // focusout bubbles here from the zoom controls and the
+            // minimap too, and it fires before the matching focusin —
+            // so only tear down a preview this handler's own focus
+            // path put up.
+            if (hoverSourceRef.current !== 'focus') return;
+            hoverSourceRef.current = null;
             cancelHoverRaf();
             setHoverNodeId(null);
             setHoverPos(null);
@@ -1335,6 +1352,7 @@ function GraphTabInner({
               // queued frame after enter and render B's preview at
               // A's coordinates.
               cancelHoverRaf();
+              hoverSourceRef.current = 'pointer';
               setHoverNodeId(node.id);
               setHoverPos({ x: event.clientX, y: event.clientY });
             }}
@@ -1348,6 +1366,7 @@ function GraphTabInner({
               queueHoverPos(event.clientX, event.clientY);
             }}
             onNodeMouseLeave={() => {
+              hoverSourceRef.current = null;
               cancelHoverRaf();
               setHoverNodeId(null);
               setHoverPos(null);

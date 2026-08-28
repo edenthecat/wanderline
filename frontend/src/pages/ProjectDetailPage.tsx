@@ -182,13 +182,15 @@ export default function ProjectDetailPage() {
       mobileTabRefs.current[openGroup]?.focus();
     }
     function handleClick(e: MouseEvent) {
-      if (
-        e.target instanceof Node &&
-        mobileSheetRef.current &&
-        !mobileSheetRef.current.contains(e.target)
-      ) {
-        close();
-      }
+      if (!(e.target instanceof Node) || !mobileSheetRef.current) return;
+      if (mobileSheetRef.current.contains(e.target)) return;
+      // mousedown's default action moves focus to the hit target's
+      // nearest focusable ancestor. The scrim has none, so the
+      // browser would put focus on <body> a beat after close()
+      // restored it. The scrim covers the viewport while the sheet is
+      // open, so this suppresses nothing else.
+      e.preventDefault();
+      close();
     }
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key === 'Escape') close();
@@ -367,8 +369,8 @@ export default function ProjectDetailPage() {
               {/* The one element that names the current view. Made a
                   live region so switching tabs is announced — the
                   whole <main> swaps and nothing else says so. It is
-                  display:none below 767px, which is why pickTab also
-                  moves focus into the panel. */}
+                  display:none below 600px, which is one reason pickTab
+                  also moves focus into the panel. */}
               <span className="workspace-toolbar-current text-muted" role="status">
                 {TAB_LABEL[activeTab]}
               </span>
