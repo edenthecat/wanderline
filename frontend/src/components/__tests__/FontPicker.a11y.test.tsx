@@ -92,11 +92,13 @@ describe('FontPicker accessibility', () => {
       fireEvent.mouseEnter(screen.getAllByRole('option')[0]);
       expect(scrollIntoView).not.toHaveBeenCalled();
 
-      // Nor may an end-stop flag outlive the dropdown. Reopening puts
-      // the highlight back on row 0, so a leftover flag would scroll to
-      // wherever the highlight used to be — off-screen above the fold,
-      // with the highlight nowhere near it.
-      fireEvent.keyDown(input, { key: 'ArrowDown' });
+      // Nor may an end-stop flag outlive the dropdown. Arrow into the
+      // stop again — leaving the flag set, since the effect never runs
+      // to spend it — then close and reopen. Reopening puts the
+      // highlight back on row 0, so a leftover flag would scroll to
+      // wherever the highlight used to be, with the highlight nowhere
+      // near it.
+      for (let i = 0; i <= last + 2; i++) fireEvent.keyDown(input, { key: 'ArrowDown' });
       fireEvent.keyDown(input, { key: 'Tab' });
       scrollIntoView.mockClear();
       fireEvent.focus(input);
