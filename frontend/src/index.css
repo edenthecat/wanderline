@@ -829,6 +829,13 @@ textarea:focus,
   gap: 6px;
 }
 
+/* Row of whole-passage actions at the top of the node panel. */
+.node-detail-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .node-text {
   font-size: 13px;
   line-height: 1.6;
@@ -1517,6 +1524,17 @@ details[open] > .audio-section-summary {
   margin: 0;
 }
 
+/* The passage this preview is pinned to by a "Preview from here"
+   click. Named out loud because a preview that opens in the middle of
+   a story looks identical to one that lost its place. */
+.preview-start-pin {
+  margin: 0;
+  color: var(--color-text-muted);
+}
+.preview-start-pin code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
 .preview-shortcuts-hint kbd {
   display: inline-block;
   padding: 1px 6px;
@@ -1712,6 +1730,25 @@ details[open] > .audio-section-summary {
 
 .graph-node-dot.is-off {
   background: #cbd5e1;
+}
+
+/* "Preview from here" on a graph card. Small enough to sit in the
+   header strip without stealing it from the flag and character chips,
+   which are what you scan the canvas for. */
+.graph-node-preview {
+  flex: 0 0 auto;
+  border: 1px solid var(--color-border);
+  background: #fff;
+  color: #475569;
+  border-radius: 4px;
+  font-size: 9px;
+  line-height: 1;
+  padding: 3px 5px;
+  cursor: pointer;
+}
+.graph-node-preview:hover {
+  background: #f1f5f9;
+  color: #0f172a;
 }
 
 .graph-node-card-title {
@@ -3618,6 +3655,10 @@ which is context rather than a problem. */ .node-flag-badge {
   border-top: 1px solid #fecaca;
 }
 .flagged-panel-node-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
   margin-bottom: 4px;
 }
 .flagged-panel-orphan {

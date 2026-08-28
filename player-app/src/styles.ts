@@ -490,6 +490,17 @@ export const styles: Record<string, React.CSSProperties> = {
   },
   resumePickerMeta: { fontSize: '0.72rem', opacity: 0.6 },
   resumePickerHint: { fontSize: '0.75rem', opacity: 0.6, marginTop: '0.5rem' },
+  // Where `?start=` put us, shown on the instructions screen just
+  // above the Start button. Deliberately quiet (it is confirmation,
+  // not a warning) but not dimmed to the point of being missable —
+  // it is the only thing telling a reviewer they are about to hear
+  // the middle of the story rather than the beginning.
+  startNotice: {
+    fontSize: '0.8rem',
+    opacity: 0.85,
+    margin: '1rem 0 0',
+    textAlign: 'center' as React.CSSProperties['textAlign'],
+  },
 
   // Preload status styles
   preloadSpinnerSmall: {

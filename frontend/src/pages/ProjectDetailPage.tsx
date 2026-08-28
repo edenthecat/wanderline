@@ -105,6 +105,19 @@ export default function ProjectDetailPage() {
   // a StoryTab upload wouldn't force-reset GraphTab's editor.
   const [sourceResetKey, setSourceResetKey] = useState(0);
   const bumpSourceResetKey = useCallback(() => setSourceResetKey((n) => n + 1), []);
+  // "Preview from here": the passage the Preview tab should open on,
+  // and a nonce so asking for the SAME passage again still re-mounts
+  // the player. Listening, fixing a take, and listening again is the
+  // whole point — an id-only comparison would make the second listen
+  // do nothing.
+  const [previewStartNodeId, setPreviewStartNodeId] = useState<string | null>(null);
+  const [previewStartNonce, setPreviewStartNonce] = useState(0);
+  const previewFromNode = useCallback((nodeId: string) => {
+    setPreviewStartNodeId(nodeId);
+    setPreviewStartNonce((n) => n + 1);
+    setActiveTab('preview');
+    setMobileSheet(null);
+  }, []);
   const exportRef = useRef<HTMLDivElement>(null);
   const exportBtnRef = useRef<HTMLButtonElement>(null);
 
@@ -233,6 +246,11 @@ export default function ProjectDetailPage() {
   function pickTab(t: Tab) {
     setActiveTab(t);
     setMobileSheet(null);
+    // Navigating to Preview by hand means "play the story", not
+    // "replay whichever passage I asked about earlier". Without this
+    // the pin would outlive the request that made it and quietly
+    // hijack the next plain preview.
+    setPreviewStartNodeId(null);
   }
 
   return (
@@ -355,6 +373,7 @@ export default function ProjectDetailPage() {
                 onSourceReplaced={bumpSourceResetKey}
                 otherPresence={presentUsers}
                 onSelfEditingNodeChange={setSelfEditingNodeId}
+                onPreviewFromNode={previewFromNode}
               />
             )}
             {activeTab === 'audio' && (
@@ -373,12 +392,18 @@ export default function ProjectDetailPage() {
                 sourceResetKey={sourceResetKey}
                 onStoryUpdated={() => loadProject({ silent: true })}
                 onSourceReplaced={bumpSourceResetKey}
+                onPreviewFromNode={previewFromNode}
               />
             )}
             {activeTab === 'theme' && <ThemeTab projectId={id} />}
             {activeTab === 'playerDisplay' && <PlayerDisplayTab projectId={id} />}
             {activeTab === 'preview' && (
-              <PreviewTab projectId={id} hasStory={!!project.story_graph} />
+              <PreviewTab
+                projectId={id}
+                hasStory={!!project.story_graph}
+                startNodeId={previewStartNodeId}
+                startRequestNonce={previewStartNonce}
+              />
             )}
             {activeTab === 'builds' && (
               <BuildsTab projectId={id} hasStory={!!project.story_graph} />

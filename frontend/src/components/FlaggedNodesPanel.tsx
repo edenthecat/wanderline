@@ -19,6 +19,10 @@ interface Props {
   /** Node ids that exist in the current story graph. */
   nodeIdSet: Set<string>;
   onJumpToNode: (nodeId: string) => void;
+  /** Switch to the Preview tab and start playback at this passage.
+   * Optional — without it the row still offers "jump to the editor",
+   * just not "hear it". */
+  onPreviewFromNode?: (nodeId: string) => void;
   onFlagsChanged: () => void;
   /** The server capped the list; say so rather than letting the cap
    * read as the total. */
@@ -30,6 +34,7 @@ export default function FlaggedNodesPanel({
   flagsByNode,
   nodeIdSet,
   onJumpToNode,
+  onPreviewFromNode,
   onFlagsChanged,
   truncated,
 }: Props) {
@@ -130,6 +135,18 @@ export default function FlaggedNodesPanel({
                       aria-label={`Jump to ${nodeId}`}
                     >
                       <code>{nodeId}</code>
+                    </button>
+                  )}
+                  {/* Deliberately absent on an orphan: there is no
+                      passage left to play. */}
+                  {onPreviewFromNode && !orphaned && (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => onPreviewFromNode(nodeId)}
+                      aria-label={`Preview from ${nodeId}`}
+                    >
+                      ▶ Preview from here
                     </button>
                   )}
                 </div>

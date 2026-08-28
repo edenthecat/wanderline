@@ -1,4 +1,13 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  createContext,
+  memo,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   ReactFlow,
   Background,
@@ -44,7 +53,27 @@ interface Props {
   /** Called after this tab's source-editor Save lands so the parent
    * bumps sourceResetKey for the other tabs' editors. */
   onSourceReplaced: () => void;
+  /** Switch to the Preview tab and start playback at this passage.
+   * Optional: without it the cards and the detail rail simply don't
+   * offer the control. */
+  onPreviewFromNode?: (nodeId: string) => void;
 }
+
+/**
+ * "Preview from here", reached by the card renderer.
+ *
+ * Through context rather than node `data` on purpose: React Flow owns
+ * the node components, and threading a callback through `data` would
+ * mean buildLayout takes it as an argument, which puts it in the layout
+ * memo's dependencies and re-runs dagre whenever the parent hands down
+ * a new closure. Context reaches the card without touching layout at
+ * all. Null when the host offers no preview surface.
+ *
+ * Exported alongside StoryCardNode so the card's control can be tested
+ * without standing up the whole tab (dagre, a live Y.Doc, and the
+ * editor hook's metadata/audio/flag fetches).
+ */
+export const PreviewFromNodeContext = createContext<((nodeId: string) => void) | null>(null);
 
 // Node sizing — fed into both the dagre layout and the React Flow render.
 const NODE_WIDTH = 200;
@@ -93,8 +122,9 @@ interface StoryCardData {
 //     change.
 //   - `is-ending` styling for nodes tagged #ending.
 //   - dim / on-path / matched flags drive search + path-trace visuals.
-const StoryCardNode = memo(function StoryCardNode({ data, selected }: NodeProps) {
+export const StoryCardNode = memo(function StoryCardNode({ data, selected }: NodeProps) {
   const d = data as unknown as StoryCardData;
+  const previewFromNode = useContext(PreviewFromNodeContext);
   const cls = ['graph-node-card'];
   if (selected) cls.push('is-selected');
   if (d.isStart) cls.push('is-start');
@@ -140,6 +170,24 @@ const StoryCardNode = memo(function StoryCardNode({ data, selected }: NodeProps)
           className={`graph-node-dot ${d.hasAudio ? 'is-on' : 'is-off'}`}
           aria-label={d.hasAudio ? 'has audio' : 'no audio assigned'}
         />
+        {/* `nodrag` keeps React Flow's drag handler off the button —
+            without it a click reads as the start of a node drag and the
+            press never lands. stopPropagation keeps the click from
+            also selecting the card underneath. */}
+        {previewFromNode && (
+          <button
+            type="button"
+            className="graph-node-preview nodrag"
+            onClick={(e) => {
+              e.stopPropagation();
+              previewFromNode(d.storyNode.id);
+            }}
+            title={`Preview from ${d.storyNode.id}`}
+            aria-label={`Preview from ${d.storyNode.id}`}
+          >
+            ▶
+          </button>
+        )}
       </div>
       <div className="graph-node-card-title">{d.storyNode.id}</div>
       {d.choices.length > 0 && (
@@ -464,7 +512,9 @@ export default function GraphTab(props: Props) {
   // a detail rail when a node is clicked.
   return (
     <ReactFlowProvider>
-      <GraphTabInner {...props} />
+      <PreviewFromNodeContext.Provider value={props.onPreviewFromNode ?? null}>
+        <GraphTabInner {...props} />
+      </PreviewFromNodeContext.Provider>
     </ReactFlowProvider>
   );
 }
@@ -547,6 +597,7 @@ function GraphTabInner({
   sourceResetKey,
   onStoryUpdated,
   onSourceReplaced,
+  onPreviewFromNode,
 }: Props) {
   // Same Y.Doc as StoryTab so collaborative choice-text edits stay in
   // sync across whichever tab is open. Note: useYjs maintains a
@@ -1229,6 +1280,7 @@ function GraphTabInner({
                   );
                 }
               }}
+              onPreviewFromNode={onPreviewFromNode}
               yDoc={yDoc}
               yDocReady={yDocReady}
             />

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ApiError, fetchMe } from '../api/client';
 import FlagNodeControl from './FlagNodeControl';
@@ -6,6 +6,15 @@ import FlagNodeControl from './FlagNodeControl';
 interface Props {
   projectId: string;
   hasStory: boolean;
+  /** Passage the preview should open on, from a "Preview from here"
+   * control elsewhere in the editor. null = the story's own start. */
+  startNodeId?: string | null;
+  /** Bumped by the parent on every "Preview from here" click. It is
+   * the click, not the id, that means "go there now": asking for the
+   * same passage twice — listen, fix the take, listen again — is the
+   * review loop this whole feature exists for, and comparing ids alone
+   * would make the second click do nothing. */
+  startRequestNonce?: number;
 }
 
 /**
@@ -14,10 +23,32 @@ interface Props {
  * shortcuts) all live in player-app/ — the editor just provides the
  * shell and a way to reset/pop out.
  */
-export default function PreviewTab({ projectId, hasStory }: Props) {
+export default function PreviewTab({
+  projectId,
+  hasStory,
+  startNodeId = null,
+  startRequestNonce = 0,
+}: Props) {
   // Bumping this key forces React to recreate the iframe element, which
   // reloads the player from scratch — simplest possible "Restart" action.
   const [iframeKey, setIframeKey] = useState(0);
+
+  // The passage this preview is pinned to. Seeded from the prop and
+  // then owned here, so "Play from the beginning" can drop the pin
+  // without having to reach back into the parent.
+  const [pinnedNodeId, setPinnedNodeId] = useState<string | null>(startNodeId);
+  // Seeded with the incoming nonce rather than 0: the usual path into
+  // this tab IS a "Preview from here" click, which mounts the component
+  // with the request already in props. Starting at 0 would see a change
+  // on first render and re-mount an iframe that had only just been
+  // created.
+  const seenNonceRef = useRef(startRequestNonce);
+  useEffect(() => {
+    if (startRequestNonce === seenNonceRef.current) return;
+    seenNonceRef.current = startRequestNonce;
+    setPinnedNodeId(startNodeId);
+    setIframeKey((k) => k + 1);
+  }, [startRequestNonce, startNodeId]);
 
   // The passage currently on screen inside the preview, reported by
   // the player over postMessage. Drives the flag control: a reviewer
@@ -43,7 +74,12 @@ export default function PreviewTab({ projectId, hasStory }: Props) {
   useEffect(() => {
     setPreviewNodeId(null);
   }, [iframeKey]);
-  const previewUrl = `/api/projects/${projectId}/preview`;
+  // The player reads `?start=` off its own location, so the pin rides
+  // in on the iframe src — and on "Open in new tab" too, or popping the
+  // preview out would silently lose the passage the reviewer asked for.
+  const previewUrl = pinnedNodeId
+    ? `/api/projects/${projectId}/preview?start=${encodeURIComponent(pinnedNodeId)}`
+    : `/api/projects/${projectId}/preview`;
 
   // Session gate. The preview endpoint sits behind requireAuth,
   // and an expired session returns 401. Browsers render that 401
@@ -155,14 +191,36 @@ export default function PreviewTab({ projectId, hasStory }: Props) {
       <div className="section-header preview-header">
         <h2>Preview</h2>
         <div className="preview-actions">
+          {/* Restart replays whatever this preview is set to — the
+              pinned passage when there is one. That is the review loop:
+              hear the problem, fix the take, hear it again. Getting
+              dropped back at the top of a forty-minute story instead is
+              exactly what made verifying a fix not worth doing. */}
           <button
             type="button"
             className="btn btn-ghost btn-sm"
             onClick={() => setIframeKey((k) => k + 1)}
-            aria-label="Restart preview from the start"
+            aria-label={
+              pinnedNodeId
+                ? `Restart preview from ${pinnedNodeId}`
+                : 'Restart preview from the start'
+            }
           >
             Restart
           </button>
+          {pinnedNodeId && (
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => {
+                setPinnedNodeId(null);
+                setIframeKey((k) => k + 1);
+              }}
+              aria-label="Play the preview from the beginning of the story"
+            >
+              From the beginning
+            </button>
+          )}
           <FlagNodeControl projectId={projectId} nodeId={previewNodeId} />
           <a
             className="btn btn-ghost btn-sm"
@@ -178,6 +236,11 @@ export default function PreviewTab({ projectId, hasStory }: Props) {
         Keyboard: <kbd>Space</kbd> play/pause · <kbd>↑</kbd>/<kbd>↓</kbd> choose · <kbd>Enter</kbd>{' '}
         select · <kbd>Backspace</kbd> back · <kbd>R</kbd> restart · <kbd>Esc</kbd> dismiss errors
       </p>
+      {pinnedNodeId && (
+        <p className="text-sm preview-start-pin" role="status">
+          Starting from <code>{pinnedNodeId}</code>
+        </p>
+      )}
       <div className="preview-frame-wrap">
         <iframe
           key={iframeKey}

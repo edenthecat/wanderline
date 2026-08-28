@@ -232,6 +232,74 @@ function createInitialClickState(): ClickDetectionState {
   return { clickCount: 0, lastClickTime: 0, timeoutId: null };
 }
 
+/** Own-property check, so a node id that collides with something on
+ * Object.prototype ("constructor", "toString") can't resolve to a
+ * passage the story doesn't have. */
+function hasNode(nodes: Record<string, unknown>, id: string): boolean {
+  return Object.prototype.hasOwnProperty.call(nodes, id);
+}
+
+/**
+ * Resolve a story reference — a choice target, a divert, or the
+ * `?start=` parameter — to a real node id, or null if nothing matches.
+ *
+ * Three steps, in order:
+ *
+ *  1. An exact node id.
+ *  2. The reference qualified by `contextNodeId`'s knot. Stories
+ *     imported from compiled .ink.json routinely carry bare stitch
+ *     names on choices, because the source author wrote a relative
+ *     divert (`-> .infinite_grace`) and the compiler kept the short
+ *     form. From inside "tell_you", "infinite_grace" means
+ *     "tell_you.infinite_grace".
+ *  3. Any node ending in `.reference`. Picks the first match — a
+ *     well-formed story has only one, and if it doesn't, the project's
+ *     graph has a real bug worth flagging in the editor; the player
+ *     would still rather proceed than hang.
+ *
+ * Shared by in-story navigation (context: the passage the listener is
+ * on) and the `?start=` deep link (context: the story's start node, the
+ * only knot there is before anyone has moved). One resolver so a link
+ * an author can write in the editor cannot resolve differently from the
+ * same reference followed mid-story.
+ */
+export function resolveNodeReference(
+  reference: string,
+  nodes: Record<string, unknown>,
+  contextNodeId: string | null | undefined,
+): string | null {
+  if (hasNode(nodes, reference)) return reference;
+  const knot = contextNodeId?.split('.')[0];
+  if (knot) {
+    const qualified = `${knot}.${reference}`;
+    if (hasNode(nodes, qualified)) return qualified;
+  }
+  const suffix = `.${reference}`;
+  for (const id of Object.keys(nodes)) {
+    if (id.endsWith(suffix)) return id;
+  }
+  return null;
+}
+
+/**
+ * The passage the URL asks us to start from, if any.
+ *
+ * Read straight off `window.location` rather than plumbed through
+ * loadStoryData, because the story itself can arrive by any of three
+ * routes (injected, fetched, ?story=) and where to start is orthogonal
+ * to all of them.
+ */
+export function requestedStartNode(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = new URLSearchParams(window.location.search).get('start');
+    const trimmed = raw?.trim();
+    return trimmed ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Drop any in-flight multi-click run.
  *
@@ -309,6 +377,15 @@ export default function App() {
   // slots are created from the Save Slots panel.
   const [saveSlots, setSaveSlots] = useState<SaveSlot[]>([]);
   const [preloadState, setPreloadState] = useState<PreloadState>('idle');
+  // What `?start=` asked for and what it resolved to (null = nothing
+  // in this story matches). Kept so the instructions screen can say
+  // where playback is about to begin — silently starting somewhere
+  // other than the beginning, or silently ignoring the request, both
+  // leave the listener unable to trust what they're hearing.
+  const [startRequest, setStartRequest] = useState<{
+    requested: string;
+    resolved: string | null;
+  } | null>(null);
 
   // audio cache layer (preloadAudio, getCachedAudio,
   // retryFailedAudio, isCached, preloadProgress). Owns audioCacheRef
@@ -400,12 +477,49 @@ export default function App() {
         const loadedSlots = readSlotsWithMigration(data.id, validNodeIds);
         setSaveSlots(loadedSlots);
         const autosave = loadedSlots.find((s) => s.id === AUTOSAVE_SLOT_ID);
+
+        // `?start=` — an author (or a reviewer following a link out of
+        // the editor) asking to begin at a named passage.
+        //
+        // It BEATS the autosave when both are present. The autosave is
+        // an inference about where you probably want to be; `?start=`
+        // is somebody saying so. Anyone who lands here has just clicked
+        // "Preview from here" on a specific passage, and dropping them
+        // forty minutes elsewhere because the browser remembered a
+        // previous session would defeat the entire point of the link.
+        // Nothing is destroyed by winning: every slot, autosave
+        // included, is still listed on the instructions screen, so
+        // resuming is one click away.
+        const requested = requestedStartNode();
+        // Resolve against the start node's knot: before the listener
+        // has moved there is no "current" knot, and the start node is
+        // the closest thing to one.
+        const resolvedStart = requested
+          ? resolveNodeReference(requested, data.nodes, data.startNode)
+          : null;
+        if (requested) {
+          setStartRequest({ requested, resolved: resolvedStart });
+          if (!resolvedStart) {
+            console.warn('[wanderline] ?start= passage not found in story graph', {
+              requested,
+              knownNodes: Object.keys(data.nodes).length,
+            });
+          }
+        }
+
         // Auto-resume the autosave only when it diverges from the
         // start node — otherwise we'd surface a "Resume?" affordance
         // for a brand-new story that the user has only just opened.
         // If the user has manual slots saved, show the picker on the
         // instructions screen instead (handled in the JSX).
-        if (autosave && autosave.nodeId !== data.startNode) {
+        if (resolvedStart) {
+          setCurrentNodeId(resolvedStart);
+          // No history: we jumped in rather than walked here, so there
+          // is no route back. An empty history is honest about that —
+          // Back does nothing rather than replaying a path the listener
+          // never took.
+          setHistory([]);
+        } else if (autosave && autosave.nodeId !== data.startNode) {
           setCurrentNodeId(autosave.nodeId);
           setHistory(autosave.history);
         } else {
@@ -928,16 +1042,12 @@ export default function App() {
     setPlayerState('ready');
   }, [history]);
 
-  // Navigate to a target, handling END/DONE as terminal.
-  // If the target doesn't exactly match a node id, try resolving as
-  // a relative-stitch reference: from inside knot "tell_you", a
-  // choice with target "infinite_grace" should resolve to
-  // "tell_you.infinite_grace". This is the common case when a story
-  // is imported from compiled .ink.json where the source author
-  // wrote `-> .infinite_grace` (relative divert) and the compiler
-  // left the bare stitch name on the choice. Without this fallback,
-  // clicking the choice silently does nothing and the player
-  // appears stuck.
+  // Navigate to a target, handling END/DONE as terminal. Everything
+  // else goes through resolveNodeReference (exact id → knot-qualified
+  // → suffix match), which is what lets a bare stitch name on a choice
+  // — the common shape when a story is imported from compiled
+  // .ink.json — still find its passage instead of silently doing
+  // nothing and leaving the player looking stuck.
   const navigateToTarget = useCallback(
     (target: string) => {
       if (target === 'END' || target === 'DONE') {
@@ -950,32 +1060,10 @@ export default function App() {
         return;
       }
       if (!story) return;
-      if (story.nodes[target]) {
-        navigateToNode(target);
+      const resolved = resolveNodeReference(target, story.nodes, currentNodeIdRef.current);
+      if (resolved) {
+        navigateToNode(resolved);
         return;
-      }
-      // Try resolving target relative to the current node's knot
-      // (everything before the first dot, or the node id itself if
-      // there's no dot).
-      const currentKnot = currentNodeIdRef.current?.split('.')[0];
-      if (currentKnot) {
-        const qualified = `${currentKnot}.${target}`;
-        if (story.nodes[qualified]) {
-          navigateToNode(qualified);
-          return;
-        }
-      }
-      // Last resort: any node that ends with `.target`. Picks the
-      // first match — there should only be one in a well-formed
-      // story; if not, the project's graph has a real bug worth
-      // flagging in the editor, but for the player we'd rather
-      // proceed than hang.
-      const suffix = `.${target}`;
-      for (const id of Object.keys(story.nodes)) {
-        if (id.endsWith(suffix)) {
-          navigateToNode(id);
-          return;
-        }
       }
       // Truly missing target. Log + leave the player in its current
       // state so the choices remain available; the user can pick a
@@ -983,7 +1071,7 @@ export default function App() {
 
       console.warn('[wanderline] choice target not found in story graph', {
         target,
-        currentKnot,
+        currentKnot: currentNodeIdRef.current?.split('.')[0],
         knownNodes: Object.keys(story.nodes).length,
       });
     },
@@ -1966,9 +2054,24 @@ export default function App() {
                   ))}
                 </ul>
                 <p style={styles.resumePickerHint}>
-                  Or use the Start Story button below to begin from the beginning.
+                  Or use the Start Story button below to begin from{' '}
+                  {startRequest?.resolved ? `passage ${startRequest.resolved}` : 'the beginning'}.
                 </p>
               </div>
+            )}
+
+            {/* Where `?start=` landed us. A reviewer who followed
+                "Preview from here" needs to see that the player agreed
+                — and if the passage no longer exists (renamed, or the
+                story was re-uploaded since the link was made), needs to
+                be told rather than left wondering why the story sounds
+                like the opening. */}
+            {startRequest && (
+              <p style={styles.startNotice} role="status">
+                {startRequest.resolved
+                  ? `Starting from passage ${startRequest.resolved}.`
+                  : `No passage matching "${startRequest.requested}" — starting from the beginning.`}
+              </p>
             )}
 
             <button

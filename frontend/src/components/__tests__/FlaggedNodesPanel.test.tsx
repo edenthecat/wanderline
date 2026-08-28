@@ -66,6 +66,30 @@ describe('FlaggedNodesPanel', () => {
     expect(onJumpToNode).toHaveBeenCalledWith('her');
   });
 
+  // The loop this feature exists for: hear the flagged passage, fix
+  // the take, hear it again — without replaying the forty minutes in
+  // front of it.
+  it('previews from the flagged passage', () => {
+    const onPreviewFromNode = vi.fn();
+    render(panel({ onPreviewFromNode }));
+    fireEvent.click(screen.getByText('1 open flag'));
+    fireEvent.click(screen.getByLabelText('Preview from her'));
+    expect(onPreviewFromNode).toHaveBeenCalledWith('her');
+  });
+
+  // There is nothing left to play.
+  it('offers no preview for a passage the story no longer has', () => {
+    render(
+      panel({
+        flagsByNode: { ghost: [flag({ nodeId: 'ghost' })] },
+        nodeIdSet: new Set(),
+        onPreviewFromNode: vi.fn(),
+      }),
+    );
+    fireEvent.click(screen.getByText('1 open flag'));
+    expect(screen.queryByLabelText('Preview from ghost')).toBeNull();
+  });
+
   // A flag on a passage the story no longer has can't be jumped to and
   // can't be fixed in place — it needs a decision, so it's called out
   // and sorted to the top rather than left looking like the others.

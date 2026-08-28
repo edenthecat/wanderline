@@ -114,6 +114,10 @@ export interface NodeDetailProps {
   audioNames?: Record<string, string>;
   /** Click a "Reachable from" entry to jump the canvas / list to it. */
   onJumpToNode?: (nodeId: string) => void;
+  /** Switch to the Preview tab and start playback at this passage.
+   * Optional: when the host has no preview surface to switch to (or in
+   * tests) the control is simply not rendered. */
+  onPreviewFromNode?: (nodeId: string) => void;
   /**: shared Y.Doc for this project (null until connected).
    * When present, CollabChoiceTextInput resolves the choice's Y.Text
    * through it and binds collaboratively; otherwise it falls back to
@@ -150,6 +154,7 @@ export default function NodeDetail({
   audioNames,
   reachableFrom,
   onJumpToNode,
+  onPreviewFromNode,
   yDoc,
   yDocReady,
 }: NodeDetailProps) {
@@ -334,6 +339,23 @@ export default function NodeDetail({
 
   return (
     <div className="node-detail">
+      {/* First thing in the panel, above the content: checking a
+          passage by ear is the fastest way to know whether the edit
+          below it is even needed, and burying it under the editor is
+          how it goes unused. */}
+      {onPreviewFromNode && (
+        <div className="node-detail-actions">
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => onPreviewFromNode(nodeId)}
+            aria-label={`Preview from ${nodeId}`}
+          >
+            ▶ Preview from here
+          </button>
+        </div>
+      )}
+
       {node.content.length > 0 && (
         <div className="node-content">
           {node.content.map((c, i) => (

@@ -54,6 +54,10 @@ interface Props {
    */
   otherPresence: import('../hooks/usePresence').PresentUser[];
   onSelfEditingNodeChange: (nodeId: string | null) => void;
+  /** Switch to the Preview tab and start playback at this passage.
+   * Optional so the component still renders in isolation (tests, and
+   * any future embed that has no tab strip to switch). */
+  onPreviewFromNode?: (nodeId: string) => void;
 }
 
 type TypeFilter = 'all' | 'knot' | 'stitch';
@@ -77,6 +81,7 @@ export default function StoryTab({
   onSourceReplaced,
   otherPresence,
   onSelfEditingNodeChange,
+  onPreviewFromNode,
 }: Props) {
   const vocab = useVocab(sourceLanguage, nomenclaturePreference);
   const useTweeEditor = sourceLanguage === 'twee';
@@ -559,6 +564,7 @@ export default function StoryTab({
             nodeIdSet={nodeIdSet}
             onJumpToNode={jumpToNode}
             onFlagsChanged={refreshFlags}
+            onPreviewFromNode={onPreviewFromNode}
             truncated={flagsTruncated}
           />
           <StoryHealthPanel storyGraph={storyGraph} onJumpToNode={jumpToNode} />
@@ -693,6 +699,7 @@ export default function StoryTab({
                     onMetadataSave={(patch) => handleMetadataSave(node.id, patch)}
                     reachableFrom={reverseEdges.get(node.id)}
                     onJumpToNode={jumpToNode}
+                    onPreviewFromNode={onPreviewFromNode}
                     yDoc={yDoc}
                     yDocReady={yDocReady}
                   />
