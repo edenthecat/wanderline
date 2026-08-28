@@ -293,12 +293,26 @@ describe('resolveSessionStart', () => {
     expect(s.protectSaves).toBe(false);
   });
 
-  // Nothing to protect means nothing to gain by refusing to record.
-  // Someone following a link into a story they have never opened
-  // should still be able to pick their listen back up.
-  it('does not protect saves that do not exist', () => {
+  // A jump is never a run, even on a device with nothing saved: a
+  // jumped-in position silently becoming "where you were" would leave
+  // the next plain preview opening in the middle of the story.
+  it('never records a session that jumped in', () => {
     const s = resolveSessionStart(story, [], { start: 'tell_you.middle', fresh: false });
     expect(s.nodeId).toBe('tell_you.middle');
+    expect(s.protectSaves).toBe(true);
+  });
+
+  // Starting at the beginning and playing forward IS a listen, and
+  // refusing to record it would protect nothing.
+  it('records a ?fresh=1 run on a device with no saves', () => {
+    const s = resolveSessionStart(story, [], { start: null, fresh: true });
+    expect(s.nodeId).toBe(story.startNode);
+    expect(s.protectSaves).toBe(false);
+  });
+
+  // A stale link leaves the listener at the beginning, same as above.
+  it('records when ?start= matched nothing and there are no saves', () => {
+    const s = resolveSessionStart(story, [], { start: 'gone', fresh: false });
     expect(s.protectSaves).toBe(false);
   });
 
@@ -424,14 +438,26 @@ describe('a review session leaves no trace', () => {
     expect(readAutosave()).toBeUndefined();
   });
 
-  // Nothing to protect means nothing to gain by refusing to record.
-  it('records progress on a ?start= link into a story with no saves', async () => {
+  // Even with nothing to protect: the position reached from a jump is
+  // not this listener's progress, and recording it would open the next
+  // plain preview in the middle of the story.
+  it('records nothing on a ?start= link into a story with no saves', async () => {
     openWith('start=tell_you.middle');
     await renderAndStart();
     await screen.findByText('Forty minutes in.');
     fireEvent.click(await screen.findByLabelText(/^Choice 1/));
     await screen.findByText('The end.');
-    expect(readAutosave()?.nodeId).toBe('tell_you.ending');
+    expect(readAutosave()).toBeUndefined();
+  });
+
+  // A ?fresh=1 run on a clean device starts at the beginning and plays
+  // forward, which is an ordinary listen.
+  it('records a ?fresh=1 run on a device with no saves', async () => {
+    openWith('fresh=1');
+    await renderAndStart();
+    fireEvent.click(await screen.findByLabelText(/^Choice 1/));
+    await screen.findByText('Forty minutes in.');
+    expect(readAutosave()?.nodeId).toBe('tell_you.middle');
   });
 
   // Picking a save is the listener saying "this is my run".

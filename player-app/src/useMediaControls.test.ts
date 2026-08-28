@@ -15,7 +15,6 @@ import { useMediaControls } from './useMediaControls';
 
 interface HandlerRefs {
   navigateToTarget: ReturnType<typeof vi.fn>;
-  navigateToNode: ReturnType<typeof vi.fn>;
   goBack: ReturnType<typeof vi.fn>;
   onHeadphoneButtonPress: ReturnType<typeof vi.fn>;
 }
@@ -23,7 +22,6 @@ interface HandlerRefs {
 function harnessHooks(overrides: Partial<Parameters<typeof useMediaControls>[0]> = {}) {
   const spies: HandlerRefs = {
     navigateToTarget: vi.fn(),
-    navigateToNode: vi.fn(),
     goBack: vi.fn(),
     onHeadphoneButtonPress: vi.fn(),
   };
@@ -35,9 +33,6 @@ function harnessHooks(overrides: Partial<Parameters<typeof useMediaControls>[0]>
     // each ref carries so TSC accepts the initial value.
     const navigateToTargetRef = useRef<((t: string) => void) | null>(
       spies.navigateToTarget as unknown as (t: string) => void,
-    );
-    const navigateToNodeRef = useRef<((n: string) => void) | null>(
-      spies.navigateToNode as unknown as (n: string) => void,
     );
     const goBackRef = useRef<(() => void) | null>(spies.goBack as unknown as () => void);
     const onHeadphoneButtonPressRef = useRef<(() => void) | null>(
@@ -54,7 +49,6 @@ function harnessHooks(overrides: Partial<Parameters<typeof useMediaControls>[0]>
       startStory,
       handlers: {
         navigateToTargetRef,
-        navigateToNodeRef,
         goBackRef,
         onHeadphoneButtonPressRef,
       },
@@ -233,7 +227,6 @@ describe('useMediaControls — keydown fallback', () => {
     // to actual state changes.
     const spies: HandlerRefs = {
       navigateToTarget: vi.fn(),
-      navigateToNode: vi.fn(),
       goBack: vi.fn(),
       onHeadphoneButtonPress: vi.fn(),
     };
@@ -245,9 +238,6 @@ describe('useMediaControls — keydown fallback', () => {
       (_props: { unused: number }) => {
         const navigateToTargetRef = useRef<((t: string) => void) | null>(
           spies.navigateToTarget as unknown as (t: string) => void,
-        );
-        const navigateToNodeRef = useRef<((n: string) => void) | null>(
-          spies.navigateToNode as unknown as (n: string) => void,
         );
         const goBackRef = useRef<(() => void) | null>(spies.goBack as unknown as () => void);
         const onHeadphoneButtonPressRef = useRef<(() => void) | null>(
@@ -277,7 +267,6 @@ describe('useMediaControls — keydown fallback', () => {
           // through the memo deps.
           handlers: {
             navigateToTargetRef,
-            navigateToNodeRef,
             goBackRef,
             onHeadphoneButtonPressRef,
           },
@@ -435,6 +424,49 @@ describe('useMediaControls — Bluetooth transport faults', () => {
       });
       expect(spies.goBack).toHaveBeenCalledTimes(1);
       expect(spies.navigateToTarget).not.toHaveBeenCalled();
+    });
+  });
+
+  // A divert written as a bare stitch name is the common shape out of
+  // the Ink compiler. The transports used to demand an exact node id
+  // and route through navigateToNode, so such a passage advanced from
+  // the keyboard and from auto-advance but did nothing at all on a
+  // Bluetooth remote — the primary interface for this player.
+  describe('following a bare-stitch divert from the transports', () => {
+    const bareDivertNode = {
+      id: 'tell_you.hallway',
+      content: [{ text: 'A hallway.' }],
+      choices: [],
+      divert: 'ending',
+    };
+
+    it('hands the raw reference to the resolver on next-track', () => {
+      const { spies } = running({
+        currentNode: bareDivertNode,
+        story: {
+          ...runningStory,
+          nodes: { 'tell_you.hallway': { choices: [], divert: 'ending' } },
+          settings: { bluetoothControls: { nextTrack: 'divert' } },
+        },
+      });
+      act(() => {
+        mediaSessionHandlers.get('nexttrack')?.({} as MediaSessionActionDetails);
+      });
+      expect(spies.navigateToTarget).toHaveBeenCalledWith('ending');
+    });
+
+    it('hands the raw reference to the resolver on seek-forward', () => {
+      const { spies } = running({
+        currentNode: bareDivertNode,
+        story: {
+          ...runningStory,
+          nodes: { 'tell_you.hallway': { choices: [], divert: 'ending' } },
+        },
+      });
+      act(() => {
+        mediaSessionHandlers.get('seekforward')?.({} as MediaSessionActionDetails);
+      });
+      expect(spies.navigateToTarget).toHaveBeenCalledWith('ending');
     });
   });
 });

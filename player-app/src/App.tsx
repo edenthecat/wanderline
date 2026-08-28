@@ -331,14 +331,21 @@ export function readSessionParams(): { start: string | null; fresh: boolean } {
  *  3. The autosave, when it diverges from the start node.
  *  4. The start node.
  *
- * A review session (1 or 2) that arrives to find saves already on this
- * device also carries `protectSaves`. Hearing one passage to check a
- * fix is not progress, and neither recording over that listener's
- * position nor wiping their slots is ours to do. It is deliberately
- * "saves exist", not "the URL asked": with nothing to protect there is
- * nothing to gain by refusing to record, and someone who follows a
- * link into a story they have never opened should still be able to
- * pick their listen back up.
+ * `protectSaves` says this session may not write or clear the saves on
+ * this device. A session records progress only when it BEGAN where a
+ * listen would begin:
+ *
+ *   - Jumping in (a `?start=` that resolved) is never recorded. Hearing
+ *     one passage to check a fix is not progress, and a jumped-in
+ *     position silently becoming "where you were" is a surprise nobody
+ *     asked for — including on a fresh device, where it would leave the
+ *     next plain preview opening mid-story.
+ *   - Any review session that finds saves already here leaves them
+ *     alone: neither recording over that listener's position nor wiping
+ *     their slots is ours to do.
+ *   - A `?fresh=1` run on a device with no saves records normally.
+ *     It starts at the beginning and plays forward — that IS a listen,
+ *     and refusing to record it protects nothing.
  */
 export function resolveSessionStart(
   story: { startNode: string; nodes: Record<string, unknown> },
@@ -361,7 +368,7 @@ export function resolveSessionStart(
   // closest thing to one.
   const resolved = requested ? resolveNodeReference(requested, story.nodes, story.startNode) : null;
   const reviewSession = Boolean(requested || params.fresh);
-  const protectSaves = reviewSession && savedSlots.length > 0;
+  const protectSaves = reviewSession && (savedSlots.length > 0 || resolved !== null);
   if (resolved) {
     // No history: we jumped in rather than walked here, so there is no
     // route back. An empty history is honest about that — Back does
@@ -507,7 +514,6 @@ export default function App() {
   const playerStateRef = useRef<PlayerState>('loading');
   const currentNodeRef = useRef<StoryNode | null>(null);
   const navigateToTargetRef = useRef<((target: string) => void) | null>(null);
-  const navigateToNodeRef = useRef<((nodeId: string) => void) | null>(null);
   const goBackRef = useRef<(() => void) | null>(null);
   const handleHeadphoneButtonPressRef = useRef<(() => void) | null>(null);
   const clickStateRef = useRef<ClickDetectionState>(createInitialClickState());
@@ -1295,14 +1301,19 @@ export default function App() {
       if (isStale()) return;
       setPlayerState('ended');
 
-      // Auto-continue: if only one choice and autoContinue enabled, navigate automatically
+      // Auto-continue: if only one choice and autoContinue enabled,
+      // navigate automatically. Through the resolver like every other
+      // way forward — an exact-id gate here meant a single-choice
+      // passage whose target is a bare stitch name fell through into
+      // the choice-audio loop instead of continuing.
+      const soleChoice = currentNode.choices?.length === 1 ? currentNode.choices[0] : null;
       if (
         autoContinue &&
-        currentNode.choices?.length === 1 &&
-        story.nodes[currentNode.choices[0].target]
+        soleChoice &&
+        resolveNodeReference(soleChoice.target, story.nodes, currentNodeId)
       ) {
         autoNavigateTimeoutRef.current = setTimeout(
-          () => navigateToNode(currentNode.choices[0].target),
+          () => navigateToTargetRef.current?.(soleChoice.target),
           story.settings?.choiceAudioDelayMs ?? 3000,
         );
         return;
@@ -1857,7 +1868,6 @@ export default function App() {
   // effect below stays anchored to story?.id.
   useEffect(() => {
     navigateToTargetRef.current = navigateToTarget;
-    navigateToNodeRef.current = navigateToNode;
     goBackRef.current = goBack;
     handleHeadphoneButtonPressRef.current = handleHeadphoneButtonPress;
   });
@@ -1962,7 +1972,6 @@ export default function App() {
     startStory,
     handlers: {
       navigateToTargetRef,
-      navigateToNodeRef,
       goBackRef,
       onHeadphoneButtonPressRef: handleHeadphoneButtonPressRef,
     },
@@ -2166,9 +2175,17 @@ export default function App() {
                     </li>
                   ))}
                 </ul>
+                {/* Read off where the session ACTUALLY begins, not off
+                    the URL: this hint used to promise "the beginning"
+                    to a listener whose autosave had already moved the
+                    player forty minutes in, which is exactly the
+                    disagreement resolveSessionStart exists to prevent. */}
                 <p style={styles.resumePickerHint}>
                   Or use the Start Story button below to begin from{' '}
-                  {startRequest?.resolved ? `passage ${startRequest.resolved}` : 'the beginning'}.
+                  {currentNodeId && currentNodeId !== story.startNode
+                    ? `passage ${currentNodeId}`
+                    : 'the beginning'}
+                  .
                 </p>
               </div>
             )}

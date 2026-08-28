@@ -250,7 +250,15 @@ export default function ProjectDetailPage() {
     // "replay whichever passage I asked about earlier". Without this
     // the pin would outlive the request that made it and quietly
     // hijack the next plain preview.
+    //
+    // The nonce is bumped alongside it: PreviewTab owns the pin once
+    // mounted and only re-reads the prop on a NEW request number.
+    // Clearing the id alone worked solely because switching tabs
+    // unmounts the component — so picking Preview while already on
+    // Preview (sidebar or mobile sheet) left the pin in place, and the
+    // "whole story" the reviewer asked for still started mid-way.
     setPreviewStartNodeId(null);
+    setPreviewStartNonce((n) => n + 1);
   }
 
   return (

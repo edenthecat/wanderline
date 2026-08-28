@@ -137,6 +137,21 @@ describe('PreviewTab — starting from a passage', () => {
     );
   });
 
+  // The parent drops the pin and bumps the nonce when someone picks
+  // the Preview tab by hand. Without the bump this component keeps the
+  // pin it mounted with, and "show me the whole story" starts mid-way.
+  it('drops the pin when the parent clears it with a new request', async () => {
+    const { rerender } = renderTab({ startNodeId: 'tell_you.middle', startRequestNonce: 1 });
+    expect(await screen.findByText('tell_you.middle')).toBeTruthy();
+    rerender(
+      <MemoryRouter>
+        <PreviewTab projectId="p1" hasStory startNodeId={null} startRequestNonce={2} />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(frame().getAttribute('src')).toBe('/api/projects/p1/preview'));
+    expect(screen.queryByText('tell_you.middle')).toBeNull();
+  });
+
   it('offers no "from the beginning" control when nothing is pinned', async () => {
     renderTab();
     await waitFor(() => expect(frame()).toBeTruthy());

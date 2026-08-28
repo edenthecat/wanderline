@@ -96,10 +96,18 @@ type PlayerState = 'loading' | 'ready' | 'playing' | 'paused' | 'ended' | 'error
  * fall-through passage the on-screen Continue worked while every
  * headphone button did nothing — with the screen off, that leaves a
  * listener stuck with no way to find out why.
+ *
+ * Returns the raw reference, NOT a verified node id: callers hand it to
+ * navigateToTarget, which resolves it the way every other way forward
+ * is resolved (exact id → knot-qualified → suffix match) and handles
+ * END/DONE. This used to require an exact match and route through
+ * navigateToNode, so a divert written as a bare stitch name — the
+ * common shape out of the Ink compiler — advanced from the keyboard and
+ * from auto-advance but did nothing on a Bluetooth remote, which is the
+ * primary interface for this player.
  */
 function onwardFrom(node: NodeLike, story: StoryLike): string | null {
-  const target = node.divert ?? fallThroughTarget(node.id, node, story.nodes);
-  return target && story.nodes[target] ? target : null;
+  return node.divert ?? fallThroughTarget(node.id, node, story.nodes);
 }
 
 export interface MediaActions {
@@ -127,7 +135,6 @@ export interface UseMediaControlsArgs {
    * can drop Bluetooth events during the unbind/rebind window). */
   handlers: {
     navigateToTargetRef: React.MutableRefObject<((target: string) => void) | null>;
-    navigateToNodeRef: React.MutableRefObject<((nodeId: string) => void) | null>;
     goBackRef: React.MutableRefObject<(() => void) | null>;
     onHeadphoneButtonPressRef: React.MutableRefObject<(() => void) | null>;
   };
@@ -179,7 +186,7 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
   // window this hook is engineered to avoid. The refs themselves have
   // stable identity across renders, so pinning the deps to them keeps
   // the bindings anchored to real state changes.
-  const { navigateToTargetRef, navigateToNodeRef, goBackRef, onHeadphoneButtonPressRef } = handlers;
+  const { navigateToTargetRef, goBackRef, onHeadphoneButtonPressRef } = handlers;
 
   const mediaTransportLastFiredAtRef = useRef<Partial<Record<TransportKey, number>>>({});
   const handleMediaNextRef = useRef<(() => void) | null>(null);
@@ -243,13 +250,15 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
       const node = currentNodeRef.current;
       if (!node) return;
       const navigateToTarget = navigateToTargetRef.current;
-      const navigateToNode = navigateToNodeRef.current;
-      if (!navigateToTarget || !navigateToNode) return;
+      if (!navigateToTarget) return;
       switch (nextAction) {
         case 'choice1': {
           const choice = node.choices[0];
           if (choice) navigateToTarget(choice.target);
-          else if (onwardFrom(node, story)) navigateToNode(onwardFrom(node, story)!);
+          else {
+            const onward = onwardFrom(node, story);
+            if (onward) navigateToTarget(onward);
+          }
           break;
         }
         case 'cycle_choices':
@@ -262,12 +271,17 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
           // see the latest value, not the closure-captured snapshot.
           const choice = node.choices[selectedChoiceRef.current];
           if (choice) navigateToTarget(choice.target);
-          else if (onwardFrom(node, story)) navigateToNode(onwardFrom(node, story)!);
+          else {
+            const onward = onwardFrom(node, story);
+            if (onward) navigateToTarget(onward);
+          }
           break;
         }
-        case 'divert':
-          if (onwardFrom(node, story)) navigateToNode(onwardFrom(node, story)!);
+        case 'divert': {
+          const onward = onwardFrom(node, story);
+          if (onward) navigateToTarget(onward);
           break;
+        }
         default:
           // Unknown action (likely a typo in project_settings JSONB).
           // Warn so authors can debug instead of silently no-op'ing.
@@ -314,14 +328,13 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
       const node = currentNodeRef.current;
       if (!node) return;
       const navigateToTarget = navigateToTargetRef.current;
-      const navigateToNode = navigateToNodeRef.current;
-      if (!navigateToTarget || !navigateToNode) return;
+      if (!navigateToTarget) return;
       if (node.choices.length > 0) {
         const choice = node.choices[0];
         if (choice) navigateToTarget(choice.target);
       } else {
         const onward = onwardFrom(node, story);
-        if (onward) navigateToNode(onward);
+        if (onward) navigateToTarget(onward);
       }
     };
 
@@ -342,7 +355,6 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
     story?.settings?.bluetoothControls?.previousTrack,
     claimFire,
     navigateToTargetRef,
-    navigateToNodeRef,
     goBackRef,
     onHeadphoneButtonPressRef,
     currentNodeRef,
