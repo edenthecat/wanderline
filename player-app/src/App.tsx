@@ -331,19 +331,25 @@ export function readSessionParams(): { start: string | null; fresh: boolean } {
  *  3. The autosave, when it diverges from the start node.
  *  4. The start node.
  *
- * A review session (1 or 2) also carries `reviewSession`, which
- * suppresses autosave writes for its whole run: hearing one passage to
- * check a fix is not progress, and recording it over a listener's real
- * position destroys something they cannot get back.
+ * A review session (1 or 2) that arrives to find saves already on this
+ * device also carries `protectSaves`. Hearing one passage to check a
+ * fix is not progress, and neither recording over that listener's
+ * position nor wiping their slots is ours to do. It is deliberately
+ * "saves exist", not "the URL asked": with nothing to protect there is
+ * nothing to gain by refusing to record, and someone who follows a
+ * link into a story they have never opened should still be able to
+ * pick their listen back up.
  */
 export function resolveSessionStart(
   story: { startNode: string; nodes: Record<string, unknown> },
-  autosave: { nodeId: string; history: string[] } | undefined,
+  /** Every slot already on this device for this story, autosave included. */
+  savedSlots: { id: string; nodeId: string; history: string[] }[],
   params: { start: string | null; fresh: boolean },
 ): {
   nodeId: string;
   history: string[];
-  reviewSession: boolean;
+  /** This session must not write or clear the saves that already exist. */
+  protectSaves: boolean;
   /** What `?start=` asked for, or null when it asked for nothing. */
   requested: string | null;
   /** What that request resolved to, or null when nothing matched. */
@@ -355,28 +361,30 @@ export function resolveSessionStart(
   // closest thing to one.
   const resolved = requested ? resolveNodeReference(requested, story.nodes, story.startNode) : null;
   const reviewSession = Boolean(requested || params.fresh);
+  const protectSaves = reviewSession && savedSlots.length > 0;
   if (resolved) {
     // No history: we jumped in rather than walked here, so there is no
     // route back. An empty history is honest about that — Back does
     // nothing rather than replaying a path the listener never took.
-    return { nodeId: resolved, history: [], reviewSession, requested, resolved };
+    return { nodeId: resolved, history: [], protectSaves, requested, resolved };
   }
   if (reviewSession) {
-    return { nodeId: story.startNode, history: [], reviewSession, requested, resolved };
+    return { nodeId: story.startNode, history: [], protectSaves, requested, resolved };
   }
   // Auto-resume the autosave only when it diverges from the start node
   // — otherwise we'd surface a "Resume?" affordance for a brand-new
   // story the listener has only just opened.
+  const autosave = savedSlots.find((s) => s.id === AUTOSAVE_SLOT_ID);
   if (autosave && autosave.nodeId !== story.startNode) {
     return {
       nodeId: autosave.nodeId,
       history: autosave.history,
-      reviewSession,
+      protectSaves,
       requested,
       resolved,
     };
   }
-  return { nodeId: story.startNode, history: [], reviewSession, requested, resolved };
+  return { nodeId: story.startNode, history: [], protectSaves, requested, resolved };
 }
 
 /**
@@ -465,13 +473,21 @@ export default function App() {
     requested: string;
     resolved: string | null;
   } | null>(null);
-  // True for a session opened with `?start=` or `?fresh=1`. Such a
-  // session never writes the autosave: it exists to check one passage,
-  // and the listener whose forty-minutes-in position is in that slot
-  // did not ask for it to be replaced by a reviewer's jump. A ref, not
-  // state, because saveProgress runs inside navigation and must see
-  // the current value without waiting for a re-render.
-  const reviewSessionRef = useRef(false);
+  // The one gate on this story's persisted saves.
+  //
+  // True for a review session that found saves already here: it exists
+  // to check one passage, and the listener whose forty-minutes-in
+  // position is in that slot did not ask for a reviewer's jump to
+  // replace it — or, through Restart, to delete every slot they have.
+  //
+  // It gates the writes the listener did NOT ask for: the autosave, and
+  // Restart's wipe. Explicitly saving, renaming, deleting or loading a
+  // slot is the listener asking, and goes through regardless.
+  //
+  // A ref, not state, because saveProgress runs inside navigation and
+  // has to see the current value without waiting for a re-render.
+  const protectSavesRef = useRef(false);
+  const mayTouchSavedState = useCallback(() => !protectSavesRef.current, []);
 
   // audio cache layer (preloadAudio, getCachedAudio,
   // retryFailedAudio, isCached, preloadProgress). Owns audioCacheRef
@@ -562,20 +578,19 @@ export default function App() {
         const validNodeIds = new Set(Object.keys(data.nodes));
         const loadedSlots = readSlotsWithMigration(data.id, validNodeIds);
         setSaveSlots(loadedSlots);
-        const autosave = loadedSlots.find((s) => s.id === AUTOSAVE_SLOT_ID);
 
         // Where this session begins — `?start=` / `?fresh=1` versus the
         // autosave — is decided in one place. See resolveSessionStart.
         // Whatever it returns is what the instructions screen reports,
         // so the two can't disagree.
         //
-        // Manual slots are untouched either way: they stay listed on
-        // the instructions screen, so resuming is one click away even
-        // from a review session.
-        const session = resolveSessionStart(data, autosave, readSessionParams());
+        // Every slot stays listed on the instructions screen either
+        // way, so resuming is one click away even from a review
+        // session.
+        const session = resolveSessionStart(data, loadedSlots, readSessionParams());
         // Set BEFORE anything can navigate: it gates every autosave
         // write for the rest of the run.
-        reviewSessionRef.current = session.reviewSession;
+        protectSavesRef.current = session.protectSaves;
         if (session.requested) {
           setStartRequest({ requested: session.requested, resolved: session.resolved });
           if (!session.resolved) {
@@ -694,8 +709,15 @@ export default function App() {
       criticalFiles.push({ key: 'ind_c2', url: story.audioBaseUrl + story.indicatorAudio.choice2 });
     }
 
-    // Priority 2: First few reachable nodes (depth 2 = start node + 2 levels of choices)
-    const nearbyNodeIds = getReachableNodes(story.startNode, story.nodes, 2);
+    // Priority 2: the first few passages reachable from WHERE THIS
+    // SESSION BEGINS (depth 2 = that passage + 2 levels of choices).
+    // Not story.startNode: a `?start=` pin normally sits well outside
+    // depth 2 of the opening, so warming from the opening left the one
+    // file the reviewer came for in the background batch — Start would
+    // finish "Preparing..." and then hit a network fetch and the stall
+    // banner on the very passage being checked.
+    const preloadRoot = currentNodeId ?? story.startNode;
+    const nearbyNodeIds = getReachableNodes(preloadRoot, story.nodes, 2);
     for (const nodeId of nearbyNodeIds) {
       const node = story.nodes[nodeId];
       if (node?.audio?.voiceover) {
@@ -777,7 +799,11 @@ export default function App() {
         Promise.all(Array.from({ length: Math.min(2, backgroundFiles.length) }, loadBackground));
       }
     });
-  }, [story, preloadState, preloadAudio, getReachableNodes]);
+    // currentNodeId is a dep so a pinned session warms its own
+    // neighbourhood. It can't re-run the preload on every navigation:
+    // the guard above returns immediately once preloadState leaves
+    // 'idle', which happens on this effect's first pass.
+  }, [story, currentNodeId, preloadState, preloadAudio, getReachableNodes]);
 
   // Background music playback - independent of other audio and headphone controls
   const startBackgroundMusic = useCallback(() => {
@@ -961,11 +987,11 @@ export default function App() {
   const saveProgress = useCallback(
     (nodeId: string, hist: string[]) => {
       if (!story) return;
-      // A review session leaves no trace. Without this, following a
-      // "Preview from here" link and advancing a single passage
-      // overwrote the listener's real autosave with the reviewer's
-      // position — silently, and with no way back to it.
-      if (reviewSessionRef.current) return;
+      // A review session leaves the listener's saves alone. Without
+      // this, following a "Preview from here" link and advancing a
+      // single passage overwrote their real autosave with the
+      // reviewer's position — silently, and with no way back to it.
+      if (!mayTouchSavedState()) return;
       const nextSlot: SaveSlot = {
         id: AUTOSAVE_SLOT_ID,
         name: 'Autosave',
@@ -979,7 +1005,7 @@ export default function App() {
         return next;
       });
     },
-    [story],
+    [story, mayTouchSavedState],
   );
 
   const navigateToNode = useCallback(
@@ -1595,10 +1621,19 @@ export default function App() {
 
   const restart = useCallback(() => {
     if (story) {
-      // also wipe the new slots key. Manual saves get removed
-      // alongside the autosave so a "restart" is a clean slate.
-      clearAllSlots(story.id);
-      setSaveSlots([]);
+      // Normally a restart is a clean slate: the slots key goes,
+      // manual saves and all.
+      //
+      // Not in a review session. Someone who followed a "Preview from
+      // here" link into a story they were forty minutes through, and
+      // tapped Restart to hear the passage again, would otherwise lose
+      // every save they had for it — no confirmation, no way back.
+      // Their saves are not this session's to delete; restart still
+      // does what it says for THIS run, from the top.
+      if (mayTouchSavedState()) {
+        clearAllSlots(story.id);
+        setSaveSlots([]);
+      }
       setCurrentNodeId(story.startNode);
       setHistory([]);
       if (audioRef.current) {
@@ -1611,7 +1646,7 @@ export default function App() {
       setPlayerState('ready');
       pendingAutoplayNodeIdRef.current = null;
     }
-  }, [story]);
+  }, [story, mayTouchSavedState]);
 
   // — save slot management. These operate against the slot
   // array in state, then persist via writeSlots(). They're stable
@@ -1633,7 +1668,7 @@ export default function App() {
       // Picking a save is the listener saying "this is my run" — from
       // here on their progress is worth recording again, even if the
       // URL brought them in on a review link.
-      reviewSessionRef.current = false;
+      protectSavesRef.current = false;
       setHistory(slot.history);
       setCurrentNodeId(slot.nodeId);
       setReachedEnding(false);

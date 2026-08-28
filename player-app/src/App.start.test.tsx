@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import App, { resolveNodeReference, resolveSessionStart } from './App';
 
 // `?start=<nodeId>` — open the player on a named passage instead of
@@ -9,6 +9,9 @@ import App, { resolveNodeReference, resolveSessionStart } from './App';
 // flags "incorrect audio" forty minutes into a story, and verifying the
 // fix used to mean playing those forty minutes again. So fixes got
 // verified by assumption, or not at all.
+
+/** Every element the player built, in creation order. */
+const audioInstances: MockAudio[] = [];
 
 class MockAudio {
   src = '';
@@ -32,6 +35,7 @@ class MockAudio {
   error: unknown = null;
   constructor(src?: string) {
     this.src = src ?? '';
+    audioInstances.push(this);
   }
   play() {
     this.playCount += 1;
@@ -137,6 +141,7 @@ function readAutosave(): { nodeId: string } | undefined {
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   globalThis.Audio = MockAudio as unknown as typeof Audio;
+  audioInstances.length = 0;
   localStorage.clear();
   sessionStorage.clear();
   openWith('');
@@ -236,51 +241,77 @@ describe('?start= opens the player on a passage', () => {
 
 describe('resolveSessionStart', () => {
   const story = makeStory();
-  const autosave = { nodeId: 'tell_you.ending', history: ['tell_you.opening'] };
+  const slot = (nodeId: string, id = 'autosave', history: string[] = []) => ({
+    id,
+    nodeId,
+    history,
+  });
+  const saved = [slot('tell_you.ending', 'autosave', ['tell_you.opening'])];
   const none = { start: null, fresh: false };
 
   it('takes a resolved ?start= over the autosave', () => {
-    const s = resolveSessionStart(story, autosave, { start: 'tell_you.middle', fresh: false });
+    const s = resolveSessionStart(story, saved, { start: 'tell_you.middle', fresh: false });
     expect(s.nodeId).toBe('tell_you.middle');
     expect(s.history).toEqual([]);
-    expect(s.reviewSession).toBe(true);
+    expect(s.protectSaves).toBe(true);
   });
 
   // The notice on screen says "starting from the beginning". Falling
   // back to the autosave here would make that a lie, and would drop
   // the listener somewhere they never asked for.
   it('begins at the story start when ?start= matched nothing, autosave or not', () => {
-    const s = resolveSessionStart(story, autosave, { start: 'gone', fresh: false });
+    const s = resolveSessionStart(story, saved, { start: 'gone', fresh: false });
     expect(s.nodeId).toBe(story.startNode);
     expect(s.resolved).toBeNull();
     expect(s.requested).toBe('gone');
-    expect(s.reviewSession).toBe(true);
+    expect(s.protectSaves).toBe(true);
   });
 
   it('honours ?fresh=1 over the autosave', () => {
-    const s = resolveSessionStart(story, autosave, { start: null, fresh: true });
+    const s = resolveSessionStart(story, saved, { start: null, fresh: true });
     expect(s.nodeId).toBe(story.startNode);
-    expect(s.reviewSession).toBe(true);
+    expect(s.protectSaves).toBe(true);
   });
 
   it('resumes the autosave when the URL asks for nothing', () => {
-    const s = resolveSessionStart(story, autosave, none);
+    const s = resolveSessionStart(story, saved, none);
     expect(s.nodeId).toBe('tell_you.ending');
     expect(s.history).toEqual(['tell_you.opening']);
-    expect(s.reviewSession).toBe(false);
+    expect(s.protectSaves).toBe(false);
   });
 
   // Otherwise a brand-new story the listener has only just opened
   // would surface a "Resume?" affordance pointing at its own start.
   it('ignores an autosave that sits on the start node', () => {
-    const s = resolveSessionStart(story, { nodeId: story.startNode, history: [] }, none);
+    const s = resolveSessionStart(story, [slot(story.startNode)], none);
     expect(s.nodeId).toBe(story.startNode);
   });
 
-  it('begins at the start node with no autosave and no parameters', () => {
-    const s = resolveSessionStart(story, undefined, none);
+  it('begins at the start node with no saves and no parameters', () => {
+    const s = resolveSessionStart(story, [], none);
     expect(s.nodeId).toBe(story.startNode);
-    expect(s.reviewSession).toBe(false);
+    expect(s.protectSaves).toBe(false);
+  });
+
+  // Nothing to protect means nothing to gain by refusing to record.
+  // Someone following a link into a story they have never opened
+  // should still be able to pick their listen back up.
+  it('does not protect saves that do not exist', () => {
+    const s = resolveSessionStart(story, [], { start: 'tell_you.middle', fresh: false });
+    expect(s.nodeId).toBe('tell_you.middle');
+    expect(s.protectSaves).toBe(false);
+  });
+
+  // Restart wipes manual slots too, so "is there saved state here?" is
+  // the question — not "is there an autosave?".
+  it('protects manual slots even with no autosave', () => {
+    const s = resolveSessionStart(story, [slot('tell_you.ending', 'manual-1')], {
+      start: 'tell_you.middle',
+      fresh: false,
+    });
+    expect(s.protectSaves).toBe(true);
+    // A manual slot is not resumed automatically — the picker offers it.
+    expect(s.nodeId).toBe('tell_you.middle');
   });
 });
 
@@ -368,6 +399,41 @@ describe('a review session leaves no trace', () => {
     expect(readAutosave()?.nodeId).toBe('tell_you.middle');
   });
 
+  // Restart wipes every slot for the story — autosave and manual saves
+  // alike, with no confirmation. That is a clean slate for a listener
+  // restarting THEIR run, and someone else's data for a reviewer who
+  // followed a link into it.
+  it('does not wipe the saves when Restart is pressed in a review session', async () => {
+    writeAutosave('tell_you.hallway', ['tell_you.opening']);
+    openWith('start=tell_you.middle');
+    await renderAndStart();
+    await screen.findByText('Forty minutes in.');
+    fireEvent.click(screen.getByLabelText('Restart story from beginning'));
+    await screen.findByText('The beginning.');
+    expect(readAutosave()?.nodeId).toBe('tell_you.hallway');
+  });
+
+  // The pre-existing contract for an ordinary listen: Restart means a
+  // clean slate.
+  it('still wipes the saves when Restart is pressed in an ordinary listen', async () => {
+    writeAutosave('tell_you.middle', []);
+    await renderAndStart();
+    await screen.findByText('Forty minutes in.');
+    fireEvent.click(screen.getByLabelText('Restart story from beginning'));
+    await screen.findByText('The beginning.');
+    expect(readAutosave()).toBeUndefined();
+  });
+
+  // Nothing to protect means nothing to gain by refusing to record.
+  it('records progress on a ?start= link into a story with no saves', async () => {
+    openWith('start=tell_you.middle');
+    await renderAndStart();
+    await screen.findByText('Forty minutes in.');
+    fireEvent.click(await screen.findByLabelText(/^Choice 1/));
+    await screen.findByText('The end.');
+    expect(readAutosave()?.nodeId).toBe('tell_you.ending');
+  });
+
   // Picking a save is the listener saying "this is my run".
   it('records again once a save is loaded from the picker', async () => {
     writeAutosave('tell_you.middle', []);
@@ -393,6 +459,64 @@ describe('following a bare-stitch divert', () => {
     await screen.findByText('A hallway.');
     fireEvent.keyDown(window, { key: 'Enter' });
     expect(await screen.findByText('The end.')).toBeTruthy();
+  });
+});
+
+// The reviewer waits through "Preparing...", presses Start, and the
+// one file they came for is the one that wasn't warmed — a network
+// fetch and the stall banner on the passage being checked.
+describe('preloading a pinned session', () => {
+  /** A chain four passages deep, so the tail sits outside the two
+   * levels the critical preload sweep covers. */
+  function makeDeepStory() {
+    const link = (id: string, next: string | null) => ({
+      id,
+      type: 'stitch',
+      content: [{ text: id }],
+      choices: next ? [{ text: 'Onward', target: next }] : [],
+      divert: null,
+      tags: [],
+      audio: { voiceover: `${id.split('.')[1]}.mp3` },
+    });
+    return {
+      id: STORY_ID,
+      title: 'Deep',
+      audioBaseUrl: './audio/',
+      startNode: 'deep.one',
+      nodes: {
+        'deep.one': link('deep.one', 'deep.two'),
+        'deep.two': link('deep.two', 'deep.three'),
+        'deep.three': link('deep.three', 'deep.four'),
+        'deep.four': link('deep.four', null),
+      },
+    };
+  }
+
+  const firstIndexOf = (file: string) => audioInstances.findIndex((a) => a.src.includes(file));
+
+  it('warms the pinned passage before the opening', async () => {
+    openWith('start=deep.four');
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = makeDeepStory();
+    render(<App />);
+    await screen.findByLabelText('Start the story');
+    await waitFor(() => {
+      expect(firstIndexOf('four.mp3')).toBeGreaterThanOrEqual(0);
+      expect(firstIndexOf('one.mp3')).toBeGreaterThanOrEqual(0);
+    });
+    // With the sweep rooted at the story's start node, the pinned
+    // passage lands in the background batch and loads last.
+    expect(firstIndexOf('four.mp3')).toBeLessThan(firstIndexOf('one.mp3'));
+  });
+
+  it('still warms the opening first for an ordinary listen', async () => {
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = makeDeepStory();
+    render(<App />);
+    await screen.findByLabelText('Start the story');
+    await waitFor(() => {
+      expect(firstIndexOf('four.mp3')).toBeGreaterThanOrEqual(0);
+      expect(firstIndexOf('one.mp3')).toBeGreaterThanOrEqual(0);
+    });
+    expect(firstIndexOf('one.mp3')).toBeLessThan(firstIndexOf('four.mp3'));
   });
 });
 
