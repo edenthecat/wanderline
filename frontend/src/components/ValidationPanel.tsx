@@ -140,7 +140,16 @@ export default function ValidationPanel({ errors, warnings, onNodeJump }: Props)
   // without a word. The live region below outlives the panel — it is
   // rendered whether or not there is anything wrong — so it can
   // announce the last problem clearing, not only the first appearing.
-  const status = total === 0 ? 'No problems in your story.' : `${summary} in your story.`;
+  // The count alone isn't enough to compare on: fixing an unclosed `[`
+  // in the same edit that introduces a bad divert leaves "1 error"
+  // reading identically, the region never changes, and the author is
+  // told their fix landed. Naming the first problem makes the two
+  // states different strings — and is the more useful thing to hear.
+  const first = errors[0] ?? warnings[0];
+  const status =
+    total === 0
+      ? 'No problems in your story.'
+      : `${summary} in your story. ${humanize(first).title}`;
   const [announcement, setAnnouncement] = useState('');
   const lastStatus = useRef<string | null>(null);
   useEffect(() => {

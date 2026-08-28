@@ -1,10 +1,10 @@
 // Shared axe-core harness for the editor's component tests.
 //
 // `jest-axe`'s `axe()` is the useful part of the package: it mounts the
-// fragment, waits for axe to settle, and turns off the rules that only
-// make sense for a whole page (`region`, landmark and page-level
-// checks) so a single component isn't failed for not being a <main>.
-// The assertion is ours because `toHaveNoViolations` is typed against
+// fragment into the document, waits for axe to settle, and disables
+// axe's colour rules — see `configureAxe` in jest-axe/index.js, which
+// switches off every rule tagged `cat.color` and nothing else. The
+// assertion is ours because `toHaveNoViolations` is typed against
 // Jest's matcher interface and this workspace runs vitest.
 //
 // What this catches: names on controls and images, ARIA attributes
@@ -14,10 +14,12 @@
 // heading order.
 //
 // What it does not:
-//  - Colour contrast. jsdom does no layout or painting, so axe cannot
-//    resolve computed colours and reports `color-contrast` as
-//    *incomplete* rather than as a violation. The FontPicker's
-//    1.041:1 highlight would have passed this suite untouched.
+//  - Colour contrast — at all. jsdom does no layout or painting, so
+//    axe can't resolve computed colours, and jest-axe turns the whole
+//    `cat.color` category off rather than let it produce noise. The
+//    rule never runs here; the FontPicker's 1.041:1 highlight would
+//    have passed this suite untouched. Contrast needs a real browser
+//    or a person.
 //  - Anything that only exists over time: whether
 //    `aria-activedescendant` follows the row the user arrowed to,
 //    whether a live region ever actually announces, where focus lands

@@ -44,19 +44,39 @@ describe('ValidationPanel accessibility', () => {
     const { rerender } = render(<ValidationPanel errors={[]} warnings={[]} />);
     expect(liveText()).toBe('');
     rerender(<ValidationPanel errors={[err()]} warnings={[warn()]} />);
-    await waitFor(() => expect(liveText()).toBe('1 error, 1 warning in your story.'));
+    await waitFor(() =>
+      expect(liveText()).toBe('1 error, 1 warning in your story. Unclosed [ on line 4'),
+    );
   });
 
   it('announces the last problem clearing, after the panel is gone', async () => {
     const { rerender } = render(<ValidationPanel errors={[err()]} warnings={[]} />);
     rerender(<ValidationPanel errors={[err(), err()]} warnings={[]} />);
-    await waitFor(() => expect(liveText()).toBe('2 errors in your story.'));
+    await waitFor(() => expect(liveText()).toContain('2 errors in your story.'));
 
     rerender(<ValidationPanel errors={[]} warnings={[]} />);
     // The panel unmounts; the region does not, which is the only
     // reason this can be said at all.
     expect(screen.queryByTestId('validation-panel')).toBeNull();
     await waitFor(() => expect(liveText()).toBe('No problems in your story.'));
+  });
+
+  it('speaks up when one problem is swapped for another at the same count', async () => {
+    // Fixing the unclosed `[` in the same edit that introduces a bad
+    // divert leaves "1 error" reading identically. Announcing on the
+    // count alone would tell the author their fix landed.
+    const { rerender } = render(<ValidationPanel errors={[]} warnings={[]} />);
+    rerender(<ValidationPanel errors={[err()]} warnings={[]} />);
+    await waitFor(() => expect(liveText()).toContain('Unclosed ['));
+
+    rerender(
+      <ValidationPanel
+        errors={[err({ message: 'Unknown divert target `celler` on line 9', lineNumber: 9 })]}
+        warnings={[]}
+      />,
+    );
+    await waitFor(() => expect(liveText()).toContain('celler'));
+    expect(liveText()).toContain('1 error in your story.');
   });
 
   it('spells out severity instead of leaving it to the glyph', () => {

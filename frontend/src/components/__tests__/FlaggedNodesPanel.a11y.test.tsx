@@ -26,31 +26,20 @@ afterEach(() => vi.restoreAllMocks());
  * A panel wired the way StoryTab wires it: `onFlagsChanged` refetches,
  * and the refreshed `flagsByNode` arrives as a new prop.
  */
-function renderPanel(initial: Record<string, client.NodeFlag[]>) {
-  let flags = initial;
-  const view = render(
+function renderPanel(initial: Record<string, client.NodeFlag[]>, truncated = false) {
+  const panel = (flags: Record<string, client.NodeFlag[]>, capped: boolean) => (
     <FlaggedNodesPanel
       projectId="p1"
       flagsByNode={flags}
       nodeIdSet={new Set(Object.keys(flags))}
       onJumpToNode={vi.fn()}
       onFlagsChanged={vi.fn()}
-      truncated={false}
-    />,
+      truncated={capped}
+    />
   );
-  const update = (next: Record<string, client.NodeFlag[]>) => {
-    flags = next;
-    view.rerender(
-      <FlaggedNodesPanel
-        projectId="p1"
-        flagsByNode={flags}
-        nodeIdSet={new Set(Object.keys(flags))}
-        onJumpToNode={vi.fn()}
-        onFlagsChanged={vi.fn()}
-        truncated={false}
-      />,
-    );
-  };
+  const view = render(panel(initial, truncated));
+  const update = (next: Record<string, client.NodeFlag[]>, capped = false) =>
+    view.rerender(panel(next, capped));
   return { ...view, update };
 }
 
@@ -116,7 +105,7 @@ describe('FlaggedNodesPanel accessibility', () => {
       expect(screen.queryByTestId('flagged-panel')).toBeNull();
       expect(document.activeElement).toBe(screen.getByTestId('flagged-panel-status'));
     });
-    expect(screen.getByTestId('flagged-panel-status').textContent).toBe('All flags resolved.');
+    expect(screen.getByTestId('flagged-panel-status').textContent).toBe('Flag resolved.');
   });
 
   it('reports the open-flag count as it changes', async () => {
@@ -129,6 +118,27 @@ describe('FlaggedNodesPanel accessibility', () => {
 
     update({ her: [flag({ id: 'b' })] });
     await waitFor(() => expect(status.textContent).toBe('1 open flag across 1 passage.'));
+  });
+
+  it('hedges the spoken count when the server capped the list', async () => {
+    const { update } = renderPanel({ her: [flag({ id: 'a' }), flag({ id: 'b' })] }, true);
+    update({ her: [flag({ id: 'b' })] }, true);
+    await waitFor(() =>
+      expect(screen.getByTestId('flagged-panel-status').textContent).toBe(
+        '1 open flag across 1 passage, showing the most recent.',
+      ),
+    );
+  });
+
+  it('does not claim the queue is clear when the flags fetch merely failed', async () => {
+    // useNodeEditor swallows a failed GET by reporting `{}`, which is
+    // indistinguishable from "nothing outstanding". Saying "resolved"
+    // there would tell an author their review queue is clear when
+    // nothing was resolved at all.
+    const { update } = renderPanel({ her: [flag({ id: 'a' }), flag({ id: 'b' })] });
+    update({});
+    await waitFor(() => expect(screen.queryByTestId('flagged-panel')).toBeNull());
+    expect(screen.getByTestId('flagged-panel-status').textContent).toBe('');
   });
 
   it('has no axe violations, collapsed or expanded', async () => {
