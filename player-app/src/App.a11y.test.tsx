@@ -324,6 +324,37 @@ describe('keyboard access to on-screen controls', () => {
     expect(keyDownAndCheckCancelled(slider, ' ')).toBe(true);
   });
 
+  it('does not restart the story on r inside the settings panel', async () => {
+    // restart() also clears every save slot, and the save/load UI lives
+    // in this panel — so with focus on a Load or Rename button, one
+    // stray keystroke wiped the saves it was showing.
+    await renderStory();
+    fireEvent.click(screen.getByLabelText('Choice 2: Go right'));
+    await screen.findByText('You went right.');
+
+    fireEvent.click(screen.getByLabelText('Settings'));
+    fireEvent.keyDown(screen.getByLabelText(/narration volume/i), { key: 'r', bubbles: true });
+
+    expect(screen.getByText('You went right.')).toBeInTheDocument();
+    expect(screen.queryByText('Welcome to the story.')).not.toBeInTheDocument();
+  });
+
+  it('still pauses on Space inside the settings panel', async () => {
+    // The allowlist keeps the playback keys: reaching for pause while
+    // adjusting the volume is exactly what a listener does.
+    await renderStory();
+    fireEvent.click(screen.getByLabelText('Settings'));
+
+    // The checkbox claims Space for itself; the panel's non-claiming
+    // controls do not, so the shortcut still reaches the player.
+    const panel = document.getElementById('settings-panel')!;
+    const heading = panel.querySelector('h3')!;
+    const event = createEvent.keyDown(heading, { key: ' ', bubbles: true });
+    fireEvent(heading, event);
+
+    expect(event.defaultPrevented).toBe(true);
+  });
+
   it('does not move the story on Enter inside the settings panel', async () => {
     // The panel is a task of its own. A checkbox ignores Enter, so
     // without this the press fell through to "confirm the armed
@@ -573,20 +604,29 @@ describe('repeated announcements', () => {
 
     const region = choiceStatusRegion();
     const narration = screen.getByRole('region', { name: 'Story narration' });
-    const records: MutationRecord[] = [];
-    const observer = new MutationObserver((rs) => records.push(...rs));
-    observer.observe(region, { childList: true, subtree: true, characterData: true });
-    observer.observe(narration, { childList: true, subtree: true, characterData: true });
+    const choiceRecords: MutationRecord[] = [];
+    const narrationRecords: MutationRecord[] = [];
+    const choiceObserver = new MutationObserver((rs) => choiceRecords.push(...rs));
+    const narrationObserver = new MutationObserver((rs) => narrationRecords.push(...rs));
+    const opts = { childList: true, subtree: true, characterData: true };
+    choiceObserver.observe(region, opts);
+    narrationObserver.observe(narration, opts);
 
     fireEvent.click(screen.getByLabelText('Choice 1: Circle again'));
 
+    // Both channels have to speak again: the passage text and the list
+    // of ways out are word-for-word what they were a moment ago.
     await waitFor(() => {
-      records.push(...observer.takeRecords());
-      expect(records.length).toBeGreaterThan(0);
+      choiceRecords.push(...choiceObserver.takeRecords());
+      narrationRecords.push(...narrationObserver.takeRecords());
+      expect(choiceRecords.length).toBeGreaterThan(0);
+      expect(narrationRecords.length).toBeGreaterThan(0);
     });
-    observer.disconnect();
+    choiceObserver.disconnect();
+    narrationObserver.disconnect();
 
     expect(choiceStatusRegion()).toHaveTextContent('2 choices: 1. Circle again, 2. Leave');
+    expect(narration).toHaveTextContent('You circle the room.');
   });
 
   it('still fires when consecutive passages read word-for-word the same, with captions on', async () => {
@@ -618,6 +658,13 @@ describe('repeated announcements', () => {
     observer.disconnect();
 
     expect(narration).toHaveTextContent('The corridor again.');
+    // Exactly one insertion, not two: the caption card's text and its
+    // key change in the same commit, so a screen reader is not given
+    // two changes to speak for one passage.
+    const insertedCards = records
+      .flatMap((r) => Array.from(r.addedNodes))
+      .filter((n) => (n as Element).tagName === 'ARTICLE');
+    expect(insertedCards).toHaveLength(1);
   });
 
   it('announces the opening choice list under StrictMode', async () => {
@@ -691,6 +738,21 @@ describe('choices when the author hides the visible list', () => {
 });
 
 describe('focus after choosing', () => {
+  it('drops focus even when the same button is reused for a self-loop', async () => {
+    // A knot that diverts to itself renders the identical choice at the
+    // identical index, so React keeps the very same DOM button and the
+    // key alone cannot help. Focus left on it turns the next Space,
+    // meant to pause, into another lap of the room.
+    await renderStory(loopStory);
+
+    const choice = screen.getByLabelText('Choice 1: Circle again');
+    choice.focus();
+    expect(document.activeElement).toBe(choice);
+
+    fireEvent.click(choice);
+    await waitFor(() => expect(document.activeElement).toBe(document.body));
+  });
+
   it('replaces the choice buttons so focus does not linger on a reused one', async () => {
     // Keyed by index, React reused the same DOM button across a
     // navigation: focus stayed on it while its meaning changed, so a

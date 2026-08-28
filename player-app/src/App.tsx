@@ -132,10 +132,17 @@ const clearAnnouncement = (prev: Announcement): Announcement =>
   prev.text === '' ? prev : { text: '', seq: prev.seq + 1 };
 
 /**
- * Keys that move the story rather than the playback head. They stand
- * down while focus is inside the settings panel.
+ * The only global shortcuts that still fire while focus is inside the
+ * settings panel: pause, and the two "get me unstuck" keys for a failed
+ * clip. Reaching for pause while adjusting the volume is exactly what a
+ * listener does; everything else belongs to the panel.
+ *
+ * An allowlist rather than a list of keys to block, because the keys
+ * worth blocking are the destructive ones. `r` restarts the story AND
+ * clears every save slot — from inside the save-slot UI, with focus on
+ * a Load or Rename button, that was one keystroke away.
  */
-const STORY_NAVIGATION_KEYS = new Set<string>(['Enter', 'Backspace', 'ArrowUp', 'ArrowDown']);
+const SHORTCUTS_ALLOWED_IN_SETTINGS = new Set<string>([' ', 'Escape', 's', 'S']);
 
 const SETTINGS_PANEL_ID = 'settings-panel';
 
@@ -1721,13 +1728,9 @@ export default function App() {
       // choice list, where the arrows are the only way to move the
       // armed choice.
       if (keyBelongsToTarget(e)) return;
-      // Focus inside the settings panel is a task of its own. The keys
-      // that move the story stand down there, so tabbing across the
-      // volume sliders and pressing Enter can't advance the passage
-      // behind the open panel. Playback keys (Space, Escape, s) still
-      // work — reaching for pause while adjusting the volume is exactly
-      // what a listener does.
-      if (STORY_NAVIGATION_KEYS.has(e.key) && isFromSettingsPanel(e)) return;
+      // Focus inside the settings panel is a task of its own: only the
+      // playback keys reach past it.
+      if (isFromSettingsPanel(e) && !SHORTCUTS_ALLOWED_IN_SETTINGS.has(e.key)) return;
 
       switch (e.key) {
         case ' ':
@@ -1855,20 +1858,20 @@ export default function App() {
   // following effect pass, which is a mutation the AT reports.
   const storyScreenVisible = !showInstructions && isAuthenticated;
 
-  // `history` is in the deps as the "a navigation happened" signal:
-  // every navigation replaces the array, including a self-loop, where
-  // `currentNodeId` is set to the value it already holds and nothing
-  // else in the deps moves. Without it, an Ink knot that diverts to
-  // itself — "circle the room again" — replayed its audio and announced
-  // nothing.
-  const [passageAnnouncement, setPassageAnnouncement] = useState(EMPTY_ANNOUNCEMENT);
+  // Identity for "which visit to which passage is on screen". The
+  // history length is what separates a self-loop from standing still:
+  // an Ink knot that diverts to itself sets `currentNodeId` to the
+  // value it already holds, so the node id alone never moves and the
+  // replayed audio arrived with no words behind it. Every navigation
+  // pushes or pops history, so the pair always changes.
+  const passageKey = `${currentNode?.id ?? ''}:${history.length}`;
+
+  // Held false for the story screen's first commit so the live region
+  // below is registered before it ever has content.
+  const [narrationRegistered, setNarrationRegistered] = useState(false);
   useEffect(() => {
-    if (!storyScreenVisible || !currentNode) {
-      setPassageAnnouncement(clearAnnouncement);
-      return;
-    }
-    setPassageAnnouncement(speak(passageText ? `Now playing: ${passageText}` : 'Now playing'));
-  }, [storyScreenVisible, currentNode, passageText, history]);
+    if (storyScreenVisible) setNarrationRegistered(true);
+  }, [storyScreenVisible]);
 
   // React's onBlur is focusout, which browsers do not fire when the
   // focused element is REMOVED. Choosing an option unmounts the button
@@ -1877,7 +1880,7 @@ export default function App() {
   // session.
   useEffect(() => {
     setChoiceListFocused(false);
-  }, [currentNode]);
+  }, [currentNode, history]);
 
   // What the choice status region says. Cycling choices with a
   // headphone button — the product's signature interaction, phone in a
@@ -2480,21 +2483,28 @@ export default function App() {
         aria-label={(story?.title || 'Audio Story') + ' - story content'}
         onClick={() => playerState === 'ready' && !audioError && playVoiceover()}
       >
-        {/* This region's children are keyed by the announcement's
-            sequence number and are absent until the first announcement
-            lands (seq 0). Both matter for the same reason: assistive
-            tech announces a MUTATION inside a live region it has
-            already registered. Content present the instant the region
-            is inserted is never announced — which used to silence the
-            opening passage, the one a listener has no other way to
-            learn about — and re-rendering identical prose is not a
-            mutation at all, so returning to a hub that reads the same
-            way as the last one was silent too. The key forces a real
-            node swap either way. */}
+        {/* Assistive tech announces a MUTATION inside a live region it
+            has already registered. Two consequences, both of which used
+            to lose announcements:
+
+            Content present the instant the region is inserted is never
+            announced. The story screen mounts <main> and this region in
+            one commit, so the opening passage — the one a listener has
+            no other way to learn about — was the one thing never spoken.
+            `narrationRegistered` flips in an effect, holding the region
+            empty for that first commit only.
+
+            Re-rendering identical prose is not a mutation at all, so
+            returning to a hub that reads the same way as the last one
+            was silent too. `passageKey` changes on every navigation,
+            self-loops included, and replaces the child outright — in the
+            same commit as the new text, so each passage produces exactly
+            one mutation rather than two a screen reader might speak
+            twice. */}
         <div aria-live="polite" aria-atomic="true" role="region" aria-label="Story narration">
-          {captionsEnabled && passageAnnouncement.seq > 0 && (
+          {narrationRegistered && captionsEnabled && (
             <article
-              key={passageAnnouncement.seq}
+              key={passageKey}
               style={{
                 ...styles.card,
                 ...(currentNode.metadata?.theme && THEME_COLORS[currentNode.metadata.theme]
@@ -2543,14 +2553,14 @@ export default function App() {
             </article>
           )}
           {/* Captions are a project setting (captionsDefault), and the
-              caption card used to be this live region's only child — so
-              a story shipped with captions off left the region empty
-              for its whole length and announced nothing on any passage
-              change. This keeps the transcript available whatever the
+              caption card used to be this region's only child — so a
+              story shipped with captions off left it empty for the whole
+              length of the story and announced nothing on any passage
+              change. This keeps the transcript spoken whatever the
               visual setting. */}
-          {!captionsEnabled && passageAnnouncement.seq > 0 && (
-            <p key={passageAnnouncement.seq} style={styles.srOnly}>
-              {passageAnnouncement.text}
+          {narrationRegistered && !captionsEnabled && (
+            <p key={passageKey} style={styles.srOnly}>
+              {passageText ? `Now playing: ${passageText}` : 'Now playing'}
             </p>
           )}
         </div>
@@ -2661,16 +2671,20 @@ export default function App() {
               }
             }}
           >
-            {/* Keyed by destination, not index. Keyed by index, the
-                same DOM button was reused across a navigation, so focus
-                stayed on it while its meaning changed: click a choice
-                with a mouse, press Space to pause, and the still-focused
-                button fired again and jumped forward instead. */}
+            {/* Keyed by destination rather than index so React does not
+                reuse a button across a navigation, and blurred on
+                activation so focus cannot survive one that reuses it
+                anyway — a self-loop, or two passages that offer the same
+                option at the same position. Focus left sitting on a
+                button whose meaning has changed turns the next Space,
+                meant to pause, into a second press of whatever now
+                occupies that slot. */}
             {currentNode.choices.map((c, i) => (
               <button
                 key={`${c.target}|${c.text}|${i}`}
                 onClick={(e) => {
                   e.stopPropagation();
+                  e.currentTarget.blur();
                   navigateToTarget(c.target);
                 }}
                 style={{ ...styles.choice, ...(i === selectedChoice ? styles.choiceSelected : {}) }}
