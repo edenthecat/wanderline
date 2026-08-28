@@ -12,7 +12,7 @@ export const PANEL_ANCHORS = {
   validation: 'panel-validation',
   /** FlaggedNodesPanel — human-reported issues, Story tab. */
   flaggedNodes: 'panel-flagged-nodes',
-  /** StoryHealthPanel — unreachable passages and dead ends, Story tab. */
+  /** StoryHealthPanel — unreachable nodes and dead ends, Story tab. */
   storyHealth: 'panel-story-health',
   /** AudioTab's "Nodes without voiceover" list. */
   missingVoiceover: 'panel-missing-voiceover',
