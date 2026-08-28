@@ -167,6 +167,53 @@ const loopStory = {
   },
 };
 
+// Two passages offering the same option, with the same wording, at the
+// same index: React keeps the very same DOM button across the
+// navigation, so focus survives it.
+const stickyStory = {
+  id: 'sticky-story',
+  title: 'Sticky Story',
+  audioBaseUrl: './audio/',
+  startNode: 'one',
+  nodes: {
+    one: {
+      id: 'one',
+      type: 'knot',
+      content: [{ text: 'Room one.' }],
+      choices: [
+        // Identical target AND text at index 0 in both rooms, so this
+        // button keeps its React key — and its DOM focus — across the
+        // navigation.
+        { text: 'Look', target: 'done' },
+        { text: 'Onward', target: 'two' },
+      ],
+      divert: null,
+      tags: [],
+      audio: { voiceover: 'one.mp3' },
+    },
+    two: {
+      id: 'two',
+      type: 'knot',
+      content: [{ text: 'Room two.' }],
+      choices: [
+        { text: 'Look', target: 'done' },
+        { text: 'Onward', target: 'done' },
+      ],
+      divert: null,
+      tags: [],
+      audio: { voiceover: 'two.mp3' },
+    },
+    done: {
+      id: 'done',
+      type: 'knot',
+      content: [{ text: 'Done.' }],
+      choices: [],
+      divert: 'END',
+      tags: [],
+    },
+  },
+};
+
 const originalAudio = globalThis.Audio;
 
 beforeEach(() => {
@@ -285,20 +332,36 @@ describe('keyboard access to on-screen controls', () => {
     );
   });
 
-  it('still cycles choices with the arrows while focus sits on a button', async () => {
-    // The bail is per key, not per element. A <button> consumes only
-    // Space and Enter, so the arrows must still reach the global
-    // handler — on a story whose author hid the visible choice list
-    // they are the only way to move the armed choice, and a listener
-    // who just tapped Play has focus sitting on that button.
+  it('leaves the arrows alone while focus sits on a control outside the list', async () => {
+    // The arrows move the armed choice; Enter activates whatever has
+    // focus. Both global at once, the two disagree — arrow twice with
+    // focus on Play, hear "Choice 3 of 3", press Enter, and playback
+    // toggles. The choice buttons are always in the DOM now, so Tab and
+    // Enter are the keyboard route from here.
     await renderStory({ ...threeChoiceStory, settings: { showChoiceList: false } });
 
     const playButton = screen.getByRole('button', { name: /^(Play|Pause|Loading) / });
     const event = createEvent.keyDown(playButton, { key: 'ArrowDown', bubbles: true });
     fireEvent(playButton, event);
 
+    expect(event.defaultPrevented).toBe(false);
+    expect(screen.getByLabelText('Choice 1: Go left')).toHaveAttribute('aria-current', 'true');
+  });
+
+  it('still cycles choices with the arrows from inside the list', async () => {
+    // Inside the list the two cannot disagree: focus follows the armed
+    // choice, so the arrows stay global there.
+    await renderStory();
+
+    const first = screen.getByLabelText('Choice 1: Go left');
+    first.focus();
+    const event = createEvent.keyDown(first, { key: 'ArrowDown', bubbles: true });
+    fireEvent(first, event);
+
     expect(event.defaultPrevented).toBe(true);
-    await waitFor(() => expect(choiceStatusRegion()).toHaveTextContent('Choice 2 of 3: Go right'));
+    await waitFor(() =>
+      expect(screen.getByLabelText('Choice 2: Go right')).toHaveAttribute('aria-current', 'true'),
+    );
   });
 
   it('still goes back on Backspace while focus sits on a button', async () => {
@@ -745,6 +808,32 @@ describe('choices when the author hides the visible list', () => {
     expect(nav).not.toHaveStyle({ position: 'absolute' });
   });
 
+  it('stays revealed when focus survives the navigation', async () => {
+    // Two passages offering the same option at the same index share a
+    // React key, so the DOM button — and the focus on it — survives.
+    // Resetting the reveal flag blindly left that focus sitting on an
+    // element clipped to a single pixel.
+    await renderStory({ ...stickyStory, settings: { showChoiceList: false } });
+
+    // Real focus, not a synthetic event: this test turns on where
+    // document.activeElement actually is after the navigation. Choice 1
+    // on purpose — it is also the armed choice in the room we land in,
+    // so nothing moves focus afterwards and nothing re-fires the focus
+    // handler that would paper over the bug.
+    screen.getByLabelText('Choice 1: Look').focus();
+    const nav = screen.getByRole('navigation', { name: 'Story choices' });
+    await waitFor(() => expect(nav).not.toHaveStyle({ position: 'absolute' }));
+
+    // Navigate from the headphones, which leaves focus where it is.
+    vi.advanceTimersByTime(200);
+    fireEvent.keyDown(document.body, { key: 'MediaTrackPrevious', bubbles: true });
+    await screen.findByText('Room two.');
+
+    const navAfter = screen.getByRole('navigation', { name: 'Story choices' });
+    expect(navAfter.contains(document.activeElement)).toBe(true);
+    expect(navAfter).not.toHaveStyle({ position: 'absolute' });
+  });
+
   it('hides it again once the chosen button is gone', async () => {
     // focusout does not fire when the focused element is REMOVED, and
     // choosing an option unmounts the button that had focus. Left to
@@ -809,6 +898,31 @@ describe('focus and the armed choice', () => {
     expect(document.activeElement).toBe(document.body);
   });
 
+  it('does not re-read the whole list when focus leaves it', async () => {
+    // Standing the status down must not look like a fresh arrival on
+    // the way out, or the entire list is read over whatever control the
+    // listener has just tabbed to — every time they pass through.
+    await renderStory();
+    await waitFor(() => expect(choiceStatusRegion()).toHaveTextContent(/3 choices/));
+
+    const first = screen.getByLabelText('Choice 1: Go left');
+    fireEvent.focus(first);
+    await waitFor(() =>
+      expect(screen.getAllByRole('status').every((r) => !/choice/i.test(r.textContent ?? ''))).toBe(
+        true,
+      ),
+    );
+
+    const play = screen.getByRole('button', { name: /^(Play|Pause|Loading) / });
+    fireEvent.blur(first, { relatedTarget: play });
+
+    await waitFor(() =>
+      expect(screen.getAllByRole('status').every((r) => !/choice/i.test(r.textContent ?? ''))).toBe(
+        true,
+      ),
+    );
+  });
+
   it('stands the spoken status down while the list has focus', async () => {
     // Assistive tech reads the focused button itself, so announcing the
     // same thing again is just noise.
@@ -838,6 +952,22 @@ describe('focus after choosing', () => {
     expect(document.activeElement).toBe(choice);
 
     fireEvent.click(choice);
+
+    // Keyboard-activated (detail 0): focus is handed to the story
+    // region rather than dropped, so the next Tab does not restart from
+    // the skip link at the top of the document.
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('main')));
+    expect(document.activeElement).not.toBe(choice);
+  });
+
+  it('leaves focus alone when the choice was clicked with a pointer', async () => {
+    await renderStory(loopStory);
+
+    const choice = screen.getByLabelText('Choice 1: Circle again');
+    choice.focus();
+    fireEvent.click(choice, { detail: 1 });
+
+    // Moving focus under a mouse user is not wanted; dropping it is.
     await waitFor(() => expect(document.activeElement).toBe(document.body));
   });
 
@@ -855,7 +985,7 @@ describe('focus after choosing', () => {
     await screen.findByText('Room B.');
 
     expect(document.body.contains(firstChoice)).toBe(false);
-    expect(document.activeElement).toBe(document.body);
+    expect(document.activeElement).toBe(screen.getByRole('main'));
   });
 });
 

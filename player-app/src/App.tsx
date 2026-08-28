@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
 import { useOfflineSupport } from './useOfflineSupport';
 import { useMediaControls } from './useMediaControls';
 import { useAudioCache } from './useAudioCache';
@@ -106,7 +106,7 @@ type PlayerState = 'loading' | 'ready' | 'playing' | 'paused' | 'ended' | 'error
 type PreloadState = 'idle' | 'loading' | 'complete' | 'error';
 
 import { fallThroughTarget } from './fall-through';
-import { keyBelongsToTarget } from './keyboard-target';
+import { isFromInteractiveElement, keyBelongsToTarget } from './keyboard-target';
 export { fallThroughTarget };
 
 /**
@@ -147,6 +147,9 @@ const clearAnnouncement = (prev: Announcement): Announcement =>
  * Anyone tempted to collapse the two should keep this guard in mind.)
  */
 const SHORTCUTS_ALLOWED_IN_SETTINGS = new Set<string>([' ', 'Escape', 's', 'S']);
+
+/** Keys that move the armed choice. */
+const CHOICE_CYCLE_KEYS = new Set<string>(['ArrowUp', 'ArrowDown']);
 
 const SETTINGS_PANEL_ID = 'settings-panel';
 
@@ -310,6 +313,8 @@ export default function App() {
   // button and would otherwise say it twice.
   const [choiceNavFocused, setChoiceNavFocused] = useState(false);
   const choiceNavRef = useRef<HTMLElement | null>(null);
+  const mainRef = useRef<HTMLElement | null>(null);
+  const focusMainAfterNavRef = useRef(false);
   const [audioError, setAudioError] = useState<string | null>(null);
   const [audioStalled, setAudioStalled] = useState(false);
   const [retryingAudio, setRetryingAudio] = useState(false);
@@ -1738,6 +1743,20 @@ export default function App() {
       // Focus inside the settings panel is a task of its own: only the
       // playback keys reach past it.
       if (isFromSettingsPanel(e) && !SHORTCUTS_ALLOWED_IN_SETTINGS.has(e.key)) return;
+      // The arrows move the armed choice, and Enter — which a control
+      // does claim — activates whatever has focus. Left global while
+      // focus sat on, say, the Play button, the two disagreed: arrow
+      // twice, hear "Choice 3 of 3", press Enter, and play/pause fired.
+      // So the arrows stand down on any focused control, EXCEPT inside
+      // the choice list itself, where focus follows the armed choice and
+      // the two stay in step by construction.
+      if (
+        CHOICE_CYCLE_KEYS.has(e.key) &&
+        isFromInteractiveElement(e) &&
+        !choiceNavRef.current?.contains(e.target as Node | null)
+      ) {
+        return;
+      }
 
       switch (e.key) {
         case ' ':
@@ -1880,7 +1899,12 @@ export default function App() {
   // flag would have re-inserted the region already populated on the way
   // back — silent again, exactly what it exists to prevent.
   const [narrationRegistered, setNarrationRegistered] = useState(false);
-  useEffect(() => {
+  // useLayoutEffect, not useEffect: the empty commit is only there to
+  // give the live region an insertion of its own to be registered on,
+  // and the accessibility tree follows DOM operations rather than
+  // paints. Running before paint keeps the announcement while sparing
+  // the listener a frame of story screen with no caption card in it.
+  useLayoutEffect(() => {
     setNarrationRegistered(storyScreenVisible);
   }, [storyScreenVisible]);
 
@@ -1889,8 +1913,21 @@ export default function App() {
   // that had focus, so nothing ever reset this and an author-hidden
   // choice list, once revealed, stayed on screen for the rest of the
   // session.
+  // Read where focus actually is rather than assuming a navigation
+  // removed the focused button: two passages that offer the same choices
+  // in the same order share a key, so React reuses the DOM nodes and
+  // focus survives. Assuming otherwise left an author-hidden list
+  // clipped to 1px with the keyboard focus still inside it.
   useEffect(() => {
-    setChoiceNavFocused(false);
+    setChoiceNavFocused(!!choiceNavRef.current?.contains(document.activeElement));
+  }, [currentNode, history]);
+
+  // Runs after the new passage has committed, so the focus lands on a
+  // story region that is already describing where the listener now is.
+  useEffect(() => {
+    if (!focusMainAfterNavRef.current) return;
+    focusMainAfterNavRef.current = false;
+    mainRef.current?.focus();
   }, [currentNode, history]);
 
   // Focus and the armed choice have to agree. The arrows move
@@ -1921,8 +1958,17 @@ export default function App() {
   } | null>(null);
   useEffect(() => {
     const choices = currentNode?.choices ?? [];
-    if (!storyScreenVisible || !currentNode || choices.length === 0 || choiceNavFocused) {
+    if (!storyScreenVisible || !currentNode || choices.length === 0) {
       lastChoiceAnnouncedRef.current = null;
+      setChoiceAnnouncement(clearAnnouncement);
+      return;
+    }
+    if (choiceNavFocused) {
+      // Assistive tech reads the focused button, so saying it again is
+      // noise. The marker is deliberately left alone: clearing it made
+      // tabbing out of the list look like a fresh arrival, and the whole
+      // list was read over whatever control the listener had just moved
+      // to — every time they passed through.
       setChoiceAnnouncement(clearAnnouncement);
       return;
     }
@@ -2496,7 +2542,9 @@ export default function App() {
           carries no keyboard duty of its own. */}
       <main
         id="main-content"
-        style={styles.main}
+        ref={mainRef}
+        tabIndex={-1}
+        style={{ ...styles.main, outline: 'none' }}
         role="main"
         aria-label={(story?.title || 'Audio Story') + ' - story content'}
         onClick={() => playerState === 'ready' && !audioError && playVoiceover()}
@@ -2703,6 +2751,14 @@ export default function App() {
                 key={`${c.target}|${c.text}|${i}`}
                 onClick={(e) => {
                   e.stopPropagation();
+                  // `detail === 0` is a keyboard-synthesised click.
+                  // Blurring alone would strand such a listener at
+                  // <body>, restarting every Tab from the skip link, so
+                  // hand focus to the story region instead once the new
+                  // passage is up. A pointer click gets the blur without
+                  // the hand-off — moving focus under a mouse user is
+                  // not wanted.
+                  if (e.detail === 0) focusMainAfterNavRef.current = true;
                   e.currentTarget.blur();
                   navigateToTarget(c.target);
                 }}
@@ -2799,7 +2855,13 @@ export default function App() {
       </main>
 
       <footer style={styles.footer} role="contentinfo">
-        Keyboard: Space/Arrows/Enter | Headphones: 1-tap Pause, 2-tap Choice 1, 3-tap Choice 2
+        {/* Qualified deliberately: a focused button owns Space and
+            Enter, as it does everywhere on the web, so the global
+            shortcuts are what you get when you have not tabbed onto a
+            control. Saying so is better than fighting the platform for
+            it. */}
+        Keyboard (outside a button): Space plays and pauses, Arrows move between choices, Enter
+        takes the one you are on | Headphones: 1-tap Pause, 2-tap Choice 1, 3-tap Choice 2
       </footer>
     </div>
   );

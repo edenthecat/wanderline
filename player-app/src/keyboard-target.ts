@@ -126,6 +126,17 @@ function keysClaimedBy(el: Element): Set<string> | null {
 }
 
 /**
+ * True when the keystroke landed on a focusable control at all,
+ * whatever the key. Used for the choice-cycling keys, which have to
+ * stand down near ANY control: they move the armed choice while Enter
+ * activates whatever has focus, and the two must not be able to
+ * disagree.
+ */
+export function isFromInteractiveElement(e: { target: EventTarget | null }): boolean {
+  return closestMatch(e.target, INTERACTIVE_SELECTOR) !== null;
+}
+
+/**
  * True when this particular key belongs to the control the keystroke
  * landed on, so a global shortcut must stand down and let the browser's
  * default behaviour run.
