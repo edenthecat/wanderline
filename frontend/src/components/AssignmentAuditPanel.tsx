@@ -16,6 +16,7 @@ import {
   auditAudioAssignments,
   type AssignmentDisagreement,
 } from '../api/client';
+import { PANEL_ANCHORS } from '../lib/panelAnchors';
 
 interface Props {
   projectId: string;
@@ -75,7 +76,11 @@ export default function AssignmentAuditPanel({ projectId }: Props) {
   }
 
   return (
-    <section className="settings-section">
+    <section
+      id={PANEL_ANCHORS.assignmentAudit}
+      className="settings-section"
+      data-testid="assignment-audit-panel"
+    >
       <h2>Check audio assignments</h2>
       <p className="text-muted">
         Re-runs the filename matcher over every clip that&rsquo;s already attached and lists any

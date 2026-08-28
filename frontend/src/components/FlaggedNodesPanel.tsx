@@ -11,6 +11,7 @@
 import { useMemo, useState } from 'react';
 import { resolveNodeFlag, type NodeFlag } from '../api/client';
 import { FLAG_REASON_LABELS } from './flagLabels';
+import { PANEL_ANCHORS } from '../lib/panelAnchors';
 
 interface Props {
   projectId: string;
@@ -86,7 +87,12 @@ export default function FlaggedNodesPanel({
 
   const bodyId = 'flagged-nodes-body';
   return (
-    <section className="flagged-panel" data-testid="flagged-panel" aria-label="Flagged passages">
+    <section
+      id={PANEL_ANCHORS.flaggedNodes}
+      className="flagged-panel"
+      data-testid="flagged-panel"
+      aria-label="Flagged passages"
+    >
       <button
         type="button"
         className="flagged-panel-summary"

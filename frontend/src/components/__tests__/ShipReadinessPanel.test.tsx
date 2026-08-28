@@ -1,0 +1,137 @@
+import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import ShipReadinessPanel from '../ShipReadinessPanel';
+import * as client from '../../api/client';
+import { PANEL_ANCHORS } from '../../lib/panelAnchors';
+
+function graph(over: Partial<client.StoryGraph> = {}): client.StoryGraph {
+  return {
+    id: 'g1',
+    title: 'Story',
+    startNode: 'start',
+    nodes: {
+      start: {
+        id: 'start',
+        type: 'knot',
+        parent: null,
+        content: [],
+        choices: [],
+        divert: 'END',
+        tags: [],
+        lineNumber: 1,
+      },
+    },
+    validation: { valid: true, errors: [], warnings: [] },
+    ...over,
+  };
+}
+
+function stubLookups({
+  flags = 0,
+  missingVoiceover = 0,
+  disagreements = 0,
+}: { flags?: number; missingVoiceover?: number; disagreements?: number } = {}) {
+  vi.spyOn(client, 'fetchNodeFlags').mockResolvedValue({
+    total: flags,
+    truncated: false,
+    flags: [],
+  });
+  vi.spyOn(client, 'fetchAudioCoverage').mockResolvedValue({
+    nodesWithoutAudio: Array.from({ length: missingVoiceover }, (_, i) => `n${i}`),
+    orphanedAudioFiles: [],
+    coverage: { total: 1, withAudio: 1, percentage: 100 },
+  });
+  vi.spyOn(client, 'auditAudioAssignments').mockResolvedValue({
+    totalAssignments: 3,
+    acknowledged: 0,
+    disagreements: Array.from({ length: disagreements }, () => ({
+      audioFileId: 'f1',
+      filename: 'intro.mp3',
+      currentNodeId: 'start',
+      currentAudioType: 'voiceover',
+      suggestedNodeId: 'other',
+      suggestedAudioType: 'voiceover',
+      reason: 'different-node' as const,
+      currentNodeExists: true,
+    })),
+  });
+}
+
+afterEach(() => vi.restoreAllMocks());
+
+describe('ShipReadinessPanel', () => {
+  // Five zeros is not an answer to "can I ship this?".
+  it('says what it verified when everything is clean', async () => {
+    stubLookups();
+    render(<ShipReadinessPanel projectId="p1" storyGraph={graph()} onNavigate={() => {}} />);
+    expect(await screen.findByText('Ready to ship')).toBeInTheDocument();
+    expect(screen.getByText(/Nothing to fix across 1 passage/)).toBeInTheDocument();
+    expect(screen.queryByText('Worth a look')).not.toBeInTheDocument();
+  });
+
+  it('separates what blocks a ship from what merely wants a look', async () => {
+    stubLookups({ flags: 3 });
+    render(
+      <ShipReadinessPanel
+        projectId="p1"
+        storyGraph={graph({
+          validation: {
+            valid: false,
+            errors: [{ type: 'syntax_error', message: 'unclosed [' }],
+            warnings: [],
+          },
+        })}
+        onNavigate={() => {}}
+      />,
+    );
+    expect(await screen.findByText('Fix before you ship')).toBeInTheDocument();
+    expect(screen.getByText('1 parser error')).toBeInTheDocument();
+    expect(screen.getByText('Worth a look')).toBeInTheDocument();
+    expect(screen.getByText('3 unresolved flags')).toBeInTheDocument();
+    expect(screen.getByText('Not ready')).toBeInTheDocument();
+  });
+
+  it('hands the owning panel back to the page when a row is clicked', async () => {
+    stubLookups({ missingVoiceover: 4 });
+    const onNavigate = vi.fn();
+    render(<ShipReadinessPanel projectId="p1" storyGraph={graph()} onNavigate={onNavigate} />);
+    await userEvent.click(await screen.findByText('4 passages with no voiceover'));
+    expect(onNavigate).toHaveBeenCalledWith({
+      tab: 'audio',
+      anchorId: PANEL_ANCHORS.missingVoiceover,
+    });
+  });
+
+  // A dead lookup must degrade one check, not blank the summary and
+  // not quietly read as zero.
+  it('reports a failed lookup as unchecked instead of clean', async () => {
+    stubLookups();
+    vi.spyOn(client, 'fetchNodeFlags').mockRejectedValue(new Error('500'));
+    render(<ShipReadinessPanel projectId="p1" storyGraph={graph()} onNavigate={() => {}} />);
+    expect(await screen.findByText('Couldn’t check')).toBeInTheDocument();
+    expect(screen.getByText('Unresolved flags')).toBeInTheDocument();
+    expect(screen.queryByText('Ready to ship')).not.toBeInTheDocument();
+    expect(screen.getByText('Partly checked')).toBeInTheDocument();
+  });
+
+  it('renders nothing until there is a story to be ready about', () => {
+    stubLookups();
+    const { container } = render(
+      <ShipReadinessPanel projectId="p1" storyGraph={null} onNavigate={() => {}} />,
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('reads the true open-flag count, not the page the flags panel lists', async () => {
+    stubLookups();
+    vi.spyOn(client, 'fetchNodeFlags').mockResolvedValue({
+      // The server caps the returned page; `total` is the real count.
+      total: 42,
+      truncated: true,
+      flags: [],
+    });
+    render(<ShipReadinessPanel projectId="p1" storyGraph={graph()} onNavigate={() => {}} />);
+    expect(await screen.findByText('42 unresolved flags')).toBeInTheDocument();
+  });
+});

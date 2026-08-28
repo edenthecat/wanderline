@@ -9,6 +9,7 @@ import BuildsTab from '../components/BuildsTab';
 import HistoryTab from '../components/HistoryTab';
 import EditableProjectTitle from '../components/EditableProjectTitle';
 import SettingsTab from '../components/SettingsTab';
+import ShipReadinessPanel from '../components/ShipReadinessPanel';
 import PreviewTab from '../components/PreviewTab';
 import GraphTab from '../components/GraphTab';
 import ThemeTab from '../components/ThemeTab';
@@ -22,6 +23,8 @@ import { useYjs } from '../hooks/useYjs';
 import { useYjsUndo } from '../hooks/useYjsUndo';
 import { usePresence } from '../hooks/usePresence';
 import { useAuth } from '../contexts/AuthContext';
+import { scrollToSelector } from '../lib/scrollToPanel';
+import type { ReadinessTarget } from '../lib/shipReadiness';
 
 type Tab =
   | 'story'
@@ -199,6 +202,17 @@ export default function ProjectDetailPage() {
       if (!silent) setLoading(false);
     }
   }
+
+  // The Ship tab's readiness summary owns none of the panels it counts.
+  // Clicking a row hands the tab switch back here, then scrolls to the
+  // panel that actually explains the number — the panel mounts with the
+  // tab content, a render after setActiveTab, which is why the scroll
+  // helper polls rather than looking once.
+  const goToReadinessTarget = useCallback((target: ReadinessTarget) => {
+    setActiveTab(target.tab);
+    setMobileSheet(null);
+    scrollToSelector(`#${target.anchorId}`);
+  }, []);
 
   const handleExport = useCallback(
     (type: 'archive' | 'ink' | 'json') => {
@@ -381,7 +395,17 @@ export default function ProjectDetailPage() {
               <PreviewTab projectId={id} hasStory={!!project.story_graph} />
             )}
             {activeTab === 'builds' && (
-              <BuildsTab projectId={id} hasStory={!!project.story_graph} />
+              <>
+                {/* "Can I ship this?" is asked here, so it is answered
+                    here — above Builds, not spread across Story and
+                    Audio. */}
+                <ShipReadinessPanel
+                  projectId={id}
+                  storyGraph={project.story_graph}
+                  onNavigate={goToReadinessTarget}
+                />
+                <BuildsTab projectId={id} hasStory={!!project.story_graph} />
+              </>
             )}
             {activeTab === 'history' && (
               <HistoryTab

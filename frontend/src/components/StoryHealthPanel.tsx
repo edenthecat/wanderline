@@ -14,6 +14,7 @@
 import { useMemo, useState } from 'react';
 import type { StoryGraph } from '../api/client';
 import { computeStoryHealth } from '../lib/storyHealth';
+import { PANEL_ANCHORS } from '../lib/panelAnchors';
 
 interface Props {
   storyGraph: StoryGraph | null;
@@ -32,7 +33,12 @@ export default function StoryHealthPanel({ storyGraph, onJumpToNode }: Props) {
 
   const bodyId = 'story-health-body';
   return (
-    <section className="story-health" data-testid="story-health" aria-label="Story health">
+    <section
+      id={PANEL_ANCHORS.storyHealth}
+      className="story-health"
+      data-testid="story-health"
+      aria-label="Story health"
+    >
       <button
         type="button"
         className="story-health-summary"

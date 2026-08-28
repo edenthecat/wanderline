@@ -20,6 +20,7 @@ import {
 } from '../api/client';
 import OrphanedAudioPanel from './OrphanedAudioPanel';
 import AssignmentAuditPanel from './AssignmentAuditPanel';
+import { PANEL_ANCHORS } from '../lib/panelAnchors';
 import { useYjs } from '../hooks/useYjs';
 import { bumpLiveSignal, useLiveSignal } from '../hooks/useLiveSignal';
 import { useAudition } from '../hooks/useAudition';
@@ -1008,7 +1009,11 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
 
       {/* Coverage: Nodes without audio */}
       {coverage && coverage.nodesWithoutAudio.length > 0 && (
-        <details className="audio-section">
+        <details
+          id={PANEL_ANCHORS.missingVoiceover}
+          className="audio-section"
+          data-testid="missing-voiceover-panel"
+        >
           <summary className="audio-section-title audio-section-summary">
             Nodes without voiceover{' '}
             <span className="text-muted">({coverage.nodesWithoutAudio.length})</span>

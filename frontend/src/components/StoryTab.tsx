@@ -12,6 +12,7 @@ import ValidationPanel from './ValidationPanel';
 import StoryHealthPanel from './StoryHealthPanel';
 import InkSourceEditor from './InkSourceEditor';
 import TweeSourceEditor from './TweeSourceEditor';
+import { scrollToSelector } from '../lib/scrollToPanel';
 import { useVocab } from '../hooks/useVocab';
 import type { Nomenclature, NomenclaturePreference } from '../lib/nomenclature';
 import NodeDetail, { hasCustomTiming } from './NodeDetail';
@@ -355,17 +356,9 @@ export default function StoryTab({
         for (const id of toAdd) next.add(id);
         return next;
       });
-      const selector = `[data-node-id="${CSS.escape(nodeId)}"]`;
-      let attempts = 0;
-      const tryScroll = () => {
-        const el = document.querySelector(selector);
-        if (el) {
-          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          return;
-        }
-        if (attempts++ < 10) setTimeout(tryScroll, 50);
-      };
-      tryScroll();
+      // The row may not exist yet — setExpandedNodes above renders it
+      // a tick later — so the helper polls briefly before giving up.
+      scrollToSelector(`[data-node-id="${CSS.escape(nodeId)}"]`);
     },
     [onSelfEditingNodeChange],
   );

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { ValidationMessage, ValidationType } from '../api/client';
+import { PANEL_ANCHORS } from '../lib/panelAnchors';
 
 interface Props {
   errors: ValidationMessage[];
@@ -134,6 +135,7 @@ export default function ValidationPanel({ errors, warnings, onNodeJump }: Props)
 
   return (
     <section
+      id={PANEL_ANCHORS.validation}
       className={`validation-panel validation-panel-${severity}`}
       data-testid="validation-panel"
     >
