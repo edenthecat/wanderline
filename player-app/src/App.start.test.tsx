@@ -231,6 +231,22 @@ describe('?start= opens the player on a passage', () => {
     expect(warn).toHaveBeenCalled();
   });
 
+  // The overlay is re-openable from the header mid-story, and Start
+  // Story resumes wherever the listener actually is. A notice still
+  // naming the passage they arrived on would contradict the hint
+  // beside it and the button below it.
+  it('stops claiming a starting passage once the listener has moved on', async () => {
+    openWith('start=tell_you.middle');
+    await renderAndStart();
+    await screen.findByText('Forty minutes in.');
+    expect(screen.queryByText('Starting from passage tell_you.middle.')).toBeNull();
+    fireEvent.click(screen.getByLabelText(/^Choice 1/));
+    await screen.findByText('The end.');
+    fireEvent.click(screen.getByLabelText('Help and instructions'));
+    await screen.findByLabelText('Start the story');
+    expect(screen.queryByText('Starting from passage tell_you.middle.')).toBeNull();
+  });
+
   it('ignores an empty ?start=', async () => {
     openWith('start=');
     await renderAndStart();
@@ -493,13 +509,15 @@ describe('following a bare-stitch divert', () => {
 // fetch and the stall banner on the passage being checked.
 describe('preloading a pinned session', () => {
   /** A chain four passages deep, so the tail sits outside the two
-   * levels the critical preload sweep covers. */
+   * levels the critical preload sweep covers. Linked by BARE STITCH
+   * NAMES — the shape a relative divert takes out of the Ink compiler,
+   * and the shape the preload walk used to give up on. */
   function makeDeepStory() {
     const link = (id: string, next: string | null) => ({
       id,
       type: 'stitch',
       content: [{ text: id }],
-      choices: next ? [{ text: 'Onward', target: next }] : [],
+      choices: next ? [{ text: 'Onward', target: next.split('.')[1] }] : [],
       divert: null,
       tags: [],
       audio: { voiceover: `${id.split('.')[1]}.mp3` },
@@ -532,6 +550,23 @@ describe('preloading a pinned session', () => {
     // With the sweep rooted at the story's start node, the pinned
     // passage lands in the background batch and loads last.
     expect(firstIndexOf('four.mp3')).toBeLessThan(firstIndexOf('one.mp3'));
+  });
+
+  // The walk has to resolve references, not just index them: stopping
+  // at the first bare stitch name left the passages about to play as
+  // the ones NOT warmed.
+  it('warms what follows the pinned passage, across bare stitch names', async () => {
+    openWith('start=deep.two');
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = makeDeepStory();
+    render(<App />);
+    await screen.findByLabelText('Start the story');
+    await waitFor(() => {
+      expect(firstIndexOf('three.mp3')).toBeGreaterThanOrEqual(0);
+      expect(firstIndexOf('one.mp3')).toBeGreaterThanOrEqual(0);
+    });
+    // deep.three is one step past the pin; the opening is not on the
+    // way anywhere, so it belongs to the background batch.
+    expect(firstIndexOf('three.mp3')).toBeLessThan(firstIndexOf('one.mp3'));
   });
 
   it('still warms the opening first for an ordinary listen', async () => {

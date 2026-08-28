@@ -667,25 +667,32 @@ export default function App() {
     (startNodeId: string, nodes: Record<string, StoryNode>, maxDepth: number): string[] => {
       const visited = new Set<string>();
       const queue: Array<{ id: string; depth: number }> = [{ id: startNodeId, depth: 0 }];
+      // Follow references the same way playback does. Walking raw
+      // targets and dropping the ones that miss meant a story imported
+      // from compiled .ink.json — where diverts and choice targets are
+      // routinely bare stitch names — preloaded almost nothing: the
+      // walk stopped at the first bare name, so the passages about to
+      // play were the ones NOT warmed, and the listener met a network
+      // fetch exactly where the preload existed to prevent one.
+      const step = (reference: string | null | undefined, from: string): string | null => {
+        if (!reference || reference === 'END' || reference === 'DONE') return null;
+        return resolveNodeReference(reference, nodes, from);
+      };
 
       while (queue.length > 0) {
         const { id, depth } = queue.shift()!;
         if (visited.has(id) || depth > maxDepth) continue;
-        if (!nodes[id]) continue;
+        if (!hasNode(nodes, id)) continue;
 
         visited.add(id);
         const node = nodes[id];
 
-        // Add choices
         for (const choice of node.choices || []) {
-          if (choice.target && choice.target !== 'END' && choice.target !== 'DONE') {
-            queue.push({ id: choice.target, depth: depth + 1 });
-          }
+          const target = step(choice.target, id);
+          if (target) queue.push({ id: target, depth: depth + 1 });
         }
-        // Add divert
-        if (node.divert && node.divert !== 'END' && node.divert !== 'DONE') {
-          queue.push({ id: node.divert, depth: depth + 1 });
-        }
+        const divert = step(node.divert, id);
+        if (divert) queue.push({ id: divert, depth: depth + 1 });
         // And the implicit continuation, or the listener meets a network
         // fetch and the stall banner at exactly the transition
         // auto-advance was added to smooth over.
@@ -1538,7 +1545,6 @@ export default function App() {
     story,
     currentNode,
     currentNodeId,
-    navigateToNode,
     autoContinue,
     getCachedAudio,
     voiceoverVolume,
@@ -1605,7 +1611,7 @@ export default function App() {
       navigateToTargetRef.current?.(target);
     }, totalDelay);
     return () => clearTimeout(t);
-  }, [story, currentNode, navigateToNode, isAuthenticated, showInstructions, autoAdvance]);
+  }, [story, currentNode, isAuthenticated, showInstructions, autoAdvance]);
 
   // Debounce showing connection issues to avoid flashing for quick retries
   useEffect(() => {
@@ -2034,6 +2040,15 @@ export default function App() {
     );
   }
 
+  // The `?start=` notice describes where playback is ABOUT to begin.
+  // The instructions overlay is re-openable mid-story from the header,
+  // and Start Story resumes wherever the listener actually is — so once
+  // they have moved on, the notice would be naming a passage they left,
+  // directly contradicting the resume hint beside it. Show it only
+  // while the player is still sitting where the parameter put it.
+  const startNoticeApplies =
+    startRequest !== null && currentNodeId === (startRequest.resolved ?? story.startNode);
+
   // Instructions screen
   if (showInstructions) {
     return (
@@ -2196,7 +2211,7 @@ export default function App() {
                 story was re-uploaded since the link was made), needs to
                 be told rather than left wondering why the story sounds
                 like the opening. */}
-            {startRequest && (
+            {startRequest && startNoticeApplies && (
               <p style={styles.startNotice} role="status">
                 {startRequest.resolved
                   ? `Starting from passage ${startRequest.resolved}.`
