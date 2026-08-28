@@ -19,7 +19,15 @@ import {
   type AudioFile,
 } from '../api/client';
 import { useAudition } from '../hooks/useAudition';
+import { useYjs } from '../hooks/useYjs';
+import { bumpLiveSignal } from '../hooks/useLiveSignal';
 import AuditionButton from './AuditionButton';
+
+// The audio-library invalidation signal, shared with AudioTab. Music
+// belongs to it too: the node panel's in-context audition plays the
+// first track under the passage, so uploading or deleting one changes
+// what another open tab should be auditioning.
+const AUDIO_ASSIGNMENTS_SIGNAL = 'audio-assignments';
 
 interface Props {
   projectId: string;
@@ -34,6 +42,7 @@ function formatBytes(n: number): string {
 export default function MusicTab({ projectId }: Props) {
   const [tracks, setTracks] = useState<AudioFile[]>([]);
   const { playingId, toggle } = useAudition();
+  const { doc: yDoc } = useYjs(projectId);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -69,6 +78,7 @@ export default function MusicTab({ projectId }: Props) {
         await uploadAudioFile(projectId, file, 'music');
       }
       await load();
+      bumpLiveSignal(yDoc, AUDIO_ASSIGNMENTS_SIGNAL);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Upload failed');
     } finally {
@@ -87,6 +97,7 @@ export default function MusicTab({ projectId }: Props) {
     try {
       await deleteAudioFile(projectId, track.id);
       await load();
+      bumpLiveSignal(yDoc, AUDIO_ASSIGNMENTS_SIGNAL);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Delete failed');
     }

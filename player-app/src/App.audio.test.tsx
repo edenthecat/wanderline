@@ -539,6 +539,25 @@ describe('per-device volumes record only what the listener chose', () => {
     expect(bgm.volume).toBeCloseTo(0.05, 5);
   });
 
+  // A move that deletes the source before the destination lands is a
+  // loss, and localStorage really does reject writes at quota.
+  it('keeps the old preference when the migrating write is rejected', async () => {
+    localStorage.setItem('wanderline_volumes', JSON.stringify({ bgMusic: 5 }));
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation((key: string) => {
+      throw new Error('QuotaExceededError: ' + key);
+    });
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = storyWithMusic(
+      { backgroundMusicVolume: 70 },
+      'story-a',
+    );
+    render(<App />);
+    await startTheStory();
+    await waitFor(() => expect(audioInstances.some((a) => a.src.includes('bgm.mp3'))).toBe(true));
+    setItem.mockRestore();
+
+    expect(localStorage.getItem('wanderline_volumes')).not.toBeNull();
+  });
+
   // Consulted forever, the old key would force a pre-1.8 preference on
   // every story the listener ever opens, including new ones by other
   // authors. It moves to the first story that asks, and then it is gone.

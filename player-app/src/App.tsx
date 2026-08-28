@@ -131,10 +131,15 @@ const safeGetItem = (storage: Storage, key: string): string | null => {
     return null;
   }
 };
-const safeSetItem = (storage: Storage, key: string, value: string): void => {
+/** Returns false when the write was rejected (quota, private mode,
+ *  file:// origins). Callers that are MOVING data have to know. */
+const safeSetItem = (storage: Storage, key: string, value: string): boolean => {
   try {
     storage.setItem(key, value);
-  } catch {}
+    return true;
+  } catch {
+    return false;
+  }
 };
 const safeRemoveItem = (storage: Storage, key: string): void => {
   try {
@@ -480,8 +485,14 @@ export default function App() {
           // story there is.
           const legacy = safeGetItem(localStorage, LEGACY_VOLUMES_KEY);
           if (legacy !== null) {
-            safeSetItem(localStorage, volumesStorageKey(data.id), legacy);
-            safeRemoveItem(localStorage, LEGACY_VOLUMES_KEY);
+            // Only drop the old key once the new one has actually
+            // landed. safeSetItem swallows a rejected write by design,
+            // so removing unconditionally would delete a listener's
+            // volumes and leave nothing in their place — at quota, the
+            // one case where the write fails, that loss is permanent.
+            if (safeSetItem(localStorage, volumesStorageKey(data.id), legacy)) {
+              safeRemoveItem(localStorage, LEGACY_VOLUMES_KEY);
+            }
             savedVolumes = legacy;
           }
         }

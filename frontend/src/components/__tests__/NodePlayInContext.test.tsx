@@ -175,6 +175,33 @@ describe('NodeDetail — play in context', () => {
     expect(playing()).toHaveLength(0);
   });
 
+  // A bed that 404s is indistinguishable by ear from a bed the
+  // narration sits comfortably over — the author would draw exactly the
+  // wrong conclusion from a mix that is quietly missing a layer.
+  it('says which layer failed to load, and keeps playing the rest', async () => {
+    render(<NodeDetail {...baseProps} nodeAudio={fullAudio} mixContext={mixContext()} />);
+    await clickPlayInContext();
+    await act(async () => forSrc('music-1')[0].emit('error'));
+
+    expect(screen.getByText(/didn't load/)).toBeTruthy();
+    // The other two carry on — a missing bed is not a dead mix.
+    expect(forSrc('vo-1')[0].paused).toBe(false);
+    expect(forSrc('amb-1')[0].paused).toBe(false);
+    expect(screen.getByLabelText('Stop in-context playback')).toBeTruthy();
+  });
+
+  it('clears a previous failure when the mix is started again', async () => {
+    render(<NodeDetail {...baseProps} nodeAudio={fullAudio} mixContext={mixContext()} />);
+    await clickPlayInContext();
+    await act(async () => forSrc('music-1')[0].emit('error'));
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText('Stop in-context playback'));
+    });
+    await clickPlayInContext();
+
+    expect(screen.queryByText(/didn't load/)).toBeNull();
+  });
+
   it('a failed voiceover unwinds the mix rather than playing beds alone', async () => {
     render(<NodeDetail {...baseProps} nodeAudio={fullAudio} mixContext={mixContext()} />);
     await clickPlayInContext();

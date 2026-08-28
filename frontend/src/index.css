@@ -3363,6 +3363,12 @@ details[open] > .audio-section-summary {
 .node-audio-context-layer {
   font-weight: 500;
 }
+/* Caveats about the mix itself — a layer that didn't load, or one the
+   generated app won't play. The author is judging by ear, so these read
+   as warnings rather than as more grey detail. */
+.node-audio-context-warn {
+  color: var(--color-warning, #b45309);
+}
 
 /* Shared audition control. Fixed square so rows with and without one
    still line up, and consistent wherever a clip is named. */

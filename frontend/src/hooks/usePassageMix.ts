@@ -40,6 +40,13 @@ export interface PassageMix {
 export interface UsePassageMixResult {
   /** True while the mix is sounding. */
   playing: boolean;
+  /**
+   * URLs of layers that did not load. A mix carries on without a bed
+   * that failed, and an author judging by ear cannot tell a missing bed
+   * from a quiet one — they would conclude the narration sits fine over
+   * something that never played. The caller has to say so.
+   */
+  failedUrls: string[];
   /** Start the mix, or stop it if it's already playing. */
   toggle: (mix: PassageMix) => void;
   /** Stop every element this hook started (no-op when idle). */
@@ -60,6 +67,7 @@ function startPlayback(el: HTMLAudioElement, onFailure: () => void): void {
 export function usePassageMix(): UsePassageMixResult {
   const elementsRef = useRef<HTMLAudioElement[]>([]);
   const [playing, setPlaying] = useState(false);
+  const [failedUrls, setFailedUrls] = useState<string[]>([]);
 
   // Every start and stop bumps this. Callbacks capture the value they
   // were registered under and no-op once it moves, so a rejection or an
@@ -81,6 +89,10 @@ export function usePassageMix(): UsePassageMixResult {
     for (const el of elements) el.pause();
   }, []);
 
+  // Deliberately does NOT clear failedUrls: a lead that fails to load
+  // stops the mix on the spot, and "it stopped because this file didn't
+  // load" is exactly what the author needs left on screen afterwards.
+  // The next start() clears it.
   const stop = useCallback(() => {
     releaseAudio(stop);
     teardown();
@@ -110,6 +122,8 @@ export function usePassageMix(): UsePassageMixResult {
         if (failed[index]) return;
         failed[index] = true;
         live -= 1;
+        const url = layers[index].layer.url;
+        setFailedUrls((current) => (current.includes(url) ? current : [...current, url]));
         // The lead failing leaves nothing to be in context of, and the
         // last bed failing leaves silence. Either way the control must
         // not sit there claiming to play.
@@ -133,6 +147,9 @@ export function usePassageMix(): UsePassageMixResult {
       });
 
       elementsRef.current = elements.map(({ el }) => el);
+      // A fresh attempt starts with a clean slate: the last run's
+      // failures say nothing about this one.
+      setFailedUrls([]);
       // Claim the editor-wide floor: a clip auditioning in another
       // node panel has to stop rather than sound over the mix.
       claimAudio(stop);
@@ -176,5 +193,5 @@ export function usePassageMix(): UsePassageMixResult {
     };
   }, [stop, teardown]);
 
-  return { playing, toggle, stop };
+  return { playing, failedUrls, toggle, stop };
 }

@@ -828,9 +828,13 @@ function NodeAudioPreview({
                 <span className="text-muted">
                   {layer.volume}%{layer.name ? ` · ${layer.name}` : ''}
                 </span>
-                {layer.note && (
-                  <span className="node-audio-context-note text-muted"> — {layer.note}</span>
+                {/* A bed that 404s simply isn't there, and by ear that
+                    is indistinguishable from a bed the narration sits
+                    comfortably over. Say so. */}
+                {mixPlayer.failedUrls.includes(layer.url) && (
+                  <span className="node-audio-context-warn"> — didn&apos;t load</span>
                 )}
+                {layer.note && <span className="node-audio-context-warn"> — {layer.note}</span>}
               </li>
             ))}
           </ul>

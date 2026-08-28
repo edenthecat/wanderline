@@ -45,9 +45,12 @@ import { useProjectSettingsTick } from './useProjectSettings';
 import type { MixContext } from '../lib/passageMix';
 
 const METADATA_SIGNAL = 'metadata';
-// Bumped by AudioTab whenever a clip is assigned, unassigned or
-// deleted. Subscribing here means attaching audio in one tab lights up
-// the play control in another without a reload.
+// The audio-library invalidation signal. Bumped by AudioTab whenever a
+// clip is assigned, unassigned or deleted, and by MusicTab whenever a
+// background track is added or removed. Subscribing here means
+// attaching audio in one tab lights up the play control in another
+// without a reload — and that a deleted music file stops being the
+// track the in-context audition tries to lay under a passage.
 const AUDIO_ASSIGNMENTS_SIGNAL = 'audio-assignments';
 const CHOICE_TEXT_SAVE_DEBOUNCE_MS = 800;
 
