@@ -294,7 +294,9 @@ export function nodeAriaLabel(d: StoryCardData): string {
     });
   }
   if (d.hasDivert) parts.push('falls through');
-  // The hover card lists these, and the hover card is visual only.
+  // The hover card carries these, and the hover card is visual only.
+  const prose = d.preview.trim();
+  if (prose) parts.push(prose.length > 100 ? `${prose.slice(0, 100).trim()}…` : prose);
   const tags = d.storyNode.tags ?? [];
   if (tags.length > 0) parts.push(`tagged ${tags.slice(0, 6).join(', ')}`);
   if (d.onPath) parts.push('on traced path');
@@ -835,6 +837,9 @@ function GraphTabInner({
    * before focusin on the new one, so neither event can be read on its
    * own without stealing or tearing down the pointer's card. */
   const hoverSourceRef = useRef<'pointer' | 'focus' | null>(null);
+  /** Set while we move focus programmatically, so the restore doesn't
+   * read as "the user tabbed here" and put a preview card up. */
+  const suppressFocusPreviewRef = useRef(false);
   const hoverRafRef = useRef<number | null>(null);
   const latestHoverPosRef = useRef<{ x: number; y: number } | null>(null);
   const cancelHoverRaf = useCallback(() => {
@@ -1105,8 +1110,15 @@ function GraphTabInner({
     pendingRailFocusRef.current = false;
     setSelectedNodeId(null);
     // Focus would otherwise land on <body> when the rail unmounts,
-    // dumping a keyboard user back at the top of the document.
-    if (back) focusGraphNode(back);
+    // dumping a keyboard user back at the top of the document. The
+    // flag stops this restore from also raising a preview card the
+    // user never asked for; focus() dispatches focusin synchronously,
+    // so the window is exactly this call.
+    if (back) {
+      suppressFocusPreviewRef.current = true;
+      focusGraphNode(back);
+      suppressFocusPreviewRef.current = false;
+    }
   };
 
   // Click semantics:
@@ -1298,8 +1310,12 @@ function GraphTabInner({
             // Clicking a node focuses it too, but the pointer entered
             // it first — so the pointer owns the card and it's already
             // anchored to the cursor. Re-anchoring here would snap it
-            // to the node's corner mid-click.
-            if (hoverSourceRef.current === 'pointer') return;
+            // to the node's corner mid-click. Scoped to the node the
+            // pointer is actually on: a mouse left resting over one
+            // card must not kill the preview for every node the user
+            // then tabs to.
+            if (hoverSourceRef.current === 'pointer' && hoverNodeId === id) return;
+            if (suppressFocusPreviewRef.current) return;
             cancelHoverRaf();
             // Same preview the mouse gets, anchored to the node box
             // instead of the pointer. Without this, everything in the
@@ -1513,7 +1529,10 @@ function HoverPreview({ node, x, y }: HoverPreviewProps) {
   const preview =
     contentText.length > 220 ? `${contentText.slice(0, 220).trim()}…` : contentText || '(empty)';
   return (
-    <div className="graph-hover-card" style={{ left: x + 14, top: y + 14 }} role="tooltip">
+    // aria-hidden: everything here is in the node's accessible name.
+    // The role="tooltip" it used to carry was never referenced by an
+    // aria-describedby, so assistive tech ignored it regardless.
+    <div className="graph-hover-card" style={{ left: x + 14, top: y + 14 }} aria-hidden="true">
       <div className="graph-hover-card-header">
         <span className="graph-node-chip" data-kind={node.type}>
           {node.type}

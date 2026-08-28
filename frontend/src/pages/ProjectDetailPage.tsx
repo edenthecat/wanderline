@@ -187,9 +187,13 @@ export default function ProjectDetailPage() {
       // mousedown's default action moves focus to the hit target's
       // nearest focusable ancestor. The scrim has none, so the
       // browser would put focus on <body> a beat after close()
-      // restored it. The scrim covers the viewport while the sheet is
-      // open, so this suppresses nothing else.
-      e.preventDefault();
+      // restored it. Scoped to the scrim itself: the scrim is
+      // display:none above 767px while this state survives a resize,
+      // and blanket-preventing mousedown there would stop clicks from
+      // focusing inputs behind it.
+      if (e.target instanceof Element && e.target.closest('.workspace-mobile-sheet-backdrop')) {
+        e.preventDefault();
+      }
       close();
     }
     function handleKeyDown(e: KeyboardEvent) {

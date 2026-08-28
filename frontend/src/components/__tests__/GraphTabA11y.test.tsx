@@ -116,6 +116,9 @@ describe('GraphTab keyboard and screen-reader access', () => {
     expect(corridor).toContain('corridor');
     expect(corridor).toContain('has audio');
     expect(corridor).toContain('no choices');
+    // The passage prose was visible only in the hover card, which is
+    // now aria-hidden — so the name has to carry it.
+    expect(corridor).toContain('Some prose.');
   });
 
   it('names validation severity, which the card otherwise shows in colour alone', async () => {
@@ -242,6 +245,36 @@ describe('GraphTab keyboard and screen-reader access', () => {
     // Clicking blurs the previously focused node — the card must stay.
     fireEvent.blur(nodeEl(container, '_intro'));
     expect(container.querySelector('.graph-hover-card')).toBeTruthy();
+  });
+
+  // "The pointer owns the card" has to mean the node the pointer is
+  // actually on. A mouse left resting over one card must not kill the
+  // preview for every node the user then tabs to.
+  it('still previews on focus while the pointer rests on another node', async () => {
+    const { container } = renderGraph();
+    await waitFor(() => expect(nodeEl(container, '_intro')).toBeTruthy());
+
+    fireEvent.mouseEnter(nodeEl(container, '_intro'), { clientX: 5, clientY: 5 });
+    await waitFor(() => expect(container.querySelector('.graph-hover-card')).toBeTruthy());
+
+    fireEvent.focus(nodeEl(container, 'corridor'));
+    await waitFor(() =>
+      expect(container.querySelector('.graph-hover-card')).toHaveTextContent('corridor'),
+    );
+  });
+
+  // Restoring focus to the node on close is for the keyboard; it must
+  // not also raise a preview card the user never asked for.
+  it('does not raise a preview when focus is restored on close', async () => {
+    const { container } = renderGraph();
+    await waitFor(() => expect(nodeEl(container, 'corridor')).toBeTruthy());
+
+    fireEvent.click(nodeEl(container, 'corridor'));
+    await screen.findByRole('complementary', { name: 'Node detail: corridor' });
+    fireEvent.click(screen.getByRole('button', { name: 'Close detail' }));
+
+    await waitFor(() => expect(document.activeElement).toBe(nodeEl(container, 'corridor')));
+    expect(container.querySelector('.graph-hover-card')).toBeNull();
   });
 
   // The hover card carried the only untruncated prose preview and the
