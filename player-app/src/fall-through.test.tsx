@@ -72,11 +72,20 @@ const chapterStory = {
 };
 
 beforeEach(() => {
+  // Fake timers, drained before cleanup: startStory arms a bare
+  // setTimeout(300) for the first voiceover that nothing cancels. On a
+  // fast run the test finishes first, and the timer then fires after
+  // unstubGlobals has restored jsdom's Audio — whose play() returns
+  // undefined, so `.catch` throws an uncaught exception that fails the
+  // run with every test still passing.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.stubGlobal('Audio', MockAudio);
   localStorage.clear();
 });
 afterEach(() => {
+  vi.runOnlyPendingTimers();
   cleanup();
+  vi.useRealTimers();
   localStorage.clear();
   delete (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__;
   vi.unstubAllGlobals();
