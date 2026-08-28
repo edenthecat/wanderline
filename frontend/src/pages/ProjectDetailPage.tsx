@@ -82,6 +82,10 @@ function groupFor(tab: Tab): GroupId {
   return GROUPS.find((g) => g.tabs.includes(tab))!.id;
 }
 
+/** Panel every nav button points at via aria-controls, and the element
+ * pickTab moves focus to. */
+const WORKSPACE_PANEL_ID = 'workspace-panel';
+
 export default function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [project, setProject] = useState<ProjectDetail | null>(null);
@@ -93,6 +97,15 @@ export default function ProjectDetailPage() {
   // null = no sheet open. Closes on tab pick / outside-click / Escape.
   const [mobileSheet, setMobileSheet] = useState<GroupId | null>(null);
   const mobileSheetRef = useRef<HTMLDivElement>(null);
+  // Focus plumbing for the mobile sheet: focus moves to the first tool
+  // when it opens (the sheet renders after the bottom bar in the DOM,
+  // so Tab alone would walk the other three group buttons first) and
+  // back to the group button when Escape closes it.
+  const firstSheetLinkRef = useRef<HTMLButtonElement>(null);
+  const mobileTabRefs = useRef<Partial<Record<GroupId, HTMLButtonElement | null>>>({});
+  // Focused by pickTab so a screen reader / keyboard user follows the
+  // content swap instead of being left on a button in the nav.
+  const panelRef = useRef<HTMLDivElement>(null);
   // Bumped when a tab nukes project-level data (e.g. SettingsTab's
   // "Delete all audio") so sibling tabs re-mount and refetch instead
   // of showing stale cached lists.
@@ -169,7 +182,12 @@ export default function ProjectDetailPage() {
       }
     }
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') setMobileSheet(null);
+      if (e.key !== 'Escape') return;
+      const openGroup = mobileSheet;
+      setMobileSheet(null);
+      // Without this the sheet unmounts under the user's focus and
+      // they're dumped back at the top of the document.
+      if (openGroup) mobileTabRefs.current[openGroup]?.focus();
     }
     document.addEventListener('mousedown', handleClick);
     document.addEventListener('keydown', handleKeyDown);
@@ -178,6 +196,32 @@ export default function ProjectDetailPage() {
       document.removeEventListener('keydown', handleKeyDown);
     };
   }, [mobileSheet]);
+
+  // Move focus into the sheet when it opens. The sheet is rendered
+  // after the bottom bar, so Tab from the group button would otherwise
+  // walk the remaining group buttons before reaching its own contents.
+  useEffect(() => {
+    if (!mobileSheet) return;
+    firstSheetLinkRef.current?.focus();
+  }, [mobileSheet]);
+
+  // Deferred to an effect rather than focusing inline in pickTab: the
+  // panel's aria-label is derived from activeTab, and focusing before
+  // React re-renders would announce the tab you just left.
+  const focusPanelRef = useRef(false);
+  useEffect(() => {
+    if (!focusPanelRef.current) return;
+    focusPanelRef.current = false;
+    panelRef.current?.focus();
+  }, [activeTab]);
+
+  // Name the document after the view. Screen-reader users check the
+  // title to orient after a navigation; without this every tab of
+  // every project reads as the same page.
+  useEffect(() => {
+    if (!project) return;
+    document.title = `${TAB_LABEL[activeTab]} · ${project.name} · Wanderline`;
+  }, [activeTab, project]);
 
   /**
    * Fetch the project. Pass `silent` for re-fetches triggered by
@@ -231,6 +275,13 @@ export default function ProjectDetailPage() {
   const activeGroup = groupFor(activeTab);
 
   function pickTab(t: Tab) {
+    // Re-picking the active tab still has to move focus — on mobile
+    // it's the gesture that dismisses the sheet.
+    if (t === activeTab) {
+      panelRef.current?.focus();
+    } else {
+      focusPanelRef.current = true;
+    }
     setActiveTab(t);
     setMobileSheet(null);
   }
@@ -249,6 +300,7 @@ export default function ProjectDetailPage() {
                       <button
                         className={`workspace-link${activeTab === t ? ' workspace-link-active' : ''}`}
                         aria-current={activeTab === t ? 'page' : undefined}
+                        aria-controls={WORKSPACE_PANEL_ID}
                         onClick={() => pickTab(t)}
                       >
                         {TAB_LABEL[t]}
@@ -279,7 +331,14 @@ export default function ProjectDetailPage() {
                   <p className="workspace-toolbar-desc text-muted">{project.description}</p>
                 )}
               </div>
-              <span className="workspace-toolbar-current text-muted">{TAB_LABEL[activeTab]}</span>
+              {/* The one element that names the current view. Made a
+                  live region so switching tabs is announced — the
+                  whole <main> swaps and nothing else says so. It is
+                  display:none below 767px, which is why pickTab also
+                  moves focus into the panel. */}
+              <span className="workspace-toolbar-current text-muted" role="status">
+                {TAB_LABEL[activeTab]}
+              </span>
             </div>
             <div className="workspace-toolbar-actions">
               <PresenceChips users={presentUsers} />
@@ -288,33 +347,36 @@ export default function ProjectDetailPage() {
                   ref={exportBtnRef}
                   className="btn btn-ghost btn-sm"
                   onClick={() => setShowExportMenu((v) => !v)}
-                  aria-haspopup="menu"
                   aria-expanded={showExportMenu}
                   aria-controls={showExportMenu ? 'export-menu' : undefined}
                 >
                   Export
                 </button>
+                {/* Disclosure, not role="menu". role="menu" carries a
+                    keyboard contract (arrow-key roving focus, focus
+                    moved in on open, Home/End) that this never
+                    implemented, and an unimplemented menu is worse
+                    than no menu: the screen reader promises arrow
+                    keys that do nothing. These are three plain
+                    buttons; aria-expanded on the trigger is the whole
+                    of the semantics they need, and Tab already
+                    reaches them because they follow the trigger in
+                    the DOM. Escape + outside-click close with focus
+                    return are handled in an effect above. */}
                 {showExportMenu && (
-                  <div className="dropdown-menu" id="export-menu" role="menu">
-                    <button
-                      className="dropdown-item"
-                      role="menuitem"
-                      onClick={() => handleExport('archive')}
-                    >
+                  <div
+                    className="dropdown-menu"
+                    id="export-menu"
+                    role="group"
+                    aria-label="Export options"
+                  >
+                    <button className="dropdown-item" onClick={() => handleExport('archive')}>
                       Export Archive (.wanderline)
                     </button>
-                    <button
-                      className="dropdown-item"
-                      role="menuitem"
-                      onClick={() => handleExport('ink')}
-                    >
+                    <button className="dropdown-item" onClick={() => handleExport('ink')}>
                       Export Ink (.ink)
                     </button>
-                    <button
-                      className="dropdown-item"
-                      role="menuitem"
-                      onClick={() => handleExport('json')}
-                    >
+                    <button className="dropdown-item" onClick={() => handleExport('json')}>
                       Export JSON
                     </button>
                   </div>
@@ -339,7 +401,17 @@ export default function ProjectDetailPage() {
               <YjsDemoField projectId={id} />
             )}
 
-          <div className="tab-content">
+          {/* Focus target for pickTab: tabbing/announcement otherwise
+              never follows the content swap. Labelled so landing here
+              says which view you're in. */}
+          <div
+            className="tab-content"
+            id={WORKSPACE_PANEL_ID}
+            ref={panelRef}
+            tabIndex={-1}
+            role="region"
+            aria-label={`${TAB_LABEL[activeTab]} panel`}
+          >
             {activeTab === 'story' && (
               <StoryTab
                 projectId={id}
@@ -421,8 +493,11 @@ export default function ProjectDetailPage() {
           return (
             <button
               key={g.id}
+              ref={(el) => {
+                mobileTabRefs.current[g.id] = el;
+              }}
               className={`workspace-mobile-tab${isActive ? ' workspace-mobile-tab-active' : ''}`}
-              aria-haspopup="menu"
+              // Disclosure, not a menu — see the comment on the sheet.
               aria-expanded={isOpen}
               aria-controls={isOpen ? `mobile-sheet-${g.id}` : undefined}
               onClick={() => setMobileSheet(isOpen ? null : g.id)}
@@ -433,25 +508,37 @@ export default function ProjectDetailPage() {
         })}
       </nav>
 
+      {/* NO aria-hidden on the backdrop. It used to carry
+          aria-hidden="true", which every descendant inherits — the
+          sheet, its heading and all of its buttons were removed from
+          the accessibility tree while staying in the tab order (axe
+          `aria-hidden-focus`). Below 767px the desktop sidebar is
+          display:none, so this sheet is the only way to change tab:
+          hiding it made the editor unnavigable by screen reader.
+          If the rest of the page ever needs hiding while this is
+          open, that belongs on the sheet's SIBLINGS, never on an
+          ancestor of the sheet itself. */}
       {mobileSheet && (
-        <div className="workspace-mobile-sheet-backdrop" aria-hidden="true">
+        <div className="workspace-mobile-sheet-backdrop">
           <div
             ref={mobileSheetRef}
             className="workspace-mobile-sheet"
-            role="menu"
             id={`mobile-sheet-${mobileSheet}`}
-            aria-label={GROUPS.find((g) => g.id === mobileSheet)?.label}
           >
-            <h2 className="workspace-mobile-sheet-title">
+            <h2 className="workspace-mobile-sheet-title" id={`mobile-sheet-title-${mobileSheet}`}>
               {GROUPS.find((g) => g.id === mobileSheet)?.label}
             </h2>
-            <ul className="workspace-mobile-sheet-list">
-              {GROUPS.find((g) => g.id === mobileSheet)?.tabs.map((t) => (
+            <ul
+              className="workspace-mobile-sheet-list"
+              aria-labelledby={`mobile-sheet-title-${mobileSheet}`}
+            >
+              {GROUPS.find((g) => g.id === mobileSheet)?.tabs.map((t, i) => (
                 <li key={t}>
                   <button
+                    ref={i === 0 ? firstSheetLinkRef : undefined}
                     className={`workspace-mobile-sheet-link${activeTab === t ? ' workspace-mobile-sheet-link-active' : ''}`}
-                    role="menuitem"
                     aria-current={activeTab === t ? 'page' : undefined}
+                    aria-controls={WORKSPACE_PANEL_ID}
                     onClick={() => pickTab(t)}
                   >
                     {TAB_LABEL[t]}

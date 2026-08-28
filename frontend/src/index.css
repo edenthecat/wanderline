@@ -3489,6 +3489,25 @@ which is context rather than a problem. */ .node-flag-badge {
   margin-left: 0;
 }
 
+/* Non-colour marker for validation severity. The card border already
+   tints red/amber, but colour alone can't be the only channel
+   (WCAG 1.4.1), so error/warning also get a glyph. */
+.graph-node-severity {
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.graph-node-severity.is-error {
+  color: #b91c1c;
+  background: #fee2e2;
+}
+.graph-node-severity.is-warning {
+  color: #b45309;
+  background: #fef3c7;
+}
+
 /* Flag list in the node panel. Sits above the character picker and the
    override editor: someone reporting the passage is wrong outranks
    configuring it. */

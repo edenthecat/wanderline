@@ -114,14 +114,29 @@ const StoryCardNode = memo(function StoryCardNode({ data, selected }: NodeProps)
         <span className="graph-node-chip" data-kind={d.storyNode.type}>
           {d.isStart ? 'start' : d.isEnding ? 'ending' : d.storyNode.type}
         </span>
+        {/* Severity is otherwise carried by border colour alone
+            (`is-error` / `is-warning`), which fails 1.4.1 Use of
+            Colour. This glyph is the non-colour marker; the same fact
+            is folded into the node's ariaLabel for screen readers. */}
+        {d.severity && (
+          <span
+            className={`graph-node-severity is-${d.severity}`}
+            role="img"
+            title={d.severity === 'error' ? 'Validation error' : 'Validation warning'}
+            aria-label={d.severity === 'error' ? 'Validation error' : 'Validation warning'}
+          >
+            {d.severity === 'error' ? '✕' : '⚠'}
+          </span>
+        )}
         {/* Flags outrank the character chip for attention: one is
             context, the other is someone saying this passage is
-            wrong. */}
+            wrong. No aria-label on either: they have visible text,
+            and a bare <span> maps to `generic`, a role that prohibits
+            naming — browsers drop the label entirely. */}
         {d.flagCount > 0 && (
           <span
             className="graph-node-flag"
             title={`${d.flagCount} open flag${d.flagCount === 1 ? '' : 's'}`}
-            aria-label={`${d.flagCount} open flag${d.flagCount === 1 ? '' : 's'}`}
           >
             ⚑ {d.flagCount}
           </span>
@@ -131,13 +146,16 @@ const StoryCardNode = memo(function StoryCardNode({ data, selected }: NodeProps)
             className="graph-node-character"
             style={{ background: d.character.color }}
             title={`Character: ${d.character.name}`}
-            aria-label={`Character: ${d.character.name}`}
           >
             {d.character.name}
           </span>
         )}
+        {/* role="img" so the label IS honoured — this span is empty,
+            so without a naming-capable role it exposes nothing at
+            all and "which passages lack audio" is colour-only. */}
         <span
           className={`graph-node-dot ${d.hasAudio ? 'is-on' : 'is-off'}`}
+          role="img"
           aria-label={d.hasAudio ? 'has audio' : 'no audio assigned'}
         />
       </div>
@@ -236,6 +254,51 @@ const NODE_TYPES = {
   terminal: TerminalNode,
   missing: MissingNode,
 };
+
+/**
+ * Accessible name for a story-card node.
+ *
+ * React Flow renders each node wrapper as `role="group"` with
+ * `aria-roledescription="node"` and `aria-label={node.ariaLabel}`.
+ * `group` does NOT take its name from content, so with no ariaLabel a
+ * keyboard user tabbing the canvas hears "group, node" N times over
+ * with no way to tell the passages apart. Everything the card conveys
+ * visually — including the facts carried only by colour (severity,
+ * path membership, the audio dot) and the choice text the card has to
+ * truncate — is folded in here.
+ *
+ * Not wired through `aria-describedby`: xyflow already owns that
+ * attribute on the node wrapper (it points at the library's own
+ * keyboard-help description) and the only way to set it per node is
+ * `domAttributes`, which would clobber the library's value.
+ */
+export function nodeAriaLabel(d: StoryCardData): string {
+  const parts: string[] = [d.storyNode.id];
+  parts.push(d.isStart ? 'start node' : d.isEnding ? 'ending' : d.storyNode.type);
+  if (d.character) parts.push(`character ${d.character.name}`);
+  parts.push(d.hasAudio ? 'has audio' : 'no audio assigned');
+  if (d.flagCount > 0) {
+    parts.push(`${d.flagCount} open flag${d.flagCount === 1 ? '' : 's'}`);
+  }
+  if (d.severity) parts.push(d.severity === 'error' ? 'validation error' : 'validation warning');
+  if (d.choices.length === 0) {
+    parts.push('no choices');
+  } else {
+    parts.push(`${d.choices.length} choice${d.choices.length === 1 ? '' : 's'}`);
+    // Untruncated on purpose: the card clips choice text at 20 chars
+    // and the target at 14, and the full string was previously only
+    // reachable through a native title= tooltip, which never appears
+    // on keyboard focus.
+    d.choices.forEach((c, i) => {
+      parts.push(`choice ${i + 1}: ${c.text || `choice ${i + 1}`} to ${c.target || 'no target'}`);
+    });
+  }
+  if (d.hasDivert) parts.push('falls through');
+  if (d.onPath) parts.push('on traced path');
+  if (d.matched) parts.push('search match');
+  if (d.dim) parts.push('unreachable from the start node');
+  return parts.join(', ');
+}
 
 // Resolve `target` semantically: END / DONE are terminal sinks (drawn
 // once as a synthetic node), unknown targets render as "missing" nodes
@@ -406,27 +469,29 @@ function buildLayout(
     const contentText = sn.content?.map((c) => c.text).join(' ') ?? '';
     const preview = contentText.length > 140 ? `${contentText.slice(0, 140).trim()}…` : contentText;
     const cardHeight = estimateCardHeight(sn);
+    const data = {
+      storyNode: sn,
+      isStart,
+      isEnding: ending,
+      severity: severityByNode.get(id) ?? null,
+      hasAudio: hasAudio(sn),
+      character: characterFor(id),
+      flagCount: flagCountFor(id),
+      choices: (sn.choices ?? []).map((c) => ({ text: c.text, target: c.target })),
+      hasDivert: !!sn.divert,
+      preview,
+      cardHeight,
+      dim: false,
+      onPath: false,
+      matched: false,
+      unmatched: false,
+    } satisfies StoryCardData;
     nodes.push({
       id,
       type: 'storyCard',
       position: { x: layout.x - NODE_WIDTH / 2, y: layout.y - cardHeight / 2 },
-      data: {
-        storyNode: sn,
-        isStart,
-        isEnding: ending,
-        severity: severityByNode.get(id) ?? null,
-        hasAudio: hasAudio(sn),
-        character: characterFor(id),
-        flagCount: flagCountFor(id),
-        choices: (sn.choices ?? []).map((c) => ({ text: c.text, target: c.target })),
-        hasDivert: !!sn.divert,
-        preview,
-        cardHeight,
-        dim: false,
-        onPath: false,
-        matched: false,
-        unmatched: false,
-      } satisfies StoryCardData,
+      ariaLabel: nodeAriaLabel(data),
+      data,
     });
   }
   for (const id of syntheticIds) {
@@ -435,6 +500,7 @@ function buildLayout(
       id,
       type: 'terminal',
       position: { x: layout.x - 40, y: layout.y - 20 },
+      ariaLabel: `${id}, story end`,
       data: { label: id },
     });
   }
@@ -444,6 +510,7 @@ function buildLayout(
       id,
       type: 'missing',
       position: { x: layout.x - NODE_WIDTH / 2, y: layout.y - NODE_HEIGHT / 2 },
+      ariaLabel: `${id}, missing target — nothing in this story defines it`,
       data: { label: id },
     });
   }
@@ -665,6 +732,35 @@ function GraphTabInner({
   // is shown; on desktop the rail renders alongside the graph, on
   // mobile a bottom sheet overlays.
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  // Keyboard route into the detail rail. React Flow makes each node
+  // focusable and handles Enter/Space itself, but its handler only
+  // flips selection in its own store — the `onNodeClick` prop is
+  // invoked from the DOM click path alone, so Enter on a focused node
+  // used to do nothing but add `is-selected`. We listen for the same
+  // keys on the canvas wrapper (node keydown bubbles to it) and open
+  // the rail ourselves, then move focus into the rail and hand it
+  // back to the node on close.
+  const graphFrameRef = useRef<HTMLDivElement>(null);
+  const railRef = useRef<HTMLElement>(null);
+  /** Node to restore focus to when the rail closes; null when the rail
+   * was opened with the mouse (nothing to restore). */
+  const returnFocusNodeIdRef = useRef<string | null>(null);
+  /** Set when the rail was opened from the keyboard, so the effect
+   * below knows to pull focus in. */
+  const pendingRailFocusRef = useRef(false);
+  const focusGraphNode = useCallback((id: string) => {
+    const frame = graphFrameRef.current;
+    if (!frame) return;
+    const el = Array.from(frame.querySelectorAll<HTMLElement>('.react-flow__node')).find(
+      (n) => n.getAttribute('data-id') === id,
+    );
+    el?.focus();
+  }, []);
+  useEffect(() => {
+    if (!selectedNodeId || !pendingRailFocusRef.current) return;
+    pendingRailFocusRef.current = false;
+    railRef.current?.focus();
+  }, [selectedNodeId]);
   // Slide-in panel that hosts the raw Ink source editor. Same
   // component the StoryTab uses inline so authors get the same
   // surface from either tab and saves go through one path.
@@ -776,7 +872,10 @@ function GraphTabInner({
         ) {
           return n;
         }
-        return { ...n, data: { ...data, dim, onPath, matched, unmatched } };
+        const next = { ...data, dim, onPath, matched, unmatched };
+        // Keep the accessible name in step: dim / on-path / matched
+        // are otherwise conveyed by colour alone.
+        return { ...n, ariaLabel: nodeAriaLabel(next), data: next };
       }),
     );
     setEdges((current) =>
@@ -925,6 +1024,9 @@ function GraphTabInner({
         { zoom: 1, duration: 300 },
       );
       setSelectedNodeId(targetId);
+      // Opened from the toolbar, not from a node — there's no node
+      // to hand focus back to when the rail closes.
+      returnFocusNodeIdRef.current = null;
     }
     setMatchCursor((c) => c + 1);
   }, [matchedIds, matchCursor, nodes, rf]);
@@ -945,24 +1047,71 @@ function GraphTabInner({
   const selected = selectedNodeId ? storyGraph.nodes[selectedNodeId] : null;
   const hoverNode = hoverNodeId ? storyGraph.nodes[hoverNodeId] : null;
 
+  // Shift-activate sets path endpoints (1st → from, 2nd → to).
+  const pickPathEndpoint = (nodeId: string) => {
+    if (!pathFromId || (pathFromId && pathToId)) {
+      setPathFromId(nodeId);
+      setPathToId(null);
+    } else if (nodeId !== pathFromId) {
+      setPathToId(nodeId);
+    }
+  };
+
+  const openNodeDetail = (nodeId: string, { fromKeyboard }: { fromKeyboard: boolean }) => {
+    // Opening the detail rail evicts the source panel — they
+    // occupy the same right-side region of the canvas.
+    setSourceOpen(false);
+    setSelectedNodeId(nodeId);
+    returnFocusNodeIdRef.current = fromKeyboard ? nodeId : null;
+    pendingRailFocusRef.current = fromKeyboard;
+  };
+
+  const closeNodeDetail = () => {
+    const back = returnFocusNodeIdRef.current;
+    returnFocusNodeIdRef.current = null;
+    pendingRailFocusRef.current = false;
+    setSelectedNodeId(null);
+    // Focus would otherwise land on <body> when the rail unmounts,
+    // dumping a keyboard user back at the top of the document.
+    if (back) focusGraphNode(back);
+  };
+
   // Click semantics:
   //  - shift-click sets path endpoints (1st → from, 2nd → to)
   //  - plain click opens the detail rail
   const handleNodeClick = (event: React.MouseEvent, node: RFNode) => {
     if (!storyGraph.nodes[node.id]) return;
     if (event.shiftKey) {
-      if (!pathFromId || (pathFromId && pathToId)) {
-        setPathFromId(node.id);
-        setPathToId(null);
-      } else if (node.id !== pathFromId) {
-        setPathToId(node.id);
-      }
+      pickPathEndpoint(node.id);
       return;
     }
-    // Opening the detail rail evicts the source panel — they
-    // occupy the same right-side region of the canvas.
-    setSourceOpen(false);
-    setSelectedNodeId(node.id);
+    openNodeDetail(node.id, { fromKeyboard: false });
+  };
+
+  /** Which story node, if any, an event inside the canvas came from. */
+  const nodeIdOfEventTarget = (target: EventTarget | null): string | null => {
+    if (!(target instanceof Element)) return null;
+    const el = target.closest('.react-flow__node');
+    const id = el?.getAttribute('data-id') ?? null;
+    if (!id || !storyGraph.nodes[id]) return null;
+    return id;
+  };
+
+  // Enter / Space on a focused node. Mirrors the click semantics
+  // above so the canvas is operable without a pointer.
+  const handleGraphKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    if (event.target instanceof HTMLElement && event.target.isContentEditable) return;
+    const id = nodeIdOfEventTarget(event.target);
+    if (!id) return;
+    // Space would otherwise scroll the page / trigger React Flow's
+    // space-to-pan activation key.
+    event.preventDefault();
+    if (event.shiftKey) {
+      pickPathEndpoint(id);
+      return;
+    }
+    openNodeDetail(id, { fromKeyboard: true });
   };
 
   return (
@@ -1091,7 +1240,39 @@ function GraphTabInner({
         )}
       </div>
       <div className="graph-layout">
-        <div className="graph-frame" data-testid="story-graph">
+        {/* Node keydown/focus bubble up to this wrapper — React Flow
+            gives us no onNodeKeyDown / onNodeFocus prop, and a handler
+            on the card itself would never fire because the focusable
+            element is the library's wrapper, i.e. the card's parent. */}
+        <div
+          className="graph-frame"
+          data-testid="story-graph"
+          ref={graphFrameRef}
+          onKeyDown={handleGraphKeyDown}
+          onFocus={(event) => {
+            const id = nodeIdOfEventTarget(event.target);
+            cancelHoverRaf();
+            if (!id) {
+              // Focus moved to the controls / minimap — drop any
+              // preview left over from the previous node.
+              setHoverNodeId(null);
+              setHoverPos(null);
+              return;
+            }
+            // Same preview the mouse gets, anchored to the node box
+            // instead of the pointer. Without this, everything in the
+            // hover card is mouse-only information.
+            const el = (event.target as Element).closest('.react-flow__node');
+            const rect = el?.getBoundingClientRect();
+            setHoverNodeId(id);
+            setHoverPos({ x: rect?.left ?? 0, y: rect?.bottom ?? 0 });
+          }}
+          onBlur={() => {
+            cancelHoverRaf();
+            setHoverNodeId(null);
+            setHoverPos(null);
+          }}
+        >
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -1110,6 +1291,13 @@ function GraphTabInner({
             onConnect={onConnect}
             onReconnect={onReconnect}
             onNodeClick={handleNodeClick}
+            /* React Flow's default deleteKeyCode is 'Backspace'. With
+               a node focused that removed the passage from the local
+               node list — nothing was deleted server-side and the
+               re-seed effect is keyed on the (unchanged) storyGraph,
+               so the card simply vanished until an unrelated refetch.
+               Deleting passages is not a gesture this tab offers. */
+            deleteKeyCode={null}
             onNodeMouseEnter={(event, node) => {
               if (!storyGraph.nodes[node.id]) return;
               // Cancel any pending rAF queued by a previous node's
@@ -1161,7 +1349,12 @@ function GraphTabInner({
           )}
         </div>
         {selected && selectedNodeId && (
-          <aside className="graph-detail" aria-label="Node detail">
+          <aside
+            className="graph-detail"
+            aria-label={`Node detail: ${selectedNodeId}`}
+            ref={railRef}
+            tabIndex={-1}
+          >
             <div className="graph-detail-header">
               <div>
                 <h3 className="graph-detail-title">{selectedNodeId}</h3>
@@ -1170,7 +1363,7 @@ function GraphTabInner({
               <button
                 type="button"
                 className="btn btn-ghost btn-sm"
-                onClick={() => setSelectedNodeId(null)}
+                onClick={closeNodeDetail}
                 aria-label="Close detail"
               >
                 ✕
@@ -1220,6 +1413,9 @@ function GraphTabInner({
               reachableFrom={editor.reverseEdges.get(selectedNodeId)}
               onJumpToNode={(id) => {
                 setSelectedNodeId(id);
+                // Keep the return target in step with what the rail
+                // is now showing, so Close lands on the right card.
+                if (returnFocusNodeIdRef.current) returnFocusNodeIdRef.current = id;
                 const target = nodes.find((n) => n.id === id);
                 if (target) {
                   rf.setCenter(
