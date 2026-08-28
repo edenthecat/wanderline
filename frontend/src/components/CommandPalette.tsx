@@ -15,7 +15,9 @@
 //     aria-controls + aria-activedescendant; the highlighted row is
 //     the only aria-selected one
 //   - the match count is announced through a polite live region
-//   - Escape closes, ↑/↓/Home/End move, Enter runs
+//   - Escape closes, ↑/↓ move, Enter runs. Home/End are deliberately
+//     NOT bound: this combobox has an editable textbox, and the
+//     author needs them to move the caret in what they typed.
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from 'react';
@@ -60,6 +62,9 @@ export default function CommandPalette({
 }: Props) {
   const [query, setQuery] = useState('');
   const [highlight, setHighlight] = useState(0);
+  // Announced result count. Deliberately empty on the render that
+  // mounts the palette — see the effect that fills it.
+  const [status, setStatus] = useState('');
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
@@ -79,6 +84,7 @@ export default function CommandPalette({
     if (open) {
       setQuery('');
       setHighlight(0);
+      setStatus('');
     }
   }
 
@@ -186,12 +192,6 @@ export default function CommandPalette({
       } else if (e.key === 'ArrowUp') {
         e.preventDefault();
         setHighlight(activeIndex <= 0 ? commands.length - 1 : activeIndex - 1);
-      } else if (e.key === 'Home') {
-        e.preventDefault();
-        setHighlight(0);
-      } else if (e.key === 'End') {
-        e.preventDefault();
-        setHighlight(commands.length - 1);
       } else if (e.key === 'Enter') {
         e.preventDefault();
         if (activeCommand) runCommand(activeCommand);
@@ -199,6 +199,20 @@ export default function CommandPalette({
     },
     [activeCommand, activeIndex, commands.length, onClose, runCommand],
   );
+
+  // A live region is silent for content that is already there when
+  // the region is inserted, and this whole subtree mounts on open. So
+  // the count goes in one commit later, where it reads as a change.
+  useEffect(() => {
+    if (!open) return;
+    setStatus(
+      totalCount === 0
+        ? 'No results'
+        : `${totalCount} result${totalCount === 1 ? '' : 's'}${
+            truncated ? `, showing the first ${commands.length}` : ''
+          }`,
+    );
+  }, [open, totalCount, truncated, commands.length]);
 
   // Keep the highlighted row visible as the arrow keys walk past the
   // fold. `block: 'nearest'` scrolls the list, never the page.
@@ -268,11 +282,7 @@ export default function CommandPalette({
           aria-live="polite"
           data-testid="command-palette-status"
         >
-          {totalCount === 0
-            ? 'No results'
-            : `${totalCount} result${totalCount === 1 ? '' : 's'}${
-                truncated ? `, showing the first ${commands.length}` : ''
-              }`}
+          {status}
         </p>
 
         <div

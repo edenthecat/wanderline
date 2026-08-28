@@ -120,7 +120,10 @@ export default function ProjectDetailPage() {
   // it would flip a palette nothing renders — and would arrive already
   // open when the fetch lands — while swallowing the browser's own
   // Ctrl-K for nothing on the error page.
-  useCommandPaletteShortcut(togglePalette, project !== null);
+  // Same condition as the render guards below — a silent refetch
+  // failure leaves `project` set while showing the error page, and an
+  // id change leaves it set while loading the next one.
+  useCommandPaletteShortcut(togglePalette, project !== null && !loading && !error);
   // Focus lands here when a jump unmounts the button that opened the
   // palette (it switched tabs). tabIndex={-1} makes the region
   // programmatically focusable without adding a tab stop.

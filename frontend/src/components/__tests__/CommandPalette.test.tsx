@@ -97,12 +97,16 @@ describe('CommandPalette', () => {
 
     fireEvent.keyDown(input(), { key: 'ArrowUp' });
     expect(activeOption()).toHaveTextContent('harbour_night');
+  });
 
-    fireEvent.keyDown(input(), { key: 'Home' });
-    expect(activeOption()).toHaveTextContent('intro');
-
-    fireEvent.keyDown(input(), { key: 'End' });
-    expect(activeOption()).toHaveTextContent('harbour_night');
+  it('leaves Home and End to the textbox caret', () => {
+    // This combobox has an editable input; stealing Home/End would
+    // strand the caret in the middle of a long passage name.
+    renderPalette();
+    fireEvent.keyDown(input(), { key: 'ArrowDown' });
+    expect(fireEvent.keyDown(input(), { key: 'Home' })).toBe(true);
+    expect(fireEvent.keyDown(input(), { key: 'End' })).toBe(true);
+    expect(activeOption()).toHaveTextContent('harbour');
   });
 
   it('keeps the arrow keys working after the list shrinks underneath it', () => {
@@ -112,7 +116,8 @@ describe('CommandPalette', () => {
     const provider = (ids: string[]) => () =>
       ids.map((id, i) => ({ id, group: 'Passages', label: id, rank: i, run: vi.fn() }));
     const { rerender } = renderPalette({ providers: [provider(three)] });
-    fireEvent.keyDown(input(), { key: 'End' });
+    fireEvent.keyDown(input(), { key: 'ArrowDown' });
+    fireEvent.keyDown(input(), { key: 'ArrowDown' });
     expect(activeOption()).toHaveTextContent('c');
     rerender(
       <CommandPalette
@@ -238,7 +243,8 @@ describe('CommandPalette', () => {
 
   it('resets the highlight when the query changes so Enter takes the top match', () => {
     const { jumpToNode } = renderPalette();
-    fireEvent.keyDown(input(), { key: 'End' });
+    fireEvent.keyDown(input(), { key: 'ArrowDown' });
+    fireEvent.keyDown(input(), { key: 'ArrowDown' });
     fireEvent.change(input(), { target: { value: 'harbour' } });
     fireEvent.keyDown(input(), { key: 'Enter' });
     expect(jumpToNode).toHaveBeenCalledWith('harbour');

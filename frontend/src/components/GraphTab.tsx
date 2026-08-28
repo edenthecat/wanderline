@@ -954,6 +954,11 @@ function GraphTabInner({
       return;
     }
     if (!focusNode(jumpRequest.nodeId)) return;
+    // The slide-in source panel overlays the right edge of the canvas
+    // AND the detail rail, so a jump would centre the passage under
+    // it and hide the rail that confirms the selection. Evict it, the
+    // way StoryTab forces its own nodes view.
+    setSourceOpen(false);
     onJumpHandled?.();
   }, [jumpRequest, storyGraph, focusNode, onJumpHandled]);
 

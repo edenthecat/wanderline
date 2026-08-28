@@ -207,6 +207,16 @@ export default function StoryTab({
     sourceDirtyRef.current = dirty;
   }, []);
 
+  // The source editors report dirty only on a TRANSITION and never
+  // report clean on unmount, so once the view is left while dirty the
+  // ref strands at true: the next jump (or "Replace story file") would
+  // raise a phantom "you have unsaved edits" confirm over an editor
+  // that isn't even mounted. Leaving the view means there's no draft
+  // left to lose.
+  useEffect(() => {
+    if (view !== 'source') sourceDirtyRef.current = false;
+  }, [view]);
+
   // Shared editor state + handlers. GraphTab calls the same hook so
   // both views drive the same NodeDetail panel through the same
   // metadata cache, debounce timers, and cross-tab signal.

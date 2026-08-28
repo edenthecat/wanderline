@@ -74,6 +74,15 @@ describe('nodeExcerpt', () => {
     expect(nodeExcerpt(node('n1', 'abcdefghij'), 4)).toBe('abcd…');
   });
 
+  it('marks a cut that lands exactly on the limit at a line boundary', () => {
+    // The early-out has to look strictly PAST the limit, or a passage
+    // whose first lines total exactly maxLength renders truncated
+    // content with nothing saying so.
+    expect(nodeExcerpt(node('n1', 'abcd', 'efgh'), 4)).toBe('abcd…');
+    // ...and a passage that genuinely ends there gets no ellipsis.
+    expect(nodeExcerpt(node('n1', 'abcd'), 4)).toBe('abcd');
+  });
+
   it('is empty for a node with no content', () => {
     expect(nodeExcerpt(node('n1'))).toBe('');
   });

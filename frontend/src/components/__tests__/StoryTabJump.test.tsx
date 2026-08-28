@@ -79,9 +79,8 @@ vi.mock('../NodeRenameButton', () => ({ default: () => <div /> }));
 
 import StoryTab from '../StoryTab';
 
-function renderTab(over: Partial<React.ComponentProps<typeof StoryTab>> = {}) {
-  const onJumpHandled = vi.fn();
-  const utils = render(
+function tab(over: Partial<React.ComponentProps<typeof StoryTab>> = {}) {
+  return (
     <StoryTab
       projectId="p1"
       storyGraph={storyGraph}
@@ -94,10 +93,14 @@ function renderTab(over: Partial<React.ComponentProps<typeof StoryTab>> = {}) {
       onSourceReplaced={vi.fn()}
       otherPresence={[]}
       onSelfEditingNodeChange={vi.fn()}
-      onJumpHandled={onJumpHandled}
       {...over}
-    />,
+    />
   );
+}
+
+function renderTab(over: Partial<React.ComponentProps<typeof StoryTab>> = {}) {
+  const onJumpHandled = vi.fn();
+  const utils = render(tab({ onJumpHandled, ...over }));
   return { ...utils, onJumpHandled };
 }
 
@@ -133,24 +136,25 @@ describe('StoryTab jumpRequest', () => {
     const { rerender, ...utils } = renderTab();
     fireEvent.click(screen.getByRole('button', { name: 'Source' }));
     expect(screen.queryByRole('button', { name: /Expand harbour/ })).toBeNull();
-    rerender(
-      <StoryTab
-        projectId="p1"
-        storyGraph={storyGraph}
-        inkSource="=== intro ==="
-        tweeSource={null}
-        sourceLanguage="ink"
-        nomenclaturePreference="auto"
-        sourceResetKey={0}
-        onStoryUpdated={() => Promise.resolve()}
-        onSourceReplaced={vi.fn()}
-        otherPresence={[]}
-        onSelfEditingNodeChange={vi.fn()}
-        onJumpHandled={utils.onJumpHandled}
-        jumpRequest={{ nodeId: 'harbour' }}
-      />,
-    );
+    rerender(tab({ jumpRequest: { nodeId: 'harbour' }, onJumpHandled: utils.onJumpHandled }));
     await waitFor(() => expect(knotToggle('harbour')).toHaveAttribute('aria-expanded', 'true'));
+  });
+
+  it('stops asking once the draft is gone', async () => {
+    // The source editors report dirty only on a transition and never
+    // report clean on unmount, so leaving the view used to strand the
+    // flag and raise a phantom confirm over an editor that no longer
+    // has anything unsaved.
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const utils = renderTab();
+    fireEvent.click(screen.getByRole('button', { name: 'Source' }));
+    fireEvent.click(screen.getByRole('button', { name: 'make draft dirty' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Nodes' }));
+    // Back into a fresh editor with nothing typed into it.
+    fireEvent.click(screen.getByRole('button', { name: 'Source' }));
+    utils.rerender(tab({ jumpRequest: { nodeId: 'harbour' }, onJumpHandled: utils.onJumpHandled }));
+    await waitFor(() => expect(knotToggle('harbour')).toHaveAttribute('aria-expanded', 'true'));
+    expect(confirmSpy).not.toHaveBeenCalled();
   });
 
   it('asks before discarding an unsaved source draft, and honours a no', async () => {
@@ -158,23 +162,7 @@ describe('StoryTab jumpRequest', () => {
     const utils = renderTab();
     fireEvent.click(screen.getByRole('button', { name: 'Source' }));
     fireEvent.click(screen.getByRole('button', { name: 'make draft dirty' }));
-    utils.rerender(
-      <StoryTab
-        projectId="p1"
-        storyGraph={storyGraph}
-        inkSource="=== intro ==="
-        tweeSource={null}
-        sourceLanguage="ink"
-        nomenclaturePreference="auto"
-        sourceResetKey={0}
-        onStoryUpdated={() => Promise.resolve()}
-        onSourceReplaced={vi.fn()}
-        otherPresence={[]}
-        onSelfEditingNodeChange={vi.fn()}
-        onJumpHandled={utils.onJumpHandled}
-        jumpRequest={{ nodeId: 'harbour' }}
-      />,
-    );
+    utils.rerender(tab({ jumpRequest: { nodeId: 'harbour' }, onJumpHandled: utils.onJumpHandled }));
     await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
     // Still in the Source view, draft intact.
     expect(screen.getByRole('button', { name: 'make draft dirty' })).toBeInTheDocument();

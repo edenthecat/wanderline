@@ -70,16 +70,22 @@ function stubTab(name: 'story' | 'graph', sink: (string | undefined)[]) {
   return function StubTab({
     jumpRequest,
     onJumpHandled,
+    onStoryUpdated,
   }: {
     jumpRequest?: { nodeId: string } | null;
     onJumpHandled?: () => void;
+    onStoryUpdated?: () => Promise<void>;
   }) {
     useEffect(() => {
       if (!jumpRequest) return;
       sink.push(jumpRequest.nodeId);
       onJumpHandled?.();
     }, [jumpRequest, onJumpHandled]);
-    return <div data-testid={`${name}-tab`} />;
+    return (
+      <div data-testid={`${name}-tab`}>
+        <button onClick={() => void onStoryUpdated?.()}>refetch from {name}</button>
+      </div>
+    );
   };
 }
 
@@ -157,6 +163,20 @@ describe('ProjectDetailPage ⌘K palette', () => {
     expect(palette()).toBeNull();
     resolve({ project });
     await waitFor(() => expect(screen.getByTestId('story-tab')).toBeInTheDocument());
+    expect(palette()).toBeNull();
+  });
+
+  it('leaves the chord alone on the error page', async () => {
+    // A silent refetch can fail with a project still in state, so
+    // gating on "we have a project" alone would bind the chord to a
+    // screen that renders no palette.
+    await renderPage();
+    vi.mocked(fetchProject).mockRejectedValueOnce(new Error('nope'));
+    fireEvent.click(screen.getByRole('button', { name: 'refetch from story' }));
+    await waitFor(() => expect(screen.getByText('nope')).toBeInTheDocument());
+    const event = new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, cancelable: true });
+    document.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
     expect(palette()).toBeNull();
   });
 

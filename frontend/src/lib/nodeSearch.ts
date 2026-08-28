@@ -75,7 +75,9 @@ export function nodeExcerpt(node: SearchableNode, maxLength = 120): string {
   let text = '';
   for (const line of node.content ?? []) {
     text = text ? `${text} ${line.text}` : line.text;
-    if (collapse(text).length >= maxLength) break;
+    // Strictly past, not at: stopping exactly ON the limit would
+    // return a truncated excerpt with no ellipsis on it.
+    if (collapse(text).length > maxLength) break;
   }
   const collapsed = collapse(text);
   if (collapsed.length <= maxLength) return collapsed;
