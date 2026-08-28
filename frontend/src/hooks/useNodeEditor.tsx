@@ -41,6 +41,7 @@ import {
   type StoryGraph,
 } from '../api/client';
 import { bumpLiveSignal, useLiveSignal, PROJECT_SETTINGS_SIGNAL } from './useLiveSignal';
+import { useProjectSettingsTick } from './useProjectSettings';
 import type { MixContext } from '../lib/passageMix';
 
 const METADATA_SIGNAL = 'metadata';
@@ -153,6 +154,9 @@ export function useNodeEditor({
   // mixes at them — so a peer moving a slider has to reach this cache,
   // not wait for a remount.
   const settingsSignal = useLiveSignal(yDoc, PROJECT_SETTINGS_SIGNAL);
+  // And the same-tab half: the Volumes tab unmounts as this one mounts,
+  // so its flushed save can land after our own settings read.
+  const settingsTick = useProjectSettingsTick();
   const lastMetadataSignalRef = useRef(0);
   useEffect(() => {
     if (metadataSignalTick === 0) return;
@@ -247,7 +251,7 @@ export function useNodeEditor({
     return () => {
       cancelled = true;
     };
-  }, [projectId, audioSignal, settingsSignal]);
+  }, [projectId, audioSignal, settingsSignal, settingsTick]);
 
   // Character list for the per-node picker. Silent on failure for the
   // same reason as the audio lookup: the control is an affordance, not

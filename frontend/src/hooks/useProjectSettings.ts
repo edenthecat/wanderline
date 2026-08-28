@@ -5,10 +5,45 @@
 // here keeps the PATCH protocol consistent across the new tools
 // (optimistic update, key-scoped rollback on failure).
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import * as Y from 'yjs';
 import { fetchProjectSettings, updateProjectSettings, type ProjectSettings } from '../api/client';
 import { bumpLiveSignal, PROJECT_SETTINGS_SIGNAL } from './useLiveSignal';
+
+// Same-tab fanout for "project settings just changed".
+//
+// bumpLiveSignal deliberately ignores its own doc's local writes (the
+// writer has already refreshed itself), and it needs a live collab doc
+// — neither of which covers the case that bites here: the tabs in
+// ProjectDetailPage are mutually exclusive, so releasing a volume
+// slider and clicking the Story tab unmounts this hook and mounts
+// useNodeEditor's settings fetch in the same commit. The flushed PATCH
+// and that GET then race, and if the GET wins, the node panel mixes at
+// — and displays — the volume the author just moved away from, with
+// nothing to correct it. A module-level tick reaches the new tab
+// whether or not a doc survived the switch.
+let settingsTick = 0;
+const settingsListeners = new Set<() => void>();
+
+function bumpProjectSettingsTick(): void {
+  settingsTick += 1;
+  for (const notify of [...settingsListeners]) notify();
+}
+
+/** Re-renders on any project-settings save made in THIS tab. Pair it
+ *  with the PROJECT_SETTINGS_SIGNAL live signal, which covers peers. */
+export function useProjectSettingsTick(): number {
+  return useSyncExternalStore(
+    (onChange) => {
+      settingsListeners.add(onChange);
+      return () => {
+        settingsListeners.delete(onChange);
+      };
+    },
+    () => settingsTick,
+    () => settingsTick,
+  );
+}
 
 export interface UseProjectSettingsResult {
   settings: ProjectSettings | null;
@@ -95,8 +130,13 @@ export function useProjectSettings(
       if (pending.size > 0) {
         const patch = Object.fromEntries(pending) as Partial<ProjectSettings>;
         pending.clear();
-        // Nothing left to tell: this component is gone.
-        updateProjectSettings(projectId, patch).catch(() => {});
+        // This component is gone, so there is no local state to
+        // update — but the tab replacing it may already have read the
+        // pre-flush settings, so it still has to be told. No live
+        // signal here: the collab doc can be torn down alongside us.
+        updateProjectSettings(projectId, patch)
+          .then(() => bumpProjectSettingsTick())
+          .catch(() => {});
       }
     };
   }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -120,6 +160,7 @@ export function useProjectSettings(
       });
       setSettings(updated);
       bumpLiveSignal(yDoc, PROJECT_SETTINGS_SIGNAL);
+      bumpProjectSettingsTick();
     } catch (err) {
       setSettings((prev) => {
         if (!prev) return prev;
@@ -153,6 +194,7 @@ export function useProjectSettings(
         });
         setSettings(updated);
         bumpLiveSignal(yDoc, PROJECT_SETTINGS_SIGNAL);
+        bumpProjectSettingsTick();
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to save');
       } finally {

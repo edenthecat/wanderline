@@ -19,6 +19,7 @@ vi.mock('../../api/client', () => ({
   fetchNodeFlags: vi.fn(),
   fetchMetadata: vi.fn(),
   fetchProjectSettings: vi.fn(),
+  updateProjectSettings: vi.fn(),
   addChoice: vi.fn(),
   deleteChoice: vi.fn(),
   renameNode: vi.fn(),
@@ -32,6 +33,7 @@ vi.mock('../../api/client', () => ({
 
 const client = await import('../../api/client');
 const { useNodeEditor } = await import('../useNodeEditor');
+const { useProjectSettings } = await import('../useProjectSettings');
 
 const audioFile = (id: string, original_name: string, category: string) =>
   ({ id, original_name, category }) as unknown as Awaited<
@@ -112,6 +114,32 @@ describe('useNodeEditor — mix context', () => {
     await act(async () => {
       bumpLiveSignal(peer, PROJECT_SETTINGS_SIGNAL);
       Y.applyUpdate(doc, Y.encodeStateAsUpdate(peer));
+    });
+
+    await waitFor(() => expect(result.current.mixContext?.volumes.backgroundMusic).toBe(10));
+  });
+
+  // The Volumes tab unmounts as the Story tab mounts, so a flushed save
+  // can land after this hook has already read the old settings. Without
+  // a same-tab fanout nothing ever corrects that: the panel goes on
+  // mixing at, and displaying, the volume the author just moved away
+  // from.
+  it('re-reads the volumes when a save lands in this tab', async () => {
+    vi.mocked(client.fetchProjectSettings)
+      .mockResolvedValueOnce({ settings: { backgroundMusicVolume: 30 } })
+      .mockResolvedValue({ settings: { backgroundMusicVolume: 10 } });
+    vi.mocked(client.updateProjectSettings).mockResolvedValue({
+      settings: { backgroundMusicVolume: 10 },
+    });
+    const { result } = mountEditor();
+    await waitFor(() => expect(result.current.mixContext?.volumes.backgroundMusic).toBe(30));
+
+    // A save from elsewhere in this tab — a Volumes slider, flushed on
+    // its way out.
+    const settings = renderHook(() => useProjectSettings('p1'));
+    await waitFor(() => expect(settings.result.current.loading).toBe(false));
+    await act(async () => {
+      await settings.result.current.updateOne('backgroundMusicVolume', 10);
     });
 
     await waitFor(() => expect(result.current.mixContext?.volumes.backgroundMusic).toBe(10));

@@ -136,6 +136,11 @@ const safeSetItem = (storage: Storage, key: string, value: string): void => {
     storage.setItem(key, value);
   } catch {}
 };
+const safeRemoveItem = (storage: Storage, key: string): void => {
+  try {
+    storage.removeItem(key);
+  } catch {}
+};
 
 // Theme colors for character-based styling
 const THEME_COLORS: Record<string, { bg: string; border: string; text: string; accent: string }> = {
@@ -464,10 +469,23 @@ export default function App() {
         // mix, which is the whole failure class here. The unscoped key
         // is still read as a fallback so an existing listener's real
         // preference survives the change.
+        let savedVolumes = safeGetItem(localStorage, volumesStorageKey(data.id));
+        if (savedVolumes === null) {
+          // Migrate, don't consult forever. Left as a permanent
+          // fallback, a listener's pre-1.8 5% music would be forced on
+          // every story they ever opened, including brand-new ones by
+          // other authors, with no way out but to touch each story's
+          // slider. Moving it to the first story that asks bounds it to
+          // one story — which, for a standalone build, is the only
+          // story there is.
+          const legacy = safeGetItem(localStorage, LEGACY_VOLUMES_KEY);
+          if (legacy !== null) {
+            safeSetItem(localStorage, volumesStorageKey(data.id), legacy);
+            safeRemoveItem(localStorage, LEGACY_VOLUMES_KEY);
+            savedVolumes = legacy;
+          }
+        }
         let overrides: VolumeOverrides | null = null;
-        const savedVolumes =
-          safeGetItem(localStorage, volumesStorageKey(data.id)) ??
-          safeGetItem(localStorage, LEGACY_VOLUMES_KEY);
         if (savedVolumes) {
           try {
             overrides = JSON.parse(savedVolumes) as VolumeOverrides;
@@ -721,18 +739,24 @@ export default function App() {
       else if (channel === 'indicator') setUserIndicatorVolume(value);
       else setUserBgMusicVolume(value);
       if (!story) return;
-      safeSetItem(
-        localStorage,
-        volumesStorageKey(story.id),
-        JSON.stringify({
-          voiceover: voiceoverVolume,
-          indicator: userIndicatorVolume,
-          bgMusic: userBgMusicVolume,
-          [channel]: value,
-        }),
-      );
+      const key = volumesStorageKey(story.id);
+      // Merge into what is already stored, and write ONLY the channel
+      // the listener moved. Writing all three would record the two they
+      // never touched — their resolved author defaults — as choices of
+      // their own, which is the same fault as persisting from the apply
+      // effect, just one slider-nudge later: the author could then never
+      // change those two for this listener again.
+      let stored: VolumeOverrides = {};
+      const raw = safeGetItem(localStorage, key);
+      if (raw) {
+        try {
+          const parsed: unknown = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object') stored = parsed as VolumeOverrides;
+        } catch {}
+      }
+      safeSetItem(localStorage, key, JSON.stringify({ ...stored, [channel]: value }));
     },
-    [story, voiceoverVolume, userIndicatorVolume, userBgMusicVolume],
+    [story],
   );
 
   const chooseAutoAdvance = useCallback(

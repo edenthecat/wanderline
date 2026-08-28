@@ -438,6 +438,64 @@ describe('per-device volumes record only what the listener chose', () => {
     expect(saved.bgMusic).toBe(80);
   });
 
+  // Writing all three channels would record the two the listener never
+  // touched — their resolved author defaults — as preferences of their
+  // own, and the author could never move those two again.
+  it('records only the channel the listener moved', async () => {
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = storyWithMusic({
+      voiceoverVolume: 40,
+      indicatorVolume: 50,
+      backgroundMusicVolume: 30,
+    });
+    render(<App />);
+    fireEvent.change(await screen.findByLabelText(/Background music volume/), {
+      target: { value: '80' },
+    });
+
+    expect(JSON.parse(localStorage.getItem(key('test-story'))!)).toEqual({ bgMusic: 80 });
+  });
+
+  it('leaves the author free to move a volume the listener never touched', async () => {
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = storyWithMusic({
+      voiceoverVolume: 40,
+    });
+    const first = render(<App />);
+    fireEvent.change(await screen.findByLabelText(/Background music volume/), {
+      target: { value: '80' },
+    });
+    first.unmount();
+    audioInstances.length = 0;
+
+    // The author raises narration afterwards. The listener only ever
+    // expressed an opinion about music.
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = storyWithMusic({
+      voiceoverVolume: 90,
+    });
+    render(<App />);
+    await startTheStory();
+
+    const vo = voiceoverFor('start.mp3')!;
+    await waitFor(() => expect(vo.volume).toBeCloseTo(0.9, 5));
+  });
+
+  // Keeps a listener's real preference across two moves of the same
+  // slider, and across two different sliders.
+  it('accumulates the choices a listener does make', async () => {
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = storyWithMusic({});
+    render(<App />);
+    fireEvent.change(await screen.findByLabelText(/Background music volume/), {
+      target: { value: '80' },
+    });
+    fireEvent.change(await screen.findByLabelText(/Narration volume/), {
+      target: { value: '20' },
+    });
+
+    expect(JSON.parse(localStorage.getItem(key('test-story'))!)).toEqual({
+      bgMusic: 80,
+      voiceover: 20,
+    });
+  });
+
   // One global key meant previewing project A and then project B from
   // the editor handed B the volumes a listener had set for A. Driven
   // through the slider rather than a seeded key, so it holds whatever
@@ -479,6 +537,35 @@ describe('per-device volumes record only what the listener chose', () => {
     await waitFor(() => expect(audioInstances.some((a) => a.src.includes('bgm.mp3'))).toBe(true));
     const bgm = [...audioInstances].reverse().find((a) => a.src.includes('bgm.mp3'))!;
     expect(bgm.volume).toBeCloseTo(0.05, 5);
+  });
+
+  // Consulted forever, the old key would force a pre-1.8 preference on
+  // every story the listener ever opens, including new ones by other
+  // authors. It moves to the first story that asks, and then it is gone.
+  it('moves the old preference to one story rather than applying it to all', async () => {
+    localStorage.setItem('wanderline_volumes', JSON.stringify({ bgMusic: 5 }));
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = storyWithMusic(
+      { backgroundMusicVolume: 70 },
+      'story-a',
+    );
+    const first = render(<App />);
+    await startTheStory();
+    await waitFor(() => expect(audioInstances.some((a) => a.src.includes('bgm.mp3'))).toBe(true));
+    expect(localStorage.getItem('wanderline_volumes')).toBeNull();
+    expect(JSON.parse(localStorage.getItem(key('story-a'))!).bgMusic).toBe(5);
+    first.unmount();
+    audioInstances.length = 0;
+
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = storyWithMusic(
+      { backgroundMusicVolume: 70 },
+      'story-b',
+    );
+    render(<App />);
+    await startTheStory();
+
+    await waitFor(() => expect(audioInstances.some((a) => a.src.includes('bgm.mp3'))).toBe(true));
+    const bgm = [...audioInstances].reverse().find((a) => a.src.includes('bgm.mp3'))!;
+    expect(bgm.volume).toBeCloseTo(0.7, 5);
   });
 });
 
