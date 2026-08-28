@@ -21,8 +21,8 @@ const TOGGLES: { key: Toggle; label: string; hint: string; defaultOn?: boolean }
   },
   {
     key: 'autoAdvance',
-    label: 'Advance automatically',
-    hint: 'Move to the next passage on its own once narration ends, instead of waiting for the listener. Off by default — an individual passage can still override this either way. Leave it off for stories where the listener should choose when to continue.',
+    label: 'Advance automatically (default)',
+    hint: 'Where each listener\u2019s own "Advance automatically" toggle starts. On, the story moves to the next passage once narration ends, but only where there is a single way forward — a passage that asks for a decision always waits. Off by default. A listener who changes it keeps their choice, and changing this later will not override them.',
     defaultOn: false,
   },
   {

@@ -1212,23 +1212,76 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
           storyGraph.nodes[newStitchKey] = stitch;
         }
       }
-      const rewriteReference = (ref: string | null | undefined): string | null | undefined => {
+      const rewriteReference = (
+        ref: string | null | undefined,
+        // The referring node. A bare stitch name means nothing on its
+        // own — it resolves against the knot it was written in.
+        fromNodeId: string,
+      ): string | null | undefined => {
         if (ref == null) return ref;
         if (ref === oldId) return newId;
         if (ref.startsWith(oldPrefix)) return newId + '.' + ref.slice(oldPrefix.length);
+        // Graphs stored before the parser qualified these still hold
+        // bare targets, so renaming a stitch left them pointing at a
+        // name that no longer exists — a working link quietly broken by
+        // an unrelated rename. Rewritten to the qualified id; the Ink
+        // emitter shortens same-knot targets back to bare on export, so
+        // the author's source keeps its original shape.
+        //
+        // Ink only. Twee has no knot scoping: every passage is
+        // top-level with `parent: null`, links name a passage exactly,
+        // and dots are legal in a title. Applying this there would read
+        // `[[Intro]]` inside `Ch1.Foo` as `Ch1.Intro` and repoint a
+        // link that pointed at the real passage `Intro`.
+        if (
+          sourceLanguage === 'ink' &&
+          !ref.includes('.') &&
+          fromNodeId.split('.')[0] + '.' + ref === oldId
+        ) {
+          return newId;
+        }
         return ref;
       };
+      // A stitch that moves knots takes its own bare refs with it, and
+      // those resolve against whatever knot it lands in. `inbox.a` with
+      // `-> b` means `inbox.b`; renamed to `other.a` it would silently
+      // mean `other.b`. Qualify against the ORIGINAL knot first, so the
+      // rewrite below sees an unambiguous id.
+      const oldKnot = oldId.split('.')[0];
+      const newKnot = newId.split('.')[0];
+      if (sourceLanguage === 'ink' && oldKnot !== newKnot) {
+        const movedKeys = Object.keys(storyGraph.nodes).filter(
+          (k) => k === newId || k.startsWith(newId + '.'),
+        );
+        const qualifyAgainstOldKnot = (ref: string | null | undefined) => {
+          if (ref == null || ref.includes('.')) return ref;
+          const qualified = oldKnot + '.' + ref;
+          return storyGraph.nodes[qualified] || qualified === oldId ? qualified : ref;
+        };
+        for (const key of movedKeys) {
+          const moved = storyGraph.nodes[key];
+          if (Array.isArray(moved.choices)) {
+            for (const choice of moved.choices) {
+              const next = qualifyAgainstOldKnot(choice.target);
+              if (typeof next === 'string') choice.target = next;
+            }
+          }
+          const nextDivert = qualifyAgainstOldKnot(moved.divert ?? null);
+          if (typeof nextDivert === 'string') moved.divert = nextDivert;
+        }
+      }
+
       for (const nodeKey of Object.keys(storyGraph.nodes)) {
         const node = storyGraph.nodes[nodeKey];
         if (Array.isArray(node.choices)) {
           for (const choice of node.choices) {
-            const nextTarget = rewriteReference(choice.target);
+            const nextTarget = rewriteReference(choice.target, nodeKey);
             if (typeof nextTarget === 'string' && nextTarget !== choice.target) {
               choice.target = nextTarget;
             }
           }
         }
-        const nextDivert = rewriteReference(node.divert ?? null);
+        const nextDivert = rewriteReference(node.divert ?? null, nodeKey);
         if (nextDivert !== (node.divert ?? null)) {
           node.divert = (nextDivert as string | null) ?? null;
         }

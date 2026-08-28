@@ -1,3 +1,4 @@
+import { fallThroughTarget } from './fall-through';
 // extract MediaSession + keydown fallback from App.tsx.
 //
 // The bundle we lift here:
@@ -64,12 +65,23 @@ interface BluetoothControls {
 interface StoryLike {
   id?: string;
   title: string;
-  nodes: Record<string, { choices: { target: string }[]; divert?: string | null }>;
+  nodes: Record<
+    string,
+    {
+      type?: string;
+      parent?: string | null;
+      lineNumber?: number;
+      choices: { target: string }[];
+      divert?: string | null;
+    }
+  >;
   settings?: { bluetoothControls?: BluetoothControls };
 }
 
 interface NodeLike {
   id: string;
+  type?: string;
+  parent?: string | null;
   content: { text: string }[];
   choices: { target: string }[];
   divert?: string | null;
@@ -77,6 +89,18 @@ interface NodeLike {
 }
 
 type PlayerState = 'loading' | 'ready' | 'playing' | 'paused' | 'ended' | 'error';
+
+/**
+ * The single way onward from a passage, including Ink's implicit
+ * continuation. Transports used to follow only `divert`, so on a
+ * fall-through passage the on-screen Continue worked while every
+ * headphone button did nothing — with the screen off, that leaves a
+ * listener stuck with no way to find out why.
+ */
+function onwardFrom(node: NodeLike, story: StoryLike): string | null {
+  const target = node.divert ?? fallThroughTarget(node.id, node, story.nodes);
+  return target && story.nodes[target] ? target : null;
+}
 
 export interface MediaActions {
   handlePlayPause: () => void;
@@ -225,7 +249,7 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
         case 'choice1': {
           const choice = node.choices[0];
           if (choice) navigateToTarget(choice.target);
-          else if (node.divert && story.nodes[node.divert]) navigateToNode(node.divert);
+          else if (onwardFrom(node, story)) navigateToNode(onwardFrom(node, story)!);
           break;
         }
         case 'cycle_choices':
@@ -238,11 +262,11 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
           // see the latest value, not the closure-captured snapshot.
           const choice = node.choices[selectedChoiceRef.current];
           if (choice) navigateToTarget(choice.target);
-          else if (node.divert && story.nodes[node.divert]) navigateToNode(node.divert);
+          else if (onwardFrom(node, story)) navigateToNode(onwardFrom(node, story)!);
           break;
         }
         case 'divert':
-          if (node.divert && story.nodes[node.divert]) navigateToNode(node.divert);
+          if (onwardFrom(node, story)) navigateToNode(onwardFrom(node, story)!);
           break;
         default:
           // Unknown action (likely a typo in project_settings JSONB).
@@ -295,8 +319,9 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
       if (node.choices.length > 0) {
         const choice = node.choices[0];
         if (choice) navigateToTarget(choice.target);
-      } else if (node.divert && story.nodes[node.divert]) {
-        navigateToNode(node.divert);
+      } else {
+        const onward = onwardFrom(node, story);
+        if (onward) navigateToNode(onward);
       }
     };
 

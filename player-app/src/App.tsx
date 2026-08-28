@@ -105,6 +105,9 @@ type PlayerState = 'loading' | 'ready' | 'playing' | 'paused' | 'ended' | 'error
 
 type PreloadState = 'idle' | 'loading' | 'complete' | 'error';
 
+import { fallThroughTarget } from './fall-through';
+export { fallThroughTarget };
+
 const STORAGE_PREFIX = 'wanderline_';
 
 // Safe storage helpers for file:// URL compatibility
@@ -197,13 +200,31 @@ function processClick(
  *    the difference between a story that flows and one that runs away.
  */
 export function autoAdvanceTarget(
-  node: { choices?: { target: string }[]; divert?: string | null } | null | undefined,
+  node:
+    | {
+        id?: string;
+        type?: string;
+        parent?: string | null;
+        choices?: { target: string }[];
+        divert?: string | null;
+      }
+    | null
+    | undefined,
   settings: { autoAdvance?: boolean } | undefined,
+  // Optional: pass the story's nodes to also advance across Ink's
+  // implicit continuation. Without it a fall-through passage stalls
+  // with auto-advance on, while the manual Continue button works —
+  // the setting would make the story *less* able to progress.
+  nodes?: Record<
+    string,
+    { id: string; type?: string; parent?: string | null; lineNumber?: number }
+  >,
 ): string | null {
   if (settings?.autoAdvance !== true || !node) return null;
   const choices = node.choices ?? [];
   if (choices.length === 1) return choices[0]?.target ?? null;
   if (choices.length === 0 && node.divert) return node.divert;
+  if (choices.length === 0 && nodes && node.id) return fallThroughTarget(node.id, node, nodes);
   return null;
 }
 
@@ -251,6 +272,15 @@ export default function App() {
   const [passwordInput, setPasswordInput] = useState('');
   const [passwordError, setPasswordError] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  // Auto-advance: the project setting is only the DEFAULT. A listener
+  // who sets it owns it from then on, including across an author
+  // changing that default. Off until the story resolves it, so a slow
+  // load never advances on its own.
+  const [autoAdvance, setAutoAdvance] = useState(false);
+  // Read where a passage ends rather than through the effect's deps:
+  // adding it there would re-run the audio effect and restart
+  // narration under a listener who toggled mid-passage.
+  const autoAdvanceRef = useRef(false);
   const [voiceoverVolume, setVoiceoverVolume] = useState(100);
   const [userIndicatorVolume, setUserIndicatorVolume] = useState(50);
   // Fallbacks are the last link in the resolution chain below, so they
@@ -397,11 +427,24 @@ export default function App() {
           voiceoverVolume?: number;
           backgroundMusicVolume?: number;
           indicatorVolume?: number;
+          autoAdvance?: boolean;
         };
         if (typeof s.voiceoverVolume === 'number') setVoiceoverVolume(s.voiceoverVolume);
         if (typeof s.indicatorVolume === 'number') setUserIndicatorVolume(s.indicatorVolume);
         if (typeof s.backgroundMusicVolume === 'number')
           setUserBgMusicVolume(s.backgroundMusicVolume);
+        // Auto-advance resolves the same way, but per story rather than
+        // per device: it is a fact about how this story reads, and a
+        // standalone build is its own origin anyway.
+        if (typeof s.autoAdvance === 'boolean') setAutoAdvance(s.autoAdvance);
+        const savedAutoAdvance = safeGetItem(
+          localStorage,
+          STORAGE_PREFIX + data.id + '_autoAdvance',
+        );
+        if (savedAutoAdvance === 'true' || savedAutoAdvance === 'false') {
+          setAutoAdvance(savedAutoAdvance === 'true');
+        }
+
         const savedVolumes = safeGetItem(localStorage, STORAGE_PREFIX + 'volumes');
         if (savedVolumes) {
           try {
@@ -446,6 +489,11 @@ export default function App() {
         if (node.divert && node.divert !== 'END' && node.divert !== 'DONE') {
           queue.push({ id: node.divert, depth: depth + 1 });
         }
+        // And the implicit continuation, or the listener meets a network
+        // fetch and the stall banner at exactly the transition
+        // auto-advance was added to smooth over.
+        const onward = fallThroughTarget(id, node, nodes);
+        if (onward) queue.push({ id: onward, depth: depth + 1 });
       }
 
       return Array.from(visited);
@@ -624,6 +672,35 @@ export default function App() {
       }
     };
   }, []);
+
+  // Mirror to the ref the audio effect reads. Only that — persisting
+  // here would write on resolution too, freezing the author's default
+  // into storage as though the listener had chosen it, so a later
+  // change to that default could never reach them. Volumes had exactly
+  // this fault; writing solely from the change handler below means
+  // "the listener expressed a preference" is the only path that
+  // records one.
+  useEffect(() => {
+    autoAdvanceRef.current = autoAdvance;
+    // A hold scheduled from `onended` outlives the toggle otherwise, so
+    // turning it off mid-passage still advanced a couple of seconds
+    // later. The no-audio path already cancels via its cleanup; this is
+    // the audio path catching up.
+    if (!autoAdvance && autoNavigateTimeoutRef.current !== null) {
+      clearTimeout(autoNavigateTimeoutRef.current);
+      autoNavigateTimeoutRef.current = null;
+    }
+  }, [autoAdvance]);
+
+  const chooseAutoAdvance = useCallback(
+    (enabled: boolean) => {
+      setAutoAdvance(enabled);
+      if (story) {
+        safeSetItem(localStorage, STORAGE_PREFIX + story.id + '_autoAdvance', String(enabled));
+      }
+    },
+    [story],
+  );
 
   // Save and apply volume settings.
   //
@@ -1102,7 +1179,11 @@ export default function App() {
           // and this branch runs before the auto-advance one — so
           // without this, a single-choice passage that happens to have
           // a choice cue would never advance at all.
-          const onward = autoAdvanceTarget(currentNode, story.settings);
+          const onward = autoAdvanceTarget(
+            currentNode,
+            { autoAdvance: autoAdvanceRef.current },
+            story.nodes,
+          );
           if (onward) {
             // Same hold as the no-cue branch below, so two passages
             // configured identically pace identically whether or not
@@ -1121,8 +1202,14 @@ export default function App() {
 
         // Start the sequence
         runChoiceSequence();
-      } else if (autoAdvanceTarget(currentNode, story.settings)) {
-        const target = autoAdvanceTarget(currentNode, story.settings)!;
+      } else if (
+        autoAdvanceTarget(currentNode, { autoAdvance: autoAdvanceRef.current }, story.nodes)
+      ) {
+        const target = autoAdvanceTarget(
+          currentNode,
+          { autoAdvance: autoAdvanceRef.current },
+          story.nodes,
+        )!;
         // Total post-audio hold = the per-node delayAfterMs (a generic
         // "wait after audio finishes" hint) plus the dedicated
         // autoAdvanceDelayMs (how long the listener has to react to
@@ -1309,7 +1396,7 @@ export default function App() {
   useEffect(() => {
     if (!story || !currentNode || !isAuthenticated || showInstructions) return;
     if (currentNode.audio?.voiceover) return; // handled by playVoiceover's audio.onended
-    const target = autoAdvanceTarget(currentNode, story?.settings);
+    const target = autoAdvanceTarget(currentNode, { autoAdvance }, story.nodes);
     if (!target) return;
     // Compose: pre-roll → (no audio) → post-audio hold → onward.
     const totalDelay =
@@ -1326,7 +1413,7 @@ export default function App() {
       navigateToTargetRef.current?.(target);
     }, totalDelay);
     return () => clearTimeout(t);
-  }, [story, currentNode, navigateToNode, isAuthenticated, showInstructions]);
+  }, [story, currentNode, navigateToNode, isAuthenticated, showInstructions, autoAdvance]);
 
   // Debounce showing connection issues to avoid flashing for quick retries
   useEffect(() => {
@@ -1540,8 +1627,11 @@ export default function App() {
     if (node.choices.length > 0) {
       const choice = node.choices[0];
       if (choice) navigateToTarget(choice.target);
-    } else if (node.divert && story.nodes[node.divert]) {
-      navigateToNode(node.divert);
+    } else {
+      // Not just `node.divert`: a fall-through passage is navigable and
+      // these are the controls a listener has with the screen off.
+      const onward = node.divert ?? fallThroughTarget(node.id, node, story.nodes);
+      if (onward && story.nodes[onward]) navigateToNode(onward);
     }
   }, [story, navigateToNode, navigateToTarget]);
 
@@ -1598,8 +1688,11 @@ export default function App() {
           if (currentNode.choices.length > 0) {
             const choice = currentNode.choices[selectedChoice];
             if (choice) navigateToTarget(choice.target);
-          } else if (currentNode.divert && story?.nodes[currentNode.divert]) {
-            navigateToNode(currentNode.divert);
+          } else {
+            const onward =
+              currentNode.divert ??
+              (story ? fallThroughTarget(currentNode.id, currentNode, story.nodes) : null);
+            if (onward && story?.nodes[onward]) navigateToNode(onward);
           }
           break;
         case 'Backspace':
@@ -1907,10 +2000,15 @@ export default function App() {
     );
   }
 
+  // Ink's implicit continuation: a knot runs its first stitch, a stitch
+  // continues into its next sibling. Not materialised by the parser, so
+  // it has to be resolved here or a chapter's opening prose reads as
+  // the end of the story.
+  const fallThrough = story ? fallThroughTarget(currentNode.id, currentNode, story.nodes) : null;
   const isEnd =
     reachedEnding ||
     currentNode.tags.includes('ending') ||
-    (currentNode.choices.length === 0 && !currentNode.divert) ||
+    (currentNode.choices.length === 0 && !currentNode.divert && !fallThrough) ||
     currentNode.divert === 'END' ||
     currentNode.divert === 'DONE';
 
@@ -2009,8 +2107,29 @@ export default function App() {
           aria-modal="false"
         >
           <h3 id="settings-title" style={styles.settingsTitle}>
-            Volume Settings
+            Settings
           </h3>
+          <div style={styles.settingsCheckboxRow}>
+            <input
+              type="checkbox"
+              id="auto-advance"
+              checked={autoAdvance}
+              onChange={(e) => chooseAutoAdvance(e.target.checked)}
+              style={styles.settingsCheckbox}
+              aria-describedby="auto-advance-hint"
+            />
+            {/* Label wraps the name only: a hint inside it would be
+                read out as part of the control's name. */}
+            <label htmlFor="auto-advance" style={styles.settingsCheckboxLabel}>
+              Advance automatically
+            </label>
+            <span id="auto-advance-hint" style={styles.settingsCheckboxHint}>
+              Moves on by itself where there is only one way forward. Passages that ask you to
+              choose always wait for you.
+            </span>
+          </div>
+          <div style={styles.settingsDivider} />
+          <h4 style={styles.saveSlotsTitle}>Volume</h4>
           <div style={styles.settingsRow}>
             <label htmlFor="narration-volume" style={styles.settingsLabel}>
               Narration
@@ -2292,11 +2411,11 @@ export default function App() {
           </nav>
         )}
 
-        {currentNode.divert && currentNode.choices.length === 0 && !isEnd && (
+        {(currentNode.divert || fallThrough) && currentNode.choices.length === 0 && !isEnd && (
           <button
             onClick={(e) => {
               e.stopPropagation();
-              navigateToTarget(currentNode.divert!);
+              navigateToTarget(currentNode.divert ?? fallThrough!);
             }}
             style={styles.continueBtn}
             aria-label="Continue to next part of the story"
