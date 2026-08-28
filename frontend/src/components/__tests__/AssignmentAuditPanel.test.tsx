@@ -23,6 +23,31 @@ const row = (over: Partial<client.AssignmentDisagreement> = {}): client.Assignme
 afterEach(() => vi.restoreAllMocks());
 
 describe('AssignmentAuditPanel', () => {
+  // The check is opt-in because it re-matches every assignment
+  // server-side. But when the Ship tab's readiness summary sends
+  // someone here for a count it already knows about, landing them on
+  // an unpressed button answers nothing.
+  it('runs on mount when the reader was sent here to see the audit', async () => {
+    const audit = vi.spyOn(client, 'auditAudioAssignments').mockResolvedValue({
+      totalAssignments: 12,
+      acknowledged: 0,
+      disagreements: [row()],
+    });
+    render(<AssignmentAuditPanel projectId="p1" autoRun />);
+    expect(await screen.findByText('intro.mp3')).toBeTruthy();
+    expect(audit).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays opt-in on an ordinary visit', () => {
+    const audit = vi.spyOn(client, 'auditAudioAssignments').mockResolvedValue({
+      totalAssignments: 12,
+      acknowledged: 0,
+      disagreements: [],
+    });
+    render(<AssignmentAuditPanel projectId="p1" />);
+    expect(audit).not.toHaveBeenCalled();
+  });
+
   it('reports a clean project without alarming anyone', async () => {
     vi.spyOn(client, 'auditAudioAssignments').mockResolvedValue({
       totalAssignments: 12,

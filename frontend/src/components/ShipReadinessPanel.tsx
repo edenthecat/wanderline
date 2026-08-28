@@ -48,11 +48,19 @@ const STATUS_LABEL: Record<ReadinessSummary['status'], string> = {
   ready: 'Ready to ship',
 };
 
+// Each check's own `detail` says why the finding matters, which is a
+// claim we have no right to make about a lookup that never answered.
+// The unknown group substitutes this.
+const UNKNOWN_DETAIL = 'This check didn’t answer. Open the panel to look for yourself.';
+
 function CheckRow({
   check,
+  detail,
   onNavigate,
 }: {
   check: ReadinessCheck;
+  /** Overrides the check's own copy. */
+  detail?: string;
   onNavigate: (target: ReadinessTarget) => void;
 }) {
   return (
@@ -63,7 +71,7 @@ function CheckRow({
         onClick={() => onNavigate(check.target)}
       >
         <span className="readiness-item-label">{check.label}</span>
-        <span className="readiness-item-detail">{check.detail}</span>
+        <span className="readiness-item-detail">{detail ?? check.detail}</span>
       </button>
     </li>
   );
@@ -72,7 +80,17 @@ function CheckRow({
 export default function ShipReadinessPanel({ projectId, storyGraph, onNavigate }: Props) {
   const [counts, setCounts] = useState<FetchedCounts | null>(null);
 
+  // A boolean, not the graph itself: the page silently refetches the
+  // project on every child save, handing us a fresh graph object each
+  // time, and depending on that identity would re-issue all three
+  // requests per keystroke.
+  const hasStory = !!storyGraph;
   useEffect(() => {
+    // Nothing renders without a story (see the early return below), so
+    // three discarded round trips — one of them a full re-match of
+    // every audio assignment — would buy nothing.
+
+    if (!hasStory) return;
     let cancelled = false;
     setCounts(null);
     // allSettled, not all: one dead endpoint must degrade that one
@@ -99,7 +117,7 @@ export default function ShipReadinessPanel({ projectId, storyGraph, onNavigate }
     return () => {
       cancelled = true;
     };
-  }, [projectId]);
+  }, [projectId, hasStory]);
 
   // computeReadiness runs computeStoryHealth's BFS; keep it off the
   // per-render path for a 500-knot story.
@@ -169,7 +187,7 @@ export default function ShipReadinessPanel({ projectId, storyGraph, onNavigate }
               <h3 className="readiness-group-title">Couldn&rsquo;t check</h3>
               <ul className="readiness-list">
                 {summary.unknown.map((c) => (
-                  <CheckRow key={c.id} check={c} onNavigate={onNavigate} />
+                  <CheckRow key={c.id} check={c} detail={UNKNOWN_DETAIL} onNavigate={onNavigate} />
                 ))}
               </ul>
             </div>

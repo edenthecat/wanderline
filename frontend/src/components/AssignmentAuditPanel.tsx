@@ -10,7 +10,7 @@
 // often intentional (an author assigned a clip by hand), so this
 // produces a list to review rather than a correction to trust.
 
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   acknowledgeAssignment,
   auditAudioAssignments,
@@ -20,9 +20,15 @@ import { PANEL_ANCHORS } from '../lib/panelAnchors';
 
 interface Props {
   projectId: string;
+  /** Run the check on mount instead of waiting for the button. Set
+   * only when the author was sent here by the Ship tab's readiness
+   * summary, which already knows there is something to see — the
+   * default stays opt-in so the ordinary visit to Audio does not pay
+   * for a full re-match of every assignment. */
+  autoRun?: boolean;
 }
 
-export default function AssignmentAuditPanel({ projectId }: Props) {
+export default function AssignmentAuditPanel({ projectId, autoRun }: Props) {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<{
@@ -63,17 +69,25 @@ export default function AssignmentAuditPanel({ projectId }: Props) {
     }
   }
 
-  async function run() {
+  const run = useCallback(async () => {
     setRunning(true);
     setError(null);
     try {
-      setResult(await auditAudioAssignments(projectId));
+      const next = await auditAudioAssignments(projectId);
+      setResult(next);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Check failed');
     } finally {
       setRunning(false);
     }
-  }
+  }, [projectId]);
+
+  // Fires once per mount: the panel unmounts with the Audio tab, and
+  // `autoRun` is cleared by the page on the next manual tab pick, so
+  // re-entering Audio by hand does not re-run it.
+  useEffect(() => {
+    if (autoRun) void run();
+  }, [autoRun, run]);
 
   return (
     <section

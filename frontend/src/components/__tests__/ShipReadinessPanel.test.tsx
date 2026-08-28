@@ -115,12 +115,28 @@ describe('ShipReadinessPanel', () => {
     expect(screen.getByText('Partly checked')).toBeInTheDocument();
   });
 
-  it('renders nothing until there is a story to be ready about', () => {
+  // An unanswered check must not borrow the copy that asserts the
+  // problem is real — that is the claim the null exists to avoid.
+  it('does not assert a problem it could not check for', async () => {
+    stubLookups();
+    vi.spyOn(client, 'fetchNodeFlags').mockRejectedValue(new Error('500'));
+    render(<ShipReadinessPanel projectId="p1" storyGraph={graph()} onNavigate={() => {}} />);
+    expect(await screen.findByText('Unresolved flags')).toBeInTheDocument();
+    expect(screen.queryByText(/Someone reported a problem/)).not.toBeInTheDocument();
+    expect(screen.getByText(/didn’t answer/)).toBeInTheDocument();
+  });
+
+  it('renders nothing, and asks nothing, until there is a story', () => {
     stubLookups();
     const { container } = render(
       <ShipReadinessPanel projectId="p1" storyGraph={null} onNavigate={() => {}} />,
     );
     expect(container).toBeEmptyDOMElement();
+    // The audit re-matches every assignment server-side; paying for
+    // that to throw the answer away is the point of the guard.
+    expect(client.auditAudioAssignments).not.toHaveBeenCalled();
+    expect(client.fetchNodeFlags).not.toHaveBeenCalled();
+    expect(client.fetchAudioCoverage).not.toHaveBeenCalled();
   });
 
   it('reads the true open-flag count, not the page the flags panel lists', async () => {

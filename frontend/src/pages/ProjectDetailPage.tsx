@@ -23,6 +23,7 @@ import { useYjs } from '../hooks/useYjs';
 import { useYjsUndo } from '../hooks/useYjsUndo';
 import { usePresence } from '../hooks/usePresence';
 import { useAuth } from '../contexts/AuthContext';
+import { PANEL_ANCHORS } from '../lib/panelAnchors';
 import { scrollToSelector } from '../lib/scrollToPanel';
 import type { ReadinessTarget } from '../lib/shipReadiness';
 
@@ -205,13 +206,23 @@ export default function ProjectDetailPage() {
 
   // The Ship tab's readiness summary owns none of the panels it counts.
   // Clicking a row hands the tab switch back here, then scrolls to the
-  // panel that actually explains the number — the panel mounts with the
-  // tab content, a render after setActiveTab, which is why the scroll
-  // helper polls rather than looking once.
+  // panel that actually explains the number.
+  //
+  // The anchor is also remembered until the next manual tab pick, so
+  // the destination can act on why the author arrived — AudioTab's
+  // assignment audit only runs when asked, and being sent to an
+  // unpressed button is not an answer.
+  const [readinessAnchor, setReadinessAnchor] = useState<string | null>(null);
   const goToReadinessTarget = useCallback((target: ReadinessTarget) => {
     setActiveTab(target.tab);
     setMobileSheet(null);
-    scrollToSelector(`#${target.anchorId}`);
+    setReadinessAnchor(target.anchorId);
+    // Generous budget: the Story panels render straight off the graph
+    // the page already holds, but both Audio anchors sit behind
+    // AudioTab's own three-request loading gate. The default 500ms
+    // loses that race on any real connection and silently drops the
+    // author at the top of the tab.
+    scrollToSelector(`#${target.anchorId}`, { attempts: 60 });
   }, []);
 
   const handleExport = useCallback(
@@ -247,6 +258,9 @@ export default function ProjectDetailPage() {
   function pickTab(t: Tab) {
     setActiveTab(t);
     setMobileSheet(null);
+    // Navigating by hand is not arriving from the readiness summary,
+    // so the destination shouldn't act on a stale reason.
+    setReadinessAnchor(null);
   }
 
   return (
@@ -372,7 +386,12 @@ export default function ProjectDetailPage() {
               />
             )}
             {activeTab === 'audio' && (
-              <AudioTab key={audioDataKey} projectId={id} storyGraph={project.story_graph} />
+              <AudioTab
+                key={audioDataKey}
+                projectId={id}
+                storyGraph={project.story_graph}
+                runAssignmentAuditOnMount={readinessAnchor === PANEL_ANCHORS.assignmentAudit}
+              />
             )}
             {activeTab === 'music' && <MusicTab projectId={id} />}
             {activeTab === 'characters' && <CharactersTab projectId={id} />}

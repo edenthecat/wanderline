@@ -35,9 +35,14 @@ type FilterMode = 'all' | 'assigned' | 'unassigned';
 interface Props {
   projectId: string;
   storyGraph: StoryGraph | null;
+  /** True when the author arrived here from the Ship tab's readiness
+   * summary specifically to see the assignment audit. The audit is
+   * normally opt-in; sending someone to an unpressed button is not an
+   * answer to the count that sent them. */
+  runAssignmentAuditOnMount?: boolean;
 }
 
-export default function AudioTab({ projectId, storyGraph }: Props) {
+export default function AudioTab({ projectId, storyGraph, runAssignmentAuditOnMount }: Props) {
   const { doc: yDoc } = useYjs(projectId);
   const audioSignalTick = useLiveSignal(yDoc, AUDIO_ASSIGNMENTS_SIGNAL);
   const { playingId, toggle: toggleAudition, stop: stopAudition } = useAudition();
@@ -459,7 +464,7 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
 
       {/* Not gated on `coverage`: the audit reads assignments directly
           and is useful even when the coverage summary hasn't loaded. */}
-      <AssignmentAuditPanel projectId={projectId} />
+      <AssignmentAuditPanel projectId={projectId} autoRun={runAssignmentAuditOnMount} />
 
       {coverage && (
         <OrphanedAudioPanel
