@@ -122,7 +122,14 @@ export function computeReadiness(inputs: ReadinessInputs): ReadinessSummary {
   const health = computeStoryHealth(storyGraph);
   // No story at all leaves both graph-derived counts genuinely
   // unknown rather than zero — an empty project is not a clean one.
-  const parserErrors = storyGraph ? storyGraph.validation.errors.length : null;
+  //
+  // `validation` is typed as required but comes from a JSONB column
+  // written by whatever parser version was current at upload, so it is
+  // read defensively: a stored graph without the blob should report
+  // "couldn't check", not take the Ship tab down with it.
+  const parserErrors = Array.isArray(storyGraph?.validation?.errors)
+    ? storyGraph.validation.errors.length
+    : null;
   const unreachable = storyGraph ? health.unreachableNodes.length : null;
 
   const checks: ReadinessCheck[] = [

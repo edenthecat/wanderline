@@ -72,6 +72,17 @@ describe('computeReadiness', () => {
     expect(countOf(summary, 'parser_errors')).toBe(1);
   });
 
+  // `validation` is a JSONB column written by whatever parser version
+  // was current at upload. A row without it should cost the author a
+  // "couldn't check", not the whole Ship tab.
+  it('reports a graph with no validation blob as unchecked', () => {
+    const g = graph([node('start', { divert: 'END' })]);
+    delete (g as Partial<StoryGraph>).validation;
+    const summary = computeReadiness({ storyGraph: g, ...clean });
+    expect(countOf(summary, 'parser_errors')).toBeNull();
+    expect(summary.unknown.map((c) => c.id)).toEqual(['parser_errors']);
+  });
+
   it('does not count validation warnings as parser errors', () => {
     const g = graph([node('start', { divert: 'END' })], {
       warnings: [err({ type: 'empty_node', message: 'start has no content' })],
