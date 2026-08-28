@@ -1934,11 +1934,17 @@ details[open] > .audio-section-summary {
    excluded by a graph search would have had the wash composite over
    the ReactFlow canvas instead of over a card, on a surface none of
    the measured ratios cover. Higher specificity than the state rules,
-   and scoped so it only applies while dimmed. */
-.graph-node-card.is-start.is-dim,
-.graph-node-card.is-start.is-unmatched,
-.graph-node-card.is-ending.is-dim,
-.graph-node-card.is-ending.is-unmatched {
+   and scoped so it only applies while dimmed.
+
+   The `:not()`s matter: at (0,3,0) this outranks `.is-error` and
+   `.is-warning` at (0,2,0), so without them a start or ending node
+   that is *also* broken would lose the pink or amber wash that says
+   so — the very regression the comment above sets out to prevent.
+   Those states already provide their own opaque fill. */
+.graph-node-card.is-start.is-dim:not(.is-error):not(.is-warning):not(.is-missing),
+.graph-node-card.is-start.is-unmatched:not(.is-error):not(.is-warning):not(.is-missing),
+.graph-node-card.is-ending.is-dim:not(.is-error):not(.is-warning):not(.is-missing),
+.graph-node-card.is-ending.is-unmatched:not(.is-error):not(.is-warning):not(.is-missing) {
   background-color: #ffffff;
 }
 /* The footer is the one piece of card text that isn't near-black;

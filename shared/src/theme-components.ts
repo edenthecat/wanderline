@@ -254,7 +254,10 @@ export const COMPONENT_SPECS: ComponentSpec[] = [
     label: 'Settings panel',
     hint: 'The flyout with volume + auto-continue + save slots.',
     props: [
-      { key: 'background', label: 'Background', kind: 'color', fallback: 'rgba(30,30,50,0.95)' },
+      // The panel now falls back through --wl-chrome, so naming the
+      // old hardcoded colour here would advertise a default that stops
+      // being in effect the moment the author touches the Chrome knob.
+      { key: 'background', label: 'Background', kind: 'color', fallback: 'var(--wl-chrome)' },
       { key: 'textColor', label: 'Text color', kind: 'color', fallback: 'var(--wl-text)' },
       { key: 'borderRadius', label: 'Corner radius', kind: 'length', fallback: '12px' },
       { key: 'padding', label: 'Padding', kind: 'length', fallback: '1rem 1.5rem' },

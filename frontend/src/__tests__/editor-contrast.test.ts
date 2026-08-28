@@ -139,6 +139,20 @@ describe('dimmed graph nodes stay readable', () => {
     });
   }
 
+  // The opaque fill is (0,3,0) and the validation states are (0,2,0),
+  // so without the :not()s it would erase the pink and amber washes on
+  // a node that is both dimmed and broken — the exact regression the
+  // wash-on-background-image approach exists to avoid.
+  it('does not let the opaque fill erase a validation state', () => {
+    const rule = css.slice(css.indexOf('.graph-node-card.is-start.is-dim'));
+    const selectors = rule.slice(0, rule.indexOf('{'));
+    for (const state of ['is-error', 'is-warning', 'is-missing']) {
+      expect(selectors, `opaque fill should stand aside for .${state}`).toContain(
+        `:not(.${state})`,
+      );
+    }
+  });
+
   // The guard that catches the next one of these: any card state that
   // paints with the `background` shorthand leaves no background-color
   // for the wash to sit on, so it has to be listed in the opaque-fill

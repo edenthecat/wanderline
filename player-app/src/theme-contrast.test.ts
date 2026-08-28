@@ -410,6 +410,25 @@ describe('per-component overrides are checked alongside the globals', () => {
   // The settings panel resolves
   // `var(--wl-settingsPanel-background, var(--wl-chrome, ...))`, so
   // both the component override and the global Chrome knob reach it.
+  // styles.header paints `var(--wl-header-background, transparent)`.
+  // A filled header bar is what the title actually sits on, so
+  // measuring it against the page would raise a warning the author has
+  // no way to satisfy — the fastest way to teach someone to ignore the
+  // panel.
+  it('measures the title against a filled header bar, not the page behind it', () => {
+    const onHeader = failingThemeContrast({
+      variables: { pageBackground: '#ffffff', headingColor: '#ffffff' },
+      components: { header: { background: '#111827' } },
+    });
+    expect(onHeader.map((f) => f.id)).not.toContain('heading-on-page');
+
+    // And the default transparent header still lets the page through.
+    const onPage = failingThemeContrast({
+      variables: { pageBackground: '#ffffff', headingColor: '#ffffff' },
+    });
+    expect(onPage.map((f) => f.id)).toContain('heading-on-page');
+  });
+
   it('measures the settings panel through both of the knobs that reach it', () => {
     const viaChrome = failingThemeContrast({ variables: { chromeColor: '#eeeeee' } });
     expect(viaChrome.map((f) => f.id)).toContain('text-on-settings-panel');
@@ -489,6 +508,26 @@ describe('the page surface follows the player, not the knob names', () => {
     expect(failures.map((f) => f.id)).toContain('text-on-page');
   });
 
+  // Project settings are merged into the row verbatim — no per-field
+  // validation — so any theme prop can hold a number, an array or an
+  // object. Before this module existed such values were inert;
+  // throwing on one here would fail every subsequent build of that
+  // project, and throw inside the Theme tab's debounce timer.
+  it('survives theme values that are not strings at all', () => {
+    const hostile = {
+      variables: { pageBackground: 42 as unknown as string },
+      components: {
+        page: { backgroundImage: 123 as unknown as string, background: [] as unknown as string },
+        storyCard: { background: {} as unknown as string },
+      },
+    };
+    expect(() => evaluateThemeContrast(hostile)).not.toThrow();
+    // And it agrees with the player about what happens next:
+    // renderThemeCss skips non-strings, so those knobs never reach the
+    // page and the shipped defaults are what a listener sees.
+    expect(evaluateThemeContrast(hostile)).toEqual(evaluateThemeContrast(undefined));
+  });
+
   it('falls through a background image cleared with `none`', () => {
     // `none` is how an author clears the image layer; it isn't a
     // colour we failed to read, and the colour underneath is what
@@ -555,6 +594,36 @@ describe('colours the parser cannot read are reported, never passed', () => {
     const started = Date.now();
     const checks = evaluateThemeContrast({ variables: { pageBackground: hostile } });
     expect(Date.now() - started).toBeLessThan(1000);
+    expect(checks.find((c) => c.id === 'text-on-page')!.ratio).toBeNull();
+  });
+
+  // The Page → Background image hint suggests exactly this shape.
+  // `extractColors` finds the scrim's stops and ignores the photo, so
+  // scoring it would mean flattening the scrim over white and calling
+  // that the page — a confident verdict about a surface nobody sampled,
+  // in either direction.
+  it('refuses to score a scrim layered over an image it cannot sample', () => {
+    const checks = evaluateThemeContrast({
+      components: {
+        page: {
+          backgroundImage: 'linear-gradient(rgba(0,0,0,0.6), rgba(0,0,0,0.6)), url(photo.jpg)',
+        },
+      },
+    });
+    expect(checks.find((c) => c.id === 'text-on-page')!.ratio).toBeNull();
+  });
+
+  it('still scores a gradient whose every stop it can read', () => {
+    const checks = evaluateThemeContrast({
+      components: { page: { backgroundImage: 'linear-gradient(#1a1a2e 0%, #16213e 100%)' } },
+    });
+    expect(checks.find((c) => c.id === 'text-on-page')!.ratio).not.toBeNull();
+  });
+
+  it('refuses to score a gradient with one stop in a syntax it does not model', () => {
+    const checks = evaluateThemeContrast({
+      components: { page: { backgroundImage: 'linear-gradient(#1a1a2e, oklch(0.7 0.1 200))' } },
+    });
     expect(checks.find((c) => c.id === 'text-on-page')!.ratio).toBeNull();
   });
 

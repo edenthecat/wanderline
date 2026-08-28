@@ -7,6 +7,7 @@ import {
   flatten,
   parseColor,
   type Rgb,
+  type Rgba,
 } from './contrast.js';
 
 // One implementation of "is this author's palette readable", shared by
@@ -115,10 +116,64 @@ const HEADING_TEXT: Source[] = [
   { component: 'header', prop: 'textColor' },
   { variable: 'headingColor' },
 ];
+// styles.header: `background: var(--wl-header-background, transparent)`.
+// The default is transparent, which composites to nothing and leaves
+// the page showing through — but an author who fills the header bar
+// puts the title on *that*, and measuring it against the page instead
+// would raise a warning they have no way to satisfy.
+const HEADER_BACKGROUND: Source[] = [
+  { component: 'header', prop: 'background' },
+  { literal: 'transparent' },
+];
 
 /** Does this CSS value paint an image layer rather than a flat colour? */
 function isImageValue(value: string): boolean {
   return /(^|[\s,])(?:repeating-)?(?:linear|radial|conic)-gradient\(|url\(/i.test(value);
+}
+
+/**
+ * One component prop, or undefined if it isn't a usable string.
+ *
+ * Theme settings are merged into the project row verbatim — no
+ * per-field validation — so any prop can hold a number, an array or an
+ * object. Such a value used to be inert, because renderThemeCss skips
+ * non-strings; calling `.trim()` on one here would throw inside
+ * renderSmokeHtml and fail every subsequent build of that project.
+ */
+function componentValue(
+  theme: ThemeInput | undefined,
+  component: string,
+  prop: string,
+): string | undefined {
+  const value = theme?.components?.[component]?.[prop];
+  return typeof value === 'string' ? value.trim() : undefined;
+}
+
+// Functions whose output we can actually enumerate. Anything else in a
+// background — `url()`, `oklch()`, `color-mix()`, a bare `var()` — is a
+// surface we cannot sample.
+const SAMPLABLE_FUNCTION = /^(?:(?:repeating-)?(?:linear|radial|conic)-gradient|rgba?|hsla?)$/;
+
+/**
+ * Every colour the page background resolves to, or null when some of
+ * it can't be read.
+ *
+ * `extractColors` returns the stops it recognises and ignores the
+ * rest, which is wrong for a *verdict*: a scrim over a photo
+ * (`linear-gradient(rgba(0,0,0,.6), rgba(0,0,0,.6)), url(photo.jpg)` —
+ * the pattern the Page → Background image hint itself suggests) would
+ * be scored as if the scrim were the whole surface, flattened over
+ * white, with the photo ignored. That is a confident red ✗ for a page
+ * that may be fine, and a confident green ✓ for one that isn't.
+ * Partial knowledge is reported as no knowledge.
+ */
+function samplePageStops(value: string): Rgba[] | null {
+  const single = parseColor(value);
+  if (single) return [single];
+  const functions = [...value.matchAll(/([a-zA-Z][\w-]*)\(/g)].map((m) => m[1].toLowerCase());
+  if (functions.some((fn) => !SAMPLABLE_FUNCTION.test(fn))) return null;
+  const stops = extractColors(value);
+  return stops.length > 0 ? stops : null;
 }
 
 /**
@@ -138,8 +193,9 @@ function isImageValue(value: string): boolean {
  * near-white text, and failed a dark page that renders fine.
  */
 function resolvePageSurface(theme: ThemeInput | undefined): string {
-  const image = theme?.components?.page?.backgroundImage?.trim();
-  const color = theme?.components?.page?.background?.trim();
+  // Read through `componentValue`, not `?.trim()` — see its docblock.
+  const image = componentValue(theme, 'page', 'backgroundImage');
+  const color = componentValue(theme, 'page', 'background');
   const variable = isSet(theme?.variables?.pageBackground)
     ? theme!.variables!.pageBackground!.trim()
     : PLAYER_THEME_DEFAULTS.pageBackground;
@@ -186,9 +242,9 @@ const PAIRS: PairSpec[] = [
     // measuring that combination would warn about something nobody
     // ever sees.
     id: 'heading-on-page',
-    label: 'Headings on the page background',
+    label: 'Headings on the header background',
     foreground: HEADING_TEXT,
-    layers: [],
+    layers: [HEADER_BACKGROUND],
     required: AA_LARGE_TEXT,
   },
   {
@@ -240,7 +296,7 @@ export function evaluateThemeContrast(theme: ThemeInput | undefined): ThemeContr
   const results: ThemeContrastCheck[] = [];
 
   const pageValue = resolvePageSurface(theme);
-  const pageStops = extractColors(pageValue);
+  const pageStops = samplePageStops(pageValue) ?? [];
 
   for (const pair of PAIRS) {
     const unparsed: string[] = [];
