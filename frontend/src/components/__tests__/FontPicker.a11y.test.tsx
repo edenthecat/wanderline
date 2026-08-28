@@ -91,6 +91,16 @@ describe('FontPicker accessibility', () => {
       scrollIntoView.mockClear();
       fireEvent.mouseEnter(screen.getAllByRole('option')[0]);
       expect(scrollIntoView).not.toHaveBeenCalled();
+
+      // Nor may an end-stop flag outlive the dropdown. Reopening puts
+      // the highlight back on row 0, so a leftover flag would scroll to
+      // wherever the highlight used to be — off-screen above the fold,
+      // with the highlight nowhere near it.
+      fireEvent.keyDown(input, { key: 'ArrowDown' });
+      fireEvent.keyDown(input, { key: 'Tab' });
+      scrollIntoView.mockClear();
+      fireEvent.focus(input);
+      expect(scrollIntoView).not.toHaveBeenCalled();
     } finally {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       delete (Element.prototype as any).scrollIntoView;

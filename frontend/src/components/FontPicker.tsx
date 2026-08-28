@@ -123,9 +123,15 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
   // somewhere around the eighth family and arrowing further looks like
   // nothing is happening.
   useEffect(() => {
-    if (!open) return;
-    if (!scrollNextHighlight.current) return;
+    // Read and clear first, before any early return. An arrow key into
+    // an end stop sets the flag and then changes nothing, so the effect
+    // never runs to spend it; leaving it set lets it survive the
+    // dropdown closing and fire on reopen against the *old* highlight —
+    // scrolling to the row you were on while the highlight sits back at
+    // the top, which is the very thing this is here to prevent.
+    const wanted = scrollNextHighlight.current;
     scrollNextHighlight.current = false;
+    if (!open || !wanted) return;
     // jsdom doesn't implement scrollIntoView, and neither do some older
     // browsers — calling it is an enhancement, not a requirement.
     optionRefs.current[highlight]?.scrollIntoView?.({ block: 'nearest' });

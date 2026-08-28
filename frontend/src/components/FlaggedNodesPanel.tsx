@@ -53,6 +53,7 @@ export default function FlaggedNodesPanel({
   // flags meant being thrown to the top of the document three times.
   // These refs let the removal hand focus to the next Resolve button.
   const resolveButtons = useRef(new Map<string, HTMLButtonElement>());
+  const panelRef = useRef<HTMLElement | null>(null);
   const summaryRef = useRef<HTMLButtonElement | null>(null);
   const statusRef = useRef<HTMLDivElement | null>(null);
   const pendingFocus = useRef<{
@@ -148,6 +149,21 @@ export default function FlaggedNodesPanel({
     setAnnouncement(openSummary);
   }, [flagIdKey, total, openSummary]);
 
+  // Re-homing focus is only a kindness while the author is still here.
+  // A refetch can land a second or two later — the budget below is
+  // sized for a slow connection, which is exactly the window in which
+  // they may have clicked into the source editor and started typing.
+  // Pulling focus onto a Resolve button mid-keystroke would put the
+  // next Space or Enter on an unrelated flag. After a disable-blur
+  // focus sits on <body>, which is ours to reclaim; anywhere outside
+  // the panel is not.
+  function mayTakeFocus() {
+    const active = document.activeElement;
+    if (!active || active === document.body) return true;
+    if (active === statusRef.current) return true;
+    return panelRef.current?.contains(active) ?? false;
+  }
+
   // Once the resolved flag is gone from the list, re-home focus.
   useEffect(() => {
     const pending = pendingFocus.current;
@@ -161,6 +177,7 @@ export default function FlaggedNodesPanel({
     pendingFocus.current = null;
     if (Date.now() - pending.at > RECENT_RESOLVE_MS) return;
     if (flagIds.includes(pending.resolvedId)) return;
+    if (!mayTakeFocus()) return;
     const next = pending.nextId ? resolveButtons.current.get(pending.nextId) : undefined;
     // Next Resolve button, else the panel's own toggle, else the status
     // line — which is where you end up when that was the last flag and
@@ -178,6 +195,7 @@ export default function FlaggedNodesPanel({
     const id = refocusOnFailure.current;
     if (!id || resolving.has(id)) return;
     refocusOnFailure.current = null;
+    if (!mayTakeFocus()) return;
     resolveButtons.current.get(id)?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resolvingKey]);
@@ -230,7 +248,12 @@ export default function FlaggedNodesPanel({
   return (
     <>
       {statusRegion}
-      <section className="flagged-panel" data-testid="flagged-panel" aria-label="Flagged passages">
+      <section
+        ref={panelRef}
+        className="flagged-panel"
+        data-testid="flagged-panel"
+        aria-label="Flagged passages"
+      >
         <button
           type="button"
           ref={summaryRef}

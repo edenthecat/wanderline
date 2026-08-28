@@ -175,6 +175,36 @@ describe('FlaggedNodesPanel accessibility', () => {
     expect(screen.getByTestId('flagged-panel-status').textContent).toBe('');
   });
 
+  it('leaves focus alone when the author has already moved on', async () => {
+    // The refetch can land a second or two after the click. By then the
+    // author may be typing in the source editor, and yanking focus onto
+    // a Resolve button mid-keystroke would put their next Space or
+    // Enter on an unrelated flag.
+    vi.spyOn(client, 'resolveNodeFlag').mockResolvedValue(undefined as never);
+    const outside = document.createElement('button');
+    outside.textContent = 'Ink source';
+    document.body.appendChild(outside);
+    try {
+      const { update } = renderPanel({
+        her: [flag({ id: 'a' }), flag({ id: 'b' }), flag({ id: 'c' })],
+      });
+      expand();
+
+      const [first] = resolveButtons();
+      first.focus();
+      await act(async () => {
+        fireEvent.click(first);
+      });
+      outside.focus();
+
+      update({ her: [flag({ id: 'b' }), flag({ id: 'c' })] });
+      await waitFor(() => expect(resolveButtons()).toHaveLength(2));
+      expect(document.activeElement).toBe(outside);
+    } finally {
+      outside.remove();
+    }
+  });
+
   it('does not spend the resolve credit on a later empty list', async () => {
     // Resolving one flag while a collaborator raises another leaves the
     // total flat — and the summary string with it. The credit for that
