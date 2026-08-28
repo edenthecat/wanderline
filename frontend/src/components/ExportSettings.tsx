@@ -19,6 +19,26 @@ interface Props {
 const HEX = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 const DEFAULT_COLOR = '#1a1a2e';
 
+// Mirrors normalizeBuildLanguage in backend/src/services/build-language.ts.
+// Kept in step deliberately: rejecting here means the author sees why
+// their tag didn't take, instead of the build silently falling back to
+// English.
+const BCP47 = /^[a-zA-Z]{2,8}(?:-[a-zA-Z0-9]{1,8})*$/;
+
+// Only a convenience list for the datalist — any valid tag is accepted.
+const COMMON_LANGUAGES = [
+  ['en', 'English'],
+  ['en-GB', 'English (UK)'],
+  ['fr', 'French'],
+  ['es', 'Spanish'],
+  ['pt-BR', 'Portuguese (Brazil)'],
+  ['de', 'German'],
+  ['it', 'Italian'],
+  ['nl', 'Dutch'],
+  ['ja', 'Japanese'],
+  ['zh-Hans', 'Chinese (Simplified)'],
+];
+
 export default function ExportSettings({ projectId, settings, onSave }: Props) {
   const [readme, setReadme] = useState(settings.exportReadme ?? '');
   const [readmeSaving, setReadmeSaving] = useState(false);
@@ -28,8 +48,12 @@ export default function ExportSettings({ projectId, settings, onSave }: Props) {
   const [iconFilename, setIconFilename] = useState(settings.appIcon?.filename ?? null);
   const [background, setBackground] = useState(settings.appIcon?.backgroundColor ?? DEFAULT_COLOR);
   const [theme, setTheme] = useState(settings.appIcon?.themeColor ?? DEFAULT_COLOR);
+  const [language, setLanguage] = useState(settings.language ?? '');
+  const [languageError, setLanguageError] = useState<string | null>(null);
+  const [languageSaved, setLanguageSaved] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const languageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Re-seed when the parent swaps projects; without this the textarea
   // keeps the previous project's README.
@@ -38,11 +62,14 @@ export default function ExportSettings({ projectId, settings, onSave }: Props) {
     setIconFilename(settings.appIcon?.filename ?? null);
     setBackground(settings.appIcon?.backgroundColor ?? DEFAULT_COLOR);
     setTheme(settings.appIcon?.themeColor ?? DEFAULT_COLOR);
+    setLanguage(settings.language ?? '');
+    setLanguageError(null);
   }, [projectId, settings]);
 
   useEffect(() => {
     return () => {
       if (savedTimerRef.current !== null) clearTimeout(savedTimerRef.current);
+      if (languageTimerRef.current !== null) clearTimeout(languageTimerRef.current);
     };
   }, []);
 
@@ -60,6 +87,25 @@ export default function ExportSettings({ projectId, settings, onSave }: Props) {
     } finally {
       setReadmeSaving(false);
     }
+  };
+
+  // Saved on blur rather than on every keystroke: the tag is only
+  // meaningful once it's complete, and "fr" is a valid prefix of
+  // "fr-CA".
+  const saveLanguage = async () => {
+    const trimmed = language.trim();
+    if (trimmed.length > 0 && !BCP47.test(trimmed)) {
+      setLanguageError(
+        `"${trimmed}" isn't a valid language tag. Use a code like "en", "fr" or "pt-BR".`,
+      );
+      return;
+    }
+    setLanguageError(null);
+    if (trimmed === (settings.language ?? '')) return;
+    await onSave({ language: trimmed });
+    setLanguageSaved(true);
+    if (languageTimerRef.current !== null) clearTimeout(languageTimerRef.current);
+    languageTimerRef.current = setTimeout(() => setLanguageSaved(false), 2000);
   };
 
   const saveColor = async (which: 'backgroundColor' | 'themeColor', value: string) => {
@@ -87,6 +133,47 @@ export default function ExportSettings({ projectId, settings, onSave }: Props) {
   return (
     <section className="settings-section">
       <h2>Export</h2>
+
+      <h3 className="settings-subhead">Language</h3>
+      <p className="text-muted">
+        The language this story is written in. Exported builds carry it in{' '}
+        <code>&lt;html lang&gt;</code> and the app manifest, so a screen reader reads the captions
+        with the right voice and pronunciation instead of an English one. Use a language code like{' '}
+        <code>en</code>, <code>fr</code> or <code>pt-BR</code>. Leave empty for English.
+      </p>
+      <div className="settings-row">
+        <label htmlFor="export-language">Language code</label>
+        <input
+          id="export-language"
+          type="text"
+          className="settings-language-input"
+          value={language}
+          list="export-language-options"
+          placeholder="en"
+          autoComplete="off"
+          spellCheck={false}
+          aria-invalid={languageError !== null}
+          aria-describedby={languageError ? 'export-language-error' : undefined}
+          onChange={(e) => {
+            setLanguage(e.target.value);
+            setLanguageError(null);
+          }}
+          onBlur={() => void saveLanguage()}
+        />
+        <datalist id="export-language-options">
+          {COMMON_LANGUAGES.map(([code, label]) => (
+            <option key={code} value={code}>
+              {label}
+            </option>
+          ))}
+        </datalist>
+        {languageSaved && <span className="text-muted">Saved</span>}
+      </div>
+      {languageError && (
+        <div className="alert alert-error" role="alert" id="export-language-error">
+          {languageError}
+        </div>
+      )}
 
       <h3 className="settings-subhead">README</h3>
       <p className="text-muted">

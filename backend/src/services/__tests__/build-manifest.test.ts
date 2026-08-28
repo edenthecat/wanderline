@@ -3,7 +3,7 @@
 // pipeline's own integration path; this suite pins the pure renderer,
 // which is where the OS-facing contract lives.
 
-import { renderManifest } from '../build-manifest.js';
+import { renderManifest, resolveThemeColor } from '../build-manifest.js';
 
 function parse(json: string) {
   return JSON.parse(json) as Record<string, unknown>;
@@ -78,5 +78,64 @@ describe('renderManifest', () => {
     const m = parse(renderManifest({ storyTitle: 'S', hasCustomIcon: true }));
     const purposes = (m.icons as Array<{ purpose: string }>).map((i) => i.purpose);
     expect(purposes).toContain('maskable');
+  });
+
+  // WCAG 1.3.4. This was 'portrait', which meant an installed story
+  // refused to rotate on a device physically fixed in landscape — a
+  // wheelchair-mounted tablet, a keyboard case, a car dock.
+  it('never locks the installed app to one orientation', () => {
+    const m = parse(renderManifest({ storyTitle: 'S', hasCustomIcon: false }));
+    expect(m.orientation).not.toBe('portrait');
+    expect(m.orientation).not.toBe('landscape');
+    // Either 'any' or an absent key satisfies the spec's default.
+    if (m.orientation !== undefined) expect(m.orientation).toBe('any');
+  });
+
+  describe('lang', () => {
+    it('carries the project language', () => {
+      const m = parse(renderManifest({ storyTitle: 'S', hasCustomIcon: false, language: 'pt-BR' }));
+      expect(m.lang).toBe('pt-BR');
+    });
+
+    it('defaults to en when the project has no language set', () => {
+      const m = parse(renderManifest({ storyTitle: 'S', hasCustomIcon: false }));
+      expect(m.lang).toBe('en');
+    });
+
+    it('rejects a malformed tag rather than passing it to the OS', () => {
+      const m = parse(
+        renderManifest({ storyTitle: 'S', hasCustomIcon: false, language: 'not a tag' }),
+      );
+      expect(m.lang).toBe('en');
+    });
+  });
+
+  // The generated index.html carries the same value in its theme-color
+  // meta; exporting the resolution is what keeps the two in step.
+  describe('resolveThemeColor', () => {
+    it.each([
+      [undefined, '#1a1a2e'],
+      [{}, '#1a1a2e'],
+      [{ themeColor: '#ff0000' }, '#ff0000'],
+      // No explicit theme colour: the splash background is the better
+      // guess than the player's default navy.
+      [{ backgroundColor: '#abc' }, '#abc'],
+      [{ backgroundColor: '#abc', themeColor: '#123456' }, '#123456'],
+      // A malformed colour makes some Android launchers refuse the
+      // install outright, so it never reaches the output.
+      [{ themeColor: 'not-a-colour' }, '#1a1a2e'],
+      [{ themeColor: 'not-a-colour', backgroundColor: '#abc' }, '#abc'],
+    ])('resolves %p to %p', (icon, expected) => {
+      expect(resolveThemeColor(icon)).toBe(expected);
+    });
+
+    // The generated index.html carries this value in its theme-color
+    // meta. The two shipped different colours before, so pin that they
+    // now come from one source.
+    it('agrees with the manifest theme_color', () => {
+      const icon = { backgroundColor: '#abc', themeColor: '#123456' };
+      const m = parse(renderManifest({ storyTitle: 'S', hasCustomIcon: false, icon }));
+      expect(resolveThemeColor(icon)).toBe(m.theme_color);
+    });
   });
 });

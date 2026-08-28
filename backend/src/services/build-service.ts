@@ -25,13 +25,15 @@ import { deleteBuildPreviewCache } from './build-preview-audio.js';
 import { renderBuildReadme } from './build-readme.js';
 import {
   renderManifest,
+  resolveThemeColor,
   stageAppIcon,
   copyDefaultIcons,
   type AppIconSettings,
 } from './build-manifest.js';
 import { storyHash } from './story-hash.js';
 import { bundleGoogleFonts, renderThemeCss, type ThemeConfig } from './theme-render.js';
-import { prepareDistHtml } from './build-html.js';
+import { prepareDistHtml, renderNoscriptFallback } from './build-html.js';
+import { DEFAULT_BUILD_LANGUAGE, normalizeBuildLanguage } from './build-language.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -449,6 +451,12 @@ export async function executeBuild(pool: Pool, projectId: string, buildId: strin
     // icon is referenced by the manifest, not the player code.
     const readmeTemplate = (settings as Record<string, unknown>).exportReadme as string | undefined;
     const appIcon = (settings as Record<string, unknown>).appIcon as AppIconSettings | undefined;
+    // The story's own language. Falls back to 'en'; every generated
+    // surface (index.html, smoke.html, the manifest) carries the same
+    // tag so a screen reader picks the right voice for the captions.
+    const buildLanguage = normalizeBuildLanguage(
+      (settings as Record<string, unknown>).language as unknown,
+    );
     const usedFilenames = collectUsedAudioFilenames(
       storyData,
       settings as Record<string, unknown>,
@@ -504,7 +512,14 @@ export async function executeBuild(pool: Pool, projectId: string, buildId: strin
     // Post-process index.html for file:// URL compatibility
     const distIndexPath = join(buildDir, 'dist', 'index.html');
     let distHtml = readFileSync(distIndexPath, 'utf-8');
-    distHtml = prepareDistHtml(distHtml, { title: escapedName, storyData });
+    distHtml = prepareDistHtml(distHtml, {
+      title: escapedName,
+      storyData,
+      language: buildLanguage,
+      // Same value renderManifest writes, so the browser chrome and
+      // the installed app's status bar agree with the author's theme.
+      themeColor: resolveThemeColor(appIcon),
+    });
 
     // bake the project's theme into the built bundle. Google
     // Fonts woff2 files (if any) are downloaded into public/fonts/
@@ -534,7 +549,7 @@ export async function executeBuild(pool: Pool, projectId: string, buildId: strin
     // resolves, and every referenced audio file is reachable from the
     // bundle. The runner is a single inline-JS page so it works on
     // file:// URLs and doesn't need any extra plumbing in the player.
-    const smokeHtml = renderSmokeHtml(storyData);
+    const smokeHtml = renderSmokeHtml(storyData, buildLanguage);
     writeFileSync(join(buildDir, 'dist', 'smoke.html'), smokeHtml);
 
     // Per-project PWA identity. The player's static manifest names the
@@ -567,7 +582,12 @@ export async function executeBuild(pool: Pool, projectId: string, buildId: strin
 
     writeFileSync(
       join(buildDir, 'dist', 'manifest.webmanifest'),
-      renderManifest({ storyTitle: storyData.title, icon: appIcon, hasCustomIcon }),
+      renderManifest({
+        storyTitle: storyData.title,
+        icon: appIcon,
+        hasCustomIcon,
+        language: buildLanguage,
+      }),
     );
 
     await pool.query(
@@ -796,7 +816,7 @@ function escapeHtml(text: string): string {
  */
 // Exported for the build-service unit tests; not part of the public
 // build API (callers go through executeBuild).
-export function renderSmokeHtml(storyData: unknown): string {
+export function renderSmokeHtml(storyData: unknown, language?: string): string {
   const storyJsonStr = JSON.stringify(storyData)
     .replace(/</g, '\\u003c')
     .replace(/\u2028/g, '\\u2028')
@@ -804,12 +824,18 @@ export function renderSmokeHtml(storyData: unknown): string {
   const title = escapeHtml(
     ((storyData as { title?: string }).title ?? 'Wanderline build') + ' — smoke test',
   );
+  const lang = normalizeBuildLanguage(language ?? DEFAULT_BUILD_LANGUAGE);
   // The runner is inlined as a regular <script> so file:// pages can
   // execute it without module-loader gymnastics.
   return `<!doctype html>
-<html lang="en">
+<html lang="${lang}">
 <head>
   <meta charset="utf-8" />
+  <!-- Authors are told (in the build README) to open this page to
+       verify a build, and plenty of them will do it on a phone.
+       Without this the page renders at desktop width and has to be
+       pinch-zoomed to read — WCAG 1.4.10. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${title}</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif;
@@ -823,12 +849,29 @@ export function renderSmokeHtml(storyData: unknown): string {
     code { background: rgba(255,255,255,0.07); padding: 0 0.25rem; border-radius: 3px; }
     .summary { background: rgba(255,255,255,0.05); border-radius: 8px; padding: 1rem; margin-bottom: 1.5rem; }
     .summary strong { font-size: 1.5rem; display: block; }
+    /* Pass / fail is otherwise carried only by a ✓ / ✗ glyph and a
+       border colour — a screen reader reads those as "check mark" /
+       "multiplication x", or skips them entirely, leaving the two
+       states indistinguishable. The word goes here instead. */
+    .visually-hidden {
+      position: absolute; width: 1px; height: 1px; margin: -1px;
+      padding: 0; border: 0; overflow: hidden; clip: rect(0 0 0 0);
+      clip-path: inset(50%); white-space: nowrap;
+    }
   </style>
 </head>
 <body>
   <h1>${title}</h1>
-  <div class="summary" id="summary">Running…</div>
-  <div id="results"></div>
+  <!-- The audio-reachability check is a real network round-trip, so
+       "Running…" can sit here for a while. Without a live region a
+       screen-reader user is never told the checks finished. -->
+  <div class="summary" id="summary" role="status" aria-live="polite">Running…</div>
+  <div id="results" role="status" aria-live="polite"></div>
+  ${renderNoscriptFallback(
+    title,
+    'This page runs the build&rsquo;s checks in your browser, so it needs JavaScript. ' +
+      'Turn JavaScript on in your browser settings, then reload this page.',
+  )}
   <script>window.__WANDERLINE_STORY__=${storyJsonStr};</script>
   <script>
   (function () {
@@ -920,8 +963,13 @@ export function renderSmokeHtml(storyData: unknown): string {
               }) + '</code></li>';
             }).join('') + '</ul>'
           : '';
+        // The state is spelled out for assistive tech; the glyph is
+        // decorative and hidden from it, so nothing reads "check mark".
+        var state = c.ok
+          ? '<span class="visually-hidden">Passed: </span><span aria-hidden="true">✓ </span>'
+          : '<span class="visually-hidden">Failed: </span><span aria-hidden="true">✗ </span>';
         return '<div class="check ' + (c.ok ? 'pass' : 'fail') + '">' +
-          '<h2>' + (c.ok ? '✓ ' : '✗ ') + c.label + '</h2>' + problemHtml + '</div>';
+          '<h2>' + state + c.label + '</h2>' + problemHtml + '</div>';
       }).join('');
       // Also log to console so headless smoke runners can capture it.
       console.log('[wanderline-smoke]', JSON.stringify({

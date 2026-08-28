@@ -425,6 +425,67 @@ describe('build-service unit', () => {
       const html = renderSmokeHtml(empty);
       expect(html).toMatch(/window\.__WANDERLINE_STORY__/);
     });
+
+    // The build README tells authors to open this page to verify a
+    // build, and plenty of them will do that on a phone. Without a
+    // viewport meta it renders at desktop width and has to be
+    // pinch-zoomed to read (WCAG 1.4.10).
+    it('declares a responsive viewport', () => {
+      const html = renderSmokeHtml(sampleStory);
+      expect(html).toMatch(/<meta name="viewport" content="width=device-width[^"]*"/i);
+    });
+
+    // The audio-reachability check is a network round-trip, so the
+    // page genuinely sits on "Running…" for a while. Without a live
+    // region a screen-reader author is never told it finished.
+    it('announces both result containers as live regions', () => {
+      const html = renderSmokeHtml(sampleStory);
+      const summary = /<div class="summary" id="summary"[^>]*>/i.exec(html);
+      expect(summary).not.toBeNull();
+      expect(summary![0]).toContain('role="status"');
+      expect(summary![0]).toContain('aria-live="polite"');
+
+      const results = /<div id="results"[^>]*>/i.exec(html);
+      expect(results).not.toBeNull();
+      expect(results![0]).toContain('role="status"');
+      expect(results![0]).toContain('aria-live="polite"');
+    });
+
+    // ✓ / ✗ read as "check mark" / "multiplication x", or get skipped
+    // entirely — which left pass and fail distinguishable only by a
+    // border colour.
+    it('spells out pass and fail instead of relying on the glyphs', () => {
+      const html = renderSmokeHtml(sampleStory);
+      expect(html).toContain('>Passed: <');
+      expect(html).toContain('>Failed: <');
+      // The glyphs stay for sighted readers but are hidden from AT.
+      expect(html).toMatch(/aria-hidden="true">✓/);
+      expect(html).toMatch(/aria-hidden="true">✗/);
+      expect(html).toMatch(/\.visually-hidden\s*\{/);
+    });
+
+    // Entirely script-driven: with JS off it would otherwise sit on
+    // "Running…" forever with no explanation.
+    it('explains itself when JavaScript is unavailable', () => {
+      const html = renderSmokeHtml(sampleStory);
+      const block = /<noscript>[\s\S]*?<\/noscript>/i.exec(html);
+      expect(block).not.toBeNull();
+      expect(block![0]).toMatch(/needs JavaScript/i);
+    });
+
+    describe('lang', () => {
+      it('carries the project language', () => {
+        expect(renderSmokeHtml(sampleStory, 'fr')).toMatch(/<html lang="fr">/);
+      });
+
+      it('defaults to en when unset', () => {
+        expect(renderSmokeHtml(sampleStory)).toMatch(/<html lang="en">/);
+      });
+
+      it('falls back to en rather than emitting a malformed tag', () => {
+        expect(renderSmokeHtml(sampleStory, 'en" onload="x')).toMatch(/<html lang="en">/);
+      });
+    });
   });
 
   // env-var integer parsing with fallback + clamp.

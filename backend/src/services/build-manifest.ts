@@ -16,6 +16,7 @@
 import { execFileSync } from 'child_process';
 import { copyFileSync, existsSync } from 'fs';
 import { join } from 'path';
+import { normalizeBuildLanguage } from './build-language.js';
 
 export interface AppIconSettings {
   /** Filename of the uploaded icon within the project's icon storage. */
@@ -44,6 +45,23 @@ export interface ManifestContext {
   icon?: AppIconSettings;
   /** True when stageAppIcon actually produced custom icon files. */
   hasCustomIcon: boolean;
+  /**
+   * BCP-47 tag for the story's own language, already normalized by
+   * normalizeBuildLanguage. Defaults to 'en' when the project hasn't
+   * set one.
+   */
+  language?: string;
+}
+
+/**
+ * The colour the OS paints the installed app's chrome with. Exported
+ * because the generated index.html carries the same value in its
+ * `theme-color` meta — the two used to disagree (the manifest had the
+ * author's colour, the HTML kept the player's default navy), which
+ * left mobile browser chrome and the status bar in the wrong palette.
+ */
+export function resolveThemeColor(icon: AppIconSettings | undefined): string {
+  return safeColor(icon?.themeColor, safeColor(icon?.backgroundColor, DEFAULT_COLOR));
 }
 
 /**
@@ -53,9 +71,14 @@ export interface ManifestContext {
  * produces "The Long Sto…" on the device instead of something the
  * author chose.
  */
-export function renderManifest({ storyTitle, icon, hasCustomIcon }: ManifestContext): string {
+export function renderManifest({
+  storyTitle,
+  icon,
+  hasCustomIcon,
+  language,
+}: ManifestContext): string {
   const background = safeColor(icon?.backgroundColor, DEFAULT_COLOR);
-  const theme = safeColor(icon?.themeColor, background);
+  const theme = resolveThemeColor(icon);
   const name = storyTitle.trim() || 'Audio narrative';
   const shortName = name.length > 12 ? `${name.slice(0, 11).trimEnd()}…` : name;
   const iconBase = hasCustomIcon ? './icons/app' : './icon';
@@ -65,12 +88,17 @@ export function renderManifest({ storyTitle, icon, hasCustomIcon }: ManifestCont
       name,
       short_name: shortName,
       description: `${name} — an audio narrative.`,
-      lang: 'en',
+      lang: normalizeBuildLanguage(language),
       start_url: './',
       scope: './',
       display: 'standalone',
       display_override: ['standalone', 'minimal-ui'],
-      orientation: 'portrait',
+      // WCAG 1.3.4: never lock the installed story to one orientation.
+      // This used to be 'portrait', which meant a listener whose device
+      // is physically fixed in landscape — a wheelchair-mounted tablet,
+      // a keyboard case, a car dock — could not turn the story the right
+      // way up. The player's layout works in both orientations.
+      orientation: 'any',
       background_color: background,
       theme_color: theme,
       icons: [
