@@ -178,13 +178,6 @@ export default function ShipReadinessPanel({ projectId, storyGraph, onNavigate }
         <p className="readiness-line text-muted">
           Collecting flags, audio coverage and assignment checks…
         </p>
-      ) : summary.status === 'empty' ? (
-        // Every check trivially answers zero on a story with no nodes.
-        // "Ready to ship" is the one thing that must not be said here.
-        <p className="readiness-line text-muted">
-          This story has no nodes yet — there is nothing to build. Write or upload one on the Story
-          tab.
-        </p>
       ) : summary.status === 'ready' ? (
         // Five zeros is not an answer. Say what was actually verified.
         <p className="readiness-line readiness-line-ready">
@@ -194,6 +187,17 @@ export default function ShipReadinessPanel({ projectId, storyGraph, onNavigate }
         </p>
       ) : (
         <>
+          {summary.status === 'empty' && (
+            // Every check trivially answers zero on a story with no
+            // nodes, so "Ready to ship" is the one thing that must not
+            // be said here. It leads rather than replaces, though: a
+            // project can have no nodes AND flags left over from the
+            // passages it used to have, and those are worth seeing.
+            <p className="readiness-line text-muted">
+              This story has no nodes yet — there is nothing to build. Write or upload one on the
+              Story tab.
+            </p>
+          )}
           {summary.blocking.length > 0 && (
             <div className="readiness-group readiness-group-blocking">
               <h3 className="readiness-group-title">Fix before you ship</h3>
@@ -224,9 +228,13 @@ export default function ShipReadinessPanel({ projectId, storyGraph, onNavigate }
               </ul>
             </div>
           )}
-          {summary.blocking.length === 0 && summary.review.length === 0 && (
-            <p className="readiness-line text-muted">Everything we could check came back clean.</p>
-          )}
+          {summary.status !== 'empty' &&
+            summary.blocking.length === 0 &&
+            summary.review.length === 0 && (
+              <p className="readiness-line text-muted">
+                Everything we could check came back clean.
+              </p>
+            )}
         </>
       )}
     </section>

@@ -169,6 +169,21 @@ describe('ShipReadinessPanel', () => {
     expect(screen.queryByText('Ready to ship')).not.toBeInTheDocument();
   });
 
+  // A story can have no nodes AND flags left over from the passages it
+  // used to have. The empty line leads; it does not hide them.
+  it('still lists what is outstanding on an empty story', async () => {
+    stubLookups({ flags: 2 });
+    render(
+      <ShipReadinessPanel
+        projectId="p1"
+        storyGraph={graph({ startNode: '', nodes: {} })}
+        onNavigate={() => {}}
+      />,
+    );
+    expect(await screen.findByText('Nothing to ship yet')).toBeInTheDocument();
+    expect(screen.getByText('2 unresolved flags')).toBeInTheDocument();
+  });
+
   // allSettled proves the request resolved, not that the body has the
   // field. A scalar read of a missing `total` used to render as
   // "undefined unresolved flags".
