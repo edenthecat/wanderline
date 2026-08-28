@@ -294,6 +294,9 @@ export function nodeAriaLabel(d: StoryCardData): string {
     });
   }
   if (d.hasDivert) parts.push('falls through');
+  // The hover card lists these, and the hover card is visual only.
+  const tags = d.storyNode.tags ?? [];
+  if (tags.length > 0) parts.push(`tagged ${tags.slice(0, 6).join(', ')}`);
   if (d.onPath) parts.push('on traced path');
   if (d.matched) parts.push('search match');
   if (d.dim) parts.push('unreachable from the start node');
@@ -1024,9 +1027,11 @@ function GraphTabInner({
         { zoom: 1, duration: 300 },
       );
       setSelectedNodeId(targetId);
-      // Opened from the toolbar, not from a node — there's no node
-      // to hand focus back to when the rail closes.
+      // Opened from the toolbar, not from a node — there's no node to
+      // hand focus back to when the rail closes, and focus belongs on
+      // the "next match" button the user is still clicking.
       returnFocusNodeIdRef.current = null;
+      pendingRailFocusRef.current = false;
     }
     setMatchCursor((c) => c + 1);
   }, [matchedIds, matchCursor, nodes, rf]);
@@ -1061,9 +1066,14 @@ function GraphTabInner({
     // Opening the detail rail evicts the source panel — they
     // occupy the same right-side region of the canvas.
     setSourceOpen(false);
-    setSelectedNodeId(nodeId);
     returnFocusNodeIdRef.current = fromKeyboard ? nodeId : null;
-    pendingRailFocusRef.current = fromKeyboard;
+    // The focus effect is keyed on selectedNodeId, so re-activating
+    // the node the rail is ALREADY showing wouldn't re-run it: focus
+    // now instead, rather than leaving the flag set for whatever
+    // changes the selection next.
+    pendingRailFocusRef.current = fromKeyboard && nodeId !== selectedNodeId;
+    if (fromKeyboard && nodeId === selectedNodeId) railRef.current?.focus();
+    setSelectedNodeId(nodeId);
   };
 
   const closeNodeDetail = () => {
@@ -1100,6 +1110,14 @@ function GraphTabInner({
   // Enter / Space on a focused node. Mirrors the click semantics
   // above so the canvas is operable without a pointer.
   const handleGraphKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    // WCAG 2.1 1.4.13: content shown on focus has to be dismissible
+    // without moving focus. Escape hides the preview card.
+    if (event.key === 'Escape') {
+      cancelHoverRaf();
+      setHoverNodeId(null);
+      setHoverPos(null);
+      return;
+    }
     if (event.key !== 'Enter' && event.key !== ' ') return;
     if (event.target instanceof HTMLElement && event.target.isContentEditable) return;
     const id = nodeIdOfEventTarget(event.target);
@@ -1416,6 +1434,10 @@ function GraphTabInner({
                 // Keep the return target in step with what the rail
                 // is now showing, so Close lands on the right card.
                 if (returnFocusNodeIdRef.current) returnFocusNodeIdRef.current = id;
+                // NodeDetail is keyed on selectedNodeId, so jumping
+                // unmounts the very button that was activated. Pull
+                // focus to the rail or it falls to <body>.
+                pendingRailFocusRef.current = true;
                 const target = nodes.find((n) => n.id === id);
                 if (target) {
                   rf.setCenter(

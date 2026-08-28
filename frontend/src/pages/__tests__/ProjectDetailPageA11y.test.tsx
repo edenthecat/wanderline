@@ -194,11 +194,37 @@ describe('ProjectDetailPage navigation accessibility', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Graph');
   });
 
-  it('names the document after the current view', async () => {
-    await renderPage();
+  it('names the document after the current view, and restores it on leaving', async () => {
+    document.title = 'Wanderline';
+    const { unmount } = await renderPage();
     await waitFor(() => expect(document.title).toBe('Story · Nightjar · Wanderline'));
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Builds' })[0]);
     await waitFor(() => expect(document.title).toBe('Builds · Nightjar · Wanderline'));
+
+    // A title that lies after you navigate away is worse than the
+    // generic one it replaced.
+    unmount();
+    expect(document.title).toBe('Wanderline');
+  });
+
+  // The backdrop is an opaque fixed scrim, so everything behind it is
+  // dimmed and unclickable — but still focusable, and still fires on
+  // Enter, since the outside-click handler only listens for mousedown.
+  it('keeps Tab inside the open sheet', async () => {
+    await renderPage();
+    fireEvent.click(within(mobileNav()).getByRole('button', { name: 'Style' }));
+
+    const links = Array.from(sheet().querySelectorAll<HTMLButtonElement>('button'));
+    expect(links.length).toBeGreaterThan(1);
+    const first = links[0];
+    const last = links[links.length - 1];
+
+    last.focus();
+    fireEvent.keyDown(last, { key: 'Tab' });
+    expect(document.activeElement).toBe(first);
+
+    fireEvent.keyDown(first, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(last);
   });
 });

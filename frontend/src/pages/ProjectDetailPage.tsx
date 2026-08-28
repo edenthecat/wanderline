@@ -218,10 +218,23 @@ export default function ProjectDetailPage() {
   // Name the document after the view. Screen-reader users check the
   // title to orient after a navigation; without this every tab of
   // every project reads as the same page.
+  // Captured during render, before any effect has touched it, so the
+  // restore below puts back the app's own title and not the previous
+  // tab's.
+  const baseTitleRef = useRef(typeof document === 'undefined' ? '' : document.title);
   useEffect(() => {
     if (!project) return;
     document.title = `${TAB_LABEL[activeTab]} · ${project.name} · Wanderline`;
   }, [activeTab, project]);
+  useEffect(() => {
+    const base = baseTitleRef.current;
+    // Otherwise the tab still reads "Story · Nightjar" after
+    // navigating back to the project list — a title that lies is
+    // worse than the generic one it replaced.
+    return () => {
+      document.title = base;
+    };
+  }, []);
 
   /**
    * Fetch the project. Pass `silent` for re-fetches triggered by
@@ -273,6 +286,22 @@ export default function ProjectDetailPage() {
     );
 
   const activeGroup = groupFor(activeTab);
+
+  /** Keep Tab inside the open sheet. It's the last thing in the DOM,
+   * so tabbing past its final button would otherwise wrap to the top
+   * of the page — into content the scrim has made unclickable but
+   * that is still focusable and still activates on Enter. */
+  function trapSheetTab(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (e.key !== 'Tab') return;
+    const items = Array.from(
+      mobileSheetRef.current?.querySelectorAll<HTMLButtonElement>('button:not([disabled])') ?? [],
+    );
+    if (items.length === 0) return;
+    const edge = e.shiftKey ? items[0] : items[items.length - 1];
+    if (document.activeElement !== edge) return;
+    e.preventDefault();
+    (e.shiftKey ? items[items.length - 1] : items[0]).focus();
+  }
 
   function pickTab(t: Tab) {
     // Re-picking the active tab still has to move focus — on mobile
@@ -497,7 +526,8 @@ export default function ProjectDetailPage() {
                 mobileTabRefs.current[g.id] = el;
               }}
               className={`workspace-mobile-tab${isActive ? ' workspace-mobile-tab-active' : ''}`}
-              // Disclosure, not a menu — see the comment on the sheet.
+              // No aria-haspopup="menu": what opens is a modal sheet
+              // of plain buttons, not an ARIA menu. See the sheet.
               aria-expanded={isOpen}
               aria-controls={isOpen ? `mobile-sheet-${g.id}` : undefined}
               onClick={() => setMobileSheet(isOpen ? null : g.id)}
@@ -520,18 +550,26 @@ export default function ProjectDetailPage() {
           ancestor of the sheet itself. */}
       {mobileSheet && (
         <div className="workspace-mobile-sheet-backdrop">
+          {/* role="dialog" + aria-modal, because the backdrop is an
+              opaque fixed scrim over the whole viewport: everything
+              behind it is dimmed and unclickable. aria-modal is how
+              you hide that content from assistive tech — correctly,
+              from the outside — and onKeyDown keeps Tab inside for
+              sighted keyboard users, who could otherwise wrap around
+              to buttons they can see but not click. */}
           <div
             ref={mobileSheetRef}
             className="workspace-mobile-sheet"
             id={`mobile-sheet-${mobileSheet}`}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={`mobile-sheet-title-${mobileSheet}`}
+            onKeyDown={trapSheetTab}
           >
             <h2 className="workspace-mobile-sheet-title" id={`mobile-sheet-title-${mobileSheet}`}>
               {GROUPS.find((g) => g.id === mobileSheet)?.label}
             </h2>
-            <ul
-              className="workspace-mobile-sheet-list"
-              aria-labelledby={`mobile-sheet-title-${mobileSheet}`}
-            >
+            <ul className="workspace-mobile-sheet-list">
               {GROUPS.find((g) => g.id === mobileSheet)?.tabs.map((t, i) => (
                 <li key={t}>
                   <button

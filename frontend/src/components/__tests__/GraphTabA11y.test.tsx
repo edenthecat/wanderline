@@ -174,6 +174,26 @@ describe('GraphTab keyboard and screen-reader access', () => {
     await waitFor(() => expect(document.activeElement).toBe(rail));
   });
 
+  // The focus effect is keyed on the selected id, so re-activating the
+  // node the rail already shows doesn't re-run it. Focusing inline
+  // keeps Enter working and stops a stale "focus the rail next time"
+  // flag from yanking focus later.
+  it('re-focuses the rail when Enter is pressed on the already-open node', async () => {
+    const { container } = renderGraph();
+    await waitFor(() => expect(nodeEl(container, 'corridor')).toBeTruthy());
+
+    const el = nodeEl(container, 'corridor');
+    el.focus();
+    fireEvent.keyDown(el, { key: 'Enter' });
+    const rail = await screen.findByRole('complementary', { name: 'Node detail: corridor' });
+    await waitFor(() => expect(document.activeElement).toBe(rail));
+
+    // Walk back out to the node, then activate it again.
+    nodeEl(container, 'corridor').focus();
+    fireEvent.keyDown(nodeEl(container, 'corridor'), { key: 'Enter' });
+    expect(document.activeElement).toBe(rail);
+  });
+
   it('hands focus back to the node when the rail is closed', async () => {
     const { container } = renderGraph();
     await waitFor(() => expect(nodeEl(container, 'corridor')).toBeTruthy());
