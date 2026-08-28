@@ -1734,11 +1734,10 @@ export default function App() {
       // receive: without this bail, tabbing to Settings and pressing
       // Enter advanced the story instead of opening the panel, and the
       // auto-advance checkbox could not be toggled by keyboard at all.
-      // Scoped per key rather than per element, because a <button>
-      // consumes only Space and Enter — yielding the arrows to it too
-      // would strand a listener on a story whose author hid the visible
-      // choice list, where the arrows are the only way to move the
-      // armed choice.
+      // Scoped per key rather than per element: a <button> consumes
+      // only Space and Enter, so Backspace, `r`, `s` and Escape still
+      // reach the shortcuts with focus sitting on one. The arrows are
+      // the exception, handled just below.
       if (keyBelongsToTarget(e)) return;
       // Focus inside the settings panel is a task of its own: only the
       // playback keys reach past it.
@@ -1872,16 +1871,13 @@ export default function App() {
       .trim();
   }, [currentNode]);
 
-  // Both announcements below are held in state and written from an
-  // effect, and both effects stand down until the story screen is up.
   // Screen readers announce MUTATIONS to a live region they have
-  // already registered — text that is present the moment the region is
-  // inserted is not announced at all. The story screen mounts <main>
-  // and both regions in one commit, so populating them during render
-  // would have meant the opening passage, the very one a listener has
-  // no other way to hear about, was the one thing never spoken. Held
-  // empty through that commit, they get their first content on the
-  // following effect pass, which is a mutation the AT reports.
+  // already registered: text present the moment the region is inserted
+  // is not announced at all, and re-rendering identical wording is not
+  // a mutation. Both of the regions below are built around that — the
+  // passage one through `narrationRegistered` and `passageKey`, the
+  // choice one through its own state and sequence number — and both
+  // stand down until the story screen is up.
   const storyScreenVisible = !showInstructions && isAuthenticated;
 
   // Identity for "which visit to which passage is on screen". The
@@ -1908,16 +1904,15 @@ export default function App() {
     setNarrationRegistered(storyScreenVisible);
   }, [storyScreenVisible]);
 
-  // React's onBlur is focusout, which browsers do not fire when the
-  // focused element is REMOVED. Choosing an option unmounts the button
-  // that had focus, so nothing ever reset this and an author-hidden
-  // choice list, once revealed, stayed on screen for the rest of the
-  // session.
-  // Read where focus actually is rather than assuming a navigation
-  // removed the focused button: two passages that offer the same choices
-  // in the same order share a key, so React reuses the DOM nodes and
-  // focus survives. Assuming otherwise left an author-hidden list
-  // clipped to 1px with the keyboard focus still inside it.
+  // The <nav>'s own onBlur cannot carry this alone: React's onBlur is
+  // focusout, which browsers do not fire when the focused element is
+  // REMOVED, and choosing an option removes it — so an author-hidden
+  // list, once revealed, stayed on screen for the rest of the session.
+  // Re-read where focus actually is rather than assuming the button is
+  // gone: two passages offering the same choices in the same order share
+  // a key, so React reuses the DOM nodes and the focus on them survives,
+  // and assuming otherwise re-clipped the list to 1px with the keyboard
+  // focus still inside it.
   useEffect(() => {
     setChoiceNavFocused(!!choiceNavRef.current?.contains(document.activeElement));
   }, [currentNode, history]);
