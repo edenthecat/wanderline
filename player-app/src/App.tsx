@@ -106,6 +106,7 @@ type PlayerState = 'loading' | 'ready' | 'playing' | 'paused' | 'ended' | 'error
 type PreloadState = 'idle' | 'loading' | 'complete' | 'error';
 
 import { fallThroughTarget } from './fall-through';
+import { characterThemeCardStyle } from './character-theme';
 export { fallThroughTarget };
 
 const STORAGE_PREFIX = 'wanderline_';
@@ -124,17 +125,8 @@ const safeSetItem = (storage: Storage, key: string, value: string): void => {
   } catch {}
 };
 
-// Theme colors for character-based styling
-const THEME_COLORS: Record<string, { bg: string; border: string; text: string; accent: string }> = {
-  red: { bg: 'rgba(239,68,68,0.15)', border: '#ef4444', text: '#fecaca', accent: '#f87171' },
-  orange: { bg: 'rgba(249,115,22,0.15)', border: '#f97316', text: '#fed7aa', accent: '#fb923c' },
-  yellow: { bg: 'rgba(234,179,8,0.15)', border: '#eab308', text: '#fef08a', accent: '#facc15' },
-  green: { bg: 'rgba(34,197,94,0.15)', border: '#22c55e', text: '#bbf7d0', accent: '#4ade80' },
-  blue: { bg: 'rgba(59,130,246,0.15)', border: '#3b82f6', text: '#bfdbfe', accent: '#60a5fa' },
-  indigo: { bg: 'rgba(99,102,241,0.15)', border: '#6366f1', text: '#c7d2fe', accent: '#818cf8' },
-  purple: { bg: 'rgba(168,85,247,0.15)', border: '#a855f7', text: '#e9d5ff', accent: '#c084fc' },
-  pink: { bg: 'rgba(236,72,153,0.15)', border: '#ec4899', text: '#fbcfe8', accent: '#f472b6' },
-};
+// Theme colors for character-based styling live in ./character-theme,
+// which explains why the character no longer sets the text colour.
 
 // Click detection for headphone controls
 const CLICK_TIMEOUT = 400;
@@ -1807,6 +1799,7 @@ export default function App() {
                   setPasswordError(false);
                 }}
                 placeholder="Password"
+                className="wl-password-input"
                 style={{
                   ...styles.passwordInput,
                   ...(passwordError ? styles.passwordInputError : {}),
@@ -1982,7 +1975,11 @@ export default function App() {
             >
               {preloadState === 'loading' ? (
                 <>
-                  <div style={styles.preloadSpinnerSmall} aria-hidden="true" />
+                  <div
+                    className="wl-spinner"
+                    style={styles.preloadSpinnerSmall}
+                    aria-hidden="true"
+                  />
                   Preparing...
                 </>
               ) : (
@@ -2267,12 +2264,7 @@ export default function App() {
             <article
               style={{
                 ...styles.card,
-                ...(currentNode.metadata?.theme && THEME_COLORS[currentNode.metadata.theme]
-                  ? {
-                      background: THEME_COLORS[currentNode.metadata.theme].bg,
-                      borderLeft: `4px solid ${THEME_COLORS[currentNode.metadata.theme].border}`,
-                    }
-                  : {}),
+                ...characterThemeCardStyle(currentNode.metadata?.theme),
               }}
               data-theme-component="storyCard"
             >
@@ -2281,31 +2273,10 @@ export default function App() {
                   an accidental space rendered as blank paragraphs and
                   silently hid the Ink content fallback. */}
               {currentNode.metadata?.transcript?.trim() ? (
-                <p
-                  style={{
-                    ...styles.text,
-                    ...(currentNode.metadata?.theme && THEME_COLORS[currentNode.metadata.theme]
-                      ? {
-                          color: THEME_COLORS[currentNode.metadata.theme].text,
-                        }
-                      : {}),
-                  }}
-                >
-                  {currentNode.metadata.transcript}
-                </p>
+                <p style={styles.text}>{currentNode.metadata.transcript}</p>
               ) : (
                 currentNode.content.map((c, i) => (
-                  <p
-                    key={i}
-                    style={{
-                      ...styles.text,
-                      ...(currentNode.metadata?.theme && THEME_COLORS[currentNode.metadata.theme]
-                        ? {
-                            color: THEME_COLORS[currentNode.metadata.theme].text,
-                          }
-                        : {}),
-                    }}
-                  >
+                  <p key={i} style={styles.text}>
                     {c.text}
                   </p>
                 ))
@@ -2433,7 +2404,7 @@ export default function App() {
         {/* Connection status - shown below content to avoid layout shift */}
         {showConnectionIssue && !audioError && (audioStalled || retryingAudio) && (
           <div style={styles.stalledBanner} role="status" aria-live="polite">
-            <div style={styles.stalledSpinner} aria-hidden="true" />
+            <div className="wl-spinner" style={styles.stalledSpinner} aria-hidden="true" />
             <span>{retryingAudio ? 'Reconnecting...' : 'Buffering...'}</span>
           </div>
         )}

@@ -242,7 +242,12 @@ export const styles: Record<string, React.CSSProperties> = {
     paddingTop: '1rem',
     textAlign: 'center',
     fontSize: '0.75rem',
-    opacity: 0.4,
+    // This footer is the only place the keyboard and headphone
+    // controls are documented, so it is exactly the text a low-vision
+    // keyboard user needs most. At the old 0.4 the default #eee over
+    // the #1a1a2e page composited to 3.43:1 — below the 4.5:1 AA floor
+    // for text this size. 0.6 gives 6.05:1 and still reads as chrome.
+    opacity: 0.6,
   },
   // Instructions screen styles
   // instructionsCard reads --wl-instructionsCard-* with
@@ -357,6 +362,12 @@ export const styles: Record<string, React.CSSProperties> = {
   passwordTitle: { fontSize: '1.5rem', fontWeight: 600, marginTop: 0, marginBottom: '0.5rem' },
   passwordSubtitle: { margin: '0 0 1.5rem', opacity: 0.7, fontSize: '0.9rem' },
   passwordForm: { display: 'flex', flexDirection: 'column', gap: '1rem' },
+  // No `outline: 'none'` here. It used to suppress the focus ring with
+  // nothing put in its place, on the one control that gates the whole
+  // story — a keyboard user had no way to tell the field was focused.
+  // The visible focus treatment lives on `.wl-password-input` in
+  // index.css so `:focus-visible` can actually reach it; an inline
+  // style cannot express a pseudo-class.
   passwordInput: {
     padding: '1rem',
     fontSize: '1rem',
@@ -364,7 +375,6 @@ export const styles: Record<string, React.CSSProperties> = {
     border: '2px solid rgba(255,255,255,0.2)',
     background: 'rgba(255,255,255,0.05)',
     color: '#eee',
-    outline: 'none',
     textAlign: 'center',
   },
   passwordInputError: { borderColor: '#ff6b6b' },
@@ -492,13 +502,20 @@ export const styles: Record<string, React.CSSProperties> = {
   resumePickerHint: { fontSize: '0.75rem', opacity: 0.6, marginTop: '0.5rem' },
 
   // Preload status styles
+  //
+  // The `spin` animation is NOT declared here. An inline
+  // `animation` beats every stylesheet, so a `prefers-reduced-motion`
+  // rule could never switch it off. It lives on the `wl-spinner` class
+  // in index.css instead, where the media query can replace the
+  // infinite rotation with a static ring. Both spinners are
+  // `aria-hidden` and sit beside visible status text ("Preparing…",
+  // "Buffering…"), so nothing is lost when the motion stops.
   preloadSpinnerSmall: {
     width: '18px',
     height: '18px',
     border: '2px solid rgba(26,26,46,0.3)',
     borderTop: '2px solid #1a1a2e',
     borderRadius: '50%',
-    animation: 'spin 1s linear infinite',
   },
   startBtnLoading: { background: 'rgba(78,205,196,0.7)', cursor: 'wait' },
   // Connection status styles
@@ -514,12 +531,12 @@ export const styles: Record<string, React.CSSProperties> = {
     color: '#ffb74d',
     fontSize: '0.9rem',
   },
+  // See preloadSpinnerSmall: the animation is on `wl-spinner`.
   stalledSpinner: {
     width: '16px',
     height: '16px',
     border: '2px solid rgba(255,152,0,0.3)',
     borderTop: '2px solid #ff9800',
     borderRadius: '50%',
-    animation: 'spin 1s linear infinite',
   },
 };

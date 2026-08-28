@@ -96,6 +96,56 @@ button:disabled {
   }
 }
 
+/* Busy indicators. The rotation lives here rather than in the inline
+   style objects in styles.ts so the reduced-motion block below can
+   actually override it — an inline `animation` outranks any
+   stylesheet, which is why the player previously had no way to honour
+   the preference at all. */
+.wl-spinner {
+  animation: spin 1s linear infinite;
+}
+
+/* Visible focus for the password gate. styles.ts used to set
+   `outline: none` inline with no replacement, on the only control
+   standing between a listener and the story. */
+.wl-password-input:focus-visible {
+  outline: 2px solid var(--wl-accent, #4ecdc4);
+  outline-offset: 2px;
+  border-color: var(--wl-accent, #4ecdc4);
+}
+
+/* Motion preference. Vestibular disorders, migraine and motion
+   sensitivity all make sustained animation genuinely painful, and the
+   editor already honours this for its start-node pulse
+   (frontend/src/index.css). The player honoured it nowhere.
+
+   The blanket rule collapses transitions (including the inline
+   progress-bar `transition: width`) and stops looping animations; the
+   spinner then gets an explicit static substitute so a "busy" ring is
+   still visibly a ring rather than vanishing mid-rotation. Both
+   spinners are aria-hidden and sit next to live status text, so the
+   state is never conveyed by motion alone. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .wl-spinner {
+    animation: none !important;
+    /* Close the ring so it reads as a deliberate indicator rather
+       than a frozen three-quarter arc. `!important` because the ring's
+       border is an inline style from styles.ts, which a plain
+       declaration here could not reach. */
+    border-top-color: currentColor !important;
+    border-color: currentColor !important;
+  }
+}
+
 /* Offline support UI: drops anchored at the top of the viewport
    so it stays visible without competing with the story content.
    Designed for mobile-first thumb reach. */
@@ -106,7 +156,12 @@ button:disabled {
   right: 0;
   z-index: 50;
   padding: 8px 14px;
-  background: #ef4444;
+  /* Was #ef4444: white on it measures 3.76:1, under the 4.5:1 AA
+     floor for 13px/500 text. This banner appears exactly when a
+     listener has lost connection and needs to understand what
+     happened, so it is the worst possible place to be hard to read.
+     #b91c1c holds the same "something is wrong" red at 6.47:1. */
+  background: #b91c1c;
   color: #fff;
   font-size: 13px;
   text-align: center;

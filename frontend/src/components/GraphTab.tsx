@@ -114,6 +114,20 @@ const StoryCardNode = memo(function StoryCardNode({ data, selected }: NodeProps)
         <span className="graph-node-chip" data-kind={d.storyNode.type}>
           {d.isStart ? 'start' : d.isEnding ? 'ending' : d.storyNode.type}
         </span>
+        {/* Path membership used to be signalled by an amber border and
+            nothing else — invisible to anyone who can't separate it
+            from the default border by hue, and invisible to a screen
+            reader entirely. The chip carries the same information as
+            text. */}
+        {d.onPath && (
+          <span
+            className="graph-node-path-chip"
+            title="On the traced path"
+            aria-label="On the traced path"
+          >
+            path
+          </span>
+        )}
         {/* Flags outrank the character chip for attention: one is
             context, the other is someone saying this passage is
             wrong. */}

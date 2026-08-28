@@ -8,6 +8,7 @@ import {
 import { promoteWeight, toggleWeight } from '../lib/font-weights';
 import {
   COMPONENT_SPECS,
+  failingThemeContrast,
   type ComponentId,
   type ComponentSpec,
   type ComponentPropSpec,
@@ -339,6 +340,7 @@ export default function ThemeTab({ projectId }: Props) {
 
   const vars = theme.variables ?? {};
   const components = theme.components ?? {};
+  const contrastWarnings = failingThemeContrast(vars);
 
   // Use a CSS class instead of an inline grid-template-columns so we
   // can collapse to a single column on narrow viewports. The class is
@@ -365,6 +367,30 @@ export default function ThemeTab({ projectId }: Props) {
             <p className="text-muted">
               Affect every component unless overridden in the per-component panels below.
             </p>
+            {/* Until this existed an author could set body text and
+                page background to the same colour and ship it: nothing
+                in the editor or the backend looked at the pair, and the
+                first person to find out was a listener who couldn't
+                read the story. Unset knobs are measured against the
+                player's real defaults, and a gradient page is measured
+                at every stop. */}
+            {contrastWarnings.length > 0 && (
+              <div
+                className="alert alert-warning"
+                data-testid="theme-contrast-warning"
+                role="alert"
+              >
+                <strong>Hard to read for some listeners.</strong> These pairs fall below the WCAG AA
+                minimum:
+                <ul>
+                  {contrastWarnings.map((w) => (
+                    <li key={w.id}>
+                      {w.label} — {w.ratio.toFixed(2)}:1, needs {w.required}:1
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <ul className="ui-options-list" data-testid="theme-colors">
               {VARIABLE_KNOBS.map((knob) => {
                 const value = vars[knob.key] ?? '';

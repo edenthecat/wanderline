@@ -12,6 +12,14 @@
   --color-bg: #f9fafb;
   --color-surface: #ffffff;
   --color-border: #e5e7eb;
+  /* --color-border is 1.24:1 on white: fine for a decorative divider,
+     but WCAG 1.4.11 asks 3:1 of a boundary that identifies a control,
+     and at 1.24:1 the edge of a text field was essentially invisible.
+     #878e9c is 3.29:1 on --color-surface and 3.15:1 on --color-bg, so
+     it clears the bar on both surfaces a control can sit on. Kept as
+     a separate token so the 40-odd decorative uses of --color-border
+     don't all turn into hard grey rules. */
+  --color-border-control: #878e9c;
   --color-text: #111827;
   --color-text-muted: #6b7280;
   --color-danger: #dc2626;
@@ -204,7 +212,7 @@ input[type='number'],
 textarea,
 .select {
   padding: 8px 12px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-control);
   border-radius: var(--radius-sm);
   font-size: 14px;
   font-family: inherit;
@@ -263,10 +271,12 @@ textarea:focus,
   background: var(--color-primary-hover);
 }
 
+/* Ghost buttons have no fill, so this border is the only thing that
+   says "button" — a 1.4.11 boundary, hence the control token. */
 .btn-ghost {
   background: transparent;
   color: var(--color-text-muted);
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-control);
 }
 
 .btn-ghost:hover:not(:disabled) {
@@ -1060,8 +1070,14 @@ textarea:focus,
   border-right: 1px solid var(--color-border);
   color: var(--color-text-muted);
 }
+/* CodeMirror's default focus outline is a 1px dotted #212121 that
+   clashes with the panel chrome, so it was removed — but nothing
+   replaced it, leaving a keyboard user with no way to tell the Ink
+   editor had focus. Substitute the same indigo the form controls use
+   (6.29:1 on white), inset so it doesn't fight the panel border. */
 .ink-source-host .cm-focused {
-  outline: none;
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
 }
 
 /* Slide-in source-editor panel inside the Graph view. */
@@ -1878,21 +1894,60 @@ details[open] > .audio-section-summary {
   }
 }
 
-/* Overlay visuals: dim, on-path, search match/unmatched. */
-.graph-node-card.is-dim {
-  opacity: 0.32;
+/* Overlay visuals: dim, on-path, search match/unmatched.
+
+   De-emphasis is done with a recessed *surface*, not with `opacity`.
+   Card opacity fades the text along with everything else: at the old
+   0.32 the node title measured 2.07:1 and at 0.35 the search-unmatched
+   title measured 2.24:1, both far under the 4.5:1 AA floor. "Dim
+   unreachable nodes" exists precisely so authors can still see the
+   nodes rather than have them hidden — at those ratios a low-vision
+   author couldn't read them, so the setting quietly became "hide".
+
+   Recessing the fill keeps the de-emphasis obvious while the ink stays
+   at full strength: title 15.31:1, footer 6.5:1 on the new surface.
+   `saturate()` stays because the sRGB saturation matrix is built from
+   the luminance coefficients, so it drains hue without moving
+   luminance — it costs no contrast. */
+.graph-node-card.is-dim,
+.graph-node-card.is-unmatched {
+  background: #e9eef5;
+  border-color: #cbd5e1;
+  box-shadow: none;
   filter: saturate(0.35);
 }
+/* The footer is the one piece of card text that isn't near-black;
+   #6b7280 on the recessed fill is 4.15:1, so darken it to clear AA. */
+.graph-node-card.is-dim .graph-node-card-footer,
+.graph-node-card.is-unmatched .graph-node-card-footer {
+  color: #475569;
+}
+/* #f59e0b measured 2.15:1 on the card — under the 3:1 WCAG 1.4.11
+   asks of a boundary that carries meaning. #b45309 is 5.02:1 on white
+   and 4.47:1 on the recessed dim fill. Path membership also gets the
+   `path` chip in StoryCardNode so it is not signalled by colour
+   alone. */
 .graph-node-card.is-on-path {
-  border-color: #f59e0b;
-  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.18);
+  border-color: #b45309;
+  box-shadow: 0 0 0 3px rgba(180, 83, 9, 0.18);
 }
 .graph-node-card.is-matched {
   border-color: #2563eb;
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
 }
-.graph-node-card.is-unmatched {
-  opacity: 0.35;
+
+/* Non-colour marker for path membership. */
+.graph-node-path-chip {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #7c2d12;
+  background: #fef3c7;
+  border: 1px solid #b45309;
+  padding: 1px 5px;
+  border-radius: 999px;
+  white-space: nowrap;
 }
 
 /* On-path edges pop in front; dim edges fade back. */

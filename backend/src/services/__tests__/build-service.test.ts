@@ -413,11 +413,81 @@ describe('build-service unit', () => {
       expect(scriptBody).toMatch(/\\u003c\\\/script\\u003e|\\u003c\/script>/i);
     });
 
-    it('declares the three smoke checks in the embedded runner', () => {
+    it('declares every smoke check in the embedded runner', () => {
       const html = renderSmokeHtml(sampleStory);
       expect(html).toMatch(/Every node has content, a divert, or choices/);
       expect(html).toMatch(/Every divert \/ choice target resolves/);
       expect(html).toMatch(/Every referenced audio file is reachable/);
+      expect(html).toMatch(/Theme colours meet WCAG AA contrast/);
+    });
+
+    // smoke.html is the page authors are told to open before
+    // publishing, so it is where a palette nobody can read should
+    // surface. The maths comes from @wanderline/shared — the same
+    // module the editor's Theme tab warns with — so the build and the
+    // editor can't disagree about whether a story is readable.
+    describe('theme contrast check', () => {
+      function contrastPayload(html: string): string[] {
+        const match = /window\.__WANDERLINE_CONTRAST__=(\[[^\n]*\]);/.exec(html);
+        expect(match).not.toBeNull();
+        return JSON.parse(match![1]) as string[];
+      }
+
+      it('reports no problems for a story with no theme', () => {
+        expect(contrastPayload(renderSmokeHtml(sampleStory))).toEqual([]);
+      });
+
+      it('reports no problems for a readable author palette', () => {
+        const story = {
+          ...sampleStory,
+          settings: {
+            theme: {
+              variables: {
+                pageBackground: '#ffffff',
+                textColor: '#111827',
+                // Headings have to move with the page too — leaving
+                // the dark-theme default here is itself a failure the
+                // check reports, which is the point.
+                headingColor: '#111827',
+              },
+            },
+          },
+        };
+        expect(contrastPayload(renderSmokeHtml(story))).toEqual([]);
+      });
+
+      it('reports the pair and the measured ratio when a palette fails', () => {
+        const story = {
+          ...sampleStory,
+          settings: { theme: { variables: { pageBackground: '#336699', textColor: '#336699' } } },
+        };
+        const problems = contrastPayload(renderSmokeHtml(story));
+        expect(problems.length).toBeGreaterThan(0);
+        expect(problems.join('\n')).toMatch(/Body text on the page background: 1\.00:1/);
+        expect(problems.join('\n')).toMatch(/needs 4\.5:1/);
+      });
+
+      // The trap the character-theme defect came from: a light page
+      // under text colours chosen for the dark default.
+      it('catches a light page left with the default dark-theme text', () => {
+        const story = {
+          ...sampleStory,
+          settings: { theme: { variables: { pageBackground: '#ffffff' } } },
+        };
+        expect(contrastPayload(renderSmokeHtml(story)).join('\n')).toMatch(
+          /Body text on the page background/,
+        );
+      });
+
+      it('keeps the payload from closing the inline script', () => {
+        const story = {
+          ...sampleStory,
+          settings: { theme: { variables: { textColor: '</script><b>' } } },
+        };
+        const html = renderSmokeHtml(story);
+        const body = html.split('window.__WANDERLINE_CONTRAST__')[1].split('</script>')[0];
+        expect(body).not.toMatch(/<\/script>/i);
+      });
     });
 
     it('handles a story with no nodes without throwing', () => {

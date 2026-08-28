@@ -31,6 +31,7 @@ import {
 } from './build-manifest.js';
 import { storyHash } from './story-hash.js';
 import { bundleGoogleFonts, renderThemeCss, type ThemeConfig } from './theme-render.js';
+import { evaluateThemeContrast } from '@wanderline/shared';
 import { prepareDistHtml } from './build-html.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -789,6 +790,13 @@ function escapeHtml(text: string): string {
  *      (GET request to ./audio/<filename> with cache:no-cache; HEAD
  *      isn't reliably allowed on file:// URLs so we use the smallest
  *      method that works in all target browsers).
+ *   4) Every text/surface pair in the project's theme clears the WCAG
+ *      AA contrast minimum. Authors are told to open this page before
+ *      publishing, and an unreadable palette is as much a broken build
+ *      as a missing audio file — the difference is that only the
+ *      listener finds out. Computed here rather than in the page's
+ *      inline script so it uses the same @wanderline/shared code the
+ *      editor's Theme tab warns with.
  *
  * Designed to run on file://  — no fetch of story.json, no React, no
  * imports, no build step. Just paste into a browser, get a green
@@ -804,6 +812,18 @@ export function renderSmokeHtml(storyData: unknown): string {
   const title = escapeHtml(
     ((storyData as { title?: string }).title ?? 'Wanderline build') + ' — smoke test',
   );
+
+  // Contrast is resolved at build time — the palette is already known
+  // and the maths needs no DOM, so shipping the answer beats shipping
+  // a second copy of the algorithm into the inline script.
+  const themeVariables = (
+    storyData as { settings?: { theme?: { variables?: Record<string, string | undefined> } } }
+  ).settings?.theme?.variables;
+  const contrastProblems = evaluateThemeContrast(themeVariables)
+    .filter((check) => !check.passes)
+    .map((check) => `${check.label}: ${check.ratio.toFixed(2)}:1 (needs ${check.required}:1)`);
+  const contrastJson = JSON.stringify(contrastProblems).replace(/</g, '\\u003c');
+
   // The runner is inlined as a regular <script> so file:// pages can
   // execute it without module-loader gymnastics.
   return `<!doctype html>
@@ -829,7 +849,8 @@ export function renderSmokeHtml(storyData: unknown): string {
   <h1>${title}</h1>
   <div class="summary" id="summary">Running…</div>
   <div id="results"></div>
-  <script>window.__WANDERLINE_STORY__=${storyJsonStr};</script>
+  <script>window.__WANDERLINE_STORY__=${storyJsonStr};
+  window.__WANDERLINE_CONTRAST__=${contrastJson};</script>
   <script>
   (function () {
     var story = window.__WANDERLINE_STORY__ || {};
@@ -880,6 +901,11 @@ export function renderSmokeHtml(storyData: unknown): string {
       });
     });
     record('Every divert / choice target resolves', missingTargets);
+
+    // 2b) Theme readability, computed at build time from the same
+    // rules the editor's Theme tab warns with.
+    record('Theme colours meet WCAG AA contrast',
+      (window.__WANDERLINE_CONTRAST__ || []).slice());
 
     // 3) Audio reachability — fire HEAD requests in parallel and wait.
     var audioRefs = [];
