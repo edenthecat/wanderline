@@ -139,33 +139,54 @@ describe('dimmed graph nodes stay readable', () => {
     });
   }
 
-  // The opaque fill is (0,3,0) and the validation states are (0,2,0),
-  // so without the :not()s it would erase the pink and amber washes on
-  // a node that is both dimmed and broken — the exact regression the
-  // wash-on-background-image approach exists to avoid.
-  it('does not let the opaque fill erase a validation state', () => {
-    const rule = css.slice(css.indexOf('.graph-node-card.is-start.is-dim'));
-    const selectors = rule.slice(0, rule.indexOf('{'));
-    for (const state of ['is-error', 'is-warning', 'is-missing']) {
-      expect(selectors, `opaque fill should stand aside for .${state}`).toContain(
-        `:not(.${state})`,
-      );
-    }
-  });
+  // Whether the opaque fill may stand aside for a validation state
+  // depends on declaration order, not on the fill's own specificity.
+  // `.is-start` is declared before .is-error/.is-warning/.is-missing,
+  // so those win on a node carrying both and supply their own fill.
+  // `.is-ending` is declared after them, so its gradient wins and
+  // there is no background-color to defer to — excluding it would
+  // leave a dimmed, broken ending node transparent under the wash.
+  //
+  // This is also the guard for the next state someone adds: any card
+  // state painting with the `background` shorthand leaves no
+  // background-color for the wash, so it has to appear here.
+  it('gives every gradient-filled state a fill, deferring only where the cascade allows', () => {
+    const ruleStart = (selector: string) => css.indexOf(`\n${selector} {`);
+    const validationStates = ['is-error', 'is-warning', 'is-missing'];
+    const lastValidation = Math.max(
+      ...validationStates.map((s) => ruleStart(`.graph-node-card.${s}`)),
+    );
+    expect(lastValidation).toBeGreaterThan(0);
 
-  // The guard that catches the next one of these: any card state that
-  // paints with the `background` shorthand leaves no background-color
-  // for the wash to sit on, so it has to be listed in the opaque-fill
-  // rule above.
-  it('lists every gradient-filled card state in the opaque-fill rule', () => {
     const gradientStates = [...css.matchAll(/\.graph-node-card\.(is-[a-z-]+)\s*\{([^}]*)\}/g)]
       .filter(([, , body]) => /(?:^|;)\s*background\s*:[^;]*gradient\(/.test(body))
       .map(([, state]) => state);
     expect(gradientStates.length).toBeGreaterThan(0);
-    const opaqueFillRule = css.slice(css.indexOf('.graph-node-card.is-start.is-dim'));
+
+    const opaqueFill = css.slice(css.indexOf('.graph-node-card.is-start.is-dim'));
+    const selectors = opaqueFill.slice(0, opaqueFill.indexOf('{'));
+
     for (const state of gradientStates) {
-      expect(opaqueFillRule).toContain(`.graph-node-card.${state}.is-dim`);
-      expect(opaqueFillRule).toContain(`.graph-node-card.${state}.is-unmatched`);
+      for (const overlay of ['is-dim', 'is-unmatched']) {
+        const selector = selectors
+          .split(',')
+          .map((s) => s.trim())
+          .find((s) => s.startsWith(`.graph-node-card.${state}.${overlay}`));
+        expect(selector, `.${state}.${overlay} needs an opaque fill`).toBeDefined();
+
+        // Declared after the validation states? Then its gradient
+        // beats their fills and it must not defer to them.
+        const deferrable = ruleStart(`.graph-node-card.${state}`) < lastValidation;
+        for (const guard of validationStates) {
+          if (deferrable) {
+            expect(selector, `.${state} should defer to .${guard}`).toContain(`:not(.${guard})`);
+          } else {
+            expect(selector, `.${state} outranks .${guard}, so it cannot defer`).not.toContain(
+              `:not(.${guard})`,
+            );
+          }
+        }
+      }
     }
   });
 });

@@ -627,6 +627,56 @@ describe('colours the parser cannot read are reported, never passed', () => {
     expect(checks.find((c) => c.id === 'text-on-page')!.ratio).toBeNull();
   });
 
+  // A stop that isn't a function has no parens for a function-name
+  // check to catch. `linear-gradient(lightgray, #111111)` scored
+  // 18.88:1 — a green tick for a page whose top half is white text on
+  // light grey — because the unreadable stop was simply dropped.
+  it.each([
+    ['a keyword outside the small named map', 'linear-gradient(lightgray, #111111)'],
+    ['currentColor', 'linear-gradient(currentColor, #111111)'],
+    ['a hex length that is not a colour', 'linear-gradient(#abcde, #111111)'],
+  ])('refuses to score a gradient containing %s', (_label, background) => {
+    const checks = evaluateThemeContrast({
+      variables: { textColor: '#ffffff' },
+      components: { page: { backgroundImage: background } },
+    });
+    expect(checks.find((c) => c.id === 'text-on-page')!.ratio).toBeNull();
+  });
+
+  it('still scores the gradient grammar it does understand', () => {
+    const checks = evaluateThemeContrast({
+      components: {
+        page: { backgroundImage: 'repeating-linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)' },
+      },
+    });
+    expect(checks.find((c) => c.id === 'text-on-page')!.ratio).not.toBeNull();
+  });
+
+  // The image layer can be translucent, and what shows through is the
+  // shorthand's background-color — not the browser canvas. Flattening
+  // a 20%-black scrim over white called a dark page 1.38:1 and failed
+  // the smoke check on a build that renders at ~14:1.
+  it('composites a translucent page image over the colour beneath it', () => {
+    const checks = evaluateThemeContrast({
+      variables: { pageBackground: '#1a1a2e' },
+      components: {
+        page: { backgroundImage: 'linear-gradient(rgba(0,0,0,0.2), rgba(0,0,0,0.2))' },
+      },
+    });
+    const onPage = checks.find((c) => c.id === 'text-on-page')!;
+    expect(onPage.passes).toBe(true);
+    expect(onPage.ratio!).toBeGreaterThan(10);
+  });
+
+  // `none` is how an author clears a knob. Returning it verbatim left
+  // the Theme tab showing a permanent "Couldn't check these — none".
+  it('treats a page background cleared with `none` as no override', () => {
+    const checks = evaluateThemeContrast({
+      components: { page: { backgroundImage: 'none', background: 'none' } },
+    });
+    expect(checks.find((c) => c.id === 'text-on-page')!.ratio).not.toBeNull();
+  });
+
   it('still resolves a translucent surface against the page it shows through', () => {
     // The default card is rgba(255,255,255,0.1), so an unsamplable
     // page genuinely does leave its readability unknown.

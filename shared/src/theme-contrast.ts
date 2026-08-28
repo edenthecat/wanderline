@@ -3,8 +3,8 @@ import {
   AA_NORMAL_TEXT,
   composite,
   contrastRatio,
-  extractColors,
   flatten,
+  colorTokenPattern,
   parseColor,
   type Rgb,
   type Rgba,
@@ -154,26 +154,56 @@ function componentValue(
 // surface we cannot sample.
 const SAMPLABLE_FUNCTION = /^(?:(?:repeating-)?(?:linear|radial|conic)-gradient|rgba?|hsla?)$/;
 
+// The non-colour vocabulary of a gradient: geometry, interpolation and
+// the function names themselves. Whatever is left after removing these
+// and every colour we parsed is, by elimination, a colour we failed to
+// read.
+const GRADIENT_GRAMMAR =
+  /(?:repeating-)?(?:linear|radial|conic)-gradient|\b(?:to|at|in|from|circle|ellipse|top|bottom|left|right|center|closest-side|closest-corner|farthest-side|farthest-corner|srgb|srgb-linear|display-p3|a98-rgb|prophoto-rgb|rec2020|lab|oklab|xyz|xyz-d50|xyz-d65|hsl|hwb|lch|oklch|shorter|longer|increasing|decreasing|hue)\b/gi;
+const CSS_NUMBER =
+  /-?\d*\.?\d+(?:px|%|r?em|deg|rad|grad|turn|vw|vh|vmin|vmax|ex|ch|pt|pc|cm|mm|in|q)?/gi;
+
 /**
- * Every colour the page background resolves to, or null when some of
- * it can't be read.
+ * Every colour the page background resolves to, or null when any part
+ * of it can't be read.
  *
- * `extractColors` returns the stops it recognises and ignores the
- * rest, which is wrong for a *verdict*: a scrim over a photo
- * (`linear-gradient(rgba(0,0,0,.6), rgba(0,0,0,.6)), url(photo.jpg)` —
- * the pattern the Page → Background image hint itself suggests) would
- * be scored as if the scrim were the whole surface, flattened over
- * white, with the photo ignored. That is a confident red ✗ for a page
- * that may be fine, and a confident green ✓ for one that isn't.
- * Partial knowledge is reported as no knowledge.
+ * `extractColors` returns the stops it recognises and drops the rest,
+ * which is fine for "show me the colours" and wrong for a *verdict*.
+ * Two ways that bit:
+ *
+ *   - A scrim over a photo — `linear-gradient(rgba(0,0,0,.6),
+ *     rgba(0,0,0,.6)), url(photo.jpg)`, the pattern the Page →
+ *     Background image hint itself suggests — would be scored as if
+ *     the scrim were the whole surface, with the photo ignored.
+ *   - A stop written as a bare keyword outside the small NAMED map
+ *     (`lightgray`, `currentColor`) or a hex length we reject
+ *     (`#abcde`) has no parens, so a function-name check waves it
+ *     through and the page is scored on the surviving stops alone.
+ *     `linear-gradient(lightgray, #111111)` came out as 18.88:1 —
+ *     a green tick for a page whose top half is white on light grey.
+ *
+ * So: every colour-shaped token has to parse, and whatever is left
+ * over has to be gradient grammar. Partial knowledge is reported as no
+ * knowledge.
  */
 function samplePageStops(value: string): Rgba[] | null {
   const single = parseColor(value);
   if (single) return [single];
+
   const functions = [...value.matchAll(/([a-zA-Z][\w-]*)\(/g)].map((m) => m[1].toLowerCase());
   if (functions.some((fn) => !SAMPLABLE_FUNCTION.test(fn))) return null;
-  const stops = extractColors(value);
-  return stops.length > 0 ? stops : null;
+
+  const tokens = value.match(colorTokenPattern()) ?? [];
+  const stops = tokens.map(parseColor);
+  if (stops.length === 0 || stops.some((stop) => stop === null)) return null;
+
+  const residue = value
+    .replace(colorTokenPattern(), ' ')
+    .replace(GRADIENT_GRAMMAR, ' ')
+    .replace(CSS_NUMBER, ' ')
+    .replace(/[(),/]/g, ' ')
+    .trim();
+  return residue === '' ? (stops as Rgba[]) : null;
 }
 
 /**
@@ -191,25 +221,41 @@ function samplePageStops(value: string): Rgba[] | null {
  * with the shipped default, a gradient, it is covered. Modelling this
  * as "component beats variable" would have passed a white page with
  * near-white text, and failed a dark page that renders fine.
+ *
+ * Both halves are returned, because the image layer can be
+ * translucent: a 20%-black scrim over a dark page is dark, and
+ * flattening the scrim over the browser canvas instead would have
+ * called it 1.38:1 and failed a build that renders at ~14:1.
  */
-function resolvePageSurface(theme: ThemeInput | undefined): string {
+interface PageSurface {
+  /** The layer the text sits on — an image/gradient, or a flat colour. */
+  value: string;
+  /** The opaque `background-color` painted underneath it. */
+  beneath: string;
+}
+
+/** `none` on a component prop means "no override", not a colour. */
+function override(theme: ThemeInput | undefined, prop: string): string | undefined {
+  const value = componentValue(theme, 'page', prop);
+  return isSet(value) && value.toLowerCase() !== 'none' ? value : undefined;
+}
+
+function resolvePageSurface(theme: ThemeInput | undefined): PageSurface {
   // Read through `componentValue`, not `?.trim()` — see its docblock.
-  const image = componentValue(theme, 'page', 'backgroundImage');
-  const color = componentValue(theme, 'page', 'background');
+  const image = override(theme, 'backgroundImage');
+  const color = override(theme, 'background');
   const variable = isSet(theme?.variables?.pageBackground)
-    ? theme!.variables!.pageBackground!.trim()
+    ? theme.variables.pageBackground.trim()
     : PLAYER_THEME_DEFAULTS.pageBackground;
 
-  if (isSet(image) && image.toLowerCase() !== 'none') return image;
-  if (isSet(image)) {
-    // Explicitly cleared: the shorthand's background-color shows. If
-    // that came from a gradient it was never a colour at all, so the
-    // browser canvas (white) is what's behind the text.
-    if (isSet(color)) return color;
-    return isImageValue(variable) ? '#ffffff' : variable;
-  }
-  if (isImageValue(variable)) return variable;
-  return isSet(color) ? color : variable;
+  // The shorthand's colour. A gradient there paints as an image and
+  // leaves background-color at its initial `transparent`, which shows
+  // the browser's own canvas.
+  const beneath = color ?? (isImageValue(variable) ? '#ffffff' : variable);
+
+  if (image) return { value: image, beneath };
+  if (isImageValue(variable)) return { value: variable, beneath };
+  return { value: beneath, beneath };
 }
 
 // The surfaces text actually lands on in the player. Headings are
@@ -295,8 +341,18 @@ function resolveSource(theme: ThemeInput | undefined, chain: Source[]): string |
 export function evaluateThemeContrast(theme: ThemeInput | undefined): ThemeContrastCheck[] {
   const results: ThemeContrastCheck[] = [];
 
-  const pageValue = resolvePageSurface(theme);
-  const pageStops = samplePageStops(pageValue) ?? [];
+  // The page, flattened once: its visible layer composited over the
+  // background-color painted beneath it, over the browser canvas.
+  const page = resolvePageSurface(theme);
+  const stops = samplePageStops(page.value);
+  const beneath = parseColor(page.beneath);
+  const pageBases: Rgb[] | null =
+    stops && beneath
+      ? stops.map((stop) => composite(stop.rgb, flatten([beneath], [255, 255, 255]), stop.alpha))
+      : null;
+  // Name whichever half we couldn't read, so the author knows which
+  // field to change.
+  const pageUnreadable = stops ? page.beneath : page.value;
 
   for (const pair of PAIRS) {
     const unparsed: string[] = [];
@@ -320,15 +376,9 @@ export function evaluateThemeContrast(theme: ThemeInput | undefined): ThemeContr
     // that uses a background image.
     const bottom = layers[0];
     const pageIsVisible = layers.length === 0 || (bottom !== null && bottom.alpha < 1);
-    const bases: Rgb[] = pageIsVisible
-      ? // A translucent page resolves over white — the browser's own
-        // canvas — before anything stacks on it.
-        pageStops.map((stop) => flatten([stop], [255, 255, 255]))
-      : bottom
-        ? [bottom.rgb]
-        : [];
+    const bases: Rgb[] = pageIsVisible ? (pageBases ?? []) : bottom ? [bottom.rgb] : [];
     const stacked = pageIsVisible ? layers : layers.slice(1);
-    if (pageIsVisible && pageStops.length === 0) unparsed.push(pageValue);
+    if (pageIsVisible && !pageBases) unparsed.push(pageUnreadable);
 
     if (unparsed.length > 0) {
       results.push({

@@ -1936,15 +1936,21 @@ details[open] > .audio-section-summary {
    the measured ratios cover. Higher specificity than the state rules,
    and scoped so it only applies while dimmed.
 
-   The `:not()`s matter: at (0,3,0) this outranks `.is-error` and
-   `.is-warning` at (0,2,0), so without them a start or ending node
-   that is *also* broken would lose the pink or amber wash that says
-   so — the very regression the comment above sets out to prevent.
-   Those states already provide their own opaque fill. */
+   `.is-start` is declared BEFORE the validation states, so on a node
+   that is both broken and dimmed those states' own opaque fills win
+   and this must stand aside — at (0,3,0) it would otherwise erase the
+   pink or amber wash that says the node is broken.
+
+   `.is-ending` is declared AFTER them, so its gradient wins and there
+   is no background-color regardless of any validation state. It needs
+   the fill unconditionally; excluding it the same way would leave a
+   dimmed, broken ending node transparent under the wash. (That an
+   ending node's green already hides its own error styling is a
+   separate, pre-existing precedence quirk.) */
 .graph-node-card.is-start.is-dim:not(.is-error):not(.is-warning):not(.is-missing),
 .graph-node-card.is-start.is-unmatched:not(.is-error):not(.is-warning):not(.is-missing),
-.graph-node-card.is-ending.is-dim:not(.is-error):not(.is-warning):not(.is-missing),
-.graph-node-card.is-ending.is-unmatched:not(.is-error):not(.is-warning):not(.is-missing) {
+.graph-node-card.is-ending.is-dim,
+.graph-node-card.is-ending.is-unmatched {
   background-color: #ffffff;
 }
 /* The footer is the one piece of card text that isn't near-black;
