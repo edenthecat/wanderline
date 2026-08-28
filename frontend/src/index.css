@@ -3692,6 +3692,7 @@ which is context rather than a problem. */ .node-flag-badge {
   color: #991b1b;
 }
 .readiness-status-unknown,
+.readiness-status-empty,
 .readiness-status-checking {
   background: #f1f5f9;
   color: #475569;
