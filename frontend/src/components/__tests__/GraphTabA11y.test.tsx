@@ -132,29 +132,30 @@ describe('GraphTab keyboard and screen-reader access', () => {
     await waitFor(() => expect(nodeEl(container, 'corridor')).toBeTruthy());
 
     expect(nodeEl(container, 'corridor').getAttribute('aria-label')).toContain('validation error');
-    // ...and a non-colour marker on the card itself for sighted users.
-    // (Queried by selector, not getByRole: jsdom can't measure the
-    // canvas, so React Flow leaves every node visibility:hidden and
-    // role queries skip them.)
+    // ...and a non-colour marker on the card itself for sighted users,
+    // since the severity is otherwise only a border tint.
     const marker = nodeEl(container, 'corridor').querySelector('.graph-node-severity');
-    expect(marker?.getAttribute('role')).toBe('img');
-    expect(marker?.getAttribute('aria-label')).toBe('Validation error');
     expect(marker?.textContent?.trim()).toBeTruthy();
   });
 
-  // A bare <span> maps to `generic`, a role that prohibits naming, so
-  // the audio dot's aria-label was dropped by browsers — and the span
-  // is empty, so it exposed nothing at all.
-  it('exposes the audio dot with a naming-capable role', async () => {
+  // A focused role="group" has its contents read out after its name,
+  // so leaving the card exposed announced every node twice: once from
+  // the ariaLabel we build, once from the chips and rows inside it.
+  it('announces each node once, through the wrapper label only', async () => {
     const { container } = renderGraph();
     await waitFor(() => expect(nodeEl(container, 'corridor')).toBeTruthy());
 
-    const dot = nodeEl(container, 'corridor').querySelector('.graph-node-dot');
-    expect(dot?.getAttribute('role')).toBe('img');
-    expect(dot?.getAttribute('aria-label')).toBe('has audio');
-
-    const offDot = nodeEl(container, '_intro').querySelector('.graph-node-dot');
-    expect(offDot?.getAttribute('aria-label')).toBe('no audio assigned');
+    for (const id of ['_intro', 'corridor']) {
+      const card = nodeEl(container, id).querySelector('.graph-node-card');
+      expect(card).toHaveAttribute('aria-hidden', 'true');
+    }
+    // Nothing focusable is inside, so this hides no tab stop
+    // (axe `aria-hidden-focus`).
+    expect(
+      nodeEl(container, 'corridor').querySelectorAll(
+        'a, button, input, select, textarea, [tabindex]',
+      ),
+    ).toHaveLength(0);
   });
 
   // React Flow makes nodes focusable and binds Enter/Space, but its

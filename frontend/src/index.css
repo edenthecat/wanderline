@@ -3498,6 +3498,19 @@ which is context rather than a problem. */ .node-flag-badge {
   line-height: 1;
   padding: 2px 4px;
   border-radius: 4px;
+  flex: 0 0 auto;
+}
+/* The header is a no-wrap flex row inside a 200px card, and an error
+   node with both a flag and a character overruns it. Flex items shrink
+   below their content by default and `overflow` is visible, so without
+   this the chips' text bleeds past its own pill. The character chip
+   already clips itself (max-width + ellipsis). */
+.graph-node-chip,
+.graph-node-flag {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .graph-node-severity.is-error {
   color: #b91c1c;

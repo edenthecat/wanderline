@@ -184,6 +184,10 @@ export default function ProjectDetailPage() {
     function handleClick(e: MouseEvent) {
       if (!(e.target instanceof Node) || !mobileSheetRef.current) return;
       if (mobileSheetRef.current.contains(e.target)) return;
+      // The group buttons own the toggle. Closing here would flush
+      // before the click lands, so the button would read the sheet as
+      // already shut and immediately reopen it.
+      if (e.target instanceof Element && e.target.closest('.workspace-mobile-nav')) return;
       // mousedown's default action moves focus to the hit target's
       // nearest focusable ancestor. The scrim has none, so the
       // browser would put focus on <body> a beat after close()

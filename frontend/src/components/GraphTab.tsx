@@ -108,7 +108,12 @@ const StoryCardNode = memo(function StoryCardNode({ data, selected }: NodeProps)
   if (d.unmatched) cls.push('is-unmatched');
 
   return (
-    <div className={cls.join(' ')}>
+    // aria-hidden: React Flow's node wrapper carries the whole story
+    // in `ariaLabel` (see nodeAriaLabel), and a focused `group` has
+    // its contents read out after its name — without this, every card
+    // is announced twice over. Nothing in here is focusable, so this
+    // hides no interactive target.
+    <div className={cls.join(' ')} aria-hidden="true">
       <Handle type="target" position={Position.Top} className="graph-node-handle" />
       <div className="graph-node-card-header">
         <span className="graph-node-chip" data-kind={d.storyNode.type}>
@@ -116,23 +121,20 @@ const StoryCardNode = memo(function StoryCardNode({ data, selected }: NodeProps)
         </span>
         {/* Severity is otherwise carried by border colour alone
             (`is-error` / `is-warning`), which fails 1.4.1 Use of
-            Colour. This glyph is the non-colour marker; the same fact
-            is folded into the node's ariaLabel for screen readers. */}
+            Colour. This glyph is the non-colour marker for sighted
+            users; the fact itself reaches assistive tech through the
+            node's ariaLabel. */}
         {d.severity && (
           <span
             className={`graph-node-severity is-${d.severity}`}
-            role="img"
             title={d.severity === 'error' ? 'Validation error' : 'Validation warning'}
-            aria-label={d.severity === 'error' ? 'Validation error' : 'Validation warning'}
           >
             {d.severity === 'error' ? '✕' : '⚠'}
           </span>
         )}
         {/* Flags outrank the character chip for attention: one is
             context, the other is someone saying this passage is
-            wrong. No aria-label on either: they have visible text,
-            and a bare <span> maps to `generic`, a role that prohibits
-            naming — browsers drop the label entirely. */}
+            wrong. */}
         {d.flagCount > 0 && (
           <span
             className="graph-node-flag"
@@ -150,13 +152,12 @@ const StoryCardNode = memo(function StoryCardNode({ data, selected }: NodeProps)
             {d.character.name}
           </span>
         )}
-        {/* role="img" so the label IS honoured — this span is empty,
-            so without a naming-capable role it exposes nothing at
-            all and "which passages lack audio" is colour-only. */}
+        {/* Colour-only by construction — an empty 8px dot. The
+            fact lives in the node's ariaLabel; `title` gives mouse
+            users the same answer. */}
         <span
           className={`graph-node-dot ${d.hasAudio ? 'is-on' : 'is-off'}`}
-          role="img"
-          aria-label={d.hasAudio ? 'has audio' : 'no audio assigned'}
+          title={d.hasAudio ? 'Has audio' : 'No audio assigned'}
         />
       </div>
       <div className="graph-node-card-title">{d.storyNode.id}</div>
@@ -225,7 +226,7 @@ const StoryCardNode = memo(function StoryCardNode({ data, selected }: NodeProps)
 const TerminalNode = memo(function TerminalNode({ data }: NodeProps) {
   const label = (data as { label: string }).label;
   return (
-    <div className="graph-node-terminal">
+    <div className="graph-node-terminal" aria-hidden="true">
       <Handle type="target" position={Position.Top} className="graph-node-handle" />
       {label}
     </div>
@@ -237,7 +238,7 @@ const TerminalNode = memo(function TerminalNode({ data }: NodeProps) {
 const MissingNode = memo(function MissingNode({ data }: NodeProps) {
   const label = (data as { label: string }).label;
   return (
-    <div className="graph-node-card is-missing">
+    <div className="graph-node-card is-missing" aria-hidden="true">
       <Handle type="target" position={Position.Top} className="graph-node-handle" />
       <div className="graph-node-card-header">
         <span className="graph-node-chip" data-kind="missing">

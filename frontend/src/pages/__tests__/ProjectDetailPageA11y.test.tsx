@@ -189,6 +189,22 @@ describe('ProjectDetailPage navigation accessibility', () => {
     expect(document.activeElement).toBe(soundBtn);
   });
 
+  // The document mousedown listener flushes before the click lands,
+  // so if it closed the sheet the button's own toggle would read it as
+  // already shut and immediately reopen it.
+  it('closes the sheet when its own group button is pressed again', async () => {
+    await renderPage();
+
+    const soundBtn = within(mobileNav()).getByRole('button', { name: 'Sound' });
+    fireEvent.click(soundBtn);
+    await waitFor(() => expect(document.querySelector('.workspace-mobile-sheet')).toBeTruthy());
+
+    fireEvent.mouseDown(soundBtn);
+    fireEvent.click(soundBtn);
+    await waitFor(() => expect(document.querySelector('.workspace-mobile-sheet')).toBeNull());
+    expect(soundBtn).toHaveAttribute('aria-expanded', 'false');
+  });
+
   // Focus is inside the sheet from the moment it opens, so dismissing
   // by tapping the scrim has to hand it back too — not only Escape.
   it('returns focus to the trigger when the sheet is dismissed by an outside click', async () => {
