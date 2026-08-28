@@ -19,6 +19,7 @@ import NodeRenameButton from './NodeRenameButton';
 import { useYjs } from '../hooks/useYjs';
 import { useNodeEditor } from '../hooks/useNodeEditor';
 import { useYjsSeedReady } from '../hooks/useStoryYDoc';
+import { nodeMatchesQuery, normalizeQuery } from '../lib/nodeSearch';
 
 interface Props {
   projectId: string;
@@ -54,6 +55,14 @@ interface Props {
    */
   otherPresence: import('../hooks/usePresence').PresentUser[];
   onSelfEditingNodeChange: (nodeId: string | null) => void;
+  /** One-shot request from the ⌘K palette: expand + scroll to this
+   * passage as soon as this tab is mounted. A NEW object means "jump
+   * again", so the same passage twice in a row still works. */
+  jumpRequest?: { nodeId: string } | null;
+  /** Called once the request above has been acted on so the parent
+   * can clear it — otherwise coming back to this tab later would
+   * re-run a stale jump. */
+  onJumpHandled?: () => void;
 }
 
 type TypeFilter = 'all' | 'knot' | 'stitch';
@@ -77,6 +86,8 @@ export default function StoryTab({
   onSourceReplaced,
   otherPresence,
   onSelfEditingNodeChange,
+  jumpRequest = null,
+  onJumpHandled,
 }: Props) {
   const vocab = useVocab(sourceLanguage, nomenclaturePreference);
   const useTweeEditor = sourceLanguage === 'twee';
@@ -338,6 +349,10 @@ export default function StoryTab({
     (nodeId: string) => {
       setSearch('');
       setTypeFilter('all');
+      // The node list only exists in the 'nodes' view. Jumps arrive
+      // from the palette too now, and landing on the raw-source
+      // editor with nothing highlighted isn't "jumping to" anything.
+      setView('nodes');
       // Keep the editing stack in sync with expandedNodes so a
       // later toggleNode call doesn't drift. Jumping also focuses
       // the user on the target, so promote it to stack top.
@@ -369,6 +384,15 @@ export default function StoryTab({
     },
     [onSelfEditingNodeChange],
   );
+
+  // Consume a cross-tab jump from the command palette. Runs on mount
+  // when the palette switched us on, and on prop change when we were
+  // already the active tab.
+  useEffect(() => {
+    if (!jumpRequest) return;
+    jumpToNode(jumpRequest.nodeId);
+    onJumpHandled?.();
+  }, [jumpRequest, jumpToNode, onJumpHandled]);
 
   function toggleNode(nodeId: string) {
     const wasExpanded = expandedNodes.has(nodeId);
@@ -427,15 +451,10 @@ export default function StoryTab({
 
   const filteredNodes = useMemo(() => {
     if (!isFiltering) return [];
-    const q = search.toLowerCase().trim();
+    const q = normalizeQuery(search);
     return nodes.filter((n) => {
       if (typeFilter !== 'all' && n.type !== typeFilter) return false;
-      if (q) {
-        const idMatch = n.id.toLowerCase().includes(q);
-        const contentMatch = n.content.some((c) => c.text.toLowerCase().includes(q));
-        if (!idMatch && !contentMatch) return false;
-      }
-      return true;
+      return nodeMatchesQuery(n, q);
     });
   }, [nodes, search, typeFilter, isFiltering]);
 

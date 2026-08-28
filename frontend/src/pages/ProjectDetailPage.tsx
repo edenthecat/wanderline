@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { fetchProject, type ProjectDetail } from '../api/client';
 import StoryTab from '../components/StoryTab';
@@ -18,6 +18,9 @@ import HeadphoneControlsTab from '../components/HeadphoneControlsTab';
 import PlayerDisplayTab from '../components/PlayerDisplayTab';
 import YjsDemoField from '../components/YjsDemoField';
 import { PresenceChips } from '../components/PresenceChips';
+import CommandPalette from '../components/CommandPalette';
+import { useCommandPaletteShortcut } from '../hooks/useCommandPaletteShortcut';
+import type { PaletteActions } from '../lib/commandPalette';
 import { useYjs } from '../hooks/useYjs';
 import { useYjsUndo } from '../hooks/useYjsUndo';
 import { usePresence } from '../hooks/usePresence';
@@ -107,6 +110,32 @@ export default function ProjectDetailPage() {
   const bumpSourceResetKey = useCallback(() => setSourceResetKey((n) => n + 1), []);
   const exportRef = useRef<HTMLDivElement>(null);
   const exportBtnRef = useRef<HTMLButtonElement>(null);
+
+  // ⌘K command palette. Open state lives here because the palette
+  // acts ACROSS tabs — it has to be able to switch the active tab and
+  // then hand the target passage to whichever tab took over.
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const togglePalette = useCallback(() => setPaletteOpen((v) => !v), []);
+  useCommandPaletteShortcut(togglePalette);
+  const closePalette = useCallback(() => setPaletteOpen(false), []);
+  // One-shot jump request handed to a tab. `tab` says who should
+  // consume it; the consumer calls onJumpHandled and we clear it, so
+  // re-entering that tab later doesn't re-trigger a stale jump.
+  const [passageJump, setPassageJump] = useState<{ nodeId: string; tab: Tab } | null>(null);
+  const clearPassageJump = useCallback(() => setPassageJump(null), []);
+  const jumpToNode = useCallback(
+    (nodeId: string) => {
+      // Land where the passage is actually legible: the Graph tab can
+      // centre its canvas on the node, so someone working in the graph
+      // stays in the graph. From anywhere else, the Story tab's
+      // existing expand + scroll path is the destination.
+      const tab: Tab = activeTab === 'graph' ? 'graph' : 'story';
+      setActiveTab(tab);
+      setPassageJump({ nodeId, tab });
+    },
+    [activeTab],
+  );
+  const paletteActions = useMemo<PaletteActions>(() => ({ jumpToNode }), [jumpToNode]);
 
   // presence. useYjs is single-instance per project,
   // so calling it here piggybacks on the same connection StoryTab
@@ -355,6 +384,8 @@ export default function ProjectDetailPage() {
                 onSourceReplaced={bumpSourceResetKey}
                 otherPresence={presentUsers}
                 onSelfEditingNodeChange={setSelfEditingNodeId}
+                jumpRequest={passageJump?.tab === 'story' ? passageJump : null}
+                onJumpHandled={clearPassageJump}
               />
             )}
             {activeTab === 'audio' && (
@@ -373,6 +404,8 @@ export default function ProjectDetailPage() {
                 sourceResetKey={sourceResetKey}
                 onStoryUpdated={() => loadProject({ silent: true })}
                 onSourceReplaced={bumpSourceResetKey}
+                jumpRequest={passageJump?.tab === 'graph' ? passageJump : null}
+                onJumpHandled={clearPassageJump}
               />
             )}
             {activeTab === 'theme' && <ThemeTab projectId={id} />}
@@ -411,6 +444,13 @@ export default function ProjectDetailPage() {
           </div>
         </main>
       </div>
+
+      <CommandPalette
+        open={paletteOpen}
+        onClose={closePalette}
+        storyGraph={project.story_graph}
+        actions={paletteActions}
+      />
 
       {/* Mobile bottom navigation: 4 group buttons; tapping opens a
           sheet of the tools inside. Hidden on desktop via CSS. */}
