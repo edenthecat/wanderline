@@ -524,9 +524,12 @@ describe('per-device volumes record only what the listener chose', () => {
     expect(bgm.volume).toBeCloseTo(0.7, 5);
   });
 
-  // Existing listeners chose those volumes for real; the rename must
-  // not throw them away.
-  it('still honours a preference saved under the old unscoped key', async () => {
+  // The pre-1.8 blob recorded the author's RESOLVED defaults as though
+  // the listener had chosen them, and nothing in it tells the two
+  // apart. Honouring it would pin all three channels for every existing
+  // listener and lock the author out — the fault this release removes,
+  // preserved forever. It is cleared instead.
+  it('ignores the old unscoped key rather than trusting what it holds', async () => {
     localStorage.setItem('wanderline_volumes', JSON.stringify({ bgMusic: 5 }));
     (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = storyWithMusic({
       backgroundMusicVolume: 70,
@@ -536,55 +539,16 @@ describe('per-device volumes record only what the listener chose', () => {
 
     await waitFor(() => expect(audioInstances.some((a) => a.src.includes('bgm.mp3'))).toBe(true));
     const bgm = [...audioInstances].reverse().find((a) => a.src.includes('bgm.mp3'))!;
-    expect(bgm.volume).toBeCloseTo(0.05, 5);
-  });
-
-  // A move that deletes the source before the destination lands is a
-  // loss, and localStorage really does reject writes at quota.
-  it('keeps the old preference when the migrating write is rejected', async () => {
-    localStorage.setItem('wanderline_volumes', JSON.stringify({ bgMusic: 5 }));
-    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation((key: string) => {
-      throw new Error('QuotaExceededError: ' + key);
-    });
-    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = storyWithMusic(
-      { backgroundMusicVolume: 70 },
-      'story-a',
-    );
-    render(<App />);
-    await startTheStory();
-    await waitFor(() => expect(audioInstances.some((a) => a.src.includes('bgm.mp3'))).toBe(true));
-    setItem.mockRestore();
-
-    expect(localStorage.getItem('wanderline_volumes')).not.toBeNull();
-  });
-
-  // Consulted forever, the old key would force a pre-1.8 preference on
-  // every story the listener ever opens, including new ones by other
-  // authors. It moves to the first story that asks, and then it is gone.
-  it('moves the old preference to one story rather than applying it to all', async () => {
-    localStorage.setItem('wanderline_volumes', JSON.stringify({ bgMusic: 5 }));
-    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = storyWithMusic(
-      { backgroundMusicVolume: 70 },
-      'story-a',
-    );
-    const first = render(<App />);
-    await startTheStory();
-    await waitFor(() => expect(audioInstances.some((a) => a.src.includes('bgm.mp3'))).toBe(true));
-    expect(localStorage.getItem('wanderline_volumes')).toBeNull();
-    expect(JSON.parse(localStorage.getItem(key('story-a'))!).bgMusic).toBe(5);
-    first.unmount();
-    audioInstances.length = 0;
-
-    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = storyWithMusic(
-      { backgroundMusicVolume: 70 },
-      'story-b',
-    );
-    render(<App />);
-    await startTheStory();
-
-    await waitFor(() => expect(audioInstances.some((a) => a.src.includes('bgm.mp3'))).toBe(true));
-    const bgm = [...audioInstances].reverse().find((a) => a.src.includes('bgm.mp3'))!;
     expect(bgm.volume).toBeCloseTo(0.7, 5);
+  });
+
+  it('clears the old key so nothing can resurrect it', async () => {
+    localStorage.setItem('wanderline_volumes', JSON.stringify({ bgMusic: 5 }));
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = storyWithMusic({});
+    render(<App />);
+    await startTheStory();
+
+    await waitFor(() => expect(localStorage.getItem('wanderline_volumes')).toBeNull());
   });
 });
 

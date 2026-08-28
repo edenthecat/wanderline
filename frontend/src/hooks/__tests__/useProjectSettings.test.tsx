@@ -188,3 +188,56 @@ describe('useProjectSettings — a debounced save survives the teardown', () => 
     expect(mockedUpdate).toHaveBeenCalledTimes(1);
   });
 });
+
+// The tick this hook publishes has to reach it too. A section that
+// flushed a save on its way out is gone, but the instance that replaced
+// it may have read the server just before that PATCH landed — and would
+// then sit there showing a value the author had already moved away
+// from, with nothing left to correct it.
+describe('useProjectSettings — hearing a save it did not make', () => {
+  it('re-reads when another instance saves', async () => {
+    mockedFetch.mockResolvedValue({ settings: { backgroundMusicVolume: 30 } });
+    const reader = renderHook(() => useProjectSettings('p1'));
+    await waitFor(() => expect(reader.result.current.loading).toBe(false));
+
+    mockedFetch.mockResolvedValue({ settings: { backgroundMusicVolume: 70 } });
+    mockedUpdate.mockResolvedValueOnce({ settings: { backgroundMusicVolume: 70 } });
+    const writer = renderHook(() => useProjectSettings('p1'));
+    await waitFor(() => expect(writer.result.current.loading).toBe(false));
+    await act(async () => {
+      await writer.result.current.updateOne('backgroundMusicVolume', 70);
+    });
+
+    await waitFor(() => expect(reader.result.current.settings?.backgroundMusicVolume).toBe(70));
+  });
+
+  it('does not chase its own save with a redundant read', async () => {
+    mockedFetch.mockResolvedValue({ settings: { backgroundMusicVolume: 30 } });
+    mockedUpdate.mockResolvedValueOnce({ settings: { backgroundMusicVolume: 70 } });
+    const { result } = renderHook(() => useProjectSettings('p1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    mockedFetch.mockClear();
+
+    await act(async () => {
+      await result.current.updateOne('backgroundMusicVolume', 70);
+    });
+
+    expect(mockedFetch).not.toHaveBeenCalled();
+    expect(result.current.settings?.backgroundMusicVolume).toBe(70);
+  });
+
+  it('does not blank the section while re-reading', async () => {
+    mockedFetch.mockResolvedValue({ settings: { backgroundMusicVolume: 30 } });
+    const reader = renderHook(() => useProjectSettings('p1'));
+    await waitFor(() => expect(reader.result.current.loading).toBe(false));
+
+    mockedUpdate.mockResolvedValueOnce({ settings: { backgroundMusicVolume: 70 } });
+    const writer = renderHook(() => useProjectSettings('p1'));
+    await waitFor(() => expect(writer.result.current.loading).toBe(false));
+    await act(async () => {
+      await writer.result.current.updateOne('backgroundMusicVolume', 70);
+    });
+
+    expect(reader.result.current.loading).toBe(false);
+  });
+});

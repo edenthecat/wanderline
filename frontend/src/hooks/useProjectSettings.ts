@@ -25,9 +25,12 @@ import { bumpLiveSignal, PROJECT_SETTINGS_SIGNAL } from './useLiveSignal';
 let settingsTick = 0;
 const settingsListeners = new Set<() => void>();
 
-function bumpProjectSettingsTick(): void {
+/** Returns the new tick so a publisher can recognise its own bump and
+ *  skip re-reading what it already has. */
+function bumpProjectSettingsTick(): number {
   settingsTick += 1;
   for (const notify of [...settingsListeners]) notify();
+  return settingsTick;
 }
 
 /** Re-renders on any project-settings save made in THIS tab. Pair it
@@ -84,21 +87,28 @@ export function useProjectSettings(
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const debounceTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  // The tick value this instance has already accounted for. Seeded from
+  // the current tick so mounting never triggers a redundant re-read,
+  // and advanced by our own saves so we don't chase our own tail.
+  const tick = useProjectSettingsTick();
+  const handledTickRef = useRef(tick);
   // What each pending debounce is going to save, so a teardown can
   // finish the work instead of dropping it.
   const pendingSavesRef = useRef<Map<string, unknown>>(new Map());
 
-  async function reload() {
-    setLoading(true);
+  /** `quiet` re-reads without flipping `loading` — a peer's save
+   *  shouldn't blank a section the author is looking at. */
+  async function reload(quiet = false) {
+    if (!quiet) setLoading(true);
     try {
       const { settings: data } = await fetchProjectSettings(projectId);
       setSettings(data);
       setError(null);
     } catch (err) {
-      setSettings({});
+      if (!quiet) setSettings({});
       setError(err instanceof Error ? err.message : 'Failed to load settings');
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   }
 
@@ -132,14 +142,40 @@ export function useProjectSettings(
         pending.clear();
         // This component is gone, so there is no local state to
         // update — but the tab replacing it may already have read the
-        // pre-flush settings, so it still has to be told. No live
-        // signal here: the collab doc can be torn down alongside us.
+        // pre-flush settings, and so may a collaborator, so both still
+        // have to be told. The doc is captured here rather than read
+        // later: ProjectDetailPage holds the ref-counted entry for the
+        // whole page, so a tab switch doesn't destroy it, but a full
+        // project switch does and a bump then is a no-op we'd rather
+        // not throw on.
+        const doc = yDoc;
         updateProjectSettings(projectId, patch)
-          .then(() => bumpProjectSettingsTick())
+          .then(() => {
+            bumpProjectSettingsTick();
+            try {
+              bumpLiveSignal(doc, PROJECT_SETTINGS_SIGNAL);
+            } catch {
+              // The doc went with the project. Peers will re-read when
+              // they next mount against the new one.
+            }
+          })
           .catch(() => {});
       }
     };
   }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Subscribe as well as publish. The section that flushed a save on
+  // its way out is gone, but this instance may have read the server
+  // just before that PATCH landed — in which case it is showing a value
+  // the author has already moved away from, with nothing else to
+  // correct it. (It also makes a losing write visible: if a slow flush
+  // lands after a newer save, the re-read shows what the server
+  // actually holds rather than leaving the UI quietly disagreeing.)
+  useEffect(() => {
+    if (tick === handledTickRef.current) return;
+    handledTickRef.current = tick;
+    reload(true);
+  }, [tick]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function updateOne<K extends keyof ProjectSettings>(
     key: K,
@@ -160,7 +196,9 @@ export function useProjectSettings(
       });
       setSettings(updated);
       bumpLiveSignal(yDoc, PROJECT_SETTINGS_SIGNAL);
-      bumpProjectSettingsTick();
+      // Our own save: the response above is already the newest truth,
+      // so account for the tick rather than re-reading it.
+      handledTickRef.current = bumpProjectSettingsTick();
     } catch (err) {
       setSettings((prev) => {
         if (!prev) return prev;
@@ -194,7 +232,7 @@ export function useProjectSettings(
         });
         setSettings(updated);
         bumpLiveSignal(yDoc, PROJECT_SETTINGS_SIGNAL);
-        bumpProjectSettingsTick();
+        handledTickRef.current = bumpProjectSettingsTick();
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to save');
       } finally {

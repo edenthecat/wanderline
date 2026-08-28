@@ -119,8 +119,17 @@ const STORAGE_PREFIX = 'wanderline_';
 function volumesStorageKey(storyId: string): string {
   return STORAGE_PREFIX + storyId + '_volumes';
 }
-/** The unscoped key this used to be. Read on load so an existing
- *  listener keeps the volumes they chose; never written again. */
+/**
+ * The unscoped key this used to be. Not read any more, only cleared.
+ *
+ * Its payload cannot be trusted: the old apply effect wrote all three
+ * RESOLVED volumes on every change, so for a listener who never touched
+ * a slider it holds the author's defaults recorded as though they were
+ * choices — and nothing in it distinguishes the two. Honouring it would
+ * pin all three channels for every pre-1.8 listener and lock the author
+ * out of changing them, which is the exact fault this release removes.
+ * A listener who really did set a volume re-sets it in one drag.
+ */
 const LEGACY_VOLUMES_KEY = STORAGE_PREFIX + 'volumes';
 
 // Safe storage helpers for file:// URL compatibility
@@ -131,15 +140,10 @@ const safeGetItem = (storage: Storage, key: string): string | null => {
     return null;
   }
 };
-/** Returns false when the write was rejected (quota, private mode,
- *  file:// origins). Callers that are MOVING data have to know. */
-const safeSetItem = (storage: Storage, key: string, value: string): boolean => {
+const safeSetItem = (storage: Storage, key: string, value: string): void => {
   try {
     storage.setItem(key, value);
-    return true;
-  } catch {
-    return false;
-  }
+  } catch {}
 };
 const safeRemoveItem = (storage: Storage, key: string): void => {
   try {
@@ -467,35 +471,23 @@ export default function App() {
         // its default is 100 and 1 x 1 = 1.
         //
         // The override is scoped by story id, like the auto-advance key
-        // above. It used
+        // above and like save slots. That id is re-minted on every ink
+        // upload, so a listener's volumes reset when the author
+        // re-uploads the story — accepted, and arguably right: every
+        // other per-story preference already behaves that way, and the
+        // alternative is the unscoped key, which handed project B the
+        // volumes a listener set for project A. It used
         // to be one global key, so previewing project A and then
         // project B from the editor handed B the volumes a listener had
         // set for A — an author's mix silently not being the author's
         // mix, which is the whole failure class here. The unscoped key
         // is still read as a fallback so an existing listener's real
         // preference survives the change.
-        let savedVolumes = safeGetItem(localStorage, volumesStorageKey(data.id));
-        if (savedVolumes === null) {
-          // Migrate, don't consult forever. Left as a permanent
-          // fallback, a listener's pre-1.8 5% music would be forced on
-          // every story they ever opened, including brand-new ones by
-          // other authors, with no way out but to touch each story's
-          // slider. Moving it to the first story that asks bounds it to
-          // one story — which, for a standalone build, is the only
-          // story there is.
-          const legacy = safeGetItem(localStorage, LEGACY_VOLUMES_KEY);
-          if (legacy !== null) {
-            // Only drop the old key once the new one has actually
-            // landed. safeSetItem swallows a rejected write by design,
-            // so removing unconditionally would delete a listener's
-            // volumes and leave nothing in their place — at quota, the
-            // one case where the write fails, that loss is permanent.
-            if (safeSetItem(localStorage, volumesStorageKey(data.id), legacy)) {
-              safeRemoveItem(localStorage, LEGACY_VOLUMES_KEY);
-            }
-            savedVolumes = legacy;
-          }
-        }
+        // Untrustworthy by construction — see LEGACY_VOLUMES_KEY.
+        // Cleared rather than left lying around, so no later version
+        // can mistake it for a record of anything.
+        safeRemoveItem(localStorage, LEGACY_VOLUMES_KEY);
+        const savedVolumes = safeGetItem(localStorage, volumesStorageKey(data.id));
         let overrides: VolumeOverrides | null = null;
         if (savedVolumes) {
           try {
