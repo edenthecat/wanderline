@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import type { StoryGraph, StoryNode, ValidationMessage } from '../../api/client';
 import { computeReadiness, type ReadinessCheckId } from '../shipReadiness';
 import { PANEL_ANCHORS } from '../panelAnchors';
-import { INK_VOCAB, TWEE_VOCAB } from '../nomenclature';
 
 function node(id: string, over: Partial<StoryNode> = {}): StoryNode {
   return {
@@ -32,7 +31,6 @@ const clean = {
   openFlagCount: 0,
   passagesWithoutVoiceover: 0,
   assignmentDisagreements: 0,
-  nodeNoun: INK_VOCAB.node,
 };
 
 function countOf(
@@ -131,7 +129,6 @@ describe('computeReadiness', () => {
       openFlagCount: 3,
       passagesWithoutVoiceover: 7,
       assignmentDisagreements: 1,
-      nodeNoun: INK_VOCAB.node,
     });
     expect(summary.status).toBe('blocked');
     expect(summary.blocking.map((c) => c.id)).toEqual(['parser_errors']);
@@ -151,7 +148,6 @@ describe('computeReadiness', () => {
       openFlagCount: 0,
       passagesWithoutVoiceover: 2,
       assignmentDisagreements: 0,
-      nodeNoun: INK_VOCAB.node,
     });
     expect(summary.status).toBe('review');
     expect(summary.review.map((c) => c.id)).toEqual(['passages_without_voiceover']);
@@ -165,28 +161,45 @@ describe('computeReadiness', () => {
     expect(summary.totalNodes).toBe(2);
   });
 
-  // lib/nomenclature: never hard-code "knot" or "passage". A Ship tab
-  // reporting "3 unreachable passages" for an Ink project, while the
-  // panel the row links to calls them knots, is the same disagreement
-  // this module exists to prevent — one level up.
-  it('names nodes the way the rest of the project does', () => {
-    const g = graph([node('start', { divert: 'END' }), node('lonely', { divert: 'END' })]);
-    const inputs = {
+  // Both counts span knots AND stitches, so the knot/passage vocab
+  // skin would overstate them. "Node" is the word StoryHealthPanel and
+  // AudioTab already use for this exact universe — matching them is
+  // the whole point of the module.
+  it('names nodes the way the panels it links to name them', () => {
+    const g = graph([
+      node('inbox'),
+      node('inbox.reply', { type: 'stitch', parent: 'inbox', lineNumber: 2, divert: 'END' }),
+      node('lonely', { divert: 'END' }),
+    ]);
+    const summary = computeReadiness({
       storyGraph: g,
       openFlagCount: 0,
       passagesWithoutVoiceover: 2,
       assignmentDisagreements: 0,
-    };
-    const ink = computeReadiness({ ...inputs, nodeNoun: INK_VOCAB.node });
-    expect(ink.review.map((c) => c.label)).toEqual([
-      '1 unreachable knot',
-      '2 knots with no voiceover',
+    });
+    expect(summary.review.map((c) => c.label)).toEqual([
+      '1 unreachable node',
+      '2 nodes with no voiceover',
     ]);
-    const twee = computeReadiness({ ...inputs, nodeNoun: TWEE_VOCAB.node });
-    expect(twee.review.map((c) => c.label)).toEqual([
-      '1 unreachable passage',
-      '2 passages with no voiceover',
-    ]);
+  });
+
+  // Every check trivially answers zero on a story with no nodes, so
+  // without a guard the Ship tab would put "Ready to ship" directly
+  // above the Build button for a project with nothing in it.
+  it('never calls an empty story ready', () => {
+    const summary = computeReadiness({ storyGraph: graph([]), ...clean });
+    expect(summary.status).toBe('empty');
+    expect(summary.totalNodes).toBe(0);
+  });
+
+  // A file that failed to parse hard enough to produce no nodes is
+  // better described by its errors than by its emptiness.
+  it('leads with parser errors on a story that parsed to nothing', () => {
+    const summary = computeReadiness({
+      storyGraph: graph([], { valid: false, errors: [err()] }),
+      ...clean,
+    });
+    expect(summary.status).toBe('blocked');
   });
 
   // "We could not check" and "there is nothing wrong" are opposite
@@ -199,7 +212,6 @@ describe('computeReadiness', () => {
       openFlagCount: null,
       passagesWithoutVoiceover: 0,
       assignmentDisagreements: 0,
-      nodeNoun: INK_VOCAB.node,
     });
     expect(summary.status).toBe('unknown');
     expect(summary.unknown.map((c) => c.id)).toEqual(['open_flags']);
@@ -213,17 +225,18 @@ describe('computeReadiness', () => {
       openFlagCount: null,
       passagesWithoutVoiceover: 0,
       assignmentDisagreements: 0,
-      nodeNoun: INK_VOCAB.node,
     });
     expect(summary.status).toBe('blocked');
     expect(summary.unknown.map((c) => c.id)).toEqual(['open_flags']);
   });
 
   // An empty project is not a clean one: with no graph there is
-  // nothing to have validated or walked.
+  // nothing to have validated or walked, so neither graph-derived
+  // count can answer — and the headline is that there is nothing here
+  // yet, never that it is ready.
   it('treats a project with no story as unchecked, not as ready', () => {
     const summary = computeReadiness({ storyGraph: null, ...clean });
-    expect(summary.status).toBe('unknown');
+    expect(summary.status).toBe('empty');
     expect(summary.unknown.map((c) => c.id)).toEqual(['parser_errors', 'unreachable_passages']);
   });
 
@@ -255,7 +268,6 @@ describe('computeReadiness', () => {
       openFlagCount: 1,
       passagesWithoutVoiceover: 0,
       assignmentDisagreements: 0,
-      nodeNoun: INK_VOCAB.node,
     });
     expect(one.blocking[0].label).toBe('1 parser error');
     expect(one.review[0].label).toBe('1 unresolved flag');
@@ -268,7 +280,6 @@ describe('computeReadiness', () => {
       openFlagCount: 4,
       passagesWithoutVoiceover: 0,
       assignmentDisagreements: 0,
-      nodeNoun: INK_VOCAB.node,
     });
     expect(many.blocking[0].label).toBe('2 parser errors');
     expect(many.review[0].label).toBe('4 unresolved flags');

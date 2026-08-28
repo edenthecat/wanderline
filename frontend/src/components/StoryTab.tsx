@@ -368,13 +368,19 @@ export default function StoryTab({
       });
       // The row may not exist yet — setExpandedNodes above renders it
       // a tick later — so the helper watches for it and scrolls when
-      // it mounts. That watch has to be cancelled: a validation error
-      // can name a knot that does not exist (that IS the error), and
-      // an uncancelled watch would sit on the document until it timed
-      // out, then scroll unbidden if a save or a collaborator's edit
-      // happened to create that knot inside the window.
+      // it mounts. Two bounds on that watch, because a jump can name a
+      // node that will never appear: a missing_target validation error
+      // names a knot that does not exist, and that IS the error.
+      //
+      // Cancel on the next jump and on unmount, so an abandoned watch
+      // does not sit on the document. And a short timeout, because
+      // unlike the Ship tab's cross-tab navigation this target is one
+      // local render away — anything longer is just a window in which
+      // a collaborator creating that knot would yank the viewport.
       cancelScrollRef.current?.();
-      cancelScrollRef.current = scrollToSelector(`[data-node-id="${CSS.escape(nodeId)}"]`);
+      cancelScrollRef.current = scrollToSelector(`[data-node-id="${CSS.escape(nodeId)}"]`, {
+        timeoutMs: 1000,
+      });
     },
     [onSelfEditingNodeChange],
   );

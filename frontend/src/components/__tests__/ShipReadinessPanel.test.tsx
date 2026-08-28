@@ -58,26 +58,15 @@ function stubLookups({
   });
 }
 
-// The Ship tab must call a node whatever the panel it links to calls
-// it, so the vocab is a required input rather than a default.
-const vocabProps = { sourceLanguage: 'ink' as const, nomenclaturePreference: 'auto' as const };
-
 afterEach(() => vi.restoreAllMocks());
 
 describe('ShipReadinessPanel', () => {
   // Five zeros is not an answer to "can I ship this?".
   it('says what it verified when everything is clean', async () => {
     stubLookups();
-    render(
-      <ShipReadinessPanel
-        projectId="p1"
-        storyGraph={graph()}
-        onNavigate={() => {}}
-        {...vocabProps}
-      />,
-    );
+    render(<ShipReadinessPanel projectId="p1" storyGraph={graph()} onNavigate={() => {}} />);
     expect(await screen.findByText('Ready to ship')).toBeInTheDocument();
-    expect(screen.getByText(/Nothing to fix across 1 knot/)).toBeInTheDocument();
+    expect(screen.getByText(/Nothing to fix across 1 node/)).toBeInTheDocument();
     expect(screen.queryByText('Worth a look')).not.toBeInTheDocument();
   });
 
@@ -94,7 +83,6 @@ describe('ShipReadinessPanel', () => {
           },
         })}
         onNavigate={() => {}}
-        {...vocabProps}
       />,
     );
     expect(await screen.findByText('Fix before you ship')).toBeInTheDocument();
@@ -107,15 +95,8 @@ describe('ShipReadinessPanel', () => {
   it('hands the owning panel back to the page when a row is clicked', async () => {
     stubLookups({ missingVoiceover: 4 });
     const onNavigate = vi.fn();
-    render(
-      <ShipReadinessPanel
-        projectId="p1"
-        storyGraph={graph()}
-        onNavigate={onNavigate}
-        {...vocabProps}
-      />,
-    );
-    await userEvent.click(await screen.findByText('4 knots with no voiceover'));
+    render(<ShipReadinessPanel projectId="p1" storyGraph={graph()} onNavigate={onNavigate} />);
+    await userEvent.click(await screen.findByText('4 nodes with no voiceover'));
     expect(onNavigate).toHaveBeenCalledWith({
       tab: 'audio',
       anchorId: PANEL_ANCHORS.missingVoiceover,
@@ -127,14 +108,7 @@ describe('ShipReadinessPanel', () => {
   it('reports a failed lookup as unchecked instead of clean', async () => {
     stubLookups();
     vi.spyOn(client, 'fetchNodeFlags').mockRejectedValue(new Error('500'));
-    render(
-      <ShipReadinessPanel
-        projectId="p1"
-        storyGraph={graph()}
-        onNavigate={() => {}}
-        {...vocabProps}
-      />,
-    );
+    render(<ShipReadinessPanel projectId="p1" storyGraph={graph()} onNavigate={() => {}} />);
     expect(await screen.findByText('Couldn’t check')).toBeInTheDocument();
     expect(screen.getByText('Unresolved flags')).toBeInTheDocument();
     expect(screen.queryByText('Ready to ship')).not.toBeInTheDocument();
@@ -146,14 +120,7 @@ describe('ShipReadinessPanel', () => {
   it('does not assert a problem it could not check for', async () => {
     stubLookups();
     vi.spyOn(client, 'fetchNodeFlags').mockRejectedValue(new Error('500'));
-    render(
-      <ShipReadinessPanel
-        projectId="p1"
-        storyGraph={graph()}
-        onNavigate={() => {}}
-        {...vocabProps}
-      />,
-    );
+    render(<ShipReadinessPanel projectId="p1" storyGraph={graph()} onNavigate={() => {}} />);
     expect(await screen.findByText('Unresolved flags')).toBeInTheDocument();
     expect(screen.queryByText(/Someone reported a problem/)).not.toBeInTheDocument();
     expect(screen.getByText(/didn’t answer/)).toBeInTheDocument();
@@ -168,14 +135,7 @@ describe('ShipReadinessPanel', () => {
     vi.spyOn(client, 'fetchAudioCoverage').mockResolvedValue({
       error: 'Bad Gateway',
     } as unknown as client.AudioCoverage);
-    render(
-      <ShipReadinessPanel
-        projectId="p1"
-        storyGraph={graph()}
-        onNavigate={() => {}}
-        {...vocabProps}
-      />,
-    );
+    render(<ShipReadinessPanel projectId="p1" storyGraph={graph()} onNavigate={() => {}} />);
     expect(await screen.findByText('Couldn’t check')).toBeInTheDocument();
     expect(screen.queryByText('Checking…')).not.toBeInTheDocument();
   });
@@ -183,7 +143,7 @@ describe('ShipReadinessPanel', () => {
   it('renders nothing, and asks nothing, until there is a story', () => {
     stubLookups();
     const { container } = render(
-      <ShipReadinessPanel projectId="p1" storyGraph={null} onNavigate={() => {}} {...vocabProps} />,
+      <ShipReadinessPanel projectId="p1" storyGraph={null} onNavigate={() => {}} />,
     );
     expect(container).toBeEmptyDOMElement();
     // The audit re-matches every assignment server-side; paying for
@@ -193,18 +153,34 @@ describe('ShipReadinessPanel', () => {
     expect(client.fetchAudioCoverage).not.toHaveBeenCalled();
   });
 
-  it('follows the project’s own terminology', async () => {
-    stubLookups({ missingVoiceover: 2 });
+  // Every lookup trivially answers zero for a story with no nodes.
+  // "Ready to ship" is the one thing that must not appear above the
+  // Build button for a project with nothing in it.
+  it('never offers the all-clear for an empty story', async () => {
+    stubLookups();
     render(
       <ShipReadinessPanel
         projectId="p1"
-        storyGraph={graph()}
+        storyGraph={graph({ startNode: '', nodes: {} })}
         onNavigate={() => {}}
-        sourceLanguage="twee"
-        nomenclaturePreference="auto"
       />,
     );
-    expect(await screen.findByText('2 passages with no voiceover')).toBeInTheDocument();
+    expect(await screen.findByText('Nothing to ship yet')).toBeInTheDocument();
+    expect(screen.queryByText('Ready to ship')).not.toBeInTheDocument();
+  });
+
+  // allSettled proves the request resolved, not that the body has the
+  // field. A scalar read of a missing `total` used to render as
+  // "undefined unresolved flags".
+  it('does not render a count the server never sent', async () => {
+    stubLookups();
+    vi.spyOn(client, 'fetchNodeFlags').mockResolvedValue({
+      truncated: false,
+      flags: [],
+    } as unknown as Awaited<ReturnType<typeof client.fetchNodeFlags>>);
+    render(<ShipReadinessPanel projectId="p1" storyGraph={graph()} onNavigate={() => {}} />);
+    expect(await screen.findByText('Couldn’t check')).toBeInTheDocument();
+    expect(screen.queryByText(/undefined/)).not.toBeInTheDocument();
   });
 
   it('reads the true open-flag count, not the page the flags panel lists', async () => {
@@ -215,14 +191,7 @@ describe('ShipReadinessPanel', () => {
       truncated: true,
       flags: [],
     });
-    render(
-      <ShipReadinessPanel
-        projectId="p1"
-        storyGraph={graph()}
-        onNavigate={() => {}}
-        {...vocabProps}
-      />,
-    );
+    render(<ShipReadinessPanel projectId="p1" storyGraph={graph()} onNavigate={() => {}} />);
     expect(await screen.findByText('42 unresolved flags')).toBeInTheDocument();
   });
 });

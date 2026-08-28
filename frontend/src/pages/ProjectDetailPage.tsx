@@ -257,8 +257,8 @@ export default function ProjectDetailPage() {
     );
 
   const activeGroup = groupFor(activeTab);
-  // Read by every surface that names a story node — StoryTab and the
-  // Ship tab's readiness summary must agree on "knot" vs "passage".
+  // The knot/passage vocab skin, hoisted out of the JSX so the cast is
+  // not buried in an attribute.
   const nomenclaturePreference =
     (project.settings?.nomenclature as NomenclaturePreference | undefined) ?? 'auto';
 
@@ -428,8 +428,6 @@ export default function ProjectDetailPage() {
                   projectId={id}
                   storyGraph={project.story_graph}
                   onNavigate={goToReadinessTarget}
-                  sourceLanguage={project.source_language}
-                  nomenclaturePreference={nomenclaturePreference}
                 />
                 <BuildsTab projectId={id} hasStory={!!project.story_graph} />
               </>

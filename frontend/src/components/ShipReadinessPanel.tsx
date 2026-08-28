@@ -24,8 +24,6 @@ import {
   type ReadinessSummary,
   type ReadinessTarget,
 } from '../lib/shipReadiness';
-import { useVocab } from '../hooks/useVocab';
-import type { Nomenclature, NomenclaturePreference } from '../lib/nomenclature';
 
 interface Props {
   projectId: string;
@@ -33,10 +31,6 @@ interface Props {
   storyGraph: StoryGraph | null;
   /** Switch to the owning panel's tab and scroll to it. */
   onNavigate: (target: ReadinessTarget) => void;
-  /** Terminology inputs: the summary must call a node whatever the
-   * panel it links to calls it. */
-  sourceLanguage: Nomenclature;
-  nomenclaturePreference: NomenclaturePreference;
 }
 
 /** The three counts that need a request. `null` means the request
@@ -49,6 +43,7 @@ interface FetchedCounts {
 
 const STATUS_LABEL: Record<ReadinessSummary['status'], string> = {
   blocked: 'Not ready',
+  empty: 'Nothing to ship yet',
   review: 'Ships, with caveats',
   unknown: 'Partly checked',
   ready: 'Ready to ship',
@@ -58,6 +53,16 @@ const STATUS_LABEL: Record<ReadinessSummary['status'], string> = {
 // claim we have no right to make about a lookup that never answered.
 // The unknown group substitutes this.
 const UNKNOWN_DETAIL = 'This check didn’t answer. Open the panel to look for yourself.';
+
+/** A count the server sent, or null if it did not send one. */
+function asCount(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/** The length of a list the server sent, or null if it did not send one. */
+function asLength(value: unknown): number | null {
+  return Array.isArray(value) ? value.length : null;
+}
 
 function CheckRow({
   check,
@@ -83,14 +88,7 @@ function CheckRow({
   );
 }
 
-export default function ShipReadinessPanel({
-  projectId,
-  storyGraph,
-  onNavigate,
-  sourceLanguage,
-  nomenclaturePreference,
-}: Props) {
-  const vocab = useVocab(sourceLanguage, nomenclaturePreference);
+export default function ShipReadinessPanel({ projectId, storyGraph, onNavigate }: Props) {
   const [counts, setCounts] = useState<FetchedCounts | null>(null);
 
   // A boolean, not the graph itself: the page silently refetches the
@@ -123,30 +121,23 @@ export default function ShipReadinessPanel({
       auditAudioAssignments(projectId),
     ]).then(([flags, coverage, audit]) => {
       if (cancelled) return;
-      // allSettled covers a rejected request, not a fulfilled one whose
-      // body is not the shape we expect — a proxy's own JSON error page
-      // returned as 200, or a backend a version ahead. Reading through
-      // it would throw here and never reach setCounts, leaving the
-      // panel stuck on "Checking…": the exact outcome the allSettled
-      // above exists to prevent. Fall back to all-unknown instead.
-      try {
-        setCounts({
-          // `.total` is the true open count. FlaggedNodesPanel's own
-          // badge shows the returned page and says so when the server
-          // capped it; the readiness answer wants the real number.
-          openFlagCount: flags.status === 'fulfilled' ? flags.value.total : null,
-          passagesWithoutVoiceover:
-            coverage.status === 'fulfilled' ? coverage.value.nodesWithoutAudio.length : null,
-          assignmentDisagreements:
-            audit.status === 'fulfilled' ? audit.value.disagreements.length : null,
-        });
-      } catch {
-        setCounts({
-          openFlagCount: null,
-          passagesWithoutVoiceover: null,
-          assignmentDisagreements: null,
-        });
-      }
+      // allSettled proves the request resolved, not that the body is
+      // the shape we asked for — a proxy's own JSON error page served
+      // as 200, or a backend a version ahead. Each field is checked
+      // rather than read through: the array reads would throw (leaving
+      // the panel stuck on "Checking…"), and the scalar read would
+      // quietly produce "undefined unresolved flags". Both are worse
+      // than the honest answer, which is that we do not know.
+      setCounts({
+        // `.total` is the true open count. FlaggedNodesPanel's own
+        // badge shows the returned page and says so when the server
+        // capped it; the readiness answer wants the real number.
+        openFlagCount: flags.status === 'fulfilled' ? asCount(flags.value?.total) : null,
+        passagesWithoutVoiceover:
+          coverage.status === 'fulfilled' ? asLength(coverage.value?.nodesWithoutAudio) : null,
+        assignmentDisagreements:
+          audit.status === 'fulfilled' ? asLength(audit.value?.disagreements) : null,
+      });
     });
     return () => {
       cancelled = true;
@@ -163,9 +154,8 @@ export default function ShipReadinessPanel({
         openFlagCount: counts.openFlagCount,
         passagesWithoutVoiceover: counts.passagesWithoutVoiceover,
         assignmentDisagreements: counts.assignmentDisagreements,
-        nodeNoun: vocab.node,
       }),
-    [storyGraph, counts, vocab],
+    [storyGraph, counts],
   );
 
   // No story means nothing to be ready about, and BuildsTab directly
@@ -188,12 +178,18 @@ export default function ShipReadinessPanel({
         <p className="readiness-line text-muted">
           Collecting flags, audio coverage and assignment checks…
         </p>
+      ) : summary.status === 'empty' ? (
+        // Every check trivially answers zero on a story with no nodes.
+        // "Ready to ship" is the one thing that must not be said here.
+        <p className="readiness-line text-muted">
+          This story has no nodes yet — there is nothing to build. Write or upload one on the Story
+          tab.
+        </p>
       ) : summary.status === 'ready' ? (
         // Five zeros is not an answer. Say what was actually verified.
         <p className="readiness-line readiness-line-ready">
-          Nothing to fix across {summary.totalNodes}{' '}
-          {summary.totalNodes === 1 ? vocab.node.singular : vocab.node.plural}: no parser errors,
-          nothing unreachable, every {vocab.node.singular} voiced, no open flags, and every clip
+          Nothing to fix across {summary.totalNodes} node{summary.totalNodes === 1 ? '' : 's'}: no
+          parser errors, nothing unreachable, every node voiced, no open flags, and every clip
           agrees with its filename.
         </p>
       ) : (
