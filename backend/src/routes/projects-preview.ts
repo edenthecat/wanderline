@@ -13,6 +13,8 @@ import {
   useSignedUrlDownloads,
 } from '../services/storage.js';
 import { renderThemeForPreview, type ThemeConfig } from '../services/theme-render.js';
+import { setHtmlLang } from '../services/build-html.js';
+import { normalizeBuildLanguage } from '../services/build-language.js';
 import { logger } from '../logger.js';
 
 /**
@@ -182,6 +184,12 @@ export function generatePreviewNonce(): string {
  * header. `sriOverride` lets the build-preview route pin the SRI to
  * a historical build's recorded hash; live preview passes null and
  * we read the current bundle-info.json.
+ *
+ * `language` is the project's own BCP-47 tag. The player template
+ * ships `lang="en"`, and the shareable /public-preview link is
+ * listener-facing, so leaving it alone would have a screen reader read
+ * a French story's captions with an English voice — the same defect
+ * the exported build fixes. Unset or malformed falls back to 'en'.
  */
 export function renderPreviewHtml(
   storyData: unknown,
@@ -189,8 +197,10 @@ export function renderPreviewHtml(
   bannerLabel: string,
   nonce: string,
   sriOverride: string | null = null,
+  language?: string,
 ): string {
   let html = getPlayerHtmlTemplate();
+  html = setHtmlLang(html, normalizeBuildLanguage(language));
 
   // Rewrite asset paths to use the global player assets route (no auth required)
   // Handle both absolute (/assets/) and relative (./assets/) paths from Vite builds
@@ -321,8 +331,20 @@ export async function respondWithPreviewHtml(
       passwordExposure: 'omit',
     });
     const projectName = (project as Record<string, unknown>).name as string;
+    // Read from the raw settings rather than storyData: buildStoryData
+    // allowlists what reaches the player payload, and the language tag
+    // is document metadata rather than runtime data.
+    const projectSettings = (project as Record<string, unknown>).settings as
+      Record<string, unknown> | undefined;
     const nonce = generatePreviewNonce();
-    const html = renderPreviewHtml(storyData, `${projectName} - Preview`, opts.bannerLabel, nonce);
+    const html = renderPreviewHtml(
+      storyData,
+      `${projectName} - Preview`,
+      opts.bannerLabel,
+      nonce,
+      null,
+      projectSettings?.language as string | undefined,
+    );
     applyPreviewHeaders(res, nonce);
     res.send(html);
   } catch (error) {

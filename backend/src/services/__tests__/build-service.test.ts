@@ -438,17 +438,27 @@ describe('build-service unit', () => {
     // The audio-reachability check is a network round-trip, so the
     // page genuinely sits on "Running…" for a while. Without a live
     // region a screen-reader author is never told it finished.
-    it('announces both result containers as live regions', () => {
+    it('announces completion through the summary', () => {
       const html = renderSmokeHtml(sampleStory);
       const summary = /<div class="summary" id="summary"[^>]*>/i.exec(html);
       expect(summary).not.toBeNull();
       expect(summary![0]).toContain('role="status"');
       expect(summary![0]).toContain('aria-live="polite"');
+    });
 
+    // role="status" implies aria-atomic="true" and render() replaces
+    // this container wholesale, so making it live would speak every
+    // problem on a failing build as one uninterruptible utterance
+    // straight after the summary already announced the outcome.
+    it('leaves the results list navigable rather than live', () => {
+      const html = renderSmokeHtml(sampleStory);
       const results = /<div id="results"[^>]*>/i.exec(html);
       expect(results).not.toBeNull();
-      expect(results![0]).toContain('role="status"');
-      expect(results![0]).toContain('aria-live="polite"');
+      expect(results![0]).not.toContain('aria-live');
+      expect(results![0]).not.toContain('role="status"');
+      // Still reachable: a named landmark, plus an <h2> per check.
+      expect(results![0]).toContain('role="region"');
+      expect(results![0]).toContain('aria-label="Check results"');
     });
 
     // ✓ / ✗ read as "check mark" / "multiplication x", or get skipped

@@ -872,9 +872,18 @@ export function renderSmokeHtml(storyData: unknown, language?: string): string {
   <h1><span lang="${lang}">${storyTitle}</span> — smoke test</h1>
   <!-- The audio-reachability check is a real network round-trip, so
        "Running…" can sit here for a while. Without a live region a
-       screen-reader user is never told the checks finished. -->
+       screen-reader user is never told the checks finished. The
+       summary carries the announcement and names the outcome
+       ("2 / 3 checks passing"), which is the actionable part. -->
   <div class="summary" id="summary" role="status" aria-live="polite">Running…</div>
-  <div id="results" role="status" aria-live="polite"></div>
+  <!-- Deliberately NOT a live region. role="status" implies
+       aria-atomic="true" and render() replaces this wholesale, so a
+       failing build would speak every unresolved target and every
+       unreachable filename as one uninterruptible utterance right
+       after the summary already said the run finished. It is static
+       content once written, reachable by landmark and by the <h2> on
+       each check. -->
+  <div id="results" role="region" aria-label="Check results"></div>
   <!-- No heading here: the page heading above renders with scripting
        off too, and repeating it would announce the title twice. -->
   <noscript>

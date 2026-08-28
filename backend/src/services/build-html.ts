@@ -35,8 +35,15 @@ export interface PrepareDistHtmlOptions {
  * the source document has none — a document with no `lang` at all is
  * exactly as bad for a screen reader as one with the wrong `lang`.
  * `language` must already be normalized (see build-language.ts).
+ *
+ * Exported because the preview endpoint serves the same player
+ * template from its own renderer (renderPreviewHtml in
+ * backend/src/routes/projects-preview.ts) and needs the identical
+ * rewrite — the shareable /public-preview link is listener-facing, so
+ * a French story announced as English there is the same defect as in
+ * the exported build.
  */
-function applyLanguage(html: string, language: string): string {
+export function setHtmlLang(html: string, language: string): string {
   const withExistingLang = /<html([^>]*?)\slang="[^"]*"/i;
   if (withExistingLang.test(html)) {
     return html.replace(
@@ -144,7 +151,7 @@ export function prepareDistHtml(rawHtml: string, options: PrepareDistHtmlOptions
   html = html.replace(/ type="module"/g, '');
   html = html.replace(/<script /g, '<script defer ');
   html = html.replace(/<title>[^<]*<\/title>/i, () => `<title>${options.title}</title>`);
-  html = applyLanguage(html, options.language ?? DEFAULT_BUILD_LANGUAGE);
+  html = setHtmlLang(html, options.language ?? DEFAULT_BUILD_LANGUAGE);
   if (options.themeColor) html = applyThemeColor(html, options.themeColor);
   html = applyNoscript(html, options.title);
   html = html.replace(/((?:src|href)=)"\/(assets\/[^"]+)"/g, '$1"./$2"');

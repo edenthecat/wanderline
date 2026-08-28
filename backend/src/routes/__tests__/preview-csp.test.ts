@@ -168,6 +168,27 @@ describe('renderPreviewHtml', () => {
     expect(html).toMatch(/data-wl-close="1"/);
   });
 
+  // The player template ships lang="en", and /public-preview/:token is
+  // listener-facing — so a French story previewed there was announced
+  // as English exactly like an unfixed exported build.
+  describe('lang', () => {
+    it('carries the project language', () => {
+      const html = renderPreviewHtml(story, 'T', 'Preview Mode', 'N1', null, 'fr');
+      expect(html).toMatch(/<html lang="fr"/i);
+    });
+
+    it('defaults to en when the project has no language set', () => {
+      const html = renderPreviewHtml(story, 'T', 'Preview Mode', 'N1');
+      expect(html).toMatch(/<html lang="en"/i);
+    });
+
+    it('falls back to en rather than emitting a malformed tag', () => {
+      const html = renderPreviewHtml(story, 'T', 'Preview Mode', 'N1', null, 'en" onload="x');
+      expect(html).toMatch(/<html lang="en"/i);
+      expect(html).not.toMatch(/onload=/i);
+    });
+  });
+
   it('injects a meta referrer=no-referrer to keep signed URLs off Referer', () => {
     const html = renderPreviewHtml(story, 'T', 'Preview Mode', 'N1');
     expect(html).toMatch(/<meta name="referrer" content="no-referrer">/);

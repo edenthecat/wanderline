@@ -334,6 +334,39 @@ describe('GET /public-preview/:token — anonymous HTML', () => {
     expect(res.text).toMatch(new RegExp(`/public-preview/${validToken}/audio/`));
   });
 
+  // This is the listener-facing surface, reached before any build
+  // exists. Shipping the player's hardcoded lang="en" here has a
+  // screen reader read a French story's captions with an English
+  // voice — the same defect the exported build fixes.
+  it('tags the document with the project language', async () => {
+    const { pool } = makePool([
+      () => ({ rows: [{ id: 'p1' }] }),
+      () => ({
+        rows: [
+          {
+            id: 'p1',
+            name: 'Le Fantôme',
+            story_graph: { title: 'Le Fantôme', nodes: {}, initialNode: null },
+            settings: { language: 'fr' },
+          },
+        ],
+      }),
+      () => ({ rows: [] }),
+      () => ({ rows: [] }),
+      () => ({ rows: [] }),
+      () => ({ rows: [] }),
+    ]);
+    const app = express();
+    attachLog(app);
+    const router = express.Router();
+    mountPublicPreviewRoutes(router, pool);
+    app.use('/public-preview', router);
+
+    const res = await request(app).get(`/public-preview/${validToken}`);
+    expect(res.status).toBe(200);
+    expect(res.text).toMatch(/<html lang="fr"/i);
+  });
+
   it('404s when the token is unknown', async () => {
     const { pool } = makePool([() => ({ rows: [] })]);
     const app = express();
