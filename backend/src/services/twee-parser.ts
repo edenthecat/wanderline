@@ -246,6 +246,20 @@ const SPECIAL_PASSAGES = new Set([
  * A conditional `[Cond]` suffix (Twine's SugarCube macro pattern) is
  * tolerated but stripped — the parser doesn't evaluate conditions.
  */
+/**
+ * Every passage a body links to.
+ *
+ * Special passages (StoryInit, PassageHeader, PassageFooter, …) are
+ * kept as raw text on `graph.twee.specials` rather than parsed into
+ * nodes, so nothing else in the graph records that a nav menu in
+ * PassageHeader points at a passage. Delete-passage needs to know, or
+ * it would leave a dangling link nothing warns about — hence the same
+ * link parser, exposed for that check.
+ */
+export function extractLinkTargets(body: string): string[] {
+  return extractLinks(body).choices.map((choice) => choice.target);
+}
+
 function extractLinks(body: string): { choices: Choice[]; contentBody: string } {
   const choices: Choice[] = [];
   const linkPattern = /\[\[([^\][]*?)\]\](?:\[[^\]]*\])?/g;

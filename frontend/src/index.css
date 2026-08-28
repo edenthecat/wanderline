@@ -744,6 +744,21 @@ textarea:focus,
      let it break out of that width rather than squeeze the select. */
   max-width: 100%;
 }
+/* On a knot row the action slot is absolutely positioned (see
+   .node-rename-slot), which contributes no height — and .node-group
+   clips. An open delete confirmation is several wrapped lines tall, so
+   its Delete and Cancel buttons would fall outside the clip and stop
+   being clickable. While one is open, put the slot back in normal flow
+   so the row grows to fit it. Browsers without :has() keep the old
+   behaviour rather than breaking. */
+.node-group:has(.node-delete-confirm) {
+  overflow: visible;
+}
+.node-group:has(.node-delete-confirm) .node-rename-slot {
+  position: static;
+  justify-content: flex-end;
+  padding: 0 8px 8px;
+}
 .node-delete-prompt {
   font-size: 13px;
 }

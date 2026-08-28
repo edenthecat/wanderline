@@ -225,6 +225,82 @@ describe('convertStoryGraphToInk', () => {
     expect(result.indexOf('= zulu')).toBeLessThan(result.indexOf('= beta'));
   });
 
+  // `.` is path syntax in an Ink target, not a character in a name.
+  // Sanitising it to `_` produced `-> k1_intro` for a stitch whose
+  // header is `= intro` under `=== k1 ===` — a target naming nothing.
+  it('emits a cross-knot stitch target as a path, not a flattened name', () => {
+    const result = convertStoryGraphToInk({
+      id: 'test',
+      title: 'Test',
+      startNode: 'k1',
+      nodes: {
+        k1: {
+          id: 'k1',
+          type: 'knot',
+          content: [],
+          choices: [],
+          divert: null,
+          tags: [],
+          lineNumber: 1,
+        },
+        'k1.intro': {
+          id: 'k1.intro',
+          type: 'stitch',
+          content: [{ text: 'A', tags: [] }],
+          choices: [],
+          divert: null,
+          tags: [],
+          lineNumber: 2,
+        },
+        k2: {
+          id: 'k2',
+          type: 'knot',
+          content: [],
+          choices: [],
+          divert: 'k1.intro',
+          tags: [],
+          lineNumber: 3,
+        },
+      },
+    });
+
+    expect(result).toContain('-> k1.intro');
+    expect(result).not.toContain('k1_intro');
+  });
+
+  // A Twee passage may legitimately be called `Ch1.Scene`. It exports
+  // as the knot `Ch1_Scene`, so references to it must stay flattened.
+  it('does not turn a dotted top-level passage name into a path', () => {
+    const result = convertStoryGraphToInk({
+      id: 'test',
+      title: 'Test',
+      startNode: 'Start',
+      nodes: {
+        Start: {
+          id: 'Start',
+          type: 'knot',
+          content: [],
+          choices: [],
+          divert: 'Ch1.Scene',
+          tags: [],
+          lineNumber: 1,
+        },
+        Ch1: { id: 'Ch1', type: 'knot', content: [], choices: [], divert: null, tags: [] },
+        'Ch1.Scene': {
+          id: 'Ch1.Scene',
+          type: 'knot',
+          content: [{ text: 'A', tags: [] }],
+          choices: [],
+          divert: null,
+          tags: [],
+        },
+      },
+    });
+
+    expect(result).toContain('-> Ch1_Scene');
+    expect(result).toContain('=== Ch1_Scene ===');
+  });
+
   // Knots too — a chapter placed after another has to come out after
   // it, whatever the two are called.
   it('emits knots in story order after the start knot', () => {

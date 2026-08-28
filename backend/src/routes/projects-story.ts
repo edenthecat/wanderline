@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { Pool } from 'pg';
 import { parseInk } from '../services/ink-parser.js';
 import { parseInkJson } from '../services/ink-json-parser.js';
-import { parseTwee, TweeParseError } from '../services/twee-parser.js';
+import { extractLinkTargets, parseTwee, TweeParseError } from '../services/twee-parser.js';
 import { emitTwee } from '../services/twee-emitter.js';
 import { emitInk } from '../services/ink-converter.js';
 import { randomUUID } from 'crypto';
@@ -1480,6 +1480,7 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
         nodes: GraphNodes;
         startNode: string;
         validation?: GraphValidation;
+        twee?: { specials?: Record<string, unknown> };
       };
       const sourceLanguage: SourceLanguage =
         storyResult.rows[0].source_language === 'twee' ? 'twee' : 'ink';
@@ -1726,6 +1727,58 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
     const repointTo =
       typeof rawRepoint === 'string' && rawRepoint.trim() !== '' ? rawRepoint.trim() : null;
 
+    // Snapshot before a delete, the way the upload endpoints do — this
+    // is the more destructive of the two. It drops a knot's prose AND
+    // every stitch under it, the audio assignments and timing
+    // overrides keyed to all of them, and rewrites other passages'
+    // targets; without a rollback point, recovery means re-uploading
+    // the source and re-attaching audio by hand.
+    //
+    // Taken BEFORE the transaction opens, not inside it: captureSnapshot
+    // flushes any pending collab shadow-save first, and that write
+    // would block on the `FOR UPDATE` lock we'd be holding while
+    // awaiting it — a deadlock.
+    //
+    // Which means an unlocked pre-read to decide whether this request
+    // is going to write anything at all. Refusals are the common case
+    // (a passage other passages link to), and a recovery point for an
+    // edit that never happened is just noise in History. The check
+    // below is advisory only — the authoritative one runs under the
+    // lock.
+    try {
+      const preview = await pool.query(
+        `SELECT story_graph, COALESCE(source_language, 'ink') AS source_language
+         FROM project_stories WHERE project_id = $1`,
+        [id],
+      );
+      const previewGraph = preview.rows[0]?.story_graph as
+        { nodes?: GraphNodes; startNode?: string } | undefined;
+      const previewNodes = previewGraph?.nodes;
+      if (previewNodes && Object.hasOwn(previewNodes, nodeId)) {
+        const previewLanguage: SourceLanguage =
+          preview.rows[0].source_language === 'twee' ? 'twee' : 'ink';
+        const previewSet = new Set(collectDeletionSet(nodeId, previewNodes, previewLanguage));
+        const blockedByStart = previewSet.has(previewGraph?.startNode ?? '');
+        const blockedByRefs =
+          repointTo === null &&
+          findInboundReferences(previewSet, previewNodes, previewLanguage).length > 0;
+        if (!blockedByStart && !blockedByRefs) {
+          await captureSnapshot({
+            pool,
+            projectId: id,
+            label: `Before deleting "${nodeId}"`,
+            source: 'auto',
+            createdBy: req.session?.userId ?? null,
+          });
+        }
+      }
+    } catch (snapErr) {
+      // Same call as the upload path makes: a snapshot failure is
+      // logged and the edit proceeds. Blocking an author's delete on
+      // the history feature would be the worse trade.
+      req.log.warn({ err: snapErr }, 'Pre-delete snapshot capture failed');
+    }
+
     const client = await pool.connect();
     let reducedGraph: unknown = null;
     let deletedIds: string[] = [];
@@ -1750,6 +1803,7 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
         nodes: GraphNodes;
         startNode: string;
         validation?: GraphValidation;
+        twee?: { specials?: Record<string, unknown> };
       };
       const sourceLanguage: SourceLanguage =
         storyResult.rows[0].source_language === 'twee' ? 'twee' : 'ink';
@@ -1772,6 +1826,37 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
               : `"${nodeId}" contains the story's start passage "${storyGraph.startNode}". Point the story elsewhere before deleting it.`,
         });
         return;
+      }
+
+      // Twee special passages (StoryInit, PassageHeader, ...) are kept
+      // as RAW TEXT on graph.twee.specials — the parser never turns
+      // them into nodes, so a nav menu in PassageHeader linking to this
+      // passage is invisible to findInboundReferences. Deleting anyway
+      // would leave exactly the dangling link this endpoint exists to
+      // prevent.
+      //
+      // `repointTo` can't fix these: they are authored text, and
+      // rewriting a link inside a body would mean re-emitting markup
+      // the author wrote by hand. So this refuses outright and names
+      // the special passage — which the author can edit in the Source
+      // tab, then retry.
+      if (sourceLanguage === 'twee') {
+        const specials = (storyGraph.twee?.specials ?? {}) as Record<string, unknown>;
+        const blocking = Object.keys(specials).filter((name) => {
+          const body = specials[name];
+          if (typeof body !== 'string') return false;
+          return extractLinkTargets(body).some((target) => deleteSet.has(target));
+        });
+        if (blocking.length > 0) {
+          await client.query('ROLLBACK');
+          res.status(409).json({
+            error:
+              `Can't delete "${nodeId}" — it is linked from ${blocking.join(', ')}, ` +
+              'which is authored text rather than a passage. Edit that link in the Source tab first.',
+            specialReferrers: blocking,
+          });
+          return;
+        }
       }
 
       const referrers = findInboundReferences(deleteSet, nodes, sourceLanguage);

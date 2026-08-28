@@ -73,7 +73,11 @@ export default function NodeDeleteButton({
   const [error, setError] = useState<string | null>(null);
   // Turned on by a server 409 for referrers we couldn't see locally.
   const [repointForced, setRepointForced] = useState(false);
-  const [repointTo, setRepointTo] = useState('END');
+  // Deliberately no default. Sending every inbound link to END on a
+  // click the author aimed at "delete this one passage" edits passages
+  // they never opened, and there is no undo for it — so where those
+  // links go has to be chosen, not defaulted.
+  const [repointTo, setRepointTo] = useState('');
 
   const doomedSet = useMemo(() => new Set(doomedIds), [doomedIds]);
   const replacementOptions = useMemo(
@@ -88,7 +92,7 @@ export default function NodeDeleteButton({
     setSaving(false);
     setError(null);
     setRepointForced(false);
-    setRepointTo('END');
+    setRepointTo('');
   }
 
   async function handleDelete() {
@@ -162,6 +166,7 @@ export default function NodeDeleteButton({
             disabled={saving}
             aria-label="Replacement target"
           >
+            <option value="">Choose where…</option>
             <option value="END">END (story ends there)</option>
             <option value="DONE">DONE</option>
             {replacementOptions.map((id) => (
@@ -176,7 +181,7 @@ export default function NodeDeleteButton({
         type="button"
         className="btn btn-danger btn-xs"
         onClick={handleDelete}
-        disabled={saving}
+        disabled={saving || (needsRepoint && !repointTo)}
       >
         {saving ? 'Deleting…' : 'Delete'}
       </button>

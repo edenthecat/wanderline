@@ -49,7 +49,16 @@ interface ScriptedQuery {
   rows?: unknown[];
 }
 
-function makePool(script: ScriptedQuery[]) {
+/**
+ * `script` is the transaction the handler runs on its own client.
+ * `poolScript` is the off-transaction work on the pool itself — the
+ * delete handler's unlocked pre-read and, when that says the request
+ * will write, captureSnapshot's own two queries. It defaults to a
+ * story-less answer, which makes the pre-read find nothing and skip
+ * the snapshot, so tests that aren't about snapshots don't have to
+ * script one.
+ */
+function makePool(script: ScriptedQuery[], poolScript: ScriptedQuery[] = []) {
   let i = 0;
   const calls: { sql: string; params: unknown[] }[] = [];
   const clientQuery = jest.fn(async (sql: string, params?: unknown[]) => {
@@ -64,11 +73,19 @@ function makePool(script: ScriptedQuery[]) {
     }
     return { rows: step.rows ?? [] } as { rows: unknown[] };
   });
+  let p = 0;
+  const poolCalls: { sql: string; params: unknown[] }[] = [];
+  const poolQuery = jest.fn(async (sql: string, params?: unknown[]) => {
+    poolCalls.push({ sql, params: params ?? [] });
+    const step = poolScript[p++];
+    return { rows: step?.rows ?? [] } as { rows: unknown[] };
+  });
   const release = jest.fn(() => undefined);
   const connect = jest.fn(async () => ({ query: clientQuery, release }));
   return {
-    pool: { query: jest.fn(), connect } as unknown as Pool,
+    pool: { query: poolQuery, connect } as unknown as Pool,
     calls,
+    poolCalls,
     release,
     consumedAll: () => i === script.length,
   };
@@ -692,6 +709,126 @@ describe('DELETE /:id/story/node', () => {
       { type: 'unreachable_node', nodeId: 'intro' },
     ]);
     expect(res.body.story_graph.validation.valid).toBe(true);
+  });
+
+  it('captures a rollback point before a delete that is going to write', async () => {
+    // A knot delete takes its stitches, their audio assignments and
+    // their timing overrides with it. The upload endpoints snapshot
+    // before overwriting for the same reason; this is more
+    // destructive than either.
+    const storyGraph = graph('intro', {
+      intro: { id: 'intro', type: 'knot', parent: null, choices: [], divert: null, lineNumber: 1 },
+      spare: { id: 'spare', type: 'knot', parent: null, choices: [], divert: null, lineNumber: 2 },
+    });
+    const { pool, poolCalls } = makePool(deleteScript(storyGraph), [
+      // The handler's unlocked pre-read.
+      { match: 'SELECT story_graph', rows: [{ story_graph: storyGraph, source_language: 'ink' }] },
+      // captureSnapshot's own read, then its insert.
+      {
+        match: 'SELECT ps.story_graph',
+        rows: [{ story_graph: storyGraph, ink_source: null, node_metadata: {} }],
+      },
+      { match: 'INSERT INTO project_snapshots', rows: [{ id: 's1', created_at: 'now' }] },
+    ]);
+    const res = await request(makeApp(pool))
+      .delete(`/api/projects/${projectId}/story/node`)
+      .send({ nodeId: 'spare' });
+
+    expect(res.status).toBe(200);
+    const insert = poolCalls.find((c) => c.sql.includes('INSERT INTO project_snapshots'));
+    expect(insert).toBeDefined();
+    expect(insert?.params).toContain('Before deleting "spare"');
+    expect(insert?.params).toContain('auto');
+  });
+
+  it('does not leave a rollback point behind for a delete it refuses', async () => {
+    // Refusals are the common case. A recovery point for an edit that
+    // never happened is noise in a History list nothing prunes.
+    const storyGraph = graph('intro', {
+      intro: {
+        id: 'intro',
+        type: 'knot',
+        parent: null,
+        choices: [{ text: 'go', target: 'kitchen' }],
+        divert: null,
+        lineNumber: 1,
+      },
+      kitchen: {
+        id: 'kitchen',
+        type: 'knot',
+        parent: null,
+        choices: [],
+        divert: null,
+        lineNumber: 2,
+      },
+    });
+    const { pool, poolCalls } = makePool(
+      [
+        { match: 'BEGIN' },
+        {
+          match: 'SELECT story_graph',
+          rows: [{ story_graph: storyGraph, source_language: 'ink' }],
+        },
+        { match: 'ROLLBACK' },
+      ],
+      [
+        {
+          match: 'SELECT story_graph',
+          rows: [{ story_graph: storyGraph, source_language: 'ink' }],
+        },
+        // Scripted so a snapshot WOULD succeed if one were attempted.
+        // Without these rows captureSnapshot fails on its own ("no
+        // story to snapshot") and the assertion below would hold even
+        // with the guard removed.
+        {
+          match: 'SELECT ps.story_graph',
+          rows: [{ story_graph: storyGraph, ink_source: null, node_metadata: {} }],
+        },
+        { match: 'INSERT INTO project_snapshots', rows: [{ id: 's1', created_at: 'now' }] },
+      ],
+    );
+    const res = await request(makeApp(pool))
+      .delete(`/api/projects/${projectId}/story/node`)
+      .send({ nodeId: 'kitchen' });
+
+    expect(res.status).toBe(409);
+    expect(poolCalls.some((c) => c.sql.includes('INSERT INTO project_snapshots'))).toBe(false);
+  });
+
+  it('refuses when a Twee special passage links to it, since repointing cannot reach raw text', async () => {
+    // StoryInit / PassageHeader bodies are stored verbatim and never
+    // parsed into nodes, so a nav menu linking here is invisible to
+    // the graph walk — and deleting anyway would dangle it.
+    const storyGraph = {
+      startNode: 'Start',
+      nodes: {
+        Start: {
+          id: 'Start',
+          type: 'knot',
+          parent: null,
+          choices: [],
+          divert: null,
+          lineNumber: 1,
+        },
+        Cave: { id: 'Cave', type: 'knot', parent: null, choices: [], divert: null, lineNumber: 2 },
+      },
+      id: 'g1',
+      title: 'T',
+      validation: { valid: true, errors: [], warnings: [] },
+      twee: { specials: { PassageHeader: 'Menu: [[Map->Cave]]' } },
+    };
+    const { pool } = makePool([
+      { match: 'BEGIN' },
+      { match: 'SELECT story_graph', rows: [{ story_graph: storyGraph, source_language: 'twee' }] },
+      { match: 'ROLLBACK' },
+    ]);
+    const res = await request(makeApp(pool))
+      .delete(`/api/projects/${projectId}/story/node`)
+      .send({ nodeId: 'Cave', repointTo: 'Start' });
+
+    expect(res.status).toBe(409);
+    expect(res.body.specialReferrers).toEqual(['PassageHeader']);
+    expect(res.body.error).toMatch(/PassageHeader/);
   });
 
   it('404s on an unknown node', async () => {

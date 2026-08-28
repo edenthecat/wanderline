@@ -46,12 +46,18 @@ describe('NodeDeleteButton', () => {
     // The passage being deleted is never offered as its own
     // replacement — the server rejects that.
     expect(Array.from(select.options).map((o) => o.value)).toEqual([
+      '',
       'END',
       'DONE',
       'hall',
       'porch',
     ]);
+    // No default: rewriting every inbound link to END on a click aimed
+    // at "delete this passage" edits passages the author never opened,
+    // and nothing undoes it.
+    expect((screen.getByText('Delete') as HTMLButtonElement).disabled).toBe(true);
     fireEvent.change(select, { target: { value: 'porch' } });
+    expect((screen.getByText('Delete') as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(screen.getByText('Delete'));
     await waitFor(() => expect(onDelete).toHaveBeenCalledWith('kitchen', 'porch'));
   });

@@ -92,6 +92,26 @@ export function convertStoryGraphToInk(storyGraph: InkStoryGraph): string {
         return sanitisedTarget.slice(sanitisedKnot.length + 1);
       }
     }
+    // A stitch in a DIFFERENT knot is named `knot.stitch` in Ink — the
+    // dot is path syntax, not part of a name. `sanitize` turns it into
+    // `_` along with every other illegal character, which produces
+    // `-> k1_intro` for a stitch whose header is `= intro` under
+    // `=== k1 ===`: a target that names nothing, and a `missing_target`
+    // the moment the export is read back. Rebuild the path form from
+    // the two sanitised halves.
+    //
+    // Gated on the target actually BEING a stitch, because a Twee
+    // graph exported to Ink can hold a top-level passage literally
+    // called `Ch1.Scene` — which emits as the knot `Ch1_Scene` and
+    // must be referenced that way.
+    const dot = target.indexOf('.');
+    if (dot > 0 && nodes[target]?.type === 'stitch') {
+      const targetKnot = target.slice(0, dot);
+      const sanitisedKnot = inkId(targetKnot);
+      if (sanitisedTarget.startsWith(sanitisedKnot + '_')) {
+        return `${sanitisedKnot}.${sanitisedTarget.slice(sanitisedKnot.length + 1)}`;
+      }
+    }
     return sanitisedTarget;
   };
 
