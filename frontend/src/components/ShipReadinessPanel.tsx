@@ -102,10 +102,17 @@ export default function ShipReadinessPanel({
     // Nothing renders without a story (see the early return below), so
     // three discarded round trips — one of them a full re-match of
     // every audio assignment — would buy nothing.
-
     if (!hasStory) return;
     let cancelled = false;
     setCounts(null);
+    // Every visit to Ship pays for a fresh audit, which re-matches
+    // every attached clip server-side. Deliberate: this is the screen
+    // that answers "can I ship this", and a cached count saying
+    // "nothing to review" about a project someone changed ten minutes
+    // ago is worse than the request. AssignmentAuditPanel stays
+    // opt-in for the same reason in reverse — an ordinary visit to
+    // Audio is not asking the question.
+    //
     // allSettled, not all: one dead endpoint must degrade that one
     // check to "couldn't check", not blank the whole summary. A
     // readiness panel that disappears when the flags API hiccups is
@@ -116,16 +123,30 @@ export default function ShipReadinessPanel({
       auditAudioAssignments(projectId),
     ]).then(([flags, coverage, audit]) => {
       if (cancelled) return;
-      setCounts({
-        // `.total` is the true open count. FlaggedNodesPanel's own
-        // badge shows the returned page and says so when the server
-        // capped it; the readiness answer wants the real number.
-        openFlagCount: flags.status === 'fulfilled' ? flags.value.total : null,
-        passagesWithoutVoiceover:
-          coverage.status === 'fulfilled' ? coverage.value.nodesWithoutAudio.length : null,
-        assignmentDisagreements:
-          audit.status === 'fulfilled' ? audit.value.disagreements.length : null,
-      });
+      // allSettled covers a rejected request, not a fulfilled one whose
+      // body is not the shape we expect — a proxy's own JSON error page
+      // returned as 200, or a backend a version ahead. Reading through
+      // it would throw here and never reach setCounts, leaving the
+      // panel stuck on "Checking…": the exact outcome the allSettled
+      // above exists to prevent. Fall back to all-unknown instead.
+      try {
+        setCounts({
+          // `.total` is the true open count. FlaggedNodesPanel's own
+          // badge shows the returned page and says so when the server
+          // capped it; the readiness answer wants the real number.
+          openFlagCount: flags.status === 'fulfilled' ? flags.value.total : null,
+          passagesWithoutVoiceover:
+            coverage.status === 'fulfilled' ? coverage.value.nodesWithoutAudio.length : null,
+          assignmentDisagreements:
+            audit.status === 'fulfilled' ? audit.value.disagreements.length : null,
+        });
+      } catch {
+        setCounts({
+          openFlagCount: null,
+          passagesWithoutVoiceover: null,
+          assignmentDisagreements: null,
+        });
+      }
     });
     return () => {
       cancelled = true;

@@ -25,6 +25,7 @@ import { usePresence } from '../hooks/usePresence';
 import { useAuth } from '../contexts/AuthContext';
 import { PANEL_ANCHORS } from '../lib/panelAnchors';
 import { scrollToSelector } from '../lib/scrollToPanel';
+import type { NomenclaturePreference } from '../lib/nomenclature';
 import type { ReadinessTarget } from '../lib/shipReadiness';
 
 type Tab =
@@ -218,14 +219,13 @@ export default function ProjectDetailPage() {
     setReadinessAnchor(target.anchorId);
   }, []);
 
-  // Scrolling from an effect rather than the click handler, so the poll
-  // is cancelled when the author moves on instead of yanking the page
-  // seconds later. The budget is generous because both Audio anchors
-  // sit behind AudioTab's own data load; it is still a bound, not a
-  // guarantee — a missed target simply leaves the tab where it opened.
+  // Scrolling from an effect rather than the click handler, so the
+  // watch is torn down when the author moves on instead of yanking the
+  // page later. scrollToSelector waits for the anchor to mount, which
+  // matters because both Audio anchors sit behind AudioTab's own load.
   useEffect(() => {
     if (!readinessAnchor) return;
-    return scrollToSelector(`#${readinessAnchor}`, { attempts: 60 });
+    return scrollToSelector(`#${readinessAnchor}`);
   }, [readinessAnchor, activeTab]);
 
   const handleExport = useCallback(
@@ -257,6 +257,10 @@ export default function ProjectDetailPage() {
     );
 
   const activeGroup = groupFor(activeTab);
+  // Read by every surface that names a story node — StoryTab and the
+  // Ship tab's readiness summary must agree on "knot" vs "passage".
+  const nomenclaturePreference =
+    (project.settings?.nomenclature as NomenclaturePreference | undefined) ?? 'auto';
 
   function pickTab(t: Tab) {
     setActiveTab(t);
@@ -378,9 +382,7 @@ export default function ProjectDetailPage() {
                 inkSource={project.ink_source}
                 tweeSource={project.twee_source}
                 sourceLanguage={project.source_language}
-                nomenclaturePreference={
-                  (project.settings?.nomenclature as 'auto' | 'ink' | 'twee' | undefined) ?? 'auto'
-                }
+                nomenclaturePreference={nomenclaturePreference}
                 sourceResetKey={sourceResetKey}
                 onStoryUpdated={() => loadProject({ silent: true })}
                 onSourceReplaced={bumpSourceResetKey}
@@ -427,10 +429,7 @@ export default function ProjectDetailPage() {
                   storyGraph={project.story_graph}
                   onNavigate={goToReadinessTarget}
                   sourceLanguage={project.source_language}
-                  nomenclaturePreference={
-                    (project.settings?.nomenclature as 'auto' | 'ink' | 'twee' | undefined) ??
-                    'auto'
-                  }
+                  nomenclaturePreference={nomenclaturePreference}
                 />
                 <BuildsTab projectId={id} hasStory={!!project.story_graph} />
               </>

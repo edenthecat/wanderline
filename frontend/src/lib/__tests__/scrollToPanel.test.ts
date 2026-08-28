@@ -13,6 +13,9 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/** MutationObserver callbacks are delivered as microtasks. */
+const flush = () => Promise.resolve();
+
 describe('scrollToSelector', () => {
   it('scrolls a target that is already mounted', () => {
     document.body.innerHTML = '<div id="target"></div>';
@@ -23,34 +26,43 @@ describe('scrollToSelector', () => {
   // Both callers ask to scroll in the same tick they trigger the
   // render that creates the target — a tab switch, or expanding a
   // collapsed knot — so a single look would always miss.
-  it('keeps looking while the target is still rendering', () => {
-    vi.useFakeTimers();
+  it('scrolls as soon as a target that was not there yet mounts', async () => {
     scrollToSelector('#late');
-    vi.advanceTimersByTime(200);
     document.body.innerHTML = '<div id="late"></div>';
-    vi.advanceTimersByTime(200);
+    await flush();
     expect(document.getElementById('late')!.scrollIntoView).toHaveBeenCalled();
   });
 
-  it('gives up rather than polling forever', () => {
+  // The Audio anchors sit behind that tab's own data load, which takes
+  // as long as the network does. A fixed retry budget used to lose
+  // that race and silently leave the author at the top of the tab.
+  it('waits out a slow destination rather than timing out on it', async () => {
     vi.useFakeTimers();
-    scrollToSelector('#never', { attempts: 3, intervalMs: 10 });
-    vi.advanceTimersByTime(1000);
+    scrollToSelector('#slow');
+    // Longer than any plausible fixed retry budget.
+    vi.advanceTimersByTime(8000);
+    document.body.innerHTML = '<div id="slow"></div>';
+    await flush();
+    expect(document.getElementById('slow')!.scrollIntoView).toHaveBeenCalled();
+  });
+
+  it('stops watching once its lifetime bound is up', async () => {
+    vi.useFakeTimers();
+    scrollToSelector('#never', { timeoutMs: 100 });
+    vi.advanceTimersByTime(500);
     document.body.innerHTML = '<div id="never"></div>';
-    vi.advanceTimersByTime(1000);
+    await flush();
     expect(document.getElementById('never')!.scrollIntoView).not.toHaveBeenCalled();
   });
 
   // The author clicks a readiness row, then clicks somewhere else
   // while the destination is still loading. Without a cancel, the
-  // pending retry yanks the page out from under them seconds later.
-  it('stops retrying once cancelled', () => {
-    vi.useFakeTimers();
-    const cancel = scrollToSelector('#late', { attempts: 60, intervalMs: 10 });
-    vi.advanceTimersByTime(50);
+  // watch yanks the page out from under them when it finally arrives.
+  it('stops watching once cancelled', async () => {
+    const cancel = scrollToSelector('#late');
     cancel();
     document.body.innerHTML = '<div id="late"></div>';
-    vi.advanceTimersByTime(1000);
+    await flush();
     expect(document.getElementById('late')!.scrollIntoView).not.toHaveBeenCalled();
   });
 

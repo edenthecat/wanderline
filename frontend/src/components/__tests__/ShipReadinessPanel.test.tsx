@@ -159,6 +159,27 @@ describe('ShipReadinessPanel', () => {
     expect(screen.getByText(/didn’t answer/)).toBeInTheDocument();
   });
 
+  // allSettled covers a rejected request, not a 200 whose body is not
+  // what we expect — a proxy's own error page, or a backend a version
+  // ahead. Reading through that used to throw past setCounts and leave
+  // the panel on "Checking…" forever.
+  it('degrades to unknown when a request succeeds with the wrong shape', async () => {
+    stubLookups();
+    vi.spyOn(client, 'fetchAudioCoverage').mockResolvedValue({
+      error: 'Bad Gateway',
+    } as unknown as client.AudioCoverage);
+    render(
+      <ShipReadinessPanel
+        projectId="p1"
+        storyGraph={graph()}
+        onNavigate={() => {}}
+        {...vocabProps}
+      />,
+    );
+    expect(await screen.findByText('Couldn’t check')).toBeInTheDocument();
+    expect(screen.queryByText('Checking…')).not.toBeInTheDocument();
+  });
+
   it('renders nothing, and asks nothing, until there is a story', () => {
     stubLookups();
     const { container } = render(
