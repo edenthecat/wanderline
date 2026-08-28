@@ -67,12 +67,14 @@ export default function FlaggedNodesPanel({
   // failure used to leave the author at the top of the document,
   // looking at an error about a button they'd have to hunt for again.
   const refocusOnFailure = useRef<string | null>(null);
-  // One timestamp per resolve we watched succeed, spent one per
-  // attributable change. A single slot would let two quick resolves
-  // share one credit: the first refetch spends it and the second — the
-  // one that empties the queue — reads as a change we can't vouch for
-  // and says nothing at all.
-  const resolveCredits = useRef<number[]>([]);
+  // Which flags we watched resolve, and when. Keyed by id rather than
+  // counted, because one refetch can reflect two resolves at once —
+  // spending a fixed number of credits per change would strand the
+  // extras, and a stranded credit gets spent by the next unrelated
+  // change, up to and including the empty list a failed fetch reports.
+  // A credit is redeemed when its own row is gone, so batching is just
+  // two redemptions in one pass.
+  const resolveCredits = useRef(new Map<string, number>());
 
   const entries = useMemo(() => {
     return (
@@ -115,13 +117,20 @@ export default function FlaggedNodesPanel({
   const lastTotal = useRef<number | null>(null);
   useEffect(() => {
     // Credits expire on their own: a resolve can't vouch for a change
-    // that lands minutes later. They also have to be spendable on a
+    // that lands minutes later. And they have to be redeemable on a
     // change that leaves the count flat — resolving one flag while a
     // collaborator raises another moves neither the total nor the
     // summary string, which is why `flagIdKey` is in the deps.
     const now = Date.now();
-    resolveCredits.current = resolveCredits.current.filter((t) => now - t <= RECENT_RESOLVE_MS);
-    const spendCredit = () => resolveCredits.current.shift() !== undefined;
+    let landed = 0;
+    for (const [id, at] of resolveCredits.current) {
+      if (now - at > RECENT_RESOLVE_MS) {
+        resolveCredits.current.delete(id);
+      } else if (!flagIds.includes(id)) {
+        resolveCredits.current.delete(id);
+        landed += 1;
+      }
+    }
 
     // The state on arrival isn't news; only announce changes to it.
     if (lastTotal.current === null) {
@@ -132,11 +141,11 @@ export default function FlaggedNodesPanel({
     if (prev === total) {
       // Staying silent when the count holds steady across a resolve
       // reads as "your click did nothing", so say both halves.
-      if (spendCredit()) setAnnouncement(`Flag resolved. ${openSummary}`);
+      if (landed > 0) setAnnouncement(`Flag resolved. ${openSummary}`);
       return;
     }
     lastTotal.current = total;
-    const ours = total < prev && spendCredit();
+    const ours = landed > 0;
     if (total === 0) {
       // An empty list is also what a *failed* flags fetch looks like —
       // useNodeEditor swallows the error and reports `{}` — so "your
@@ -147,6 +156,9 @@ export default function FlaggedNodesPanel({
       return;
     }
     setAnnouncement(openSummary);
+    // `flagIdKey` is the stable string form of `flagIds`; depending on
+    // the array itself would re-run this on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flagIdKey, total, openSummary]);
 
   // Re-homing focus is only a kindness while the author is still here.
@@ -172,12 +184,16 @@ export default function FlaggedNodesPanel({
     // collaborator's resolve) would fire one and yank focus out of
     // whatever the author had moved on to.
     const now = Date.now();
-    pendingFocus.current = pendingFocus.current.filter((p) => now - p.at <= RECENT_RESOLVE_MS);
-    // Take the first record whose row has actually gone. The others
-    // wait for the refetch that removes theirs.
-    const at = pendingFocus.current.findIndex((p) => !flagIds.includes(p.resolvedId));
-    if (at === -1) return;
-    const [pending] = pendingFocus.current.splice(at, 1);
+    const live = pendingFocus.current.filter((p) => now - p.at <= RECENT_RESOLVE_MS);
+    // Drain *every* record whose row has gone, not just the first. One
+    // refetch can reflect two resolves, and a record left queued is
+    // permanently satisfied — it would fire on the next unrelated
+    // change and pull focus off whatever the author had moved to.
+    const satisfied = live.filter((p) => !flagIds.includes(p.resolvedId));
+    pendingFocus.current = live.filter((p) => flagIds.includes(p.resolvedId));
+    if (satisfied.length === 0) return;
+    // The most recent removal is the one the author is standing on.
+    const pending = satisfied[satisfied.length - 1];
     if (!mayTakeFocus()) return;
     const next = pending.nextId ? resolveButtons.current.get(pending.nextId) : undefined;
     // Next Resolve button, else the panel's own toggle, else the status
@@ -202,22 +218,23 @@ export default function FlaggedNodesPanel({
   }, [resolvingKey]);
 
   /**
-   * `hadFocus` is read at click time, not inferred later. Safari (and
-   * Firefox with Full Keyboard Access off) leaves `activeElement` on
-   * <body> after a mouse click on a button, which is the same place a
-   * disable-blur leaves it — so without this, a mouse user's click
-   * would look exactly like a keyboard user's and we'd move focus onto
-   * a Resolve button they never touched. Their next Space, pressed to
-   * scroll the page, would resolve a flag they never read.
+   * `byKeyboard` decides whether focus is ours to move afterwards, and
+   * it is read from the event rather than inferred from where focus
+   * happens to sit. `activeElement` can't answer this: Safari leaves it
+   * on <body> after a mouse click (the same place a disable-blur
+   * leaves it), while Chromium focuses the button on mousedown — so
+   * either browser would misread half its users. A click synthesised
+   * from Enter or Space carries `detail === 0`; a pointer click
+   * carries the click count. Only the former asked for focus.
    */
-  async function resolve(flagId: string, hadFocus: boolean) {
+  async function resolve(flagId: string, byKeyboard: boolean) {
     setResolving((prev) => new Set(prev).add(flagId));
     setError(null);
     try {
       await resolveNodeFlag(projectId, flagId);
       const at = flagIds.indexOf(flagId);
-      resolveCredits.current.push(Date.now());
-      if (hadFocus) {
+      resolveCredits.current.set(flagId, Date.now());
+      if (byKeyboard) {
         pendingFocus.current.push({
           resolvedId: flagId,
           // Prefer the flag below; at the end of the list, step back up.
@@ -227,7 +244,7 @@ export default function FlaggedNodesPanel({
       }
       onFlagsChanged();
     } catch (e) {
-      if (hadFocus) refocusOnFailure.current = flagId;
+      if (byKeyboard) refocusOnFailure.current = flagId;
       setError(e instanceof Error ? e.message : 'Could not resolve');
     } finally {
       setResolving((prev) => {
@@ -342,9 +359,7 @@ export default function FlaggedNodesPanel({
                             else resolveButtons.current.delete(f.id);
                           }}
                           className="btn btn-sm btn-ghost"
-                          onClick={(e) =>
-                            void resolve(f.id, document.activeElement === e.currentTarget)
-                          }
+                          onClick={(e) => void resolve(f.id, e.detail === 0)}
                           disabled={resolving.has(f.id)}
                           aria-label={`Resolve ${FLAG_REASON_LABELS[f.reason] ?? f.reason} on ${nodeId}`}
                         >

@@ -264,25 +264,88 @@ describe('FlaggedNodesPanel accessibility', () => {
     expect(screen.getByTestId('flagged-panel-status').textContent).toBe('Flag resolved.');
   });
 
-  it('does not move focus for a click that never focused the button', async () => {
-    // Safari leaves activeElement on <body> after a mouse click on a
-    // button — the same place a disable-blur leaves it. Moving focus
-    // onto the next Resolve button there would put the mouse user's
-    // next Space, pressed to scroll, on a flag they never read.
+  it('does not move focus for a pointer click', async () => {
+    // Only a keyboard activation asked for focus. `activeElement` can't
+    // tell the two apart — Safari leaves it on <body> after a mouse
+    // click, Chromium focuses the button on mousedown — so the signal
+    // is the click's detail: 0 for Enter/Space, the click count for a
+    // pointer. Moving a mouse user onto the next Resolve button would
+    // put their next Space, pressed to scroll, on a flag they never
+    // read.
     vi.spyOn(client, 'resolveNodeFlag').mockResolvedValue(undefined as never);
     const { update } = renderPanel({ her: [flag({ id: 'a' }), flag({ id: 'b' })] });
     expand();
 
     const [first] = resolveButtons();
-    // No .focus() — the click arrives with focus still on <body>.
-    expect(document.activeElement).toBe(document.body);
     await act(async () => {
-      fireEvent.click(first);
+      fireEvent.click(first, { detail: 1 });
     });
     update({ her: [flag({ id: 'b' })] });
 
     await waitFor(() => expect(resolveButtons()).toHaveLength(1));
     expect(document.activeElement).toBe(document.body);
+  });
+
+  it('redeems both credits when one refetch reflects two resolves', async () => {
+    // Two clicks, then a single refresh carrying both removals. Credits
+    // are keyed by flag id precisely so this is two redemptions in one
+    // pass — spending a fixed number per change would strand the extra,
+    // and the next unrelated change would spend it. The empty list a
+    // failed fetch reports is exactly such a change.
+    vi.spyOn(client, 'resolveNodeFlag').mockResolvedValue(undefined as never);
+    const { update } = renderPanel({
+      her: [flag({ id: 'a' }), flag({ id: 'b' }), flag({ id: 'c' })],
+    });
+    expand();
+
+    const [ra, rb] = resolveButtons();
+    await act(async () => {
+      fireEvent.click(ra);
+    });
+    await act(async () => {
+      fireEvent.click(rb);
+    });
+
+    update({ her: [flag({ id: 'c' })] });
+    await waitFor(() =>
+      expect(screen.getByTestId('flagged-panel-status').textContent).toBe(
+        '1 open flag across 1 passage.',
+      ),
+    );
+
+    // Both credits are spent, so the failed fetch has nothing to claim.
+    update({});
+    await waitFor(() => expect(screen.queryByTestId('flagged-panel')).toBeNull());
+    expect(screen.getByTestId('flagged-panel-status').textContent).toBe('');
+  });
+
+  it('does not let a leftover focus record steal focus later', async () => {
+    // Same batched removal, seen from the focus side: two queued
+    // records, one refetch satisfies both. A record left behind is
+    // permanently satisfied and would fire on the next list change.
+    vi.spyOn(client, 'resolveNodeFlag').mockResolvedValue(undefined as never);
+    const { update } = renderPanel({
+      her: [flag({ id: 'a' }), flag({ id: 'b' }), flag({ id: 'c' }), flag({ id: 'd' })],
+    });
+    expand();
+
+    const [ra, rb] = resolveButtons();
+    await act(async () => {
+      fireEvent.click(ra);
+    });
+    await act(async () => {
+      fireEvent.click(rb);
+    });
+    update({ her: [flag({ id: 'c' }), flag({ id: 'd' })] });
+    await waitFor(() => expect(resolveButtons()).toHaveLength(2));
+
+    // The author moves to the last row themselves.
+    const last = resolveButtons()[1];
+    last.focus();
+    // A collaborator raises another flag.
+    update({ her: [flag({ id: 'c' }), flag({ id: 'd' }), flag({ id: 'e' })] });
+    await waitFor(() => expect(resolveButtons()).toHaveLength(3));
+    expect(document.activeElement).toBe(last);
   });
 
   it('still reports a failure when the list empties in the same breath', async () => {
