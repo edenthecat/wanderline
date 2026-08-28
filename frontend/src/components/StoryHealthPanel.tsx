@@ -19,10 +19,19 @@ import { PANEL_ANCHORS } from '../lib/panelAnchors';
 interface Props {
   storyGraph: StoryGraph | null;
   onJumpToNode: (nodeId: string) => void;
+  /** Start open. Read once, at mount: set when the Ship tab's
+   * readiness summary sent the author here for the unreachable count,
+   * and being scrolled to a collapsed one-line strip is not an answer.
+   * StoryTab unmounts with the tab, so every arrival is a fresh mount. */
+  startExpanded?: boolean;
 }
 
-export default function StoryHealthPanel({ storyGraph, onJumpToNode }: Props) {
-  const [expanded, setExpanded] = useState(false);
+export default function StoryHealthPanel({
+  storyGraph,
+  onJumpToNode,
+  startExpanded = false,
+}: Props) {
+  const [expanded, setExpanded] = useState(startExpanded);
   // Parent re-renders on every search keystroke / metadata save /
   // awareness change. Memoize on the graph reference so we don't
   // walk a 500-knot BFS per keystroke.

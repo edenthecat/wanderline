@@ -41,6 +41,19 @@ describe('scrollToSelector', () => {
     expect(document.getElementById('never')!.scrollIntoView).not.toHaveBeenCalled();
   });
 
+  // The author clicks a readiness row, then clicks somewhere else
+  // while the destination is still loading. Without a cancel, the
+  // pending retry yanks the page out from under them seconds later.
+  it('stops retrying once cancelled', () => {
+    vi.useFakeTimers();
+    const cancel = scrollToSelector('#late', { attempts: 60, intervalMs: 10 });
+    vi.advanceTimersByTime(50);
+    cancel();
+    document.body.innerHTML = '<div id="late"></div>';
+    vi.advanceTimersByTime(1000);
+    expect(document.getElementById('late')!.scrollIntoView).not.toHaveBeenCalled();
+  });
+
   // The Audio tab's missing-voiceover list is a <details>. Scrolling a
   // collapsed one into view lands the author on a twisty, not on the
   // list they were sent to see — and a tab switch is not fragment

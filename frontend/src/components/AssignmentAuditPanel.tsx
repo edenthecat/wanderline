@@ -22,9 +22,12 @@ interface Props {
   projectId: string;
   /** Run the check on mount instead of waiting for the button. Set
    * only when the author was sent here by the Ship tab's readiness
-   * summary, which already knows there is something to see — the
-   * default stays opt-in so the ordinary visit to Audio does not pay
-   * for a full re-match of every assignment. */
+   * summary, which counted a disagreement and owes them the list; an
+   * ordinary visit to Audio stays opt-in and pays nothing. The
+   * summary's own count came from a separate call a moment earlier —
+   * re-running is deliberate, since the author may have changed
+   * something on the way here and the panel offers actions against
+   * what it shows. */
   autoRun?: boolean;
 }
 

@@ -24,6 +24,11 @@ interface Props {
   /** The server capped the list; say so rather than letting the cap
    * read as the total. */
   truncated?: boolean;
+  /** Start open. Read once, at mount: set when the Ship tab's
+   * readiness summary sent the author here for this count, and being
+   * scrolled to a collapsed one-line strip is not an answer. StoryTab
+   * unmounts with the tab, so every arrival is a fresh mount. */
+  startExpanded?: boolean;
 }
 
 export default function FlaggedNodesPanel({
@@ -33,8 +38,9 @@ export default function FlaggedNodesPanel({
   onJumpToNode,
   onFlagsChanged,
   truncated,
+  startExpanded = false,
 }: Props) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(startExpanded);
   // A set, not one id: gating every button on a single in-flight id
   // meant starting a second resolve re-enabled the first — letting it
   // fire twice and surface the backend's "already resolved" 404 for an

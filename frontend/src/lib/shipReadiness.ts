@@ -37,6 +37,7 @@
 // author can click through to.
 
 import type { StoryGraph } from '../api/client';
+import type { Vocab } from './nomenclature';
 import { PANEL_ANCHORS } from './panelAnchors';
 import { computeStoryHealth } from './storyHealth';
 
@@ -81,6 +82,12 @@ export interface ReadinessInputs {
   passagesWithoutVoiceover: number | null;
   /** `auditAudioAssignments(...).disagreements.length`. */
   assignmentDisagreements: number | null;
+  /** `useVocab(...).node` — "knot" for an Ink project, "passage" for
+   * Twee. Copy here must not hard-code either (see lib/nomenclature):
+   * a Ship tab reporting "3 unreachable passages" while the panel it
+   * links to calls them knots is the same disagreement this module
+   * exists to prevent, one level up. */
+  nodeNoun: Vocab['node'];
 }
 
 export interface ReadinessSummary {
@@ -94,13 +101,17 @@ export interface ReadinessSummary {
   unknown: ReadinessCheck[];
   /** 'ready' is only claimed when every check answered, and answered zero. */
   status: 'blocked' | 'review' | 'unknown' | 'ready';
-  /** Passage count, from the same walk the unreachable count comes
-   * from, so the all-clear line can say something concrete. */
-  totalPassages: number;
+  /** Node count, from the same walk the unreachable count comes from,
+   * so the all-clear line can say something concrete. */
+  totalNodes: number;
 }
 
 function plural(count: number, one: string, many: string): string {
   return `${count} ${count === 1 ? one : many}`;
+}
+
+function capitalize(word: string): string {
+  return word.charAt(0).toUpperCase() + word.slice(1);
 }
 
 /**
@@ -109,7 +120,7 @@ function plural(count: number, one: string, many: string): string {
  * inputs rather than per render.
  */
 export function computeReadiness(inputs: ReadinessInputs): ReadinessSummary {
-  const { storyGraph } = inputs;
+  const { storyGraph, nodeNoun } = inputs;
   const health = computeStoryHealth(storyGraph);
   // No story at all leaves both graph-derived counts genuinely
   // unknown rather than zero — an empty project is not a clean one.
@@ -135,7 +146,7 @@ export function computeReadiness(inputs: ReadinessInputs): ReadinessSummary {
         inputs.openFlagCount === null
           ? 'Unresolved flags'
           : plural(inputs.openFlagCount, 'unresolved flag', 'unresolved flags'),
-      detail: 'Someone reported a problem on these passages and nobody has closed it out yet.',
+      detail: `Someone reported a problem on ${nodeNoun.plural} here and nobody has closed it out yet.`,
       count: inputs.openFlagCount,
       severity: 'review',
       target: { tab: 'story', anchorId: PANEL_ANCHORS.flaggedNodes },
@@ -144,10 +155,14 @@ export function computeReadiness(inputs: ReadinessInputs): ReadinessSummary {
       id: 'unreachable_passages',
       label:
         unreachable === null
-          ? 'Unreachable passages'
-          : plural(unreachable, 'unreachable passage', 'unreachable passages'),
+          ? `Unreachable ${nodeNoun.plural}`
+          : plural(
+              unreachable,
+              `unreachable ${nodeNoun.singular}`,
+              `unreachable ${nodeNoun.plural}`,
+            ),
       detail:
-        'Written, but nothing diverts or chooses into them. They ship, and no listener ever hears them.',
+        'Written, but nothing in the story leads to them. They ship, and no listener ever hears them.',
       count: unreachable,
       severity: 'review',
       target: { tab: 'story', anchorId: PANEL_ANCHORS.storyHealth },
@@ -156,11 +171,11 @@ export function computeReadiness(inputs: ReadinessInputs): ReadinessSummary {
       id: 'passages_without_voiceover',
       label:
         inputs.passagesWithoutVoiceover === null
-          ? 'Passages with no voiceover'
+          ? `${capitalize(nodeNoun.plural)} with no voiceover`
           : plural(
               inputs.passagesWithoutVoiceover,
-              'passage with no voiceover',
-              'passages with no voiceover',
+              `${nodeNoun.singular} with no voiceover`,
+              `${nodeNoun.plural} with no voiceover`,
             ),
       detail: 'No voiceover clip is assigned, so the listener reaches these in silence.',
       count: inputs.passagesWithoutVoiceover,
@@ -177,8 +192,7 @@ export function computeReadiness(inputs: ReadinessInputs): ReadinessSummary {
               'clip whose filename disagrees',
               'clips whose filenames disagree',
             ),
-      detail:
-        'Their filename points at a different passage than the one they sit on. Often deliberate — worth confirming before it ships.',
+      detail: `Their filename points at a different ${nodeNoun.singular} than the one they sit on. Often deliberate — worth confirming before it ships.`,
       count: inputs.assignmentDisagreements,
       severity: 'review',
       target: { tab: 'audio', anchorId: PANEL_ANCHORS.assignmentAudit },
@@ -207,5 +221,5 @@ export function computeReadiness(inputs: ReadinessInputs): ReadinessSummary {
         ? 'unknown'
         : 'ready';
 
-  return { checks, blocking, review, unknown, status, totalPassages: health.totalNodes };
+  return { checks, blocking, review, unknown, status, totalNodes: health.totalNodes };
 }

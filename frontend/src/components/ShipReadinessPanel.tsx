@@ -24,6 +24,8 @@ import {
   type ReadinessSummary,
   type ReadinessTarget,
 } from '../lib/shipReadiness';
+import { useVocab } from '../hooks/useVocab';
+import type { Nomenclature, NomenclaturePreference } from '../lib/nomenclature';
 
 interface Props {
   projectId: string;
@@ -31,6 +33,10 @@ interface Props {
   storyGraph: StoryGraph | null;
   /** Switch to the owning panel's tab and scroll to it. */
   onNavigate: (target: ReadinessTarget) => void;
+  /** Terminology inputs: the summary must call a node whatever the
+   * panel it links to calls it. */
+  sourceLanguage: Nomenclature;
+  nomenclaturePreference: NomenclaturePreference;
 }
 
 /** The three counts that need a request. `null` means the request
@@ -77,7 +83,14 @@ function CheckRow({
   );
 }
 
-export default function ShipReadinessPanel({ projectId, storyGraph, onNavigate }: Props) {
+export default function ShipReadinessPanel({
+  projectId,
+  storyGraph,
+  onNavigate,
+  sourceLanguage,
+  nomenclaturePreference,
+}: Props) {
+  const vocab = useVocab(sourceLanguage, nomenclaturePreference);
   const [counts, setCounts] = useState<FetchedCounts | null>(null);
 
   // A boolean, not the graph itself: the page silently refetches the
@@ -129,8 +142,9 @@ export default function ShipReadinessPanel({ projectId, storyGraph, onNavigate }
         openFlagCount: counts.openFlagCount,
         passagesWithoutVoiceover: counts.passagesWithoutVoiceover,
         assignmentDisagreements: counts.assignmentDisagreements,
+        nodeNoun: vocab.node,
       }),
-    [storyGraph, counts],
+    [storyGraph, counts, vocab],
   );
 
   // No story means nothing to be ready about, and BuildsTab directly
@@ -156,9 +170,10 @@ export default function ShipReadinessPanel({ projectId, storyGraph, onNavigate }
       ) : summary.status === 'ready' ? (
         // Five zeros is not an answer. Say what was actually verified.
         <p className="readiness-line readiness-line-ready">
-          Nothing to fix across {summary.totalPassages} passage
-          {summary.totalPassages === 1 ? '' : 's'}: no parser errors, nothing unreachable, every
-          passage voiced, no open flags, and every clip agrees with its filename.
+          Nothing to fix across {summary.totalNodes}{' '}
+          {summary.totalNodes === 1 ? vocab.node.singular : vocab.node.plural}: no parser errors,
+          nothing unreachable, every {vocab.node.singular} voiced, no open flags, and every clip
+          agrees with its filename.
         </p>
       ) : (
         <>

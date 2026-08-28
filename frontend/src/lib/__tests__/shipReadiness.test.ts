@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { StoryGraph, StoryNode, ValidationMessage } from '../../api/client';
 import { computeReadiness, type ReadinessCheckId } from '../shipReadiness';
 import { PANEL_ANCHORS } from '../panelAnchors';
+import { INK_VOCAB, TWEE_VOCAB } from '../nomenclature';
 
 function node(id: string, over: Partial<StoryNode> = {}): StoryNode {
   return {
@@ -31,6 +32,7 @@ const clean = {
   openFlagCount: 0,
   passagesWithoutVoiceover: 0,
   assignmentDisagreements: 0,
+  nodeNoun: INK_VOCAB.node,
 };
 
 function countOf(
@@ -85,7 +87,7 @@ describe('computeReadiness', () => {
   // pre-qualification reachability pass, and StoryHealthPanel — the
   // panel this count links to — ignores them in favour of
   // computeStoryHealth. The summary follows the panel.
-  it('takes unreachable passages from story health, not the blob’s unreachable warnings', () => {
+  it('takes unreachable nodes from story health, not the blob’s unreachable warnings', () => {
     const g = graph(
       [
         node('start', { divert: 'middle' }),
@@ -109,7 +111,7 @@ describe('computeReadiness', () => {
   // naive re-implementation over choices + diverts alone would call
   // `inbox.reply` unreachable, and the summary would then contradict
   // the panel it links to.
-  it('honours Ink knot fall-through when counting unreachable passages', () => {
+  it('honours Ink knot fall-through when counting unreachable nodes', () => {
     const g = graph([
       node('inbox'),
       node('inbox.reply', { type: 'stitch', parent: 'inbox', lineNumber: 2, divert: 'END' }),
@@ -129,6 +131,7 @@ describe('computeReadiness', () => {
       openFlagCount: 3,
       passagesWithoutVoiceover: 7,
       assignmentDisagreements: 1,
+      nodeNoun: INK_VOCAB.node,
     });
     expect(summary.status).toBe('blocked');
     expect(summary.blocking.map((c) => c.id)).toEqual(['parser_errors']);
@@ -148,17 +151,42 @@ describe('computeReadiness', () => {
       openFlagCount: 0,
       passagesWithoutVoiceover: 2,
       assignmentDisagreements: 0,
+      nodeNoun: INK_VOCAB.node,
     });
     expect(summary.status).toBe('review');
     expect(summary.review.map((c) => c.id)).toEqual(['passages_without_voiceover']);
     expect(summary.blocking).toHaveLength(0);
   });
 
-  it('reports a clean story as ready, with a passage count to say so', () => {
+  it('reports a clean story as ready, with a node count to say so', () => {
     const g = graph([node('start', { divert: 'ending' }), node('ending', { divert: 'END' })]);
     const summary = computeReadiness({ storyGraph: g, ...clean });
     expect(summary.status).toBe('ready');
-    expect(summary.totalPassages).toBe(2);
+    expect(summary.totalNodes).toBe(2);
+  });
+
+  // lib/nomenclature: never hard-code "knot" or "passage". A Ship tab
+  // reporting "3 unreachable passages" for an Ink project, while the
+  // panel the row links to calls them knots, is the same disagreement
+  // this module exists to prevent — one level up.
+  it('names nodes the way the rest of the project does', () => {
+    const g = graph([node('start', { divert: 'END' }), node('lonely', { divert: 'END' })]);
+    const inputs = {
+      storyGraph: g,
+      openFlagCount: 0,
+      passagesWithoutVoiceover: 2,
+      assignmentDisagreements: 0,
+    };
+    const ink = computeReadiness({ ...inputs, nodeNoun: INK_VOCAB.node });
+    expect(ink.review.map((c) => c.label)).toEqual([
+      '1 unreachable knot',
+      '2 knots with no voiceover',
+    ]);
+    const twee = computeReadiness({ ...inputs, nodeNoun: TWEE_VOCAB.node });
+    expect(twee.review.map((c) => c.label)).toEqual([
+      '1 unreachable passage',
+      '2 passages with no voiceover',
+    ]);
   });
 
   // "We could not check" and "there is nothing wrong" are opposite
@@ -171,6 +199,7 @@ describe('computeReadiness', () => {
       openFlagCount: null,
       passagesWithoutVoiceover: 0,
       assignmentDisagreements: 0,
+      nodeNoun: INK_VOCAB.node,
     });
     expect(summary.status).toBe('unknown');
     expect(summary.unknown.map((c) => c.id)).toEqual(['open_flags']);
@@ -184,6 +213,7 @@ describe('computeReadiness', () => {
       openFlagCount: null,
       passagesWithoutVoiceover: 0,
       assignmentDisagreements: 0,
+      nodeNoun: INK_VOCAB.node,
     });
     expect(summary.status).toBe('blocked');
     expect(summary.unknown.map((c) => c.id)).toEqual(['open_flags']);
@@ -225,6 +255,7 @@ describe('computeReadiness', () => {
       openFlagCount: 1,
       passagesWithoutVoiceover: 0,
       assignmentDisagreements: 0,
+      nodeNoun: INK_VOCAB.node,
     });
     expect(one.blocking[0].label).toBe('1 parser error');
     expect(one.review[0].label).toBe('1 unresolved flag');
@@ -237,6 +268,7 @@ describe('computeReadiness', () => {
       openFlagCount: 4,
       passagesWithoutVoiceover: 0,
       assignmentDisagreements: 0,
+      nodeNoun: INK_VOCAB.node,
     });
     expect(many.blocking[0].label).toBe('2 parser errors');
     expect(many.review[0].label).toBe('4 unresolved flags');

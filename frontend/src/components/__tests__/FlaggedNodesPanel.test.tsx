@@ -51,6 +51,14 @@ describe('FlaggedNodesPanel', () => {
     expect(screen.getByText(/across 2 passages/)).toBeTruthy();
   });
 
+  // Arriving from the Ship tab's readiness summary means someone
+  // clicked a count and asked to see it. Landing on a collapsed
+  // one-line strip they still have to open is not an answer.
+  it('arrives already open when the reader was sent here for the count', () => {
+    render(panel({ flagsByNode: { her: [flag({ note: 'wrong take' })] }, startExpanded: true }));
+    expect(screen.getByText('wrong take')).toBeTruthy();
+  });
+
   it('lists each flag once expanded', () => {
     render(panel({ flagsByNode: { her: [flag({ note: 'wrong take' })] } }));
     fireEvent.click(screen.getByText('1 open flag'));

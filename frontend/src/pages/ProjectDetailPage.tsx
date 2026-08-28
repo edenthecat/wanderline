@@ -205,25 +205,28 @@ export default function ProjectDetailPage() {
   }
 
   // The Ship tab's readiness summary owns none of the panels it counts.
-  // Clicking a row hands the tab switch back here, then scrolls to the
-  // panel that actually explains the number.
-  //
-  // The anchor is also remembered until the next manual tab pick, so
-  // the destination can act on why the author arrived — AudioTab's
-  // assignment audit only runs when asked, and being sent to an
-  // unpressed button is not an answer.
+  // Clicking a row records which panel the author is being sent to and
+  // switches to its tab; the effect below does the scrolling, and the
+  // destination reads the same anchor to arrive in a useful state
+  // (StoryTab expands the collapsible it names; AudioTab runs the
+  // assignment audit, which is otherwise opt-in). Held until the next
+  // manual tab pick, so an ordinary visit is not treated as an arrival.
   const [readinessAnchor, setReadinessAnchor] = useState<string | null>(null);
   const goToReadinessTarget = useCallback((target: ReadinessTarget) => {
     setActiveTab(target.tab);
     setMobileSheet(null);
     setReadinessAnchor(target.anchorId);
-    // Generous budget: the Story panels render straight off the graph
-    // the page already holds, but both Audio anchors sit behind
-    // AudioTab's own three-request loading gate. The default 500ms
-    // loses that race on any real connection and silently drops the
-    // author at the top of the tab.
-    scrollToSelector(`#${target.anchorId}`, { attempts: 60 });
   }, []);
+
+  // Scrolling from an effect rather than the click handler, so the poll
+  // is cancelled when the author moves on instead of yanking the page
+  // seconds later. The budget is generous because both Audio anchors
+  // sit behind AudioTab's own data load; it is still a bound, not a
+  // guarantee — a missed target simply leaves the tab where it opened.
+  useEffect(() => {
+    if (!readinessAnchor) return;
+    return scrollToSelector(`#${readinessAnchor}`, { attempts: 60 });
+  }, [readinessAnchor, activeTab]);
 
   const handleExport = useCallback(
     (type: 'archive' | 'ink' | 'json') => {
@@ -383,6 +386,7 @@ export default function ProjectDetailPage() {
                 onSourceReplaced={bumpSourceResetKey}
                 otherPresence={presentUsers}
                 onSelfEditingNodeChange={setSelfEditingNodeId}
+                expandPanelId={readinessAnchor}
               />
             )}
             {activeTab === 'audio' && (
@@ -422,6 +426,11 @@ export default function ProjectDetailPage() {
                   projectId={id}
                   storyGraph={project.story_graph}
                   onNavigate={goToReadinessTarget}
+                  sourceLanguage={project.source_language}
+                  nomenclaturePreference={
+                    (project.settings?.nomenclature as 'auto' | 'ink' | 'twee' | undefined) ??
+                    'auto'
+                  }
                 />
                 <BuildsTab projectId={id} hasStory={!!project.story_graph} />
               </>

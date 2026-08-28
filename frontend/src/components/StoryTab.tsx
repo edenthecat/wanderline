@@ -12,6 +12,7 @@ import ValidationPanel from './ValidationPanel';
 import StoryHealthPanel from './StoryHealthPanel';
 import InkSourceEditor from './InkSourceEditor';
 import TweeSourceEditor from './TweeSourceEditor';
+import { PANEL_ANCHORS } from '../lib/panelAnchors';
 import { scrollToSelector } from '../lib/scrollToPanel';
 import { useVocab } from '../hooks/useVocab';
 import type { Nomenclature, NomenclaturePreference } from '../lib/nomenclature';
@@ -55,6 +56,11 @@ interface Props {
    */
   otherPresence: import('../hooks/usePresence').PresentUser[];
   onSelfEditingNodeChange: (nodeId: string | null) => void;
+  /** Anchor id the Ship tab's readiness summary is sending the author
+   * to, when that panel lives here. Scrolling is the page's job; this
+   * is only so a panel that collapses via React state (rather than a
+   * <details> the scroll helper can open) arrives already expanded. */
+  expandPanelId?: string | null;
 }
 
 type TypeFilter = 'all' | 'knot' | 'stitch';
@@ -78,6 +84,7 @@ export default function StoryTab({
   onSourceReplaced,
   otherPresence,
   onSelfEditingNodeChange,
+  expandPanelId,
 }: Props) {
   const vocab = useVocab(sourceLanguage, nomenclaturePreference);
   const useTweeEditor = sourceLanguage === 'twee';
@@ -553,8 +560,13 @@ export default function StoryTab({
             onJumpToNode={jumpToNode}
             onFlagsChanged={refreshFlags}
             truncated={flagsTruncated}
+            startExpanded={expandPanelId === PANEL_ANCHORS.flaggedNodes}
           />
-          <StoryHealthPanel storyGraph={storyGraph} onJumpToNode={jumpToNode} />
+          <StoryHealthPanel
+            storyGraph={storyGraph}
+            onJumpToNode={jumpToNode}
+            startExpanded={expandPanelId === PANEL_ANCHORS.storyHealth}
+          />
           {/* Stats */}
           <div className="stats-row">
             <div className="stat">
