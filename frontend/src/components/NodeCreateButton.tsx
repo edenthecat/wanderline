@@ -114,7 +114,7 @@ export default function NodeCreateButton({
     return (
       <button
         type="button"
-        className="btn btn-ghost btn-sm node-create-button"
+        className="btn btn-ghost btn-sm"
         onClick={(e) => {
           // Node headers are themselves buttons (tree-expand); don't
           // let opening this form also collapse the row.

@@ -41,6 +41,14 @@ interface Props {
   blockedReason?: string;
   /** What a passage is called in this project's vocab, for the copy. */
   noun?: string;
+  /**
+   * Which format the project is authored in. Only END / DONE depend on
+   * it: they are Ink built-ins, and a Twee link naming one emits
+   * `[[Continue|END]]` — a link to a passage that does not exist. The
+   * server refuses them for Twee; offering them here would just be a
+   * dead end. Defaults to Ink, matching source_language's own default.
+   */
+  sourceLanguage?: 'ink' | 'twee';
 }
 
 /**
@@ -67,6 +75,7 @@ export default function NodeDeleteButton({
   onDelete,
   blockedReason,
   noun = 'node',
+  sourceLanguage = 'ink',
 }: Props) {
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -167,8 +176,12 @@ export default function NodeDeleteButton({
             aria-label="Replacement target"
           >
             <option value="">Choose where…</option>
-            <option value="END">END (story ends there)</option>
-            <option value="DONE">DONE</option>
+            {sourceLanguage !== 'twee' && (
+              <>
+                <option value="END">END (story ends there)</option>
+                <option value="DONE">DONE</option>
+              </>
+            )}
             {replacementOptions.map((id) => (
               <option key={id} value={id}>
                 {id}

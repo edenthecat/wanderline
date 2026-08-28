@@ -591,6 +591,67 @@ describe('DELETE /:id/story/node', () => {
     expect(res.body.story_graph.nodes.intro.divert).toBe('END');
   });
 
+  it('refuses END as a replacement target in a Twee project', async () => {
+    // END is an Ink built-in. `emitChoice` would write
+    // `[[Continue|END]]`, which re-imports as "points at unknown
+    // passage END" and plays as a choice that goes nowhere — the
+    // dangling reference this endpoint exists to prevent, reached
+    // through its own escape hatch.
+    const storyGraph = graph('Hall', {
+      Hall: {
+        id: 'Hall',
+        type: 'knot',
+        parent: null,
+        choices: [{ text: 'in', target: 'Kitchen' }],
+        divert: null,
+        lineNumber: 1,
+      },
+      Kitchen: {
+        id: 'Kitchen',
+        type: 'knot',
+        parent: null,
+        choices: [],
+        divert: null,
+        lineNumber: 2,
+      },
+    });
+    const { pool } = makePool([
+      { match: 'BEGIN' },
+      { match: 'SELECT story_graph', rows: [{ story_graph: storyGraph, source_language: 'twee' }] },
+      { match: 'ROLLBACK' },
+    ]);
+    const res = await request(makeApp(pool))
+      .delete(`/api/projects/${projectId}/story/node`)
+      .send({ nodeId: 'Kitchen', repointTo: 'END' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/does not exist/);
+  });
+
+  it('still captures a rollback point when repointTo is moot because nothing links here', async () => {
+    // The transaction ignores repointTo when there are no referrers,
+    // so the pre-check must not read a nonsense one as a refusal —
+    // that would skip the snapshot for a delete that goes through.
+    const storyGraph = graph('intro', {
+      intro: { id: 'intro', type: 'knot', parent: null, choices: [], divert: null, lineNumber: 1 },
+      spare: { id: 'spare', type: 'knot', parent: null, choices: [], divert: null, lineNumber: 2 },
+    });
+    const { pool, poolCalls } = makePool(deleteScript(storyGraph), [
+      { match: 'SELECT story_graph', rows: [{ story_graph: storyGraph, source_language: 'ink' }] },
+      {
+        match: 'SELECT ps.story_graph',
+        rows: [{ story_graph: storyGraph, ink_source: null, node_metadata: {} }],
+      },
+      { match: 'INSERT INTO project_snapshots', rows: [{ id: 's1', created_at: 'now' }] },
+    ]);
+    const res = await request(makeApp(pool))
+      .delete(`/api/projects/${projectId}/story/node`)
+      .send({ nodeId: 'spare', repointTo: 'nowhere' });
+
+    expect(res.status).toBe(200);
+    expect(poolCalls.some((c) => c.sql.includes('INSERT INTO project_snapshots'))).toBe(true);
+  });
+
   it('refuses a replacement target that is itself being deleted', async () => {
     const storyGraph = graph('intro', {
       intro: {

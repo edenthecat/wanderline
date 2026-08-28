@@ -62,6 +62,24 @@ describe('NodeDeleteButton', () => {
     await waitFor(() => expect(onDelete).toHaveBeenCalledWith('kitchen', 'porch'));
   });
 
+  it('does not offer END or DONE in a Twee project', () => {
+    // They are Ink built-ins. A Twee link naming one emits
+    // `[[Continue|END]]` — a link to a passage that does not exist.
+    render(
+      <NodeDeleteButton
+        nodeId="kitchen"
+        doomedIds={['kitchen']}
+        referrers={['hall']}
+        allNodeIds={['hall', 'kitchen']}
+        onDelete={vi.fn()}
+        sourceLanguage="twee"
+      />,
+    );
+    open();
+    const select = screen.getByLabelText('Replacement target') as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.value)).toEqual(['', 'hall']);
+  });
+
   it('names the sub-nodes that go with a knot', () => {
     render(
       <NodeDeleteButton

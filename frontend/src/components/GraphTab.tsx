@@ -1229,6 +1229,7 @@ function GraphTabInner({
                   referrers={railReferrers}
                   allNodeIds={Array.from(editor.nodeIdSet).sort()}
                   onDelete={handleRailDelete}
+                  sourceLanguage={sourceLanguage}
                   blockedReason={
                     doomedSet.has(storyGraph.startNode)
                       ? `"${storyGraph.startNode}" is the story's start node — the story would have nowhere to begin.`

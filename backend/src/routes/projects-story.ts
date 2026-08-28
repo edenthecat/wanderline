@@ -1793,15 +1793,21 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
         // this pre-check exists to keep out of History, so missing one
         // of them defeats the point.
         const blockedByStart = previewSet.has(previewGraph?.startNode ?? '');
-        const blockedByRefs =
-          repointTo === null &&
-          findInboundReferences(previewSet, previewNodes, previewLanguage).length > 0;
+        const previewRefs = findInboundReferences(previewSet, previewNodes, previewLanguage);
+        const blockedByRefs = repointTo === null && previewRefs.length > 0;
         const blockedBySpecials =
           previewLanguage === 'twee' &&
           specialPassagesLinkingInto(previewSet, previewGraph?.twee?.specials).length > 0;
+        // `previewRefs.length > 0` mirrors the transaction, which only
+        // validates repointTo when there is something to repoint —
+        // otherwise a nonsense repointTo on a passage nothing links to
+        // would look like a refusal here while the delete goes
+        // through, and the author would lose the rollback point for a
+        // delete that actually happened.
         const blockedByRepoint =
           repointTo !== null &&
-          !TERMINAL_TARGETS.has(repointTo) &&
+          previewRefs.length > 0 &&
+          !(previewLanguage === 'ink' && TERMINAL_TARGETS.has(repointTo)) &&
           (!Object.hasOwn(previewNodes, repointTo) || previewSet.has(repointTo));
         if (!blockedByStart && !blockedByRefs && !blockedBySpecials && !blockedByRepoint) {
           await captureSnapshot({
@@ -1918,7 +1924,14 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
       }
 
       if (repointTo !== null && referrers.length > 0) {
-        const isTerminal = TERMINAL_TARGETS.has(repointTo);
+        // END / DONE are INK built-ins. Twee has no terminal target:
+        // `emitChoice` writes `[[Continue|END]]` verbatim, and the
+        // parser then reports "points at unknown passage END" on the
+        // next import while the player renders a choice that goes
+        // nowhere. Accepting them here would create, through this
+        // endpoint's own escape hatch, exactly the dangling reference
+        // it refuses to leave behind.
+        const isTerminal = sourceLanguage === 'ink' && TERMINAL_TARGETS.has(repointTo);
         if (!isTerminal && !Object.hasOwn(nodes, repointTo)) {
           await client.query('ROLLBACK');
           res.status(400).json({ error: `Replacement target "${repointTo}" does not exist` });

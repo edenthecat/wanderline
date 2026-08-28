@@ -238,15 +238,6 @@ const SPECIAL_PASSAGES = new Set([
 ]);
 
 /**
- * extract every link on a passage body + return the body
- * text with the links removed (so the plain content lines don't
- * contain markup). Handles all four shapes documented in the file
- * header.
- *
- * A conditional `[Cond]` suffix (Twine's SugarCube macro pattern) is
- * tolerated but stripped — the parser doesn't evaluate conditions.
- */
-/**
  * Every passage a body links to.
  *
  * Special passages (StoryInit, PassageHeader, PassageFooter, …) are
@@ -260,6 +251,15 @@ export function extractLinkTargets(body: string): string[] {
   return extractLinks(body).choices.map((choice) => choice.target);
 }
 
+/**
+ * extract every link on a passage body + return the body
+ * text with the links removed (so the plain content lines don't
+ * contain markup). Handles all four shapes documented in the file
+ * header.
+ *
+ * A conditional `[Cond]` suffix (Twine's SugarCube macro pattern) is
+ * tolerated but stripped — the parser doesn't evaluate conditions.
+ */
 function extractLinks(body: string): { choices: Choice[]; contentBody: string } {
   const choices: Choice[] = [];
   const linkPattern = /\[\[([^\][]*?)\]\](?:\[[^\]]*\])?/g;

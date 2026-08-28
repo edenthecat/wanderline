@@ -523,6 +523,7 @@ export default function StoryTab({
         allNodeIds={allNodeIds}
         onDelete={handleDeleteNodeFromTab}
         noun={vocab.node.singular}
+        sourceLanguage={sourceLanguage}
         blockedReason={
           start && doomed.includes(start)
             ? `"${start}" is the story's start ${vocab.node.singular} — the story would have nowhere to begin.`
