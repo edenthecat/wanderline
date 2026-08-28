@@ -102,13 +102,39 @@ describe('PreviewTab — starting from a passage', () => {
     expect(frame().getAttribute('src')).toBe('/api/projects/p1/preview?start=tell_you.middle');
   });
 
-  it('drops the pin when asked for the beginning', async () => {
+  // Dropping the pin is not enough: with no parameter at all the
+  // player resumes its autosave, and a preview that has been listened
+  // to has one — so the button would land the reviewer wherever they
+  // last got to. `?fresh=1` is what actually means "the beginning".
+  it('asks the player to ignore saves when told to start from the beginning', async () => {
     renderTab({ startNodeId: 'tell_you.middle', startRequestNonce: 1 });
     fireEvent.click(
       await screen.findByLabelText('Play the preview from the beginning of the story'),
     );
-    await waitFor(() => expect(frame().getAttribute('src')).toBe('/api/projects/p1/preview'));
+    await waitFor(() =>
+      expect(frame().getAttribute('src')).toBe('/api/projects/p1/preview?fresh=1'),
+    );
     expect(screen.getByLabelText('Restart preview from the start')).toBeTruthy();
+  });
+
+  // A fresh "Preview from here" is a new request; it must not inherit
+  // the ignore-saves flag from a previous click.
+  it('drops the fresh flag when a passage is pinned again', async () => {
+    const { rerender } = renderTab({ startNodeId: 'tell_you.middle', startRequestNonce: 1 });
+    fireEvent.click(
+      await screen.findByLabelText('Play the preview from the beginning of the story'),
+    );
+    await waitFor(() =>
+      expect(frame().getAttribute('src')).toBe('/api/projects/p1/preview?fresh=1'),
+    );
+    rerender(
+      <MemoryRouter>
+        <PreviewTab projectId="p1" hasStory startNodeId="tell_you.ending" startRequestNonce={2} />
+      </MemoryRouter>,
+    );
+    await waitFor(() =>
+      expect(frame().getAttribute('src')).toBe('/api/projects/p1/preview?start=tell_you.ending'),
+    );
   });
 
   it('offers no "from the beginning" control when nothing is pinned', async () => {

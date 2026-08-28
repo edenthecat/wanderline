@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
-import App, { resolveNodeReference } from './App';
+import App, { resolveNodeReference, resolveSessionStart } from './App';
 
 // `?start=<nodeId>` — open the player on a named passage instead of
 // the beginning.
@@ -81,6 +81,17 @@ function makeStory() {
         divert: null,
         tags: [],
       },
+      // A divert written as a bare stitch name — the shape a relative
+      // divert (`-> .ending`) takes once the Ink compiler is done with
+      // it, and the reason references need resolving at all.
+      'tell_you.hallway': {
+        id: 'tell_you.hallway',
+        type: 'stitch',
+        content: [{ text: 'A hallway.' }],
+        choices: [],
+        divert: 'ending',
+        tags: [],
+      },
       'tell_you.ending': {
         id: 'tell_you.ending',
         type: 'stitch',
@@ -111,6 +122,12 @@ function writeAutosave(nodeId: string, history: string[] = []) {
       },
     ]),
   );
+}
+
+function readAutosave(): { nodeId: string } | undefined {
+  const raw = localStorage.getItem(`wanderline_${STORY_ID}_slots`);
+  if (!raw) return undefined;
+  return (JSON.parse(raw) as { id: string; nodeId: string }[]).find((s) => s.id === 'autosave');
 }
 
 // Fake timers, drained before cleanup: startStory arms a bare
@@ -217,6 +234,56 @@ describe('?start= opens the player on a passage', () => {
   });
 });
 
+describe('resolveSessionStart', () => {
+  const story = makeStory();
+  const autosave = { nodeId: 'tell_you.ending', history: ['tell_you.opening'] };
+  const none = { start: null, fresh: false };
+
+  it('takes a resolved ?start= over the autosave', () => {
+    const s = resolveSessionStart(story, autosave, { start: 'tell_you.middle', fresh: false });
+    expect(s.nodeId).toBe('tell_you.middle');
+    expect(s.history).toEqual([]);
+    expect(s.reviewSession).toBe(true);
+  });
+
+  // The notice on screen says "starting from the beginning". Falling
+  // back to the autosave here would make that a lie, and would drop
+  // the listener somewhere they never asked for.
+  it('begins at the story start when ?start= matched nothing, autosave or not', () => {
+    const s = resolveSessionStart(story, autosave, { start: 'gone', fresh: false });
+    expect(s.nodeId).toBe(story.startNode);
+    expect(s.resolved).toBeNull();
+    expect(s.requested).toBe('gone');
+    expect(s.reviewSession).toBe(true);
+  });
+
+  it('honours ?fresh=1 over the autosave', () => {
+    const s = resolveSessionStart(story, autosave, { start: null, fresh: true });
+    expect(s.nodeId).toBe(story.startNode);
+    expect(s.reviewSession).toBe(true);
+  });
+
+  it('resumes the autosave when the URL asks for nothing', () => {
+    const s = resolveSessionStart(story, autosave, none);
+    expect(s.nodeId).toBe('tell_you.ending');
+    expect(s.history).toEqual(['tell_you.opening']);
+    expect(s.reviewSession).toBe(false);
+  });
+
+  // Otherwise a brand-new story the listener has only just opened
+  // would surface a "Resume?" affordance pointing at its own start.
+  it('ignores an autosave that sits on the start node', () => {
+    const s = resolveSessionStart(story, { nodeId: story.startNode, history: [] }, none);
+    expect(s.nodeId).toBe(story.startNode);
+  });
+
+  it('begins at the start node with no autosave and no parameters', () => {
+    const s = resolveSessionStart(story, undefined, none);
+    expect(s.nodeId).toBe(story.startNode);
+    expect(s.reviewSession).toBe(false);
+  });
+});
+
 describe('?start= versus a saved autosave', () => {
   // The autosave is an inference about where you probably want to be.
   // `?start=` is somebody saying so — and anyone arriving on one has
@@ -246,5 +313,103 @@ describe('?start= versus a saved autosave', () => {
     writeAutosave('tell_you.ending');
     await renderAndStart();
     expect(await screen.findByText('The end.')).toBeTruthy();
+  });
+
+  // A stale link — the passage was renamed, or the story re-uploaded.
+  // Resuming the save here would contradict the notice on screen.
+  it('begins at the beginning, not the save, when the passage is gone', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    writeAutosave('tell_you.ending');
+    openWith('start=a_passage_that_left');
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = makeStory();
+    render(<App />);
+    await screen.findByLabelText('Start the story');
+    expect(
+      screen.getByText('No passage matching "a_passage_that_left" — starting from the beginning.'),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByLabelText('Start the story'));
+    expect(await screen.findByText('The beginning.')).toBeTruthy();
+  });
+});
+
+// Hearing one passage to check a fix is not progress. Recording it
+// over the listener's real position destroys something they cannot get
+// back — and a "Preview from here" link is exactly the kind of thing
+// that gets shared to someone mid-story.
+describe('a review session leaves no trace', () => {
+  // The save deliberately names a passage the jump never visits, so a
+  // write that happened to land on the same id can't pass for a save
+  // that was left alone.
+  it('does not overwrite the autosave when navigating from a ?start= jump', async () => {
+    writeAutosave('tell_you.hallway', ['tell_you.opening']);
+    openWith('start=tell_you.middle');
+    await renderAndStart();
+    await screen.findByText('Forty minutes in.');
+    fireEvent.click(await screen.findByLabelText(/^Choice 1/));
+    await screen.findByText('The end.');
+    expect(readAutosave()?.nodeId).toBe('tell_you.hallway');
+  });
+
+  it('does not overwrite the autosave in a ?fresh=1 session', async () => {
+    writeAutosave('tell_you.hallway', ['tell_you.opening']);
+    openWith('fresh=1');
+    await renderAndStart();
+    await screen.findByText('The beginning.');
+    fireEvent.click(await screen.findByLabelText(/^Choice 1/));
+    await screen.findByText('Forty minutes in.');
+    expect(readAutosave()?.nodeId).toBe('tell_you.hallway');
+  });
+
+  // The pre-existing contract for an ordinary listen.
+  it('still records progress when the URL asks for nothing', async () => {
+    await renderAndStart();
+    fireEvent.click(await screen.findByLabelText(/^Choice 1/));
+    await screen.findByText('Forty minutes in.');
+    expect(readAutosave()?.nodeId).toBe('tell_you.middle');
+  });
+
+  // Picking a save is the listener saying "this is my run".
+  it('records again once a save is loaded from the picker', async () => {
+    writeAutosave('tell_you.middle', []);
+    openWith('fresh=1');
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = makeStory();
+    render(<App />);
+    await screen.findByLabelText('Start the story');
+    fireEvent.click(screen.getByText('Autosave'));
+    await screen.findByText('Forty minutes in.');
+    fireEvent.click(await screen.findByLabelText(/^Choice 1/));
+    await screen.findByText('The end.');
+    expect(readAutosave()?.nodeId).toBe('tell_you.ending');
+  });
+});
+
+// One resolver for every way forward. The keyboard used to demand an
+// exact node id, so a bare-stitch divert auto-advanced fine and did
+// nothing at all when the listener pressed Enter.
+describe('following a bare-stitch divert', () => {
+  it('moves on when Enter is pressed', async () => {
+    openWith('start=tell_you.hallway');
+    await renderAndStart();
+    await screen.findByText('A hallway.');
+    fireEvent.keyDown(window, { key: 'Enter' });
+    expect(await screen.findByText('The end.')).toBeTruthy();
+  });
+});
+
+describe('?fresh=1 ignores saves', () => {
+  it('starts at the beginning despite an autosave', async () => {
+    writeAutosave('tell_you.ending');
+    openWith('fresh=1');
+    await renderAndStart();
+    expect(await screen.findByText('The beginning.')).toBeTruthy();
+  });
+
+  it('still offers the save on the instructions screen', async () => {
+    writeAutosave('tell_you.ending');
+    openWith('fresh=1');
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = makeStory();
+    render(<App />);
+    await screen.findByLabelText('Start the story');
+    expect(screen.getByText('Autosave')).toBeTruthy();
   });
 });

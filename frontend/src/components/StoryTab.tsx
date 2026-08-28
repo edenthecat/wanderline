@@ -824,6 +824,7 @@ export default function StoryTab({
                           onMetadataSave={(patch) => handleMetadataSave(knot.id, patch)}
                           reachableFrom={reverseEdges.get(knot.id)}
                           onJumpToNode={jumpToNode}
+                          onPreviewFromNode={onPreviewFromNode}
                           yDoc={yDoc}
                           yDocReady={yDocReady}
                         />
@@ -887,6 +888,7 @@ export default function StoryTab({
                               onMetadataSave={(patch) => handleMetadataSave(child.id, patch)}
                               reachableFrom={reverseEdges.get(child.id)}
                               onJumpToNode={jumpToNode}
+                              onPreviewFromNode={onPreviewFromNode}
                               yDoc={yDoc}
                               yDocReady={yDocReady}
                             />

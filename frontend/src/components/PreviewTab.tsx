@@ -37,6 +37,13 @@ export default function PreviewTab({
   // then owned here, so "Play from the beginning" can drop the pin
   // without having to reach back into the parent.
   const [pinnedNodeId, setPinnedNodeId] = useState<string | null>(startNodeId);
+  // Set by "From the beginning". Dropping the pin is not enough on its
+  // own: the player resumes its autosave when the URL asks for nothing,
+  // and a preview that has been listened to HAS an autosave — so
+  // clearing the pin alone lands the reviewer wherever they last got
+  // to, under a button that promised the beginning. `?fresh=1` is the
+  // player's "ignore saves this run" signal.
+  const [forceFresh, setForceFresh] = useState(false);
   // Seeded with the incoming nonce rather than 0: the usual path into
   // this tab IS a "Preview from here" click, which mounts the component
   // with the request already in props. Starting at 0 would see a change
@@ -47,6 +54,7 @@ export default function PreviewTab({
     if (startRequestNonce === seenNonceRef.current) return;
     seenNonceRef.current = startRequestNonce;
     setPinnedNodeId(startNodeId);
+    setForceFresh(false);
     setIframeKey((k) => k + 1);
   }, [startRequestNonce, startNodeId]);
 
@@ -74,12 +82,16 @@ export default function PreviewTab({
   useEffect(() => {
     setPreviewNodeId(null);
   }, [iframeKey]);
-  // The player reads `?start=` off its own location, so the pin rides
-  // in on the iframe src — and on "Open in new tab" too, or popping the
-  // preview out would silently lose the passage the reviewer asked for.
-  const previewUrl = pinnedNodeId
-    ? `/api/projects/${projectId}/preview?start=${encodeURIComponent(pinnedNodeId)}`
-    : `/api/projects/${projectId}/preview`;
+  // The player reads these off its own location, so they ride in on the
+  // iframe src — and on "Open in new tab" too, or popping the preview
+  // out would silently lose what the reviewer asked for. With neither
+  // set the player behaves exactly as it always has, autosave included.
+  const previewQuery = pinnedNodeId
+    ? `?start=${encodeURIComponent(pinnedNodeId)}`
+    : forceFresh
+      ? '?fresh=1'
+      : '';
+  const previewUrl = `/api/projects/${projectId}/preview${previewQuery}`;
 
   // Session gate. The preview endpoint sits behind requireAuth,
   // and an expired session returns 401. Browsers render that 401
@@ -214,6 +226,7 @@ export default function PreviewTab({
               className="btn btn-ghost btn-sm"
               onClick={() => {
                 setPinnedNodeId(null);
+                setForceFresh(true);
                 setIframeKey((k) => k + 1);
               }}
               aria-label="Play the preview from the beginning of the story"

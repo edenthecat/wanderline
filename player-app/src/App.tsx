@@ -282,22 +282,101 @@ export function resolveNodeReference(
 }
 
 /**
- * The passage the URL asks us to start from, if any.
+ * What the URL asks of this session.
+ *
+ *  - `start`: begin at a named passage.
+ *  - `fresh`: begin at the story's own start node, ignoring any save.
+ *
+ * Either one marks the session a REVIEW pass rather than a listen: it
+ * neither resumes the autosave nor writes over it. Both arrive from
+ * the editor's preview, where the point is to hear one passage, and
+ * where quietly overwriting the listener's forty-minutes-in autosave
+ * with a review position would destroy progress they can't get back.
  *
  * Read straight off `window.location` rather than plumbed through
  * loadStoryData, because the story itself can arrive by any of three
- * routes (injected, fetched, ?story=) and where to start is orthogonal
+ * routes (injected, fetched, ?story=) and where to begin is orthogonal
  * to all of them.
  */
-export function requestedStartNode(): string | null {
-  if (typeof window === 'undefined') return null;
+export function readSessionParams(): { start: string | null; fresh: boolean } {
+  if (typeof window === 'undefined') return { start: null, fresh: false };
   try {
-    const raw = new URLSearchParams(window.location.search).get('start');
-    const trimmed = raw?.trim();
-    return trimmed ? trimmed : null;
+    const params = new URLSearchParams(window.location.search);
+    const trimmed = params.get('start')?.trim();
+    return { start: trimmed ? trimmed : null, fresh: params.get('fresh') === '1' };
   } catch {
-    return null;
+    return { start: null, fresh: false };
   }
+}
+
+/**
+ * The one place that decides where a session begins.
+ *
+ * There are two independent claims on that decision — the `?start=`
+ * pin and a saved autosave — and having them argue at the call site is
+ * how the player ends up starting somewhere other than what it just
+ * told the listener on screen. So: one function, one answer, and the
+ * notice, the history and the save behaviour all read off it.
+ *
+ * Precedence:
+ *
+ *  1. A `?start=` that resolves. The autosave is an inference about
+ *     where you probably want to be; the parameter is somebody saying
+ *     so, and anyone arriving on one has just clicked "Preview from
+ *     here" on a specific passage.
+ *  2. Any review request at all — a `?start=` that matched nothing, or
+ *     `?fresh=1` — begins at the story's own start. Falling back to the
+ *     autosave here would drop the listener somewhere they never asked
+ *     for while the screen says "starting from the beginning".
+ *  3. The autosave, when it diverges from the start node.
+ *  4. The start node.
+ *
+ * A review session (1 or 2) also carries `reviewSession`, which
+ * suppresses autosave writes for its whole run: hearing one passage to
+ * check a fix is not progress, and recording it over a listener's real
+ * position destroys something they cannot get back.
+ */
+export function resolveSessionStart(
+  story: { startNode: string; nodes: Record<string, unknown> },
+  autosave: { nodeId: string; history: string[] } | undefined,
+  params: { start: string | null; fresh: boolean },
+): {
+  nodeId: string;
+  history: string[];
+  reviewSession: boolean;
+  /** What `?start=` asked for, or null when it asked for nothing. */
+  requested: string | null;
+  /** What that request resolved to, or null when nothing matched. */
+  resolved: string | null;
+} {
+  const requested = params.start;
+  // Resolve against the start node's knot: before the listener has
+  // moved there is no "current" knot, and the start node is the
+  // closest thing to one.
+  const resolved = requested ? resolveNodeReference(requested, story.nodes, story.startNode) : null;
+  const reviewSession = Boolean(requested || params.fresh);
+  if (resolved) {
+    // No history: we jumped in rather than walked here, so there is no
+    // route back. An empty history is honest about that — Back does
+    // nothing rather than replaying a path the listener never took.
+    return { nodeId: resolved, history: [], reviewSession, requested, resolved };
+  }
+  if (reviewSession) {
+    return { nodeId: story.startNode, history: [], reviewSession, requested, resolved };
+  }
+  // Auto-resume the autosave only when it diverges from the start node
+  // — otherwise we'd surface a "Resume?" affordance for a brand-new
+  // story the listener has only just opened.
+  if (autosave && autosave.nodeId !== story.startNode) {
+    return {
+      nodeId: autosave.nodeId,
+      history: autosave.history,
+      reviewSession,
+      requested,
+      resolved,
+    };
+  }
+  return { nodeId: story.startNode, history: [], reviewSession, requested, resolved };
 }
 
 /**
@@ -386,6 +465,13 @@ export default function App() {
     requested: string;
     resolved: string | null;
   } | null>(null);
+  // True for a session opened with `?start=` or `?fresh=1`. Such a
+  // session never writes the autosave: it exists to check one passage,
+  // and the listener whose forty-minutes-in position is in that slot
+  // did not ask for it to be replaced by a reviewer's jump. A ref, not
+  // state, because saveProgress runs inside navigation and must see
+  // the current value without waiting for a re-render.
+  const reviewSessionRef = useRef(false);
 
   // audio cache layer (preloadAudio, getCachedAudio,
   // retryFailedAudio, isCached, preloadProgress). Owns audioCacheRef
@@ -478,53 +564,29 @@ export default function App() {
         setSaveSlots(loadedSlots);
         const autosave = loadedSlots.find((s) => s.id === AUTOSAVE_SLOT_ID);
 
-        // `?start=` — an author (or a reviewer following a link out of
-        // the editor) asking to begin at a named passage.
+        // Where this session begins — `?start=` / `?fresh=1` versus the
+        // autosave — is decided in one place. See resolveSessionStart.
+        // Whatever it returns is what the instructions screen reports,
+        // so the two can't disagree.
         //
-        // It BEATS the autosave when both are present. The autosave is
-        // an inference about where you probably want to be; `?start=`
-        // is somebody saying so. Anyone who lands here has just clicked
-        // "Preview from here" on a specific passage, and dropping them
-        // forty minutes elsewhere because the browser remembered a
-        // previous session would defeat the entire point of the link.
-        // Nothing is destroyed by winning: every slot, autosave
-        // included, is still listed on the instructions screen, so
-        // resuming is one click away.
-        const requested = requestedStartNode();
-        // Resolve against the start node's knot: before the listener
-        // has moved there is no "current" knot, and the start node is
-        // the closest thing to one.
-        const resolvedStart = requested
-          ? resolveNodeReference(requested, data.nodes, data.startNode)
-          : null;
-        if (requested) {
-          setStartRequest({ requested, resolved: resolvedStart });
-          if (!resolvedStart) {
+        // Manual slots are untouched either way: they stay listed on
+        // the instructions screen, so resuming is one click away even
+        // from a review session.
+        const session = resolveSessionStart(data, autosave, readSessionParams());
+        // Set BEFORE anything can navigate: it gates every autosave
+        // write for the rest of the run.
+        reviewSessionRef.current = session.reviewSession;
+        if (session.requested) {
+          setStartRequest({ requested: session.requested, resolved: session.resolved });
+          if (!session.resolved) {
             console.warn('[wanderline] ?start= passage not found in story graph', {
-              requested,
+              requested: session.requested,
               knownNodes: Object.keys(data.nodes).length,
             });
           }
         }
-
-        // Auto-resume the autosave only when it diverges from the
-        // start node — otherwise we'd surface a "Resume?" affordance
-        // for a brand-new story that the user has only just opened.
-        // If the user has manual slots saved, show the picker on the
-        // instructions screen instead (handled in the JSX).
-        if (resolvedStart) {
-          setCurrentNodeId(resolvedStart);
-          // No history: we jumped in rather than walked here, so there
-          // is no route back. An empty history is honest about that —
-          // Back does nothing rather than replaying a path the listener
-          // never took.
-          setHistory([]);
-        } else if (autosave && autosave.nodeId !== data.startNode) {
-          setCurrentNodeId(autosave.nodeId);
-          setHistory(autosave.history);
-        } else {
-          setCurrentNodeId(data.startNode);
-        }
+        setCurrentNodeId(session.nodeId);
+        setHistory(session.history);
 
         // Volume resolution order: per-device localStorage override
         // wins (the listener set it explicitly), otherwise the
@@ -899,6 +961,11 @@ export default function App() {
   const saveProgress = useCallback(
     (nodeId: string, hist: string[]) => {
       if (!story) return;
+      // A review session leaves no trace. Without this, following a
+      // "Preview from here" link and advancing a single passage
+      // overwrote the listener's real autosave with the reviewer's
+      // position — silently, and with no way back to it.
+      if (reviewSessionRef.current) return;
       const nextSlot: SaveSlot = {
         id: AUTOSAVE_SLOT_ID,
         name: 'Autosave',
@@ -1563,6 +1630,10 @@ export default function App() {
         audioRef.current = null;
       }
       pendingAutoplayNodeIdRef.current = null;
+      // Picking a save is the listener saying "this is my run" — from
+      // here on their progress is worth recording again, even if the
+      // URL brought them in on a review link.
+      reviewSessionRef.current = false;
       setHistory(slot.history);
       setCurrentNodeId(slot.nodeId);
       setReachedEnding(false);
@@ -1718,10 +1789,15 @@ export default function App() {
     } else {
       // Not just `node.divert`: a fall-through passage is navigable and
       // these are the controls a listener has with the screen off.
+      //
+      // navigateToTarget, not navigateToNode: a divert can be END/DONE
+      // or a bare stitch name needing knot qualification, and demanding
+      // an exact id here meant the very reference shape the resolver
+      // exists for auto-advanced fine but did nothing when pressed.
       const onward = node.divert ?? fallThroughTarget(node.id, node, story.nodes);
-      if (onward && story.nodes[onward]) navigateToNode(onward);
+      if (onward) navigateToTarget(onward);
     }
-  }, [story, navigateToNode, navigateToTarget]);
+  }, [story, navigateToTarget]);
 
   const handleTripleClick = useCallback(() => {
     const node = currentNodeRef.current;
@@ -1777,10 +1853,12 @@ export default function App() {
             const choice = currentNode.choices[selectedChoice];
             if (choice) navigateToTarget(choice.target);
           } else {
+            // Same resolver as every other way forward — see
+            // handleDoubleClick for why an exact id isn't enough.
             const onward =
               currentNode.divert ??
               (story ? fallThroughTarget(currentNode.id, currentNode, story.nodes) : null);
-            if (onward && story?.nodes[onward]) navigateToNode(onward);
+            if (onward) navigateToTarget(onward);
           }
           break;
         case 'Backspace':
@@ -1828,7 +1906,7 @@ export default function App() {
     history,
     audioError,
     togglePlayback,
-    navigateToNode,
+    navigateToTarget,
     skipAudio,
     goBack,
     showInstructions,
