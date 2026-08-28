@@ -172,22 +172,26 @@ export default function ProjectDetailPage() {
   // Close mobile sheet on outside click or Escape.
   useEffect(() => {
     if (!mobileSheet) return;
+    const openGroup = mobileSheet;
+    // Focus lives inside the sheet from the moment it opens, so every
+    // dismissal path has to hand it back — otherwise the sheet
+    // unmounts under the focused button and the user is dropped at
+    // the top of the document.
+    function close() {
+      setMobileSheet(null);
+      mobileTabRefs.current[openGroup]?.focus();
+    }
     function handleClick(e: MouseEvent) {
       if (
         e.target instanceof Node &&
         mobileSheetRef.current &&
         !mobileSheetRef.current.contains(e.target)
       ) {
-        setMobileSheet(null);
+        close();
       }
     }
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key !== 'Escape') return;
-      const openGroup = mobileSheet;
-      setMobileSheet(null);
-      // Without this the sheet unmounts under the user's focus and
-      // they're dumped back at the top of the document.
-      if (openGroup) mobileTabRefs.current[openGroup]?.focus();
+      if (e.key === 'Escape') close();
     }
     document.addEventListener('mousedown', handleClick);
     document.addEventListener('keydown', handleKeyDown);

@@ -299,6 +299,7 @@ export function nodeAriaLabel(d: StoryCardData): string {
   if (tags.length > 0) parts.push(`tagged ${tags.slice(0, 6).join(', ')}`);
   if (d.onPath) parts.push('on traced path');
   if (d.matched) parts.push('search match');
+  if (d.unmatched) parts.push('filtered out by the search');
   if (d.dim) parts.push('unreachable from the start node');
   return parts.join(', ');
 }
@@ -847,6 +848,19 @@ function GraphTabInner({
       if (next) setHoverPos(next);
     });
   }, []);
+  // Anchor the preview to a node's box on the NEXT frame. React Flow
+  // pans the canvas to bring an off-screen node into view when it
+  // takes focus (autoPanOnNodeFocus), and that transform lands after
+  // this handler runs — reading the rect synchronously would pin the
+  // card to where the node was before the pan, i.e. off-screen.
+  const queueHoverRect = useCallback((el: Element) => {
+    if (hoverRafRef.current !== null) cancelAnimationFrame(hoverRafRef.current);
+    hoverRafRef.current = requestAnimationFrame(() => {
+      hoverRafRef.current = null;
+      const rect = el.getBoundingClientRect();
+      setHoverPos({ x: rect.left, y: rect.bottom });
+    });
+  }, []);
   useEffect(() => cancelHoverRaf, [cancelHoverRaf]);
 
   // Toggleable dim-unreachable overlay. Off by default to avoid the
@@ -1269,21 +1283,19 @@ function GraphTabInner({
           onKeyDown={handleGraphKeyDown}
           onFocus={(event) => {
             const id = nodeIdOfEventTarget(event.target);
+            const el = id ? (event.target as Element).closest('.react-flow__node') : null;
+            if (!el) return;
+            // Clicking a node focuses it too, but the pointer entered
+            // it first — so this node is already previewed, anchored
+            // to the cursor. Re-anchoring here would snap that card
+            // to the node's corner mid-click.
+            if (hoverNodeId === id) return;
             cancelHoverRaf();
-            if (!id) {
-              // Focus moved to the controls / minimap — drop any
-              // preview left over from the previous node.
-              setHoverNodeId(null);
-              setHoverPos(null);
-              return;
-            }
             // Same preview the mouse gets, anchored to the node box
             // instead of the pointer. Without this, everything in the
             // hover card is mouse-only information.
-            const el = (event.target as Element).closest('.react-flow__node');
-            const rect = el?.getBoundingClientRect();
             setHoverNodeId(id);
-            setHoverPos({ x: rect?.left ?? 0, y: rect?.bottom ?? 0 });
+            queueHoverRect(el);
           }}
           onBlur={() => {
             cancelHoverRaf();
@@ -1431,9 +1443,11 @@ function GraphTabInner({
               reachableFrom={editor.reverseEdges.get(selectedNodeId)}
               onJumpToNode={(id) => {
                 setSelectedNodeId(id);
-                // Keep the return target in step with what the rail
-                // is now showing, so Close lands on the right card.
-                if (returnFocusNodeIdRef.current) returnFocusNodeIdRef.current = id;
+                // Close should land on the card the rail is now
+                // showing. Set unconditionally: focus is about to be
+                // in the rail either way (see below), so leaving this
+                // null would drop it on <body> at close.
+                returnFocusNodeIdRef.current = id;
                 // NodeDetail is keyed on selectedNodeId, so jumping
                 // unmounts the very button that was activated. Pull
                 // focus to the rail or it falls to <body>.

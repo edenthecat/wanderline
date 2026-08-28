@@ -174,6 +174,20 @@ describe('ProjectDetailPage navigation accessibility', () => {
     expect(document.activeElement).toBe(soundBtn);
   });
 
+  // Focus is inside the sheet from the moment it opens, so dismissing
+  // by tapping the scrim has to hand it back too — not only Escape.
+  it('returns focus to the trigger when the sheet is dismissed by an outside click', async () => {
+    const { container } = await renderPage();
+
+    const shipBtn = within(mobileNav()).getByRole('button', { name: 'Ship' });
+    fireEvent.click(shipBtn);
+    await waitFor(() => expect(document.activeElement).not.toBe(shipBtn));
+
+    fireEvent.mouseDown(container.querySelector('.workspace-mobile-sheet-backdrop')!);
+    await waitFor(() => expect(document.querySelector('.workspace-mobile-sheet')).toBeNull());
+    expect(document.activeElement).toBe(shipBtn);
+  });
+
   // The whole <main> swaps on a tab change and nothing said so: no
   // aria-controls, no focus move, and the one element naming the
   // current view was a plain span (and is display:none on mobile).

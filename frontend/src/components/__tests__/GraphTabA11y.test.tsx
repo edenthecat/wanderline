@@ -207,6 +207,23 @@ describe('GraphTab keyboard and screen-reader access', () => {
     await waitFor(() => expect(document.activeElement).toBe(nodeEl(container, 'corridor')));
   });
 
+  // The hover card carried the only untruncated prose preview and the
+  // tag list, and it rendered from onNodeMouseEnter alone — content
+  // available to a pointer and to nothing else.
+  it('shows the node preview on keyboard focus, and dismisses it on Escape', async () => {
+    const { container } = renderGraph();
+    await waitFor(() => expect(nodeEl(container, 'corridor')).toBeTruthy());
+    expect(container.querySelector('.graph-hover-card')).toBeNull();
+
+    fireEvent.focus(nodeEl(container, 'corridor'));
+    await waitFor(() => expect(container.querySelector('.graph-hover-card')).toBeTruthy());
+    expect(container.querySelector('.graph-hover-card')).toHaveTextContent('corridor');
+
+    // WCAG 1.4.13: dismissible without moving focus.
+    fireEvent.keyDown(nodeEl(container, 'corridor'), { key: 'Escape' });
+    await waitFor(() => expect(container.querySelector('.graph-hover-card')).toBeNull());
+  });
+
   // React Flow's default deleteKeyCode is 'Backspace'. With a node
   // focused that removed the card from the local node list — nothing
   // was deleted server-side, and the re-seed effect is keyed on the
