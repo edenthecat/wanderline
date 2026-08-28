@@ -131,6 +131,20 @@ const speak =
 const clearAnnouncement = (prev: Announcement): Announcement =>
   prev.text === '' ? prev : { text: '', seq: prev.seq + 1 };
 
+/**
+ * Keys that move the story rather than the playback head. They stand
+ * down while focus is inside the settings panel.
+ */
+const STORY_NAVIGATION_KEYS = new Set<string>(['Enter', 'Backspace', 'ArrowUp', 'ArrowDown']);
+
+const SETTINGS_PANEL_ID = 'settings-panel';
+
+function isFromSettingsPanel(e: { target: EventTarget | null }): boolean {
+  const target = e.target;
+  if (!target || typeof (target as Element).closest !== 'function') return false;
+  return (target as Element).closest('#' + SETTINGS_PANEL_ID) !== null;
+}
+
 const STORAGE_PREFIX = 'wanderline_';
 
 // Safe storage helpers for file:// URL compatibility
@@ -1707,6 +1721,13 @@ export default function App() {
       // choice list, where the arrows are the only way to move the
       // armed choice.
       if (keyBelongsToTarget(e)) return;
+      // Focus inside the settings panel is a task of its own. The keys
+      // that move the story stand down there, so tabbing across the
+      // volume sliders and pressing Enter can't advance the passage
+      // behind the open panel. Playback keys (Space, Escape, s) still
+      // work — reaching for pause while adjusting the volume is exactly
+      // what a listener does.
+      if (STORY_NAVIGATION_KEYS.has(e.key) && isFromSettingsPanel(e)) return;
 
       switch (e.key) {
         case ' ':
@@ -1834,14 +1855,29 @@ export default function App() {
   // following effect pass, which is a mutation the AT reports.
   const storyScreenVisible = !showInstructions && isAuthenticated;
 
+  // `history` is in the deps as the "a navigation happened" signal:
+  // every navigation replaces the array, including a self-loop, where
+  // `currentNodeId` is set to the value it already holds and nothing
+  // else in the deps moves. Without it, an Ink knot that diverts to
+  // itself — "circle the room again" — replayed its audio and announced
+  // nothing.
   const [passageAnnouncement, setPassageAnnouncement] = useState(EMPTY_ANNOUNCEMENT);
   useEffect(() => {
-    if (!storyScreenVisible || captionsEnabled || !currentNode) {
+    if (!storyScreenVisible || !currentNode) {
       setPassageAnnouncement(clearAnnouncement);
       return;
     }
     setPassageAnnouncement(speak(passageText ? `Now playing: ${passageText}` : 'Now playing'));
-  }, [storyScreenVisible, captionsEnabled, currentNode, passageText]);
+  }, [storyScreenVisible, currentNode, passageText, history]);
+
+  // React's onBlur is focusout, which browsers do not fire when the
+  // focused element is REMOVED. Choosing an option unmounts the button
+  // that had focus, so nothing ever reset this and an author-hidden
+  // choice list, once revealed, stayed on screen for the rest of the
+  // session.
+  useEffect(() => {
+    setChoiceListFocused(false);
+  }, [currentNode]);
 
   // What the choice status region says. Cycling choices with a
   // headphone button — the product's signature interaction, phone in a
@@ -1850,7 +1886,11 @@ export default function App() {
   // which option was armed, and nothing announced the options at all on
   // arriving at a passage.
   const [choiceAnnouncement, setChoiceAnnouncement] = useState(EMPTY_ANNOUNCEMENT);
-  const lastChoiceAnnouncedRef = useRef<{ nodeId: string; selected: number } | null>(null);
+  const lastChoiceAnnouncedRef = useRef<{
+    nodeId: string;
+    selected: number;
+    history: string[];
+  } | null>(null);
   useEffect(() => {
     const choices = currentNode?.choices ?? [];
     if (!storyScreenVisible || !currentNode || choices.length === 0) {
@@ -1865,9 +1905,23 @@ export default function App() {
     // opening choice list was never read. Recording the selection too
     // makes the replay a no-op.
     const last = lastChoiceAnnouncedRef.current;
-    if (last && last.nodeId === currentNode.id && last.selected === selectedChoice) return;
-    const arrived = !last || last.nodeId !== currentNode.id;
-    lastChoiceAnnouncedRef.current = { nodeId: currentNode.id, selected: selectedChoice };
+    if (
+      last &&
+      last.nodeId === currentNode.id &&
+      last.selected === selectedChoice &&
+      last.history === history
+    ) {
+      return;
+    }
+    // A fresh `history` array means a navigation, so a self-loop counts
+    // as an arrival and re-reads the list rather than reporting the
+    // armed choice.
+    const arrived = !last || last.nodeId !== currentNode.id || last.history !== history;
+    lastChoiceAnnouncedRef.current = {
+      nodeId: currentNode.id,
+      selected: selectedChoice,
+      history,
+    };
     if (arrived) {
       // Read the whole list on arrival, so the listener knows what is
       // on offer before cycling through it.
@@ -1885,7 +1939,7 @@ export default function App() {
         speak(`Choice ${selectedChoice + 1} of ${choices.length}: ${armed.text}`),
       );
     }
-  }, [storyScreenVisible, currentNode, selectedChoice]);
+  }, [storyScreenVisible, currentNode, selectedChoice, history]);
 
   if (playerState === 'error' || !story) {
     return (
@@ -2206,7 +2260,7 @@ export default function App() {
               style={{ ...styles.headerBtn, ...(showSettings ? styles.headerBtnActive : {}) }}
               aria-pressed={showSettings}
               aria-expanded={showSettings}
-              {...(showSettings ? { 'aria-controls': 'settings-panel' } : {})}
+              {...(showSettings ? { 'aria-controls': SETTINGS_PANEL_ID } : {})}
               aria-label="Settings"
             >
               <Settings width={18} height={18} />
@@ -2251,7 +2305,7 @@ export default function App() {
           behaviour. */}
       {showSettings && (
         <div
-          id="settings-panel"
+          id={SETTINGS_PANEL_ID}
           style={styles.settingsPanel}
           data-theme-component="settingsPanel"
           onClick={(e) => e.stopPropagation()}
@@ -2426,9 +2480,21 @@ export default function App() {
         aria-label={(story?.title || 'Audio Story') + ' - story content'}
         onClick={() => playerState === 'ready' && !audioError && playVoiceover()}
       >
+        {/* This region's children are keyed by the announcement's
+            sequence number and are absent until the first announcement
+            lands (seq 0). Both matter for the same reason: assistive
+            tech announces a MUTATION inside a live region it has
+            already registered. Content present the instant the region
+            is inserted is never announced — which used to silence the
+            opening passage, the one a listener has no other way to
+            learn about — and re-rendering identical prose is not a
+            mutation at all, so returning to a hub that reads the same
+            way as the last one was silent too. The key forces a real
+            node swap either way. */}
         <div aria-live="polite" aria-atomic="true" role="region" aria-label="Story narration">
-          {captionsEnabled && (
+          {captionsEnabled && passageAnnouncement.seq > 0 && (
             <article
+              key={passageAnnouncement.seq}
               style={{
                 ...styles.card,
                 ...(currentNode.metadata?.theme && THEME_COLORS[currentNode.metadata.theme]
@@ -2480,13 +2546,11 @@ export default function App() {
               caption card used to be this live region's only child — so
               a story shipped with captions off left the region empty
               for its whole length and announced nothing on any passage
-              change. The screen-reader-only line below keeps the
-              transcript available whatever the visual setting. */}
-          {!captionsEnabled && (
-            <p style={styles.srOnly}>
-              {passageAnnouncement.text ? (
-                <span key={passageAnnouncement.seq}>{passageAnnouncement.text}</span>
-              ) : null}
+              change. This keeps the transcript available whatever the
+              visual setting. */}
+          {!captionsEnabled && passageAnnouncement.seq > 0 && (
+            <p key={passageAnnouncement.seq} style={styles.srOnly}>
+              {passageAnnouncement.text}
             </p>
           )}
         </div>

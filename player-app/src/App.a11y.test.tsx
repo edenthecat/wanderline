@@ -136,6 +136,37 @@ const echoStory = {
   },
 };
 
+// An Ink knot that diverts to itself: "circle the room again".
+// Navigating here changes neither the node nor the armed choice.
+const loopStory = {
+  id: 'loop-story',
+  title: 'Loop Story',
+  audioBaseUrl: './audio/',
+  startNode: 'loop',
+  nodes: {
+    loop: {
+      id: 'loop',
+      type: 'knot',
+      content: [{ text: 'You circle the room.' }],
+      choices: [
+        { text: 'Circle again', target: 'loop' },
+        { text: 'Leave', target: 'done' },
+      ],
+      divert: null,
+      tags: [],
+      audio: { voiceover: 'loop.mp3' },
+    },
+    done: {
+      id: 'done',
+      type: 'knot',
+      content: [{ text: 'You leave.' }],
+      choices: [],
+      divert: 'END',
+      tags: [],
+    },
+  },
+};
+
 const originalAudio = globalThis.Audio;
 
 beforeEach(() => {
@@ -293,14 +324,31 @@ describe('keyboard access to on-screen controls', () => {
     expect(keyDownAndCheckCancelled(slider, ' ')).toBe(true);
   });
 
-  it('still confirms on Enter while the auto-advance checkbox has focus', async () => {
-    // A checkbox is toggled by Space and nothing else; Enter has no
-    // meaning on it outside a form, so the global shortcut keeps it.
+  it('does not move the story on Enter inside the settings panel', async () => {
+    // The panel is a task of its own. A checkbox ignores Enter, so
+    // without this the press fell through to "confirm the armed
+    // choice" and advanced the passage behind the open panel.
     await renderStory();
     fireEvent.click(screen.getByLabelText('Settings'));
     const checkbox = screen.getByRole('checkbox', { name: /advance automatically/i });
 
-    expect(keyDownAndCheckCancelled(checkbox, 'Enter')).toBe(true);
+    fireEvent.keyDown(checkbox, { key: 'Enter', bubbles: true });
+
+    expect(screen.getByText('Welcome to the story.')).toBeInTheDocument();
+    expect(screen.queryByText('You went left.')).not.toBeInTheDocument();
+  });
+
+  it('still confirms on Enter with a story button focused', async () => {
+    // Outside the panel the global shortcut is intact: a <button>
+    // claims Enter, but the Back button is only rendered once there is
+    // history, so use the story-region heading area — nothing
+    // interactive — to prove the shortcut still runs.
+    await renderStory();
+
+    const event = createEvent.keyDown(screen.getByRole('main'), { key: 'Enter', bubbles: true });
+    fireEvent(screen.getByRole('main'), event);
+
+    expect(event.defaultPrevented).toBe(true);
     expect(await screen.findByText('You went left.')).toBeInTheDocument();
   });
 
@@ -464,15 +512,27 @@ describe('live-region registration', () => {
     ).toBe(true);
   });
 
+  const narrationRegion = () => screen.getByRole('region', { name: 'Story narration' });
+
   it('mounts the captions-off passage line empty and announces into it', async () => {
     const captionsOff = { ...threeChoiceStory, settings: { captionsDefault: false } };
-    const findLine = () => {
-      const narration = screen.getByRole('region', { name: 'Story narration' });
-      const p = narration.querySelector('p');
-      if (!p) throw new Error('no passage announcement line found');
-      return p as HTMLElement;
-    };
-    expect(await announcementArrivedAsMutation(captionsOff, findLine, /Now playing/)).toBe(true);
+    expect(await announcementArrivedAsMutation(captionsOff, narrationRegion, /Now playing/)).toBe(
+      true,
+    );
+  });
+
+  it('mounts the caption card empty and announces into it', async () => {
+    // Captions on is the default, and the caption card used to be
+    // inserted into the region already carrying the opening passage —
+    // so the passage a listener has no other way to learn about was the
+    // one thing never spoken.
+    expect(
+      await announcementArrivedAsMutation(
+        threeChoiceStory,
+        narrationRegion,
+        /Welcome to the story/,
+      ),
+    ).toBe(true);
   });
 });
 
@@ -500,6 +560,64 @@ describe('repeated announcements', () => {
     expect(records.length).toBeGreaterThan(0);
     // Same wording, same region, and it changed anyway.
     expect(choiceStatusRegion()).toHaveTextContent('2 choices: 1. Look around, 2. Go back');
+  });
+
+  it('re-announces when a passage loops back to itself', async () => {
+    // The node and the armed choice are both unchanged, so nothing the
+    // announcement effects watched moved. The audio replays; without
+    // this the listener got no words at all.
+    await renderStory(loopStory);
+    await waitFor(() =>
+      expect(choiceStatusRegion()).toHaveTextContent('2 choices: 1. Circle again, 2. Leave'),
+    );
+
+    const region = choiceStatusRegion();
+    const narration = screen.getByRole('region', { name: 'Story narration' });
+    const records: MutationRecord[] = [];
+    const observer = new MutationObserver((rs) => records.push(...rs));
+    observer.observe(region, { childList: true, subtree: true, characterData: true });
+    observer.observe(narration, { childList: true, subtree: true, characterData: true });
+
+    fireEvent.click(screen.getByLabelText('Choice 1: Circle again'));
+
+    await waitFor(() => {
+      records.push(...observer.takeRecords());
+      expect(records.length).toBeGreaterThan(0);
+    });
+    observer.disconnect();
+
+    expect(choiceStatusRegion()).toHaveTextContent('2 choices: 1. Circle again, 2. Leave');
+  });
+
+  it('still fires when consecutive passages read word-for-word the same, with captions on', async () => {
+    // Captions on is the default, and the caption card is the live
+    // region's content there. Two passages with identical prose used to
+    // produce no DOM change at all.
+    const sameProse = {
+      ...echoStory,
+      nodes: {
+        ...echoStory.nodes,
+        hubA: { ...echoStory.nodes.hubA, content: [{ text: 'The corridor again.' }] },
+        hubB: { ...echoStory.nodes.hubB, content: [{ text: 'The corridor again.' }] },
+      },
+    };
+    await renderStory(sameProse);
+    const narration = screen.getByRole('region', { name: 'Story narration' });
+    await waitFor(() => expect(narration).toHaveTextContent('The corridor again.'));
+
+    const records: MutationRecord[] = [];
+    const observer = new MutationObserver((rs) => records.push(...rs));
+    observer.observe(narration, { childList: true, subtree: true, characterData: true });
+
+    fireEvent.click(screen.getByLabelText('Choice 1: Look around'));
+
+    await waitFor(() => {
+      records.push(...observer.takeRecords());
+      expect(records.length).toBeGreaterThan(0);
+    });
+    observer.disconnect();
+
+    expect(narration).toHaveTextContent('The corridor again.');
   });
 
   it('announces the opening choice list under StrictMode', async () => {
@@ -548,6 +666,27 @@ describe('choices when the author hides the visible list', () => {
 
     // A sighted keyboard user must be able to see where focus went.
     expect(nav).not.toHaveStyle({ position: 'absolute' });
+  });
+
+  it('hides it again once the chosen button is gone', async () => {
+    // focusout does not fire when the focused element is REMOVED, and
+    // choosing an option unmounts the button that had focus. Left to
+    // the blur handler alone, the author's hidden list stayed on screen
+    // for the rest of the session.
+    await renderStory({ ...echoStory, settings: { showChoiceList: false } });
+
+    const choice = screen.getByLabelText('Choice 1: Look around');
+    fireEvent.focus(choice);
+    expect(screen.getByRole('navigation', { name: 'Story choices' })).not.toHaveStyle({
+      position: 'absolute',
+    });
+
+    fireEvent.click(choice);
+    await screen.findByText('Room B.');
+
+    expect(screen.getByRole('navigation', { name: 'Story choices' })).toHaveStyle({
+      position: 'absolute',
+    });
   });
 });
 
