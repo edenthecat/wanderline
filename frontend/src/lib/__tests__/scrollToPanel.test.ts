@@ -83,8 +83,8 @@ describe('scrollToSelector', () => {
   });
 
   // index.css already disables the start-node animation for readers
-  // who ask for less motion; this is now the only scroll path in the
-  // editor, so it is the only place that can honour them here.
+  // who ask for less motion; every deferred scroll in the editor comes
+  // through here, so this is where they have to be honoured.
   it('does not animate the scroll for a reader who asked for less motion', () => {
     vi.stubGlobal('matchMedia', (query: string) => ({
       matches: query.includes('prefers-reduced-motion'),

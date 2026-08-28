@@ -25,9 +25,9 @@ interface Options {
   block?: ScrollLogicalPosition;
 }
 
-// This is now the only scroll path for both jump-to-node and every
-// readiness-row navigation, so it is also the only place that can
-// honour the motion preference the rest of the app respects (see the
+// Every scroll-to-a-thing-that-may-not-be-mounted-yet in the editor
+// goes through here, so this is the one place that has to honour the
+// motion preference the rest of the app respects (see the
 // prefers-reduced-motion block in index.css).
 function prefersReducedMotion(): boolean {
   return (

@@ -6,6 +6,7 @@ import {
   type ThemeVariables,
 } from '../api/client';
 import { promoteWeight, toggleWeight } from '../lib/font-weights';
+import { scrollToSelector } from '../lib/scrollToPanel';
 import {
   COMPONENT_SPECS,
   type ComponentId,
@@ -262,10 +263,10 @@ export default function ThemeTab({ projectId }: Props) {
           next.add(id);
           return next;
         });
-        setTimeout(() => {
-          const panel = document.querySelector<HTMLElement>(`[data-theme-panel="${id}"]`);
-          if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }, 50);
+        // setExpanded renders the panel a tick later, so the helper
+        // watches for it rather than this guessing at a delay — and
+        // gets the reduced-motion fallback for free.
+        scrollToSelector(`[data-theme-panel="${CSS.escape(id)}"]`, { timeoutMs: 1000 });
       } else if (event.data.type === 'wanderline:inspect-ready') {
         const iframe = iframeRef.current;
         iframe?.contentWindow?.postMessage(

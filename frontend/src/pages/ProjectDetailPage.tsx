@@ -245,6 +245,12 @@ export default function ProjectDetailPage() {
     // include Enter's auto-repeat while a readiness row is held down,
     // cancelling the watch that row's own click just armed.
     const cancelOnScrollKey = (e: KeyboardEvent) => {
+      // Arrow/Home/End inside a text field is editing, not scrolling —
+      // and the destination tab is full of text fields.
+      const target = e.target;
+      if (target instanceof HTMLElement && target.closest('input, textarea, [contenteditable]')) {
+        return;
+      }
       if (SCROLL_KEYS.has(e.key)) cancel();
     };
     window.addEventListener('wheel', cancel, { once: true, passive: true });

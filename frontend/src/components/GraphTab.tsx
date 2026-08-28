@@ -27,6 +27,7 @@ import { useNodeEditor } from '../hooks/useNodeEditor';
 import { uploadInk } from '../api/client';
 import { useYjs } from '../hooks/useYjs';
 import { useYjsSeedReady } from '../hooks/useStoryYDoc';
+import { readValidation } from '../lib/storyValidation';
 
 interface Props {
   projectId: string;
@@ -293,11 +294,16 @@ function buildLayout(
 ): { nodes: RFNode[]; edges: RFEdge[] } {
   // Bucket validation messages by nodeId so each rendered node can pick
   // up the strongest severity referencing it. An error trumps a warning.
+  // Read through lib/storyValidation, like StoryTab and the Ship tab's
+  // readiness summary: the blob is a JSONB column normalizeStoryGraph
+  // passes through untouched, and an older row without it should cost
+  // this tab its severity rings, not its whole render.
   const severityByNode = new Map<string, 'error' | 'warning'>();
-  for (const w of storyGraph.validation.warnings) {
+  const validation = readValidation(storyGraph);
+  for (const w of validation.warnings ?? []) {
     if (w.nodeId) severityByNode.set(w.nodeId, 'warning');
   }
-  for (const e of storyGraph.validation.errors) {
+  for (const e of validation.errors ?? []) {
     if (e.nodeId) severityByNode.set(e.nodeId, 'error');
   }
 
