@@ -74,6 +74,13 @@ describe('FontPicker accessibility', () => {
       for (let i = 0; i < 10; i++) fireEvent.keyDown(input, { key: 'ArrowDown' });
       expect(scrollIntoView).toHaveBeenCalled();
       expect(scrollIntoView).toHaveBeenLastCalledWith({ block: 'nearest' });
+
+      // …but hovering must not. A row clipped at either fold would
+      // scroll itself into view under a stationary cursor, sliding the
+      // list and re-highlighting whatever ends up beneath the pointer.
+      scrollIntoView.mockClear();
+      fireEvent.mouseEnter(screen.getAllByRole('option')[3]);
+      expect(scrollIntoView).not.toHaveBeenCalled();
     } finally {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       delete (Element.prototype as any).scrollIntoView;

@@ -108,6 +108,40 @@ describe('FlaggedNodesPanel accessibility', () => {
     expect(screen.getByTestId('flagged-panel-status').textContent).toBe('Flag resolved.');
   });
 
+  it('hands focus back to the button when the resolve fails', async () => {
+    // A real browser blurs an element the moment it becomes disabled,
+    // so the in-flight Resolve button drops focus to <body> on its own.
+    // jsdom won't reproduce that — `blur()` is a no-op on a disabled
+    // element there — so focus is moved away by hand while the request
+    // is in flight. Without that, the button never loses focus and this
+    // test would pass with or without the fix.
+    let fail!: (e: Error) => void;
+    vi.spyOn(client, 'resolveNodeFlag').mockReturnValue(
+      new Promise<void>((_resolve, reject) => {
+        fail = reject;
+      }),
+    );
+    renderPanel({ her: [flag({ id: 'a' }), flag({ id: 'b' })] });
+    expand();
+
+    const [first] = resolveButtons();
+    first.focus();
+    fireEvent.click(first);
+
+    await waitFor(() => expect(first).toBeDisabled());
+    const elsewhere = screen.getByRole('button', { expanded: true });
+    elsewhere.focus();
+    expect(document.activeElement).not.toBe(first);
+
+    await act(async () => {
+      fail(new Error('Already resolved'));
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Already resolved'));
+    expect(document.activeElement).toBe(resolveButtons()[0]);
+  });
+
   it('reports the open-flag count as it changes', async () => {
     const { update } = renderPanel({ her: [flag({ id: 'a' }), flag({ id: 'b' })] });
     const status = screen.getByTestId('flagged-panel-status');

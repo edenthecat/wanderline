@@ -81,6 +81,11 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
   const inputRef = useRef<HTMLInputElement | null>(null);
   const dropdownRef = useRef<HTMLDivElement | null>(null);
   const optionRefs = useRef<(HTMLDivElement | null)[]>([]);
+  // Only the keyboard should scroll the list. Hovering a row that is
+  // clipped at either fold would otherwise pull it into view, sliding
+  // the list under a stationary cursor — which lands the pointer on a
+  // different row and re-highlights it.
+  const scrollNextHighlight = useRef(false);
   const listboxId = useId();
   const optionId = (i: number) => `${listboxId}-option-${i}`;
 
@@ -119,6 +124,8 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
   // nothing is happening.
   useEffect(() => {
     if (!open) return;
+    if (!scrollNextHighlight.current) return;
+    scrollNextHighlight.current = false;
     // jsdom doesn't implement scrollIntoView, and neither do some older
     // browsers — calling it is an enhancement, not a requirement.
     optionRefs.current[highlight]?.scrollIntoView?.({ block: 'nearest' });
@@ -138,9 +145,11 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
     }
     if (e.key === 'ArrowDown') {
       e.preventDefault();
+      scrollNextHighlight.current = true;
       setHighlight((h) => Math.min(filtered.length - 1, h + 1));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
+      scrollNextHighlight.current = true;
       setHighlight((h) => Math.max(0, h - 1));
     } else if (e.key === 'Enter') {
       const entry = filtered[highlight];
