@@ -57,15 +57,19 @@ export const passageProvider: CommandProvider = ({ query, storyGraph, actions })
   if (!storyGraph) return [];
   const q = normalizeQuery(query);
   const commands: PaletteCommand[] = [];
-  for (const node of Object.values(storyGraph.nodes)) {
-    if (!nodeMatchesQuery(node, q)) continue;
+  // Keyed off the record key, not `node.id`: that key is what every
+  // lookup downstream of a jump uses (GraphTab resolves the request
+  // with `storyGraph.nodes[id]`), and the two are not guaranteed to
+  // agree on a legacy stored graph.
+  for (const [id, node] of Object.entries(storyGraph.nodes)) {
+    if (!nodeMatchesQuery(id, node, q)) continue;
     commands.push({
-      id: `jump-node:${node.id}`,
+      id: `jump-node:${id}`,
       group: PASSAGE_GROUP,
-      label: node.id,
+      label: id,
       hint: nodeExcerpt(node),
-      rank: matchRank(node, q),
-      run: () => actions.jumpToNode(node.id),
+      rank: matchRank(id, q),
+      run: () => actions.jumpToNode(id),
     });
   }
   return commands;

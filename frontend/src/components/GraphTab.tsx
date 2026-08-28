@@ -700,8 +700,11 @@ function GraphTabInner({
     if (!q) return null;
     const ids = new Set<string>();
     if (!storyGraph) return ids;
-    for (const node of Object.values(storyGraph.nodes)) {
-      if (nodeMatchesQuery(node, q)) ids.add(node.id);
+    // Record key, not node.id — buildLayout stamps the React Flow
+    // node ids from the same keys, and the overlay classes are looked
+    // up by those.
+    for (const [id, node] of Object.entries(storyGraph.nodes)) {
+      if (nodeMatchesQuery(id, node, q)) ids.add(id);
     }
     return ids;
   }, [search, storyGraph]);

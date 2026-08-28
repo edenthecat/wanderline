@@ -131,8 +131,17 @@ export default function CommandPalette({
       // invoker may already be gone — a jump that switches tabs
       // unmounts the button that opened us. Fall back rather than
       // dropping focus on <body>. (jsdom elements may lack focus().)
-      const target =
-        invoker && document.contains(invoker) ? invoker : (fallbackRef.current?.current ?? null);
+      // <body> is what document.activeElement reports when nothing is
+      // focused — the author opened us straight off a page load. It is
+      // "in the document" and has a focus() method, so a naive
+      // liveness check would call it, achieve nothing, and skip the
+      // fallback in exactly the case the fallback exists for.
+      const usable =
+        invoker &&
+        invoker !== document.body &&
+        invoker !== document.documentElement &&
+        document.contains(invoker);
+      const target = usable ? invoker : (fallbackRef.current?.current ?? null);
       if (target && typeof target.focus === 'function') target.focus();
     };
   }, [open]);
@@ -311,7 +320,12 @@ export default function CommandPalette({
                     aria-selected={isActive}
                     className={`command-palette-option${isActive ? ' is-active' : ''}`}
                     onMouseMove={() => setHighlight(index)}
-                    onMouseDown={(e) => {
+                    // Activate on click, not mousedown: a screen
+                    // reader in browse mode dispatches a click with no
+                    // mousedown before it, and a row that advertises
+                    // role="option" has to answer that. Focus is kept
+                    // in the input by the dialog's own mousedown.
+                    onClick={(e) => {
                       if (e.button === 0) runCommand(command);
                     }}
                   >

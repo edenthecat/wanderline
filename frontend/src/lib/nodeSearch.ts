@@ -23,7 +23,7 @@ import type { StoryNode } from '../api/client';
 
 /** The subset of a node this module needs. Keeps the helpers usable
  * from tests and from anything holding a partial node. */
-export type SearchableNode = Pick<StoryNode, 'id' | 'content'>;
+export type SearchableNode = Pick<StoryNode, 'content'>;
 
 /**
  * Trimmed + lowercased query. An empty result means "no query" —
@@ -35,17 +35,29 @@ export function normalizeQuery(raw: string): string {
 }
 
 /** A node's content lines joined into one string, in reading order. */
-export function nodeContentText(node: SearchableNode): string {
-  return node.content?.map((c) => c.text).join(' ') ?? '';
+export function nodeContentText(node: SearchableNode | null | undefined): string {
+  return node?.content?.map((c) => c.text).join(' ') ?? '';
 }
 
 /**
  * Does this node match an already-normalized query? An empty query
  * matches everything, which keeps `filter` call sites branch-free.
+ *
+ * `id` is passed separately rather than read off the node on purpose.
+ * A stored graph's `nodes` record key and its node's own `id` field
+ * are not guaranteed to agree on legacy rows, and callers key their
+ * lookups off different ones — GraphTab and the palette off the record
+ * key, StoryTab off `node.id`. Making that choice explicit at every
+ * call site is the point.
  */
-export function nodeMatchesQuery(node: SearchableNode, normalizedQuery: string): boolean {
+export function nodeMatchesQuery(
+  id: string,
+  node: SearchableNode | null | undefined,
+  normalizedQuery: string,
+): boolean {
   if (!normalizedQuery) return true;
-  if (node.id.toLowerCase().includes(normalizedQuery)) return true;
+  if (id.toLowerCase().includes(normalizedQuery)) return true;
+  if (!node) return false;
   return nodeContentText(node).toLowerCase().includes(normalizedQuery);
 }
 
@@ -56,12 +68,12 @@ export function nodeMatchesQuery(node: SearchableNode, normalizedQuery: string):
  * passage name puts it on top; the tabs' own search boxes keep their
  * document order.
  */
-export function matchRank(node: SearchableNode, normalizedQuery: string): number {
+export function matchRank(id: string, normalizedQuery: string): number {
   if (!normalizedQuery) return 1;
-  const id = node.id.toLowerCase();
-  if (id === normalizedQuery) return 0;
-  if (id.startsWith(normalizedQuery)) return 1;
-  if (id.includes(normalizedQuery)) return 2;
+  const lower = id.toLowerCase();
+  if (lower === normalizedQuery) return 0;
+  if (lower.startsWith(normalizedQuery)) return 1;
+  if (lower.includes(normalizedQuery)) return 2;
   return 3;
 }
 
@@ -71,9 +83,9 @@ export function matchRank(node: SearchableNode, normalizedQuery: string): number
  * palette asks for this once per matching passage on every keystroke,
  * and a long knot's later lines can never reach the excerpt.
  */
-export function nodeExcerpt(node: SearchableNode, maxLength = 120): string {
+export function nodeExcerpt(node: SearchableNode | null | undefined, maxLength = 120): string {
   let text = '';
-  for (const line of node.content ?? []) {
+  for (const line of node?.content ?? []) {
     text = text ? `${text} ${line.text}` : line.text;
     // Strictly past, not at: stopping exactly ON the limit would
     // return a truncated excerpt with no ellipsis on it.

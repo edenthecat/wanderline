@@ -142,8 +142,10 @@ describe('CommandPalette', () => {
   });
 
   it('runs a command on click', () => {
+    // click, not mousedown: a screen reader in browse mode dispatches
+    // a click with no mousedown ahead of it.
     const { jumpToNode } = renderPalette();
-    fireEvent.mouseDown(options()[1]);
+    fireEvent.click(options()[1]);
     expect(jumpToNode).toHaveBeenCalledWith('harbour');
   });
 
@@ -153,6 +155,7 @@ describe('CommandPalette', () => {
     renderPalette();
     expect(fireEvent.mouseDown(screen.getByTestId('command-palette'))).toBe(false);
     expect(fireEvent.mouseDown(options()[1])).toBe(false);
+    expect(screen.getByRole('combobox')).toBe(document.activeElement);
     // ...but the input itself still gets its caret.
     expect(fireEvent.mouseDown(input())).toBe(true);
   });
@@ -174,10 +177,34 @@ describe('CommandPalette', () => {
   it('ignores non-primary mouse buttons', () => {
     // A right-click is reaching for a context menu, not activating.
     const { jumpToNode, onClose } = renderPalette();
-    fireEvent.mouseDown(options()[1], { button: 2 });
+    fireEvent.click(options()[1], { button: 2 });
     fireEvent.mouseDown(screen.getByTestId('command-palette-backdrop'), { button: 2 });
     expect(jumpToNode).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('falls back when nothing was focused before it opened', () => {
+    // document.activeElement is <body> on a fresh page load. It is in
+    // the document and has a focus() method, so a naive liveness check
+    // "restores" to it and leaves focus nowhere.
+    function Host() {
+      const [open, setOpen] = useState(true);
+      const fallback = useRef<HTMLElement>(null);
+      return (
+        <main ref={fallback} tabIndex={-1} data-testid="fallback">
+          <CommandPalette
+            open={open}
+            onClose={() => setOpen(false)}
+            storyGraph={STORY}
+            actions={{ jumpToNode: vi.fn() }}
+            fallbackFocusRef={fallback}
+          />
+        </main>
+      );
+    }
+    render(<Host />);
+    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Escape' });
+    expect(document.activeElement).toBe(screen.getByTestId('fallback'));
   });
 
   it('falls back to a given region when the invoker is gone on close', () => {

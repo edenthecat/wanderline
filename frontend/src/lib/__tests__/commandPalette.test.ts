@@ -21,6 +21,8 @@ function node(id: string, ...lines: string[]): StoryNode {
   };
 }
 
+// Keyed the way a stored graph is: the record key IS the identity the
+// palette offers and the tabs resolve.
 function graph(...nodes: StoryNode[]): StoryGraph {
   return {
     id: 'g1',
@@ -71,6 +73,15 @@ describe('passageProvider', () => {
     });
     command.run();
     expect(act.jumpToNode).toHaveBeenCalledWith('harbour');
+  });
+
+  it("offers the record key, not the node body's own id field", () => {
+    // Legacy stored graphs can disagree, and a jump is resolved by
+    // key downstream — offering node.id would drop the jump silently.
+    const stored = graph(node('intro'));
+    stored.nodes.record_key = { ...node('intro'), id: 'stale_id' };
+    const commands = passageProvider({ query: 'record', storyGraph: stored, actions: actions() });
+    expect(commands.map((c) => c.label)).toEqual(['record_key']);
   });
 
   it('returns nothing when the project has no story yet', () => {

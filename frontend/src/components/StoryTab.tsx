@@ -481,7 +481,8 @@ export default function StoryTab({
     const q = normalizeQuery(search);
     return nodes.filter((n) => {
       if (typeFilter !== 'all' && n.type !== typeFilter) return false;
-      return nodeMatchesQuery(n, q);
+      // node.id, matching how this list renders and scrolls to them.
+      return nodeMatchesQuery(n.id, n, q);
     });
   }, [nodes, search, typeFilter, isFiltering]);
 
