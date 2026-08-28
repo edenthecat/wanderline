@@ -126,16 +126,14 @@ export default function StoryTab({
   // remounts these panels, and one the author has since collapsed
   // should stay collapsed.
   //
-  // Cleared when they leave the node list rather than on first render,
-  // because FlaggedNodesPanel does not exist yet on first render — its
-  // flags arrive from a fetch and it returns null until they do, so an
-  // immediate reset would mean the flags row never expanded anything.
-  // Leaving the list is also the only thing that remounts these panels,
-  // which makes it the exact moment the arrival stops being true.
+  // Clearing it on the first commit is safe even though FlaggedNodesPanel
+  // has nothing to show yet (its flags arrive from a fetch): it is
+  // mounted unconditionally here and returns null from inside itself,
+  // so `useState(startExpanded)` has already captured the flag by then.
   const [expandOnArrival, setExpandOnArrival] = useState(expandPanelId);
   useEffect(() => {
-    if (view !== 'nodes') setExpandOnArrival(null);
-  }, [view]);
+    if (expandOnArrival) setExpandOnArrival(null);
+  }, [expandOnArrival]);
 
   // guard against source-tab STARTER_TEMPLATE data loss.
   // Every graph-mutating PATCH clears both ink_source and twee_source

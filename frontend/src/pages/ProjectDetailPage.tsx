@@ -83,6 +83,11 @@ const TAB_LABEL: Record<Tab, string> = {
   history: 'History',
   settings: 'Settings',
 };
+// Keys that scroll the page. Used to tell "the author has started
+// reading" apart from "the author pressed something" — see the
+// readiness-scroll effect.
+const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End']);
+
 function groupFor(tab: Tab): GroupId {
   return GROUPS.find((g) => g.tabs.includes(tab))!.id;
 }
@@ -232,17 +237,24 @@ export default function ProjectDetailPage() {
     const cancel = scrollToSelector(`#${readinessAnchor}`);
     // An author who starts reading before the destination finishes
     // loading has chosen where they are; a scroll that lands seconds
-    // later is an interruption, not help. Deliberately not the
-    // `scroll` event — our own smooth scrollIntoView fires that, and
-    // would cancel itself mid-animation. These three are intent.
+    // later is an interruption, not help.
+    //
+    // Deliberately not the `scroll` event — our own smooth
+    // scrollIntoView fires that and would cancel itself mid-animation.
+    // And only keys that actually move the page: "any keydown" would
+    // include Enter's auto-repeat while a readiness row is held down,
+    // cancelling the watch that row's own click just armed.
+    const cancelOnScrollKey = (e: KeyboardEvent) => {
+      if (SCROLL_KEYS.has(e.key)) cancel();
+    };
     window.addEventListener('wheel', cancel, { once: true, passive: true });
     window.addEventListener('touchmove', cancel, { once: true, passive: true });
-    window.addEventListener('keydown', cancel, { once: true });
+    window.addEventListener('keydown', cancelOnScrollKey);
     return () => {
       cancel();
       window.removeEventListener('wheel', cancel);
       window.removeEventListener('touchmove', cancel);
-      window.removeEventListener('keydown', cancel);
+      window.removeEventListener('keydown', cancelOnScrollKey);
     };
   }, [readinessAnchor, activeTab]);
 
