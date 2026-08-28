@@ -1142,18 +1142,25 @@ function GraphTabInner({
     return id;
   };
 
+  // WCAG 2.1 1.4.13: content shown on focus has to be dismissible
+  // without moving focus. This has to run in the CAPTURE phase and
+  // stop there: React Flow lists Escape among its element-selection
+  // keys, so letting it reach the node would toggle selection and
+  // then blur the node to <body> — the opposite of "without moving
+  // focus".
+  const handleGraphKeyDownCapture = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'Escape' || !hoverNodeId) return;
+    if (!nodeIdOfEventTarget(event.target)) return;
+    event.stopPropagation();
+    hoverSourceRef.current = null;
+    cancelHoverRaf();
+    setHoverNodeId(null);
+    setHoverPos(null);
+  };
+
   // Enter / Space on a focused node. Mirrors the click semantics
   // above so the canvas is operable without a pointer.
   const handleGraphKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    // WCAG 2.1 1.4.13: content shown on focus has to be dismissible
-    // without moving focus. Escape hides the preview card.
-    if (event.key === 'Escape') {
-      hoverSourceRef.current = null;
-      cancelHoverRaf();
-      setHoverNodeId(null);
-      setHoverPos(null);
-      return;
-    }
     if (event.key !== 'Enter' && event.key !== ' ') return;
     if (event.target instanceof HTMLElement && event.target.isContentEditable) return;
     const id = nodeIdOfEventTarget(event.target);
@@ -1302,6 +1309,7 @@ function GraphTabInner({
           className="graph-frame"
           data-testid="story-graph"
           ref={graphFrameRef}
+          onKeyDownCapture={handleGraphKeyDownCapture}
           onKeyDown={handleGraphKeyDown}
           onFocus={(event) => {
             const id = nodeIdOfEventTarget(event.target);
@@ -1382,8 +1390,25 @@ function GraphTabInner({
               queueHoverPos(event.clientX, event.clientY);
             }}
             onNodeMouseLeave={() => {
-              hoverSourceRef.current = null;
+              // Synthetic END / missing nodes never claim the card
+              // (the enter handler bails on them), so leaving one must
+              // not tear down a focus-owned preview.
+              if (hoverSourceRef.current !== 'pointer') return;
               cancelHoverRaf();
+              // If a node still holds focus, hand the card back to the
+              // keyboard rather than letting a passing pointer destroy
+              // a preview that nothing will re-raise — no focusin
+              // fires, because focus never moved.
+              const active = document.activeElement;
+              const focusedEl = active?.closest('.react-flow__node') ?? null;
+              const focusedId = focusedEl ? nodeIdOfEventTarget(active) : null;
+              if (focusedId && focusedEl) {
+                hoverSourceRef.current = 'focus';
+                setHoverNodeId(focusedId);
+                queueHoverRect(focusedEl);
+                return;
+              }
+              hoverSourceRef.current = null;
               setHoverNodeId(null);
               setHoverPos(null);
             }}

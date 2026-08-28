@@ -289,9 +289,34 @@ describe('GraphTab keyboard and screen-reader access', () => {
     await waitFor(() => expect(container.querySelector('.graph-hover-card')).toBeTruthy());
     expect(container.querySelector('.graph-hover-card')).toHaveTextContent('corridor');
 
-    // WCAG 1.4.13: dismissible without moving focus.
+    // WCAG 1.4.13: dismissible WITHOUT MOVING FOCUS. React Flow lists
+    // Escape among its element-selection keys, so if the key reaches
+    // the node it toggles selection and blurs it to <body>.
     fireEvent.keyDown(nodeEl(container, 'corridor'), { key: 'Escape' });
     await waitFor(() => expect(container.querySelector('.graph-hover-card')).toBeNull());
+    expect(nodeEl(container, 'corridor').className).not.toContain('selected');
+  });
+
+  it('restores a focus preview that a passing pointer took over', async () => {
+    const { container } = renderGraph();
+    await waitFor(() => expect(nodeEl(container, '_intro')).toBeTruthy());
+
+    fireEvent.focus(nodeEl(container, '_intro'));
+    nodeEl(container, '_intro').focus();
+    await waitFor(() =>
+      expect(container.querySelector('.graph-hover-card')).toHaveTextContent('_intro'),
+    );
+
+    fireEvent.mouseEnter(nodeEl(container, 'corridor'), { clientX: 5, clientY: 5 });
+    await waitFor(() =>
+      expect(container.querySelector('.graph-hover-card')).toHaveTextContent('corridor'),
+    );
+
+    // Focus never moved, so nothing else would put the card back.
+    fireEvent.mouseLeave(nodeEl(container, 'corridor'));
+    await waitFor(() =>
+      expect(container.querySelector('.graph-hover-card')).toHaveTextContent('_intro'),
+    );
   });
 
   // React Flow's default deleteKeyCode is 'Backspace'. With a node
