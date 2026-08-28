@@ -115,6 +115,9 @@ export default function StoryTab({
   // Track whether the InkSourceEditor has unsaved edits so the file-
   // upload flow can confirm with the user before discarding them.
   const sourceDirtyRef = useRef(false);
+  // Cancels the in-flight "scroll to this node when it renders" watch,
+  // so a second jump (or leaving the tab) abandons the first.
+  const cancelScrollRef = useRef<(() => void) | null>(null);
 
   // guard against source-tab STARTER_TEMPLATE data loss.
   // Every graph-mutating PATCH clears both ink_source and twee_source
@@ -364,11 +367,22 @@ export default function StoryTab({
         return next;
       });
       // The row may not exist yet — setExpandedNodes above renders it
-      // a tick later — so the helper polls briefly before giving up.
-      scrollToSelector(`[data-node-id="${CSS.escape(nodeId)}"]`);
+      // a tick later — so the helper watches for it and scrolls when
+      // it mounts. That watch has to be cancelled: a validation error
+      // can name a knot that does not exist (that IS the error), and
+      // an uncancelled watch would sit on the document until it timed
+      // out, then scroll unbidden if a save or a collaborator's edit
+      // happened to create that knot inside the window.
+      cancelScrollRef.current?.();
+      cancelScrollRef.current = scrollToSelector(`[data-node-id="${CSS.escape(nodeId)}"]`);
     },
     [onSelfEditingNodeChange],
   );
+
+  // Leaving the tab abandons the jump too.
+  useEffect(() => {
+    return () => cancelScrollRef.current?.();
+  }, []);
 
   function toggleNode(nodeId: string) {
     const wasExpanded = expandedNodes.has(nodeId);

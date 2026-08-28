@@ -11,6 +11,9 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  // restoreAllMocks does not undo stubGlobal, and one test below
+  // swaps matchMedia out.
+  vi.unstubAllGlobals();
 });
 
 /** MutationObserver callbacks are delivered as microtasks. */
@@ -64,6 +67,27 @@ describe('scrollToSelector', () => {
     document.body.innerHTML = '<div id="late"></div>';
     await flush();
     expect(document.getElementById('late')!.scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  // index.css already disables the start-node animation for readers
+  // who ask for less motion; this is now the only scroll path in the
+  // editor, so it is the only place that can honour them here.
+  it('does not animate the scroll for a reader who asked for less motion', () => {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query.includes('prefers-reduced-motion'),
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }));
+    document.body.innerHTML = '<div id="target"></div>';
+    scrollToSelector('#target');
+    expect(document.getElementById('target')!.scrollIntoView).toHaveBeenCalledWith(
+      expect.objectContaining({ behavior: 'auto' }),
+    );
   });
 
   // The Audio tab's missing-voiceover list is a <details>. Scrolling a

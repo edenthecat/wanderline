@@ -10,7 +10,7 @@
 // often intentional (an author assigned a clip by hand), so this
 // produces a list to review rather than a correction to trust.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   acknowledgeAssignment,
   auditAudioAssignments,
@@ -85,11 +85,17 @@ export default function AssignmentAuditPanel({ projectId, autoRun }: Props) {
     }
   }, [projectId]);
 
-  // Fires once per mount: the panel unmounts with the Audio tab, and
+  // At most once per mount. The panel unmounts with the Audio tab and
   // `autoRun` is cleared by the page on the next manual tab pick, so
-  // re-entering Audio by hand does not re-run it.
+  // re-entering Audio by hand does not re-run it — but StrictMode
+  // double-invokes effects in dev, and this one costs a full
+  // server-side re-match of every attached clip. The ref, not the
+  // effect's own closure, is what makes the second invocation a no-op.
+  const autoRanRef = useRef(false);
   useEffect(() => {
-    if (autoRun) void run();
+    if (!autoRun || autoRanRef.current) return;
+    autoRanRef.current = true;
+    void run();
   }, [autoRun, run]);
 
   return (

@@ -25,6 +25,18 @@ interface Options {
   block?: ScrollLogicalPosition;
 }
 
+// This is now the only scroll path for both jump-to-node and every
+// readiness-row navigation, so it is also the only place that can
+// honour the motion preference the rest of the app respects (see the
+// prefers-reduced-motion block in index.css).
+function prefersReducedMotion(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+}
+
 /** Returns a cancel function; calling it stops watching. */
 export function scrollToSelector(
   selector: string,
@@ -55,7 +67,7 @@ export function scrollToSelector(
     // Optional call: jsdom has no scrollIntoView, and a component test
     // that happens to render a matching element should not blow up on
     // a purely cosmetic side effect.
-    el.scrollIntoView?.({ behavior: 'smooth', block });
+    el.scrollIntoView?.({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block });
     stop();
     return true;
   };

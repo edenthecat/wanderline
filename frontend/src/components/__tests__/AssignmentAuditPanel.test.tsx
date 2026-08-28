@@ -1,3 +1,4 @@
+import { StrictMode } from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import AssignmentAuditPanel from '../AssignmentAuditPanel';
@@ -34,6 +35,23 @@ describe('AssignmentAuditPanel', () => {
       disagreements: [row()],
     });
     render(<AssignmentAuditPanel projectId="p1" autoRun />);
+    expect(await screen.findByText('intro.mp3')).toBeTruthy();
+    expect(audit).toHaveBeenCalledTimes(1);
+  });
+
+  // StrictMode double-invokes effects in dev, and this one costs a
+  // full server-side re-match of every attached clip.
+  it('runs the audit once even when its effect is invoked twice', async () => {
+    const audit = vi.spyOn(client, 'auditAudioAssignments').mockResolvedValue({
+      totalAssignments: 12,
+      acknowledged: 0,
+      disagreements: [row()],
+    });
+    render(
+      <StrictMode>
+        <AssignmentAuditPanel projectId="p1" autoRun />
+      </StrictMode>,
+    );
     expect(await screen.findByText('intro.mp3')).toBeTruthy();
     expect(audit).toHaveBeenCalledTimes(1);
   });
