@@ -1227,11 +1227,50 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
         // an unrelated rename. Rewritten to the qualified id; the Ink
         // emitter shortens same-knot targets back to bare on export, so
         // the author's source keeps its original shape.
-        if (!ref.includes('.') && fromNodeId.split('.')[0] + '.' + ref === oldId) {
+        //
+        // Ink only. Twee has no knot scoping: every passage is
+        // top-level with `parent: null`, links name a passage exactly,
+        // and dots are legal in a title. Applying this there would read
+        // `[[Intro]]` inside `Ch1.Foo` as `Ch1.Intro` and repoint a
+        // link that pointed at the real passage `Intro`.
+        if (
+          sourceLanguage === 'ink' &&
+          !ref.includes('.') &&
+          fromNodeId.split('.')[0] + '.' + ref === oldId
+        ) {
           return newId;
         }
         return ref;
       };
+      // A stitch that moves knots takes its own bare refs with it, and
+      // those resolve against whatever knot it lands in. `inbox.a` with
+      // `-> b` means `inbox.b`; renamed to `other.a` it would silently
+      // mean `other.b`. Qualify against the ORIGINAL knot first, so the
+      // rewrite below sees an unambiguous id.
+      const oldKnot = oldId.split('.')[0];
+      const newKnot = newId.split('.')[0];
+      if (sourceLanguage === 'ink' && oldKnot !== newKnot) {
+        const movedKeys = Object.keys(storyGraph.nodes).filter(
+          (k) => k === newId || k.startsWith(newId + '.'),
+        );
+        const qualifyAgainstOldKnot = (ref: string | null | undefined) => {
+          if (ref == null || ref.includes('.')) return ref;
+          const qualified = oldKnot + '.' + ref;
+          return storyGraph.nodes[qualified] || qualified === oldId ? qualified : ref;
+        };
+        for (const key of movedKeys) {
+          const moved = storyGraph.nodes[key];
+          if (Array.isArray(moved.choices)) {
+            for (const choice of moved.choices) {
+              const next = qualifyAgainstOldKnot(choice.target);
+              if (typeof next === 'string') choice.target = next;
+            }
+          }
+          const nextDivert = qualifyAgainstOldKnot(moved.divert ?? null);
+          if (typeof nextDivert === 'string') moved.divert = nextDivert;
+        }
+      }
+
       for (const nodeKey of Object.keys(storyGraph.nodes)) {
         const node = storyGraph.nodes[nodeKey];
         if (Array.isArray(node.choices)) {

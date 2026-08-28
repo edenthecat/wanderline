@@ -105,6 +105,9 @@ type PlayerState = 'loading' | 'ready' | 'playing' | 'paused' | 'ended' | 'error
 
 type PreloadState = 'idle' | 'loading' | 'complete' | 'error';
 
+import { fallThroughTarget } from './fall-through';
+export { fallThroughTarget };
+
 const STORAGE_PREFIX = 'wanderline_';
 
 // Safe storage helpers for file:// URL compatibility
@@ -196,53 +199,6 @@ function processClick(
  *    decision must never take it on the listener's behalf, which is
  *    the difference between a story that flows and one that runs away.
  */
-/**
- * Where a passage falls through to when it names nowhere.
- *
- * Ink runs a knot by running its first stitch, and a stitch that ends
- * without a divert continues into the next sibling. Neither parser
- * materialises that as a divert — `storyHealth` compensates the same
- * way for reachability — so without this the player reads "no choices,
- * no divert" as the end of the story and prints The End in the middle
- * of a chapter.
- *
- * Returns null when the passage really is a terminus.
- */
-export function fallThroughTarget(
-  // `id` optional so callers holding a partially-typed node (the
-  // auto-advance path) can pass it through. An absent id simply matches
-  // no children and no sibling, which is the correct answer for it.
-  node:
-    | {
-        id?: string;
-        type?: string;
-        parent?: string | null;
-        choices?: { target: string }[];
-        divert?: string | null;
-      }
-    | null
-    | undefined,
-  nodes: Record<string, { id: string; type?: string; parent?: string | null; lineNumber?: number }>,
-): string | null {
-  if (!node || node.divert || (node.choices?.length ?? 0) > 0) return null;
-  const byLine = (a: { lineNumber?: number }, b: { lineNumber?: number }) =>
-    (a.lineNumber ?? 0) - (b.lineNumber ?? 0);
-  if (node.type === 'knot') {
-    const first = Object.values(nodes)
-      .filter((n) => n.parent === node.id && n.type === 'stitch')
-      .sort(byLine)[0];
-    return first?.id ?? null;
-  }
-  if (node.type === 'stitch' && node.parent) {
-    const siblings = Object.values(nodes)
-      .filter((n) => n.parent === node.parent && n.type === 'stitch')
-      .sort(byLine);
-    const i = siblings.findIndex((n) => n.id === node.id);
-    return i >= 0 ? (siblings[i + 1]?.id ?? null) : null;
-  }
-  return null;
-}
-
 export function autoAdvanceTarget(
   node:
     | {
@@ -268,7 +224,7 @@ export function autoAdvanceTarget(
   const choices = node.choices ?? [];
   if (choices.length === 1) return choices[0]?.target ?? null;
   if (choices.length === 0 && node.divert) return node.divert;
-  if (choices.length === 0 && nodes) return fallThroughTarget(node, nodes);
+  if (choices.length === 0 && nodes && node.id) return fallThroughTarget(node.id, node, nodes);
   return null;
 }
 
@@ -533,6 +489,11 @@ export default function App() {
         if (node.divert && node.divert !== 'END' && node.divert !== 'DONE') {
           queue.push({ id: node.divert, depth: depth + 1 });
         }
+        // And the implicit continuation, or the listener meets a network
+        // fetch and the stall banner at exactly the transition
+        // auto-advance was added to smooth over.
+        const onward = fallThroughTarget(id, node, nodes);
+        if (onward) queue.push({ id: onward, depth: depth + 1 });
       }
 
       return Array.from(visited);
@@ -721,6 +682,14 @@ export default function App() {
   // records one.
   useEffect(() => {
     autoAdvanceRef.current = autoAdvance;
+    // A hold scheduled from `onended` outlives the toggle otherwise, so
+    // turning it off mid-passage still advanced a couple of seconds
+    // later. The no-audio path already cancels via its cleanup; this is
+    // the audio path catching up.
+    if (!autoAdvance && autoNavigateTimeoutRef.current !== null) {
+      clearTimeout(autoNavigateTimeoutRef.current);
+      autoNavigateTimeoutRef.current = null;
+    }
   }, [autoAdvance]);
 
   const chooseAutoAdvance = useCallback(
@@ -1658,8 +1627,11 @@ export default function App() {
     if (node.choices.length > 0) {
       const choice = node.choices[0];
       if (choice) navigateToTarget(choice.target);
-    } else if (node.divert && story.nodes[node.divert]) {
-      navigateToNode(node.divert);
+    } else {
+      // Not just `node.divert`: a fall-through passage is navigable and
+      // these are the controls a listener has with the screen off.
+      const onward = node.divert ?? fallThroughTarget(node.id, node, story.nodes);
+      if (onward && story.nodes[onward]) navigateToNode(onward);
     }
   }, [story, navigateToNode, navigateToTarget]);
 
@@ -1716,8 +1688,11 @@ export default function App() {
           if (currentNode.choices.length > 0) {
             const choice = currentNode.choices[selectedChoice];
             if (choice) navigateToTarget(choice.target);
-          } else if (currentNode.divert && story?.nodes[currentNode.divert]) {
-            navigateToNode(currentNode.divert);
+          } else {
+            const onward =
+              currentNode.divert ??
+              (story ? fallThroughTarget(currentNode.id, currentNode, story.nodes) : null);
+            if (onward && story?.nodes[onward]) navigateToNode(onward);
           }
           break;
         case 'Backspace':
@@ -2029,7 +2004,7 @@ export default function App() {
   // continues into its next sibling. Not materialised by the parser, so
   // it has to be resolved here or a chapter's opening prose reads as
   // the end of the story.
-  const fallThrough = story ? fallThroughTarget(currentNode, story.nodes) : null;
+  const fallThrough = story ? fallThroughTarget(currentNode.id, currentNode, story.nodes) : null;
   const isEnd =
     reachedEnding ||
     currentNode.tags.includes('ending') ||

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
-import App, { fallThroughTarget, autoAdvanceTarget } from './App';
+import App, { autoAdvanceTarget } from './App';
+import { fallThroughTarget } from './fall-through';
 
 // Ink's implicit continuation: entering a knot runs its first stitch,
 // and a stitch that ends without a divert continues into the next
@@ -88,26 +89,30 @@ describe('fallThroughTarget', () => {
   >;
 
   it('sends a knot into its first stitch by line order', () => {
-    expect(fallThroughTarget(chapterStory.nodes.chapter, nodes)).toBe('chapter.scene_one');
-  });
-
-  it('sends a stitch into its next sibling', () => {
-    expect(fallThroughTarget(chapterStory.nodes['chapter.scene_one'], nodes)).toBe(
-      'chapter.scene_two',
+    expect(fallThroughTarget('chapter', chapterStory.nodes.chapter, nodes)).toBe(
+      'chapter.scene_one',
     );
   });
 
+  it('sends a stitch into its next sibling', () => {
+    expect(
+      fallThroughTarget('chapter.scene_one', chapterStory.nodes['chapter.scene_one'], nodes),
+    ).toBe('chapter.scene_two');
+  });
+
   it('stops at the last stitch', () => {
-    expect(fallThroughTarget(chapterStory.nodes['chapter.scene_two'], nodes)).toBeNull();
+    expect(
+      fallThroughTarget('chapter.scene_two', chapterStory.nodes['chapter.scene_two'], nodes),
+    ).toBeNull();
   });
 
   it('leaves a passage with its own way forward alone', () => {
-    expect(fallThroughTarget(knot('k', { divert: 'somewhere' }), nodes)).toBeNull();
-    expect(fallThroughTarget(knot('k', { choices: [{ target: 'x' }] }), nodes)).toBeNull();
+    expect(fallThroughTarget('k', knot('k', { divert: 'somewhere' }), nodes)).toBeNull();
+    expect(fallThroughTarget('k', knot('k', { choices: [{ target: 'x' }] }), nodes)).toBeNull();
   });
 
   it('reports a knot with no stitches as a real terminus', () => {
-    expect(fallThroughTarget(knot('lonely'), { lonely: knot('lonely') })).toBeNull();
+    expect(fallThroughTarget('lonely', knot('lonely'), { lonely: knot('lonely') })).toBeNull();
   });
 });
 
@@ -125,6 +130,32 @@ describe('auto-advance across a fall-through', () => {
 
   it('stays put when the listener has it off', () => {
     expect(autoAdvanceTarget(chapterStory.nodes.chapter, { autoAdvance: false }, nodes)).toBeNull();
+  });
+});
+
+describe('offline download order', () => {
+  it('does not strand every stitch after a chapter opening', async () => {
+    const { orderNodesByReachability } = await import('./audio-download-order');
+    // `orphan` is declared FIRST and genuinely unreachable. Without a
+    // fall-through edge the stitches are unreachable too, so they land
+    // in the same trailing block and sort behind the orphan — which is
+    // what makes this assertion able to fail. A fixture of only
+    // reachable-by-fall-through nodes passes either way, because the
+    // trailing block happens to reproduce declaration order.
+    const order = orderNodesByReachability({
+      id: 'ft',
+      startNode: 'chapter',
+      audioBaseUrl: './audio/',
+      nodes: {
+        orphan: knot('orphan', { divert: 'END' }),
+        chapter: chapterStory.nodes.chapter,
+        'chapter.scene_one': chapterStory.nodes['chapter.scene_one'],
+      },
+    } as unknown as Parameters<typeof orderNodesByReachability>[0]);
+    // The chapter's own continuation must be saved before authoring
+    // debris, or an interrupted download keeps the opening and drops
+    // the rest of the chapter.
+    expect(order).toEqual(['chapter', 'chapter.scene_one', 'orphan']);
   });
 });
 

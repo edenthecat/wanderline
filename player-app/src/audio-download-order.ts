@@ -1,3 +1,5 @@
+import { fallThroughTarget } from './fall-through';
+
 // Ordering for the "Download for offline" file list.
 //
 // The list used to be built by iterating Object.values(story.nodes),
@@ -19,6 +21,11 @@
 // than importing either.
 
 export interface OrderableNode {
+  // Needed for Ink's implicit continuation — see the walk below.
+  id?: string;
+  type?: string;
+  parent?: string | null;
+  lineNumber?: number;
   choices?: Array<{ target?: string }>;
   divert?: string | null;
   audio?: {
@@ -64,6 +71,14 @@ export function orderNodesByReachability(story: OrderableStory): string[] {
       if (target && !TERMINAL_TARGETS.has(target)) queue.push(target);
     }
     if (node.divert && !TERMINAL_TARGETS.has(node.divert)) queue.push(node.divert);
+    // Ink's implicit continuation is a real playback edge, so it has to
+    // be a real edge here too. Without it every stitch after a knot's
+    // first is unreachable by this walk and lands in the tail below —
+    // so an interrupted download of a story written as multi-stitch
+    // chapters saves each chapter's opening and nothing after it, which
+    // is the opposite of the playable prefix this ordering promises.
+    const onward = fallThroughTarget(id, node, story.nodes);
+    if (onward) queue.push(onward);
   }
 
   for (const id of Object.keys(story.nodes)) {

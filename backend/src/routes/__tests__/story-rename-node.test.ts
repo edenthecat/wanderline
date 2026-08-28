@@ -204,6 +204,58 @@ describe('PATCH /:id/story/node/rename', () => {
     expect(res.body.story_graph.nodes.other.choices[0].target).toBe('read_email_5');
   });
 
+  it('leaves Twee links alone — no knot scoping there', async () => {
+    // Twee passages are all top-level with parent null, links name a
+    // passage exactly, and a dot is a legal character in a title. Ink's
+    // knot-relative rule would read `[[Intro]]` inside `Ch1.Foo` as
+    // `Ch1.Intro` and repoint a link that meant the passage `Intro`.
+    const storyGraph = graph('Ch1.Intro', {
+      'Ch1.Intro': { choices: [], divert: null, parent: null },
+      Intro: { choices: [], divert: null, parent: null },
+      'Ch1.Foo': { choices: [{ text: 'go', target: 'Intro' }], divert: null, parent: null },
+    });
+    const { pool } = makePool([
+      { match: 'BEGIN' },
+      { match: 'SELECT story_graph', rows: [{ story_graph: storyGraph, source_language: 'twee' }] },
+      { match: /UPDATE project_stories/ },
+      { match: /UPDATE node_audio_assignments\b/ },
+      { match: /UPDATE node_metadata\b/ },
+      { match: /UPDATE projects/ },
+      { match: 'COMMIT' },
+    ]);
+    const res = await request(makeApp(pool))
+      .patch(`/api/projects/${projectId}/story/node/rename`)
+      .send({ oldId: 'Ch1.Intro', newId: 'Ch1.Opening' });
+    expect(res.status).toBe(200);
+    expect(res.body.story_graph.nodes['Ch1.Foo'].choices[0].target).toBe('Intro');
+  });
+
+  it('qualifies a moved stitch\u2019s own bare refs against the knot it left', async () => {
+    // `inbox.a` with `-> b` means `inbox.b`. Moved to `other.a`, a bare
+    // `b` would silently start meaning `other.b`.
+    const storyGraph = graph('inbox', {
+      inbox: { choices: [], divert: null, parent: null, type: 'knot' },
+      'inbox.a': { choices: [], divert: 'b', parent: 'inbox', type: 'stitch' },
+      'inbox.b': { choices: [], divert: 'END', parent: 'inbox', type: 'stitch' },
+      other: { choices: [], divert: null, parent: null, type: 'knot' },
+      'other.b': { choices: [], divert: 'END', parent: 'other', type: 'stitch' },
+    });
+    const { pool } = makePool([
+      { match: 'BEGIN' },
+      { match: 'SELECT story_graph', rows: [{ story_graph: storyGraph, source_language: 'ink' }] },
+      { match: /UPDATE project_stories/ },
+      { match: /UPDATE node_audio_assignments\b/ },
+      { match: /UPDATE node_metadata\b/ },
+      { match: /UPDATE projects/ },
+      { match: 'COMMIT' },
+    ]);
+    const res = await request(makeApp(pool))
+      .patch(`/api/projects/${projectId}/story/node/rename`)
+      .send({ oldId: 'inbox.a', newId: 'other.a' });
+    expect(res.status).toBe(200);
+    expect(res.body.story_graph.nodes['other.a'].divert).toBe('inbox.b');
+  });
+
   it("returns 404 when the old id doesn't exist", async () => {
     const storyGraph = graph('Home', { Home: { choices: [], divert: null, parent: null } });
     const { pool } = makePool([
