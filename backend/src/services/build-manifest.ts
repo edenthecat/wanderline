@@ -82,13 +82,21 @@ export function renderManifest({
   const name = storyTitle.trim() || 'Audio narrative';
   const shortName = name.length > 12 ? `${name.slice(0, 11).trimEnd()}…` : name;
   const iconBase = hasCustomIcon ? './icons/app' : './icon';
+  const lang = normalizeBuildLanguage(language);
+  // The trailing phrase is English, and a manifest string has no way
+  // to mark a sub-span the way `<span lang>` can in HTML — so a French
+  // story would ship `lang: "fr"` alongside "Mon Histoire — an audio
+  // narrative.", and whatever surface shows the install prompt would
+  // read that tail with French phonetics. Non-English builds get the
+  // bare title instead.
+  const description = lang.toLowerCase().startsWith('en') ? `${name} — an audio narrative.` : name;
 
   return `${JSON.stringify(
     {
       name,
       short_name: shortName,
-      description: `${name} — an audio narrative.`,
-      lang: normalizeBuildLanguage(language),
+      description,
+      lang,
       start_url: './',
       scope: './',
       display: 'standalone',

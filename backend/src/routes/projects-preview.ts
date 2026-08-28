@@ -273,7 +273,12 @@ export function renderPreviewHtml(
 .wl-preview-banner{background:#4caf50;color:white;text-align:center;padding:.5rem;font-size:.85rem}
 .wl-preview-banner button{background:none;border:none;color:white;cursor:pointer;margin-left:1rem;text-decoration:underline;font:inherit}
 </style>`;
-  const bannerHtml = `<div class="wl-preview-banner">${escapeHtml(bannerLabel)} <button data-wl-close="1">Close</button></div>`;
+  // lang="en": the document now carries the STORY's language, and this
+  // banner is our own untranslated chrome ("Preview Mode", "Build #3",
+  // "Close"). Without the marker a screen reader on a French preview
+  // link announces it with French phonetics — the same reason the
+  // player marks its own toolbar and footer.
+  const bannerHtml = `<div class="wl-preview-banner" lang="en">${escapeHtml(bannerLabel)} <button data-wl-close="1">Close</button></div>`;
   const closeScript = `<script nonce="${nonce}">
 document.addEventListener('click',function(e){
   var t=e.target;

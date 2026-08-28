@@ -187,6 +187,13 @@ describe('renderPreviewHtml', () => {
       expect(html).toMatch(/<html lang="en"/i);
       expect(html).not.toMatch(/onload=/i);
     });
+
+    // The banner is our own untranslated chrome sitting inside a
+    // document now tagged with the story's language.
+    it('marks the preview banner as English', () => {
+      const html = renderPreviewHtml(story, 'T', 'Preview Mode', 'N1', null, 'fr');
+      expect(html).toMatch(/<div class="wl-preview-banner" lang="en">/);
+    });
   });
 
   // A listener sent a /public-preview link with scripting off was

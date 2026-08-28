@@ -108,6 +108,24 @@ describe('renderManifest', () => {
       );
       expect(m.lang).toBe('en');
     });
+
+    // A manifest string has no way to mark a sub-span, so an English
+    // tail on a French description is read with French phonetics by
+    // whatever surface shows the install prompt.
+    it('drops the English tail from the description for a non-English build', () => {
+      const m = parse(
+        renderManifest({ storyTitle: 'Mon Histoire', hasCustomIcon: false, language: 'fr' }),
+      );
+      expect(m.description).toBe('Mon Histoire');
+      expect(m.description).not.toMatch(/an audio narrative/);
+    });
+
+    it.each(['en', 'en-GB', undefined])('keeps the English description for %p', (language) => {
+      const m = parse(
+        renderManifest({ storyTitle: 'Ghost Radio', hasCustomIcon: false, language }),
+      );
+      expect(m.description).toBe('Ghost Radio — an audio narrative.');
+    });
   });
 
   // The generated index.html carries the same value in its theme-color
