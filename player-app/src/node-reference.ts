@@ -52,11 +52,37 @@ export function resolveNodeReference(
     const qualified = `${knot}.${reference}`;
     if (hasNode(nodes, qualified)) return qualified;
   }
-  const suffix = `.${reference}`;
+  return suffixIndexFor(nodes).get(reference) ?? null;
+}
+
+/**
+ * Trailing-segment lookup for step 3, built once per `nodes` object.
+ *
+ * The scan it replaces ran over every node id on every reference that
+ * missed the first two steps, and both graph walks now call through
+ * here — the preload walk on every navigation, the offline ordering
+ * over the whole story — so a story with many dangling targets paid
+ * O(nodes) per miss on the main thread. Keyed on the object so it
+ * costs nothing until a miss happens and is dropped with the story.
+ */
+const suffixIndexes = new WeakMap<object, Map<string, string>>();
+
+function suffixIndexFor(nodes: Record<string, unknown>): Map<string, string> {
+  const cached = suffixIndexes.get(nodes);
+  if (cached) return cached;
+  const index = new Map<string, string>();
+  // First id wins, matching the scan's Object.keys order: a well-formed
+  // story has one match, and where it doesn't the graph has a real bug
+  // worth flagging in the editor rather than resolving differently
+  // here from one call to the next.
   for (const id of Object.keys(nodes)) {
-    if (id.endsWith(suffix)) return id;
+    for (let dot = id.indexOf('.'); dot !== -1; dot = id.indexOf('.', dot + 1)) {
+      const suffix = id.slice(dot + 1);
+      if (!index.has(suffix)) index.set(suffix, id);
+    }
   }
-  return null;
+  suffixIndexes.set(nodes, index);
+  return index;
 }
 
 /**

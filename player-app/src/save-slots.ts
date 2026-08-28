@@ -96,25 +96,25 @@ export function readSlotsWithMigration(storyId: string, validNodeIds?: Set<strin
   const key = slotsStorageKey(storyId);
   let slots = parseSlots(safeGet(key));
 
-  // Legacy single-slot migration. Runs once: after the move, we
-  // delete the old key so subsequent loads skip this block.
-  if (slots.length === 0) {
+  // Legacy single-slot migration. Gated on there being no autosave to
+  // supersede rather than on the key being empty, so a payload held
+  // back below can still be picked up later — after manual saves
+  // exist, or once a re-upload restores its passage.
+  if (!slots.some((s) => s.id === AUTOSAVE_SLOT_ID)) {
     const legacyRaw = safeGet(legacyStorageKey(storyId));
     if (legacyRaw) {
-      // Whether the old payload was consumed or is beyond saving. A
-      // payload that is merely unusable RIGHT NOW — its passage went
-      // missing in a story re-upload — is neither, and deleting it
-      // would be destroying a listener's position over an edit that
-      // might be reverted. It stays until it can be migrated.
-      let settled = false;
+      // Whether the old payload has been dealt with. Exactly one case
+      // is held back: a well-formed position whose passage went missing
+      // in a story re-upload. Deleting that would destroy a listener's
+      // place over an edit that might be reverted — so it waits.
+      // Anything that will never migrate (unparseable, or not a
+      // position at all) is dropped here, or it would sit on the device
+      // forever telling hasStoredSlots there is something to protect.
+      let settled = true;
       try {
         const legacy = JSON.parse(legacyRaw);
-        if (
-          legacy &&
-          typeof legacy.nodeId === 'string' &&
-          (!validNodeIds || validNodeIds.has(legacy.nodeId))
-        ) {
-          settled = true;
+        const wellFormed = legacy && typeof legacy.nodeId === 'string';
+        if (wellFormed && (!validNodeIds || validNodeIds.has(legacy.nodeId))) {
           slots = [
             {
               id: AUTOSAVE_SLOT_ID,
@@ -125,12 +125,14 @@ export function readSlotsWithMigration(storyId: string, validNodeIds?: Set<strin
                 : [],
               savedAt: new Date().toISOString(),
             },
+            ...slots,
           ];
-          safeSet(key, JSON.stringify(slots));
+          safeSet(key, JSON.stringify(capSlots(slots)));
+        } else if (wellFormed) {
+          settled = false;
         }
       } catch {
         // malformed legacy payload — nothing will ever migrate it
-        settled = true;
       }
       if (settled) safeRemove(legacyStorageKey(storyId));
     }
@@ -142,6 +144,20 @@ export function readSlotsWithMigration(storyId: string, validNodeIds?: Set<strin
     slots = slots.filter((s) => validNodeIds.has(s.nodeId));
   }
   return capSlots(slots);
+}
+
+/**
+ * The stored slots the current story graph cannot use — exactly the
+ * ones readSlotsWithMigration hides.
+ *
+ * Callers persist these alongside their own list. What read() returns
+ * is a view, not the whole truth, so writing that view back verbatim
+ * would delete entries the caller was never shown — a listener's
+ * manual save silently destroyed by an unrelated rename, on a story
+ * they may well re-upload the passage into.
+ */
+export function readUnusableSlots(storyId: string, validNodeIds: Set<string>): SaveSlot[] {
+  return parseSlots(safeGet(slotsStorageKey(storyId))).filter((s) => !validNodeIds.has(s.nodeId));
 }
 
 /**

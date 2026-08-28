@@ -193,6 +193,26 @@ describe('legacy payloads the current story cannot use', () => {
     expect(readSlotsWithMigration(STORY_ID, validIds)).toHaveLength(0);
     expect(localStorage.getItem(legacyKey)).toBeNull();
   });
+
+  // Retention is for a POSITION whose passage went missing. A payload
+  // that isn't a position at all would sit on the device forever
+  // telling hasStoredSlots there is something to protect.
+  it.each([['{}'], ['null'], ['{"nodeId":42}']])('drops the shapeless payload %s', (raw) => {
+    localStorage.setItem(legacyKey, raw);
+    expect(readSlotsWithMigration(STORY_ID, validIds)).toHaveLength(0);
+    expect(localStorage.getItem(legacyKey)).toBeNull();
+    expect(hasStoredSlots(STORY_ID)).toBe(false);
+  });
+
+  // Held back is not the same as abandoned: the migration has to still
+  // be reachable after this build has written saves of its own.
+  it('still migrates once the passage returns, even with manual slots present', () => {
+    localStorage.setItem(legacyKey, JSON.stringify({ nodeId: 'chapter_a', history: [] }));
+    writeSlots(STORY_ID, [makeSlot({ id: 'manual-1', name: 'Save 1', nodeId: 'chapter_b' })]);
+    const slots = readSlotsWithMigration(STORY_ID, validIds);
+    expect(slots.map((s) => s.id)).toEqual([AUTOSAVE_SLOT_ID, 'manual-1']);
+    expect(localStorage.getItem(legacyKey)).toBeNull();
+  });
 });
 
 describe('hasStoredSlots', () => {

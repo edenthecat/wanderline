@@ -21,6 +21,7 @@ import {
   hasStoredSlots,
   newSlotId,
   readSlotsWithMigration,
+  readUnusableSlots,
   removeSlot,
   upsertSlot,
   writeSlots,
@@ -460,6 +461,11 @@ export default function App() {
   // has to see the current value without waiting for a re-render.
   const protectSavesRef = useRef(false);
   const mayTouchSavedState = useCallback(() => !protectSavesRef.current, []);
+  // Stored slots this build's graph can't use. They are hidden from
+  // `saveSlots` — and so from every list a write is built from — but
+  // they are still on disk, so a write that didn't carry them would
+  // delete a listener's save as a side effect of renaming another one.
+  const hiddenSlotsRef = useRef<SaveSlot[]>([]);
 
   // audio cache layer (preloadAudio, getCachedAudio,
   // retryFailedAudio, isCached, preloadProgress). Owns audioCacheRef
@@ -548,6 +554,7 @@ export default function App() {
         // load + migrate save slots, then pick a starting node.
         const validNodeIds = new Set(Object.keys(data.nodes));
         const loadedSlots = readSlotsWithMigration(data.id, validNodeIds);
+        hiddenSlotsRef.current = readUnusableSlots(data.id, validNodeIds);
         setSaveSlots(loadedSlots);
 
         // Where this session begins — `?start=` / `?fresh=1` versus the
@@ -980,7 +987,7 @@ export default function App() {
       };
       setSaveSlots((prev) => {
         const next = upsertSlot(prev, nextSlot);
-        writeSlots(story.id, next);
+        writeSlots(story.id, [...next, ...hiddenSlotsRef.current]);
         return next;
       });
     },
@@ -1628,6 +1635,12 @@ export default function App() {
       setReachedEnding(false);
       setPlayerState('ready');
       pendingAutoplayNodeIdRef.current = null;
+      // A restart puts the session back where a listen begins, so the
+      // only reason left to withhold recording is saved state we would
+      // be writing over. With none on the device there is nothing to
+      // protect and no picker to offer, and the listen that follows
+      // would otherwise go unrecorded for no one's benefit.
+      if (!hasStoredSlots(story.id)) protectSavesRef.current = false;
     }
   }, [story, mayTouchSavedState]);
 
@@ -1676,7 +1689,7 @@ export default function App() {
       };
       setSaveSlots((prev) => {
         const next = upsertSlot(prev, slot);
-        writeSlots(story.id, next);
+        writeSlots(story.id, [...next, ...hiddenSlotsRef.current]);
         return next;
       });
     },
@@ -1688,7 +1701,7 @@ export default function App() {
       if (!story) return;
       setSaveSlots((prev) => {
         const next = removeSlot(prev, slotId);
-        writeSlots(story.id, next);
+        writeSlots(story.id, [...next, ...hiddenSlotsRef.current]);
         return next;
       });
     },
@@ -1702,7 +1715,7 @@ export default function App() {
       if (!trimmed) return;
       setSaveSlots((prev) => {
         const next = prev.map((s) => (s.id === slotId ? { ...s, name: trimmed } : s));
-        writeSlots(story.id, next);
+        writeSlots(story.id, [...next, ...hiddenSlotsRef.current]);
         return next;
       });
     },

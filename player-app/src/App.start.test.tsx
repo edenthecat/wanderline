@@ -178,6 +178,17 @@ describe('resolveNodeReference', () => {
     expect(resolveNodeReference('middle', nodes, null)).toBe('tell_you.middle');
   });
 
+  // The suffix step matches whole trailing SEGMENTS, not any tail of
+  // the string: "b.c" finds "a.b.c" the same way "c" does, while a
+  // fragment that starts mid-segment matches nothing.
+  it('matches a multi-segment trailing reference', () => {
+    expect(resolveNodeReference('b.c', { 'a.b.c': {} }, null)).toBe('a.b.c');
+  });
+
+  it('does not match a fragment that starts mid-segment', () => {
+    expect(resolveNodeReference('you.middle', { 'tell_you.middle': {} }, null)).toBeNull();
+  });
+
   it('returns null for a reference nothing matches', () => {
     expect(resolveNodeReference('nowhere', nodes, 'tell_you.opening')).toBeNull();
   });
@@ -456,6 +467,20 @@ describe('a review session leaves no trace', () => {
     expect(readAutosave()?.nodeId).toBe('a_passage_that_left');
   });
 
+  // A restart puts the session back at the beginning, which is where a
+  // listen begins — so with nothing on the device to protect, the
+  // listen that follows is worth recording.
+  it('records again after a restart on a device with nothing saved', async () => {
+    openWith('start=tell_you.middle');
+    await renderAndStart();
+    await screen.findByText('Forty minutes in.');
+    fireEvent.click(screen.getByLabelText('Restart story from beginning'));
+    await screen.findByText('The beginning.');
+    fireEvent.click(await screen.findByLabelText(/^Choice 1/));
+    await screen.findByText('Forty minutes in.');
+    expect(readAutosave()?.nodeId).toBe('tell_you.middle');
+  });
+
   // The pre-existing contract for an ordinary listen: Restart means a
   // clean slate.
   it('still wipes the saves when Restart is pressed in an ordinary listen', async () => {
@@ -591,6 +616,40 @@ describe('preloading a pinned session', () => {
       expect(firstIndexOf('one.mp3')).toBeGreaterThanOrEqual(0);
     });
     expect(firstIndexOf('one.mp3')).toBeLessThan(firstIndexOf('four.mp3'));
+  });
+});
+
+// readSlotsWithMigration hides slots this build's graph can't use, so
+// the list every write is built from is a view rather than the whole
+// truth. Writing that view back would delete a listener's save as a
+// side effect of an unrelated one being written.
+describe('saves this build cannot see', () => {
+  function writeSlots(slots: { id: string; name: string; nodeId: string }[]) {
+    localStorage.setItem(
+      `wanderline_${STORY_ID}_slots`,
+      JSON.stringify(
+        slots.map((s) => ({ ...s, history: [], savedAt: '2026-08-27T10:00:00.000Z' })),
+      ),
+    );
+  }
+  const storedIds = () =>
+    (
+      JSON.parse(localStorage.getItem(`wanderline_${STORY_ID}_slots`) ?? '[]') as {
+        nodeId: string;
+      }[]
+    ).map((s) => s.nodeId);
+
+  it('survives an autosave written by an ordinary listen', async () => {
+    writeSlots([
+      { id: 'manual-1', name: 'Chapter 4', nodeId: 'a_passage_that_left' },
+      { id: 'autosave', name: 'Autosave', nodeId: 'tell_you.middle' },
+    ]);
+    await renderAndStart();
+    await screen.findByText('Forty minutes in.');
+    fireEvent.click(await screen.findByLabelText(/^Choice 1/));
+    await screen.findByText('The end.');
+    expect(storedIds()).toContain('a_passage_that_left');
+    expect(storedIds()).toContain('tell_you.ending');
   });
 });
 
