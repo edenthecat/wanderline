@@ -29,7 +29,7 @@ function graph(nodes: StoryNode[], validation: Partial<StoryGraph['validation']>
 
 const clean = {
   openFlagCount: 0,
-  passagesWithoutVoiceover: 0,
+  nodesWithoutVoiceover: 0,
   assignmentDisagreements: 0,
 };
 
@@ -101,7 +101,7 @@ describe('computeReadiness', () => {
     );
     const summary = computeReadiness({ storyGraph: g, ...clean });
     // Two warnings on the blob; only `lonely` is genuinely orphaned.
-    expect(countOf(summary, 'unreachable_passages')).toBe(1);
+    expect(countOf(summary, 'unreachable_nodes')).toBe(1);
   });
 
   // computeStoryHealth synthesizes Ink's knot -> first-stitch
@@ -115,7 +115,7 @@ describe('computeReadiness', () => {
       node('inbox.reply', { type: 'stitch', parent: 'inbox', lineNumber: 2, divert: 'END' }),
     ]);
     const summary = computeReadiness({ storyGraph: g, ...clean });
-    expect(countOf(summary, 'unreachable_passages')).toBe(0);
+    expect(countOf(summary, 'unreachable_nodes')).toBe(0);
     expect(summary.status).toBe('ready');
   });
 
@@ -127,15 +127,15 @@ describe('computeReadiness', () => {
     const summary = computeReadiness({
       storyGraph: g,
       openFlagCount: 3,
-      passagesWithoutVoiceover: 7,
+      nodesWithoutVoiceover: 7,
       assignmentDisagreements: 1,
     });
     expect(summary.status).toBe('blocked');
     expect(summary.blocking.map((c) => c.id)).toEqual(['parser_errors']);
     expect(summary.review.map((c) => c.id)).toEqual([
       'open_flags',
-      'unreachable_passages',
-      'passages_without_voiceover',
+      'unreachable_nodes',
+      'nodes_without_voiceover',
       'assignment_disagreements',
     ]);
     expect(summary.unknown).toHaveLength(0);
@@ -146,11 +146,11 @@ describe('computeReadiness', () => {
     const summary = computeReadiness({
       storyGraph: g,
       openFlagCount: 0,
-      passagesWithoutVoiceover: 2,
+      nodesWithoutVoiceover: 2,
       assignmentDisagreements: 0,
     });
     expect(summary.status).toBe('review');
-    expect(summary.review.map((c) => c.id)).toEqual(['passages_without_voiceover']);
+    expect(summary.review.map((c) => c.id)).toEqual(['nodes_without_voiceover']);
     expect(summary.blocking).toHaveLength(0);
   });
 
@@ -174,7 +174,7 @@ describe('computeReadiness', () => {
     const summary = computeReadiness({
       storyGraph: g,
       openFlagCount: 0,
-      passagesWithoutVoiceover: 2,
+      nodesWithoutVoiceover: 2,
       assignmentDisagreements: 0,
     });
     expect(summary.review.map((c) => c.label)).toEqual([
@@ -210,7 +210,7 @@ describe('computeReadiness', () => {
     const summary = computeReadiness({
       storyGraph: g,
       openFlagCount: null,
-      passagesWithoutVoiceover: 0,
+      nodesWithoutVoiceover: 0,
       assignmentDisagreements: 0,
     });
     expect(summary.status).toBe('unknown');
@@ -223,7 +223,7 @@ describe('computeReadiness', () => {
     const summary = computeReadiness({
       storyGraph: g,
       openFlagCount: null,
-      passagesWithoutVoiceover: 0,
+      nodesWithoutVoiceover: 0,
       assignmentDisagreements: 0,
     });
     expect(summary.status).toBe('blocked');
@@ -237,7 +237,7 @@ describe('computeReadiness', () => {
   it('treats a project with no story as unchecked, not as ready', () => {
     const summary = computeReadiness({ storyGraph: null, ...clean });
     expect(summary.status).toBe('empty');
-    expect(summary.unknown.map((c) => c.id)).toEqual(['parser_errors', 'unreachable_passages']);
+    expect(summary.unknown.map((c) => c.id)).toEqual(['parser_errors', 'unreachable_nodes']);
   });
 
   it('points each count at the panel that owns it', () => {
@@ -247,11 +247,11 @@ describe('computeReadiness', () => {
     );
     expect(byId.parser_errors).toEqual({ tab: 'story', anchorId: PANEL_ANCHORS.validation });
     expect(byId.open_flags).toEqual({ tab: 'story', anchorId: PANEL_ANCHORS.flaggedNodes });
-    expect(byId.unreachable_passages).toEqual({
+    expect(byId.unreachable_nodes).toEqual({
       tab: 'story',
       anchorId: PANEL_ANCHORS.storyHealth,
     });
-    expect(byId.passages_without_voiceover).toEqual({
+    expect(byId.nodes_without_voiceover).toEqual({
       tab: 'audio',
       anchorId: PANEL_ANCHORS.missingVoiceover,
     });
@@ -266,7 +266,7 @@ describe('computeReadiness', () => {
     const one = computeReadiness({
       storyGraph: g,
       openFlagCount: 1,
-      passagesWithoutVoiceover: 0,
+      nodesWithoutVoiceover: 0,
       assignmentDisagreements: 0,
     });
     expect(one.blocking[0].label).toBe('1 parser error');
@@ -278,7 +278,7 @@ describe('computeReadiness', () => {
         errors: [err(), err()],
       }),
       openFlagCount: 4,
-      passagesWithoutVoiceover: 0,
+      nodesWithoutVoiceover: 0,
       assignmentDisagreements: 0,
     });
     expect(many.blocking[0].label).toBe('2 parser errors');

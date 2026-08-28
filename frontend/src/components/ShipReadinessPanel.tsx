@@ -37,7 +37,7 @@ interface Props {
  * failed; the check reports "couldn't check" rather than zero. */
 interface FetchedCounts {
   openFlagCount: number | null;
-  passagesWithoutVoiceover: number | null;
+  nodesWithoutVoiceover: number | null;
   assignmentDisagreements: number | null;
 }
 
@@ -133,7 +133,7 @@ export default function ShipReadinessPanel({ projectId, storyGraph, onNavigate }
         // badge shows the returned page and says so when the server
         // capped it; the readiness answer wants the real number.
         openFlagCount: flags.status === 'fulfilled' ? asCount(flags.value?.total) : null,
-        passagesWithoutVoiceover:
+        nodesWithoutVoiceover:
           coverage.status === 'fulfilled' ? asLength(coverage.value?.nodesWithoutAudio) : null,
         assignmentDisagreements:
           audit.status === 'fulfilled' ? asLength(audit.value?.disagreements) : null,
@@ -152,7 +152,7 @@ export default function ShipReadinessPanel({ projectId, storyGraph, onNavigate }
       computeReadiness({
         storyGraph,
         openFlagCount: counts.openFlagCount,
-        passagesWithoutVoiceover: counts.passagesWithoutVoiceover,
+        nodesWithoutVoiceover: counts.nodesWithoutVoiceover,
         assignmentDisagreements: counts.assignmentDisagreements,
       }),
     [storyGraph, counts],

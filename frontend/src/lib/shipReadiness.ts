@@ -53,8 +53,8 @@ export type ReadinessSeverity = 'blocking' | 'review';
 export type ReadinessCheckId =
   | 'parser_errors'
   | 'open_flags'
-  | 'unreachable_passages'
-  | 'passages_without_voiceover'
+  | 'unreachable_nodes'
+  | 'nodes_without_voiceover'
   | 'assignment_disagreements';
 
 /** Where the panel that owns a count lives. `tab` is a member of
@@ -86,7 +86,7 @@ export interface ReadinessInputs {
    * exceed the page FlaggedNodesPanel lists (the panel says so). */
   openFlagCount: number | null;
   /** `fetchAudioCoverage(...).nodesWithoutAudio.length`. */
-  passagesWithoutVoiceover: number | null;
+  nodesWithoutVoiceover: number | null;
   /** `auditAudioAssignments(...).disagreements.length`. */
   assignmentDisagreements: number | null;
 }
@@ -150,7 +150,7 @@ export function computeReadiness(inputs: ReadinessInputs): ReadinessSummary {
       target: { tab: 'story', anchorId: PANEL_ANCHORS.flaggedNodes },
     },
     {
-      id: 'unreachable_passages',
+      id: 'unreachable_nodes',
       label:
         unreachable === null
           ? 'Unreachable nodes'
@@ -162,17 +162,17 @@ export function computeReadiness(inputs: ReadinessInputs): ReadinessSummary {
       target: { tab: 'story', anchorId: PANEL_ANCHORS.storyHealth },
     },
     {
-      id: 'passages_without_voiceover',
+      id: 'nodes_without_voiceover',
       label:
-        inputs.passagesWithoutVoiceover === null
+        inputs.nodesWithoutVoiceover === null
           ? 'Nodes with no voiceover'
           : plural(
-              inputs.passagesWithoutVoiceover,
+              inputs.nodesWithoutVoiceover,
               'node with no voiceover',
               'nodes with no voiceover',
             ),
       detail: 'No voiceover clip is assigned, so the listener reaches these in silence.',
-      count: inputs.passagesWithoutVoiceover,
+      count: inputs.nodesWithoutVoiceover,
       severity: 'review',
       target: { tab: 'audio', anchorId: PANEL_ANCHORS.missingVoiceover },
     },
