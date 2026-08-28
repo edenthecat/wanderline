@@ -396,41 +396,43 @@ export default function ThemeTab({ projectId }: Props) {
 
                 `role="status"` rather than "alert": this is worth
                 hearing, but not worth cutting off whatever the author
-                is in the middle of typing. */}
-            {contrastWarnings.length > 0 && (
-              <div
-                className="alert alert-warning"
-                data-testid="theme-contrast-warning"
-                role="status"
-              >
-                <strong>Hard to read for some listeners.</strong> These pairs fall below the WCAG AA
-                minimum:
-                <ul>
-                  {contrastWarnings.map((w) => (
-                    <li key={w.id}>
-                      {w.label} — {w.ratio!.toFixed(2)}:1, needs {w.required}:1
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {contrastUnknown.length > 0 && (
-              <div
-                className="alert alert-warning"
-                data-testid="theme-contrast-unknown"
-                role="status"
-              >
-                <strong>Couldn&apos;t check these.</strong> Use a hex, <code>rgb()</code> or{' '}
-                <code>hsl()</code> value if you want them measured:
-                <ul>
-                  {contrastUnknown.map((w) => (
-                    <li key={w.id}>
-                      {w.label} — {w.unparsed.join(', ')}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
+                is in the middle of typing.
+
+                The live region is mounted empty and always present. A
+                region inserted into the DOM together with its content
+                lands in the same commit as the text, and screen
+                readers register regions before mutations — NVDA, JAWS
+                and VoiceOver all tend to say nothing at all in that
+                case. Keeping the wrapper and changing only its
+                children is what makes the announcement happen. */}
+            <div role="status" data-testid="theme-contrast-live">
+              {contrastWarnings.length > 0 && (
+                <div className="alert alert-warning" data-testid="theme-contrast-warning">
+                  <strong>Hard to read for some listeners.</strong> These pairs fall below the WCAG
+                  AA minimum:
+                  <ul>
+                    {contrastWarnings.map((w) => (
+                      <li key={w.id}>
+                        {w.label} — {w.ratio!.toFixed(2)}:1, needs {w.required}:1
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {contrastUnknown.length > 0 && (
+                <div className="alert alert-warning" data-testid="theme-contrast-unknown">
+                  <strong>Couldn&apos;t check these.</strong> Use a hex, <code>rgb()</code> or{' '}
+                  <code>hsl()</code> value if you want them measured:
+                  <ul>
+                    {contrastUnknown.map((w) => (
+                      <li key={w.id}>
+                        {w.label} — {w.unparsed.join(', ')}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
             <ul className="ui-options-list" data-testid="theme-colors">
               {VARIABLE_KNOBS.map((knob) => {
                 const value = vars[knob.key] ?? '';

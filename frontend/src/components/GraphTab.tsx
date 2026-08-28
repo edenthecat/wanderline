@@ -119,12 +119,13 @@ const StoryCardNode = memo(function StoryCardNode({ data, selected }: NodeProps)
             from the default border by hue, and invisible to a screen
             reader entirely. The chip carries the same information as
             text. */}
+        {/* No aria-label: a bare span maps to role=generic, which
+            prohibits author naming, so browsers drop the label — and
+            where one is honoured it *replaces* the text rather than
+            adding to it. The visible word is what carries the state,
+            which was the point. */}
         {d.onPath && (
-          <span
-            className="graph-node-path-chip"
-            title="On the traced path"
-            aria-label="On the traced path"
-          >
+          <span className="graph-node-path-chip" title="On the traced path">
             path
           </span>
         )}

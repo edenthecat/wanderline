@@ -123,18 +123,36 @@ describe('dimmed graph nodes stay readable', () => {
     }
   });
 
-  // A translucent wash needs an opaque card under it. Every state
-  // provides one except .is-start, which paints its violet tint with
-  // the `background` shorthand — that resets background-color to
-  // transparent, so a start node excluded by a search would have had
-  // the wash composite over the ReactFlow canvas instead of a card.
-  it('gives the start node an opaque fill to be washed over', () => {
-    const fill = declaration('.graph-node-card.is-start.is-dim', 'background-color');
-    expect(fill, 'a dimmed start node needs an opaque background-color').not.toBeNull();
-    expect(parseColor(fill!)!.alpha).toBe(1);
-    expect(contrastRatio(NODE_TITLE, dimSurfaceOver(rgb(fill!)))).toBeGreaterThanOrEqual(
-      AA_NORMAL_TEXT,
-    );
+  // A translucent wash needs an opaque card under it. The flat-fill
+  // states provide one, but .is-start and .is-ending paint their tints
+  // with the `background` shorthand, which resets background-color to
+  // transparent — a start or ending node excluded by a search would
+  // have had the wash composite over the ReactFlow canvas.
+  for (const state of ['is-start', 'is-ending']) {
+    it(`gives a dimmed .${state} node an opaque fill to be washed over`, () => {
+      const fill = declaration(`.graph-node-card.${state}.is-dim`, 'background-color');
+      expect(fill, `a dimmed .${state} node needs an opaque background-color`).not.toBeNull();
+      expect(parseColor(fill!)!.alpha).toBe(1);
+      expect(contrastRatio(NODE_TITLE, dimSurfaceOver(rgb(fill!)))).toBeGreaterThanOrEqual(
+        AA_NORMAL_TEXT,
+      );
+    });
+  }
+
+  // The guard that catches the next one of these: any card state that
+  // paints with the `background` shorthand leaves no background-color
+  // for the wash to sit on, so it has to be listed in the opaque-fill
+  // rule above.
+  it('lists every gradient-filled card state in the opaque-fill rule', () => {
+    const gradientStates = [...css.matchAll(/\.graph-node-card\.(is-[a-z-]+)\s*\{([^}]*)\}/g)]
+      .filter(([, , body]) => /(?:^|;)\s*background\s*:[^;]*gradient\(/.test(body))
+      .map(([, state]) => state);
+    expect(gradientStates.length).toBeGreaterThan(0);
+    const opaqueFillRule = css.slice(css.indexOf('.graph-node-card.is-start.is-dim'));
+    for (const state of gradientStates) {
+      expect(opaqueFillRule).toContain(`.graph-node-card.${state}.is-dim`);
+      expect(opaqueFillRule).toContain(`.graph-node-card.${state}.is-unmatched`);
+    }
   });
 });
 

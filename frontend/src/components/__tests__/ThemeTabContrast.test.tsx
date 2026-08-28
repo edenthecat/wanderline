@@ -96,7 +96,18 @@ describe('Theme tab contrast warning', () => {
   // colour field, and an alert would cut them off mid-word.
   it('announces politely rather than interrupting', async () => {
     mount({ variables: { textColor: '#336699', pageBackground: '#336699' } });
-    const warning = await screen.findByTestId('theme-contrast-warning');
-    expect(warning).toHaveAttribute('role', 'status');
+    await screen.findByTestId('theme-contrast-warning');
+    expect(screen.getByTestId('theme-contrast-live')).toHaveAttribute('role', 'status');
+  });
+
+  // A live region that arrives in the same commit as its text is
+  // usually not announced at all: screen readers register regions
+  // before mutations. The wrapper has to already be there and empty.
+  it('keeps the live region mounted while there is nothing to say', async () => {
+    mount();
+    const live = await screen.findByTestId('theme-contrast-live');
+    expect(live).toHaveAttribute('role', 'status');
+    await waitFor(() => expect(screen.queryByTestId('theme-contrast-warning')).toBeNull());
+    expect(live).toBeEmptyDOMElement();
   });
 });

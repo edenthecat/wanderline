@@ -1927,15 +1927,18 @@ details[open] > .audio-section-summary {
   background-image: linear-gradient(rgba(203, 213, 225, 0.75), rgba(203, 213, 225, 0.75));
   filter: saturate(0.35);
 }
-/* The wash is translucent, so it needs an opaque card under it. Every
-   other state gives it one, but `.is-start` paints its violet tint
-   with the `background` shorthand, which resets `background-color` to
-   transparent — a start node excluded by a graph search would have had
-   the wash composite over the canvas instead of over a card, on a
-   surface none of the measured ratios cover. Higher specificity than
-   `.is-start`, and scoped so it only applies while dimmed. */
+/* The wash is translucent, so it needs an opaque card under it. The
+   flat-fill states give it one, but `.is-start` and `.is-ending` paint
+   their violet and green tints with the `background` shorthand, which
+   resets `background-color` to transparent — a start or ending node
+   excluded by a graph search would have had the wash composite over
+   the ReactFlow canvas instead of over a card, on a surface none of
+   the measured ratios cover. Higher specificity than the state rules,
+   and scoped so it only applies while dimmed. */
 .graph-node-card.is-start.is-dim,
-.graph-node-card.is-start.is-unmatched {
+.graph-node-card.is-start.is-unmatched,
+.graph-node-card.is-ending.is-dim,
+.graph-node-card.is-ending.is-unmatched {
   background-color: #ffffff;
 }
 /* The footer is the one piece of card text that isn't near-black;

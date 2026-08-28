@@ -832,10 +832,18 @@ export function renderSmokeHtml(storyData: unknown): string {
   const contrastUnknown = contrastChecks
     .filter((check) => check.ratio === null)
     .map((check) => `${check.label}: could not read ${check.unparsed.join(', ')}`);
+  // Same escaping as the story payload above: `unparsed` echoes
+  // author-controlled theme values verbatim, and the free-text
+  // component props aren't colour-validated — U+2028 in one of them
+  // would be a raw line terminator inside the inline <script> and
+  // blank the whole build-health page on any pre-ES2019 engine.
   const contrastJson = JSON.stringify({
     problems: contrastProblems,
     unknown: contrastUnknown,
-  }).replace(/</g, '\\u003c');
+  })
+    .replace(/</g, '\\u003c')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
 
   // The runner is inlined as a regular <script> so file:// pages can
   // execute it without module-loader gymnastics.

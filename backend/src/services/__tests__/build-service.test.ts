@@ -543,6 +543,21 @@ describe('build-service unit', () => {
         expect(html).toMatch(/record\('Theme colours meet WCAG AA contrast', \(contrast\.problems/);
       });
 
+      // `unparsed` echoes author-controlled theme values verbatim, and
+      // the free-text component props aren't colour-validated. A raw
+      // U+2028 inside the inline <script> is a line terminator on any
+      // pre-ES2019 engine, which blanks the whole build-health page.
+      it('escapes line separators smuggled in through a theme value', () => {
+        const story = {
+          ...sampleStory,
+          settings: { theme: { components: { page: { backgroundImage: 'url(a\u2028b.jpg)' } } } },
+        };
+        const html = renderSmokeHtml(story);
+        const payload = html.split('window.__WANDERLINE_CONTRAST__')[1].split('</script>')[0];
+        expect(payload).not.toContain('\u2028');
+        expect(payload).toContain('\\u2028');
+      });
+
       it('keeps the payload from closing the inline script', () => {
         const story = {
           ...sampleStory,
