@@ -1348,6 +1348,54 @@ export function swapChoices(
   });
 }
 
+/**
+ * Create a passage.
+ *
+ * `nodeId` carries the structure the server needs: in an Ink project
+ * `chapter` is a knot and `chapter.scene` a stitch under the existing
+ * knot `chapter`; in a Twee project it is the passage name verbatim.
+ *
+ * `afterNodeId` places the new passage directly after that sibling.
+ * It matters because Ink falls through from a passage that ends
+ * without a divert into the NEXT sibling — appending (the default)
+ * puts it last, which is never mid-scene.
+ *
+ * Throws `ApiError` on 400 (malformed id, unknown parent or sibling),
+ * 404 (project has no story), 409 (id already taken).
+ */
+export function createNode(
+  projectId: string,
+  nodeId: string,
+  options: { content?: string; afterNodeId?: string | null } = {},
+): Promise<StoryEditResult & { nodeId: string }> {
+  return request(`/projects/${projectId}/story/node`, {
+    method: 'POST',
+    body: JSON.stringify({ nodeId, ...options }),
+  });
+}
+
+/**
+ * Delete a passage, and — for an Ink knot — its stitches with it.
+ *
+ * Refuses with 409 when any surviving passage still links or diverts
+ * into what would be deleted, rather than leaving a dangling target.
+ * Pass `repointTo` (an existing node id, or `END` / `DONE`) to rewrite
+ * those references and delete in the same transaction.
+ *
+ * Also 409s on the story's start passage, which has no replacement
+ * mechanism yet.
+ */
+export function deleteNode(
+  projectId: string,
+  nodeId: string,
+  repointTo?: string,
+): Promise<StoryEditResult & { deleted: string[]; repointed: number }> {
+  return request(`/projects/${projectId}/story/node`, {
+    method: 'DELETE',
+    body: JSON.stringify(repointTo ? { nodeId, repointTo } : { nodeId }),
+  });
+}
+
 /**: rename a node. Server-side transaction rewrites every
  * reference (choice targets, diverts, stitch parents, startNode) plus
  * the two side tables (`node_audio_assignments`, `node_metadata`).

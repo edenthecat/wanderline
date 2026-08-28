@@ -8,6 +8,16 @@ import { emitInk } from '../services/ink-converter.js';
 import { randomUUID } from 'crypto';
 import { captureSnapshot } from './projects-snapshots.js';
 import { invalidateRoom } from '../services/collab-server.js';
+import {
+  collectDeletionSet,
+  findInboundReferences,
+  insertNodeOrdered,
+  parseNewNodeId,
+  repointReferences,
+  TERMINAL_TARGETS,
+  type GraphNodes,
+  type SourceLanguage,
+} from '../services/story-node-ops.js';
 
 export function mountStoryRoutes(router: Router, pool: Pool): void {
   /**
@@ -1346,6 +1356,483 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
     });
 
     res.json({ success: true, story_graph: renamedGraph });
+  });
+
+  /**
+   * @openapi
+   * /projects/{id}/story/node:
+   *   post:
+   *     summary: Create a passage.
+   *     description: |
+   *       Adds one node to `story_graph` without re-parsing the whole
+   *       story, so an author can write a new scene from the editor
+   *       instead of hand-editing the source and re-uploading.
+   *
+   *       `nodeId` carries the structure. In an Ink project `chapter`
+   *       creates a knot and `chapter.scene` creates a stitch under the
+   *       existing knot `chapter`; names must match
+   *       `[A-Za-z_][A-Za-z0-9_]*` per segment so the emitted `.ink`
+   *       re-parses to the same id. In a Twee project the id is the
+   *       passage name verbatim — every passage is top-level, dots are
+   *       ordinary characters, and the Twee link delimiters
+   *       (`[`, `]`, `|`, `->`, `<-`) plus the reserved special-passage
+   *       names are rejected.
+   *
+   *       Placement matters: Ink falls through from a passage that ends
+   *       without a divert into the NEXT sibling, and that order is
+   *       `lineNumber`. `afterNodeId` places the new node directly
+   *       after that sibling (and, for a knot, after its stitches);
+   *       omitted, it appends to the end of its sibling group. Every
+   *       node's `lineNumber` is renumbered to 1..n in the order
+   *       consumers already read, so the insert point is exact even in
+   *       graphs from compiled-Ink-JSON uploads where every node
+   *       carries lineNumber 0.
+   *
+   *       Clears the cached ink/twee source columns so the next
+   *       `/exports/:format` re-emits from the new graph.
+   *     tags: [Story]
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema: { type: string, format: uuid }
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: object
+   *             required: [nodeId]
+   *             properties:
+   *               nodeId:
+   *                 type: string
+   *                 description: Full id of the new passage.
+   *               content:
+   *                 type: string
+   *                 description: Optional opening body text.
+   *               afterNodeId:
+   *                 type: string
+   *                 nullable: true
+   *                 description: Sibling to place the new passage after.
+   *     responses:
+   *       200:
+   *         description: Created.
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 success: { type: boolean }
+   *                 nodeId: { type: string }
+   *                 story_graph: { type: object }
+   *       400: { description: 'Bad request (malformed id, unknown parent or sibling).' }
+   *       404: { description: Project has no story. }
+   *       409: { description: A node with that id already exists. }
+   */
+  router.post('/:id/story/node', async (req: Request, res: Response) => {
+    const { id } = req.params;
+    const rawId = req.body?.nodeId;
+    const rawContent = req.body?.content;
+    const rawAfter = req.body?.afterNodeId;
+
+    if (typeof rawId !== 'string') {
+      res.status(400).json({ error: 'nodeId must be a string' });
+      return;
+    }
+    if (rawContent !== undefined && rawContent !== null && typeof rawContent !== 'string') {
+      res.status(400).json({ error: 'content must be a string' });
+      return;
+    }
+    if (rawAfter !== undefined && rawAfter !== null && typeof rawAfter !== 'string') {
+      res.status(400).json({ error: 'afterNodeId must be a string or null' });
+      return;
+    }
+
+    const client = await pool.connect();
+    let createdGraph: unknown = null;
+    let createdNodeId = '';
+    try {
+      await client.query('BEGIN');
+
+      const storyResult = await client.query(
+        `SELECT story_graph, COALESCE(source_language, 'ink') AS source_language
+         FROM project_stories
+         WHERE project_id = $1
+         FOR UPDATE`,
+        [id],
+      );
+      if (storyResult.rows.length === 0 || !storyResult.rows[0].story_graph) {
+        await client.query('ROLLBACK');
+        res.status(404).json({ error: 'Story not found' });
+        return;
+      }
+
+      const storyGraph = storyResult.rows[0].story_graph as {
+        nodes: GraphNodes;
+        startNode: string;
+      };
+      const sourceLanguage: SourceLanguage =
+        storyResult.rows[0].source_language === 'twee' ? 'twee' : 'ink';
+      const nodes = storyGraph.nodes;
+      if (!nodes || typeof nodes !== 'object') {
+        await client.query('ROLLBACK');
+        res.status(404).json({ error: 'Story not found' });
+        return;
+      }
+
+      const parsed = parseNewNodeId(rawId, sourceLanguage);
+      if ('error' in parsed) {
+        await client.query('ROLLBACK');
+        res.status(400).json({ error: parsed.error });
+        return;
+      }
+      const { nodeId, type, parent } = parsed;
+
+      if (Object.hasOwn(nodes, nodeId)) {
+        await client.query('ROLLBACK');
+        res.status(409).json({ error: `"${nodeId}" is already used by another node` });
+        return;
+      }
+      if (parent !== null) {
+        if (!Object.hasOwn(nodes, parent)) {
+          await client.query('ROLLBACK');
+          res.status(400).json({
+            error: `Knot "${parent}" does not exist — create it before adding a stitch to it`,
+          });
+          return;
+        }
+        // A stitch under a stitch has no Ink syntax: the emitter would
+        // write `= a_b` inside the grandparent knot and the parser
+        // would read it back as a sibling, silently reparenting it.
+        if (nodes[parent].type === 'stitch') {
+          await client.query('ROLLBACK');
+          res.status(400).json({ error: `"${parent}" is a stitch — stitches cannot own stitches` });
+          return;
+        }
+      }
+
+      let afterId: string | null = null;
+      if (typeof rawAfter === 'string' && rawAfter.trim() !== '') {
+        afterId = rawAfter.trim();
+        if (!Object.hasOwn(nodes, afterId)) {
+          await client.query('ROLLBACK');
+          res.status(400).json({ error: `afterNodeId "${afterId}" does not exist` });
+          return;
+        }
+        // Placement is only meaningful within a sibling group —
+        // fall-through never crosses from one knot's stitches into
+        // another's, so "after a node in a different knot" has no
+        // ordering answer to give.
+        const anchor = nodes[afterId];
+        const anchorParent =
+          anchor.parent ??
+          (sourceLanguage === 'ink' && afterId.includes('.') ? afterId.split('.')[0] : null);
+        if (anchorParent !== parent) {
+          await client.query('ROLLBACK');
+          res.status(400).json({
+            error:
+              parent === null
+                ? `afterNodeId "${afterId}" is not a top-level node`
+                : `afterNodeId "${afterId}" is not a sibling — it does not belong to "${parent}"`,
+          });
+          return;
+        }
+      }
+
+      const contentText = typeof rawContent === 'string' ? rawContent.trim() : '';
+      // Note we deliberately do NOT clear side-table rows that happen
+      // to already carry this node_id. Replacing a story file leaves
+      // audio assignments and metadata behind for ids the new upload
+      // dropped (that's what OrphanedAudioPanel surfaces), and
+      // re-introducing the id reattaches them — the same thing a
+      // re-upload of the original source does.
+      insertNodeOrdered(
+        nodes,
+        nodeId,
+        {
+          id: nodeId,
+          type,
+          parent,
+          content: contentText ? [{ text: contentText, tags: [] }] : [],
+          choices: [],
+          divert: null,
+          tags: [],
+          lineNumber: 0,
+        },
+        { afterId, parent, sourceLanguage },
+      );
+
+      // A story whose startNode never resolved (an upload that failed
+      // its `missing_start` validation) gets one as soon as there's a
+      // top-level node to be it — the same rule the parsers apply.
+      if (
+        parent === null &&
+        (!storyGraph.startNode || !Object.hasOwn(nodes, storyGraph.startNode))
+      ) {
+        storyGraph.startNode = nodeId;
+      }
+
+      await client.query(
+        `UPDATE project_stories
+         SET story_graph = $1, updated_at = CURRENT_TIMESTAMP,
+             ink_source = NULL, twee_source = NULL
+         WHERE project_id = $2`,
+        [JSON.stringify(storyGraph), id],
+      );
+      await client.query('UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1', [id]);
+      await client.query('COMMIT');
+      createdGraph = storyGraph;
+      createdNodeId = nodeId;
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      req.log.error({ err: error }, 'Failed to create node');
+      res.status(500).json({ error: 'Failed to create node' });
+      return;
+    } finally {
+      client.release();
+    }
+
+    // The live Y.Doc has no entry for the new node and every peer's
+    // nodes map is now a passage short; a shadow-save from one of them
+    // would write the pre-insert graph straight back over us. Drop the
+    // room so peers reseed. Awaited (the choice endpoints do the same)
+    // so an in-flight save settles first, but a collab hiccup must not
+    // turn a committed insert into a 500 — hence the catch.
+    try {
+      await invalidateRoom(id);
+    } catch (err) {
+      req.log.warn({ err }, 'invalidateRoom failed after node create; peers may need to reconnect');
+    }
+
+    res.json({ success: true, nodeId: createdNodeId, story_graph: createdGraph });
+  });
+
+  /**
+   * @openapi
+   * /projects/{id}/story/node:
+   *   delete:
+   *     summary: Delete a passage.
+   *     description: |
+   *       Removes a node from `story_graph` and cascades everything
+   *       keyed to it: for an Ink knot its stitches go too (a stitch
+   *       cannot outlive its knot), and the side tables keyed by
+   *       (project_id, node_id) — `node_audio_assignments`,
+   *       `node_metadata`, `node_flags`, `audio_assignment_audit_acks`
+   *       — lose their rows in the same transaction.
+   *
+   *       REFUSES BY DEFAULT rather than orphaning. If any surviving
+   *       passage links or diverts into the delete set, the request
+   *       fails with 409 and lists the referring passages; nothing is
+   *       written. Pass `repointTo` (an existing node id, or `END` /
+   *       `DONE`) to rewrite every one of those references and delete
+   *       in the same transaction. Bare Ink stitch references are
+   *       resolved against the referring knot before the check, so a
+   *       `-> scene` written inside the knot counts.
+   *
+   *       Deleting the story's `startNode` is always refused — there is
+   *       no endpoint to nominate a replacement, so it would leave a
+   *       story that cannot begin.
+   *
+   *       Clears the cached ink/twee source columns so the next
+   *       `/exports/:format` re-emits from the reduced graph.
+   *     tags: [Story]
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema: { type: string, format: uuid }
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: object
+   *             required: [nodeId]
+   *             properties:
+   *               nodeId: { type: string }
+   *               repointTo:
+   *                 type: string
+   *                 description: |
+   *                   Where to send references that pointed at the
+   *                   deleted passage. An existing node id outside the
+   *                   delete set, or `END` / `DONE`.
+   *     responses:
+   *       200:
+   *         description: Deleted.
+   *         content:
+   *           application/json:
+   *             schema:
+   *               type: object
+   *               properties:
+   *                 success: { type: boolean }
+   *                 deleted:
+   *                   type: array
+   *                   items: { type: string }
+   *                 repointed: { type: integer }
+   *                 story_graph: { type: object }
+   *       400: { description: 'Bad request (missing id, unusable repointTo).' }
+   *       404: { description: Story or node not found. }
+   *       409: { description: 'Node is the start passage, or other passages still reference it.' }
+   */
+  router.delete('/:id/story/node', async (req: Request, res: Response) => {
+    const { id } = req.params;
+    const rawId = req.body?.nodeId;
+    const rawRepoint = req.body?.repointTo;
+
+    if (typeof rawId !== 'string' || !rawId.trim()) {
+      res.status(400).json({ error: 'nodeId must be a non-empty string' });
+      return;
+    }
+    if (rawRepoint !== undefined && rawRepoint !== null && typeof rawRepoint !== 'string') {
+      res.status(400).json({ error: 'repointTo must be a string' });
+      return;
+    }
+    const nodeId = rawId.trim();
+    const repointTo =
+      typeof rawRepoint === 'string' && rawRepoint.trim() !== '' ? rawRepoint.trim() : null;
+
+    const client = await pool.connect();
+    let reducedGraph: unknown = null;
+    let deletedIds: string[] = [];
+    let repointedCount = 0;
+    try {
+      await client.query('BEGIN');
+
+      const storyResult = await client.query(
+        `SELECT story_graph, COALESCE(source_language, 'ink') AS source_language
+         FROM project_stories
+         WHERE project_id = $1
+         FOR UPDATE`,
+        [id],
+      );
+      if (storyResult.rows.length === 0 || !storyResult.rows[0].story_graph) {
+        await client.query('ROLLBACK');
+        res.status(404).json({ error: 'Story not found' });
+        return;
+      }
+
+      const storyGraph = storyResult.rows[0].story_graph as {
+        nodes: GraphNodes;
+        startNode: string;
+      };
+      const sourceLanguage: SourceLanguage =
+        storyResult.rows[0].source_language === 'twee' ? 'twee' : 'ink';
+      const nodes = storyGraph.nodes;
+      if (!nodes || typeof nodes !== 'object' || !Object.hasOwn(nodes, nodeId)) {
+        await client.query('ROLLBACK');
+        res.status(404).json({ error: 'Node not found' });
+        return;
+      }
+
+      deletedIds = collectDeletionSet(nodeId, nodes, sourceLanguage);
+      const deleteSet = new Set(deletedIds);
+
+      if (deleteSet.has(storyGraph.startNode)) {
+        await client.query('ROLLBACK');
+        res.status(409).json({
+          error:
+            storyGraph.startNode === nodeId
+              ? `"${nodeId}" is the story's start passage. Point the story at a different passage before deleting it.`
+              : `"${nodeId}" contains the story's start passage "${storyGraph.startNode}". Point the story elsewhere before deleting it.`,
+        });
+        return;
+      }
+
+      const referrers = findInboundReferences(deleteSet, nodes, sourceLanguage);
+
+      if (referrers.length > 0 && repointTo === null) {
+        await client.query('ROLLBACK');
+        const names = Array.from(new Set(referrers.map((r) => r.from)));
+        const shown = names.slice(0, 10);
+        res.status(409).json({
+          error:
+            `Can't delete "${nodeId}" — ${names.length} other passage${names.length === 1 ? '' : 's'} still ` +
+            `point${names.length === 1 ? 's' : ''} at it: ${shown.join(', ')}` +
+            `${names.length > shown.length ? `, and ${names.length - shown.length} more` : ''}. ` +
+            'Repoint them first, or retry with a replacement target.',
+          referrers: referrers.map((r) => ({
+            from: r.from,
+            via: r.via,
+            choiceIndex: r.choiceIndex,
+            target: r.resolved,
+          })),
+        });
+        return;
+      }
+
+      if (repointTo !== null && referrers.length > 0) {
+        const isTerminal = TERMINAL_TARGETS.has(repointTo);
+        if (!isTerminal && !Object.hasOwn(nodes, repointTo)) {
+          await client.query('ROLLBACK');
+          res.status(400).json({ error: `Replacement target "${repointTo}" does not exist` });
+          return;
+        }
+        if (deleteSet.has(repointTo)) {
+          await client.query('ROLLBACK');
+          res.status(400).json({
+            error: `Replacement target "${repointTo}" is itself being deleted`,
+          });
+          return;
+        }
+        repointReferences(referrers, repointTo, nodes);
+        repointedCount = referrers.length;
+      }
+
+      for (const doomed of deletedIds) {
+        delete nodes[doomed];
+      }
+
+      await client.query(
+        `UPDATE project_stories
+         SET story_graph = $1, updated_at = CURRENT_TIMESTAMP,
+             ink_source = NULL, twee_source = NULL
+         WHERE project_id = $2`,
+        [JSON.stringify(storyGraph), id],
+      );
+      // Side tables keyed by (project_id, node_id). Left behind they
+      // would re-attach silently the moment an author created a
+      // passage with the same name, so they go in the same
+      // transaction as the graph write. `= ANY($2)` covers the knot
+      // and every stitch that went with it in one statement.
+      for (const table of [
+        'node_audio_assignments',
+        'node_metadata',
+        'node_flags',
+        'audio_assignment_audit_acks',
+      ] as const) {
+        await client.query(`DELETE FROM ${table} WHERE project_id = $1 AND node_id = ANY($2)`, [
+          id,
+          deletedIds,
+        ]);
+      }
+      await client.query('UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1', [id]);
+      await client.query('COMMIT');
+      reducedGraph = storyGraph;
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      req.log.error({ err: error }, 'Failed to delete node');
+      res.status(500).json({ error: 'Failed to delete node' });
+      return;
+    } finally {
+      client.release();
+    }
+
+    // Peers still hold the deleted node in their Y.Doc; a shadow-save
+    // from one of them would resurrect it. Drop the room so they
+    // reseed from the reduced graph. See the create handler above for
+    // why this is awaited but never allowed to fail the request.
+    try {
+      await invalidateRoom(id);
+    } catch (err) {
+      req.log.warn({ err }, 'invalidateRoom failed after node delete; peers may need to reconnect');
+    }
+
+    res.json({
+      success: true,
+      deleted: deletedIds,
+      repointed: repointedCount,
+      story_graph: reducedGraph,
+    });
   });
 
   /**

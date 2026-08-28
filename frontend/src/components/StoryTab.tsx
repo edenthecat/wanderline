@@ -16,6 +16,8 @@ import { useVocab } from '../hooks/useVocab';
 import type { Nomenclature, NomenclaturePreference } from '../lib/nomenclature';
 import NodeDetail, { hasCustomTiming } from './NodeDetail';
 import NodeRenameButton from './NodeRenameButton';
+import NodeCreateButton from './NodeCreateButton';
+import NodeDeleteButton from './NodeDeleteButton';
 import { useYjs } from '../hooks/useYjs';
 import { useNodeEditor } from '../hooks/useNodeEditor';
 import { useYjsSeedReady } from '../hooks/useStoryYDoc';
@@ -213,6 +215,8 @@ export default function StoryTab({
     handleDeleteChoice,
     handleSwapChoices,
     handleRenameNode,
+    handleCreateNode,
+    handleDeleteNode,
     handleMetadataSave,
     editorError,
   } = useNodeEditor({ projectId, storyGraph, onStoryUpdated, yDoc });
@@ -422,6 +426,79 @@ export default function StoryTab({
   const knots = useMemo(() => nodes.filter((n) => n.type === 'knot'), [nodes]);
   const stitchCount = useMemo(() => nodes.filter((n) => n.type === 'stitch').length, [nodes]);
   const nodesWithAudio = useMemo(() => nodes.filter(hasAudio).length, [nodes]);
+
+  // Sorted so the delete dialog's "send them to" list reads
+  // predictably rather than in graph-key order.
+  const allNodeIds = useMemo(() => Array.from(nodeIdSet).sort(), [nodeIdSet]);
+
+  // What actually disappears when this id is deleted. An Ink knot
+  // takes its stitches with it — a stitch has nowhere to live once its
+  // knot is gone. Twee passages are flat, so this is always just the
+  // one (childrenByParent is empty for them).
+  const doomedIdsFor = useCallback(
+    (nodeId: string) => {
+      const node = storyGraph?.nodes[nodeId];
+      if (!node || node.type !== 'knot') return [nodeId];
+      return [nodeId, ...(childrenByParent.get(nodeId) ?? []).map((c) => c.id)];
+    },
+    [storyGraph, childrenByParent],
+  );
+
+  // Who still points into that set, from outside it. Links between two
+  // doomed passages aren't a problem — both go.
+  const referrersFor = useCallback(
+    (doomed: string[]) => {
+      const doomedSet = new Set(doomed);
+      const out = new Set<string>();
+      for (const id of doomed) {
+        for (const from of reverseEdges.get(id) ?? []) {
+          if (!doomedSet.has(from)) out.add(from);
+        }
+      }
+      return Array.from(out).sort();
+    },
+    [reverseEdges],
+  );
+
+  // Deleting a passage that is expanded (and therefore broadcast as
+  // "editing this") would leave peers watching an id that no longer
+  // exists, and toggleNode reconciling against a stale stack. Clear
+  // both before the refetch lands.
+  const handleDeleteNodeFromTab = useCallback(
+    async (nodeId: string, repointTo?: string) => {
+      const doomed = doomedIdsFor(nodeId);
+      await handleDeleteNode(nodeId, repointTo);
+      const doomedSet = new Set(doomed);
+      editingStackRef.current = editingStackRef.current.filter((id) => !doomedSet.has(id));
+      onSelfEditingNodeChange(editingStackRef.current[editingStackRef.current.length - 1] ?? null);
+      setExpandedNodes((prev) => {
+        const next = new Set(prev);
+        for (const id of doomed) next.delete(id);
+        return next;
+      });
+    },
+    [doomedIdsFor, handleDeleteNode, onSelfEditingNodeChange],
+  );
+
+  const renderNodeDelete = (nodeId: string) => {
+    const doomed = doomedIdsFor(nodeId);
+    const start = storyGraph?.startNode;
+    return (
+      <NodeDeleteButton
+        nodeId={nodeId}
+        doomedIds={doomed}
+        referrers={referrersFor(doomed)}
+        allNodeIds={allNodeIds}
+        onDelete={handleDeleteNodeFromTab}
+        noun={vocab.node.singular}
+        blockedReason={
+          start && doomed.includes(start)
+            ? `"${start}" is the story's start ${vocab.node.singular} — the story would have nowhere to begin.`
+            : undefined
+        }
+      />
+    );
+  };
 
   const isFiltering = search.trim() !== '' || typeFilter !== 'all';
 
@@ -638,6 +715,7 @@ export default function StoryTab({
                         nodeIdSet={nodeIdSet}
                       />
                     )}
+                    {renderNodeDelete(node.id)}
                     {hasAudio(node) && <span className="badge badge-green">audio</span>}
                     {flagsByNode[node.id]?.length > 0 && (
                       <span
@@ -701,7 +779,16 @@ export default function StoryTab({
             </div>
           ) : (
             <div className="node-tree">
-              <h3>Story nodes</h3>
+              <div className="node-tree-header">
+                <h3>Story nodes</h3>
+                <NodeCreateButton
+                  label={vocab.node.singular}
+                  siblings={knots.map((k) => k.id)}
+                  siblingNoun={vocab.node.singular}
+                  onCreate={handleCreateNode}
+                  nodeIdSet={nodeIdSet}
+                />
+              </div>
               {knots.map((knot) => {
                 const children = childrenByParent.get(knot.id) || [];
                 const isExpanded = expandedNodes.has(knot.id);
@@ -788,6 +875,7 @@ export default function StoryTab({
                             : undefined
                         }
                       />
+                      {renderNodeDelete(knot.id)}
                     </div>
                     {isExpanded && (
                       <div className="node-children">
@@ -849,6 +937,7 @@ export default function StoryTab({
                               {hasCustomTiming(metadata[child.id]) && (
                                 <span className="badge badge-gray">timing</span>
                               )}
+                              {renderNodeDelete(child.id)}
                             </div>
                             <NodeDetail
                               key={child.id}
@@ -885,6 +974,21 @@ export default function StoryTab({
                             />
                           </div>
                         ))}
+                        {/* Sub-nodes only exist in Ink — vocab.subNode
+                            is empty for a Twee project, where every
+                            passage is created at the top level. */}
+                        {vocab.subNode.singular && (
+                          <div className="node-child-add">
+                            <NodeCreateButton
+                              label={vocab.subNode.singular}
+                              parentId={knot.id}
+                              siblings={children.map((c) => c.id)}
+                              siblingNoun={vocab.subNode.singular}
+                              onCreate={handleCreateNode}
+                              nodeIdSet={nodeIdSet}
+                            />
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

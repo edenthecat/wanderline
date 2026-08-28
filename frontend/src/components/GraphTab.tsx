@@ -22,6 +22,7 @@ import dagre from '@dagrejs/dagre';
 import '@xyflow/react/dist/style.css';
 import { updateChoiceTarget, updateDivert, type StoryGraph, type StoryNode } from '../api/client';
 import NodeDetail from './NodeDetail';
+import NodeDeleteButton from './NodeDeleteButton';
 import InkSourceEditor from './InkSourceEditor';
 import { useNodeEditor } from '../hooks/useNodeEditor';
 import { uploadInk } from '../api/client';
@@ -945,6 +946,32 @@ function GraphTabInner({
   const selected = selectedNodeId ? storyGraph.nodes[selectedNodeId] : null;
   const hoverNode = hoverNodeId ? storyGraph.nodes[hoverNodeId] : null;
 
+  // Delete affordance for the node the rail is showing. Ink takes a
+  // knot's stitches with it, so the confirmation has to name them and
+  // the "send links to" list has to exclude them.
+  const doomedIds = selectedNodeId
+    ? selected?.type === 'knot'
+      ? [
+          selectedNodeId,
+          ...Object.values(storyGraph.nodes)
+            .filter((n) => n.parent === selectedNodeId)
+            .map((n) => n.id),
+        ]
+      : [selectedNodeId]
+    : [];
+  const doomedSet = new Set(doomedIds);
+  const railReferrers = Array.from(
+    new Set(
+      doomedIds.flatMap((id) => editor.reverseEdges.get(id) ?? []).filter((f) => !doomedSet.has(f)),
+    ),
+  ).sort();
+  // The rail is showing a node that is about to stop existing — close
+  // it rather than leave the panel bound to a missing id.
+  const handleRailDelete = async (nodeId: string, repointTo?: string) => {
+    await editor.handleDeleteNode(nodeId, repointTo);
+    setSelectedNodeId(null);
+  };
+
   // Click semantics:
   //  - shift-click sets path endpoints (1st → from, 2nd → to)
   //  - plain click opens the detail rail
@@ -1167,14 +1194,28 @@ function GraphTabInner({
                 <h3 className="graph-detail-title">{selectedNodeId}</h3>
                 <span className="text-muted text-sm">{selected.type}</span>
               </div>
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                onClick={() => setSelectedNodeId(null)}
-                aria-label="Close detail"
-              >
-                ✕
-              </button>
+              <div className="graph-detail-actions">
+                <NodeDeleteButton
+                  nodeId={selectedNodeId}
+                  doomedIds={doomedIds}
+                  referrers={railReferrers}
+                  allNodeIds={Array.from(editor.nodeIdSet).sort()}
+                  onDelete={handleRailDelete}
+                  blockedReason={
+                    doomedSet.has(storyGraph.startNode)
+                      ? `"${storyGraph.startNode}" is the story's start node — the story would have nowhere to begin.`
+                      : undefined
+                  }
+                />
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setSelectedNodeId(null)}
+                  aria-label="Close detail"
+                >
+                  ✕
+                </button>
+              </div>
             </div>
             {editor.editorError && (
               <div className="alert alert-error" role="alert">

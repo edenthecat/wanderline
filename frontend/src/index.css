@@ -658,11 +658,15 @@ textarea:focus,
   top: 6px;
   right: 8px;
   z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 .node-header .node-rename-button {
   margin-left: auto;
 }
-.node-rename-button {
+.node-rename-button,
+.node-delete-button {
   padding: 2px 6px;
   font-size: 12px;
   line-height: 1;
@@ -674,13 +678,16 @@ textarea:focus,
   transition: opacity 0.1s;
 }
 .node-group:hover .node-rename-button,
-.node-rename-button:focus-visible {
+.node-group:hover .node-delete-button,
+.node-rename-button:focus-visible,
+.node-delete-button:focus-visible {
   opacity: 1;
 }
 /* Coarse pointers (touch) don't fire hover — pin at 1 so the
    affordance is fully visible on iPad / phone. */
 @media (hover: none) and (pointer: coarse) {
-  .node-rename-button {
+  .node-rename-button,
+  .node-delete-button {
     opacity: 1;
   }
 }
@@ -705,6 +712,59 @@ textarea:focus,
 }
 .node-rename-error {
   margin-left: 4px;
+}
+
+/* create / delete passage affordances. They share the rename
+   form's chrome so the three read as one family; only the layout
+   around them differs (the create form can carry a placement select,
+   the delete confirm a replacement-target select). */
+.node-tree-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.node-child-add {
+  padding: 4px 0 4px 12px;
+}
+.node-create-form,
+.node-delete-confirm {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  background: var(--color-surface);
+  padding: 4px 6px;
+  border-radius: var(--radius);
+  border: 1px solid var(--color-border);
+}
+.node-delete-confirm {
+  /* The confirm replaces a small icon button in a tight header row;
+     let it break out of that width rather than squeeze the select. */
+  max-width: 100%;
+}
+.node-delete-prompt {
+  font-size: 13px;
+}
+.node-create-placement,
+.node-delete-repoint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+.select-sm {
+  padding: 2px 6px;
+  font-size: 12px;
+  height: auto;
+}
+/* Sits beside the close button on the graph's detail rail. */
+.graph-detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 /* Per-collaborator presence dot rendered on a knot header when

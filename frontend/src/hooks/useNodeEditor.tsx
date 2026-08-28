@@ -19,7 +19,9 @@ import * as Y from 'yjs';
 import { ReactNode } from 'react';
 import {
   addChoice,
+  createNode,
   deleteChoice,
+  deleteNode,
   fetchAudioAssignments,
   fetchCharacters,
   fetchNodeFlags,
@@ -97,6 +99,20 @@ export interface UseNodeEditorResult {
    * Resolves when the parent's refetch has run (so the returned
    * newId is safe to switch the selection to). */
   handleRenameNode: (oldId: string, newId: string) => Promise<void>;
+  /** Add a passage. `afterNodeId` places it directly after that
+   * sibling — Ink's fall-through reads sibling order, so where it
+   * lands is a story decision, not cosmetics. Rejects with the
+   * server's message (duplicate id, unknown parent) for the calling
+   * form to render; resolves after the parent's refetch. */
+  handleCreateNode: (
+    nodeId: string,
+    options?: { content?: string; afterNodeId?: string | null },
+  ) => Promise<void>;
+  /** Remove a passage (and, for an Ink knot, its stitches). Rejects
+   * when other passages still point at it unless `repointTo` says
+   * where to send them. Resolves after the parent's refetch, so
+   * callers can safely drop a selection that named the deleted id. */
+  handleDeleteNode: (nodeId: string, repointTo?: string) => Promise<void>;
   handleMetadataSave: (nodeId: string, patch: Partial<NodeMetadata>) => Promise<void>;
   editorError: string | null;
   clearEditorError: () => void;
@@ -462,6 +478,33 @@ export function useNodeEditor({
     [projectId, onStoryUpdated],
   );
 
+  // Create + delete surface their failures through the inline form
+  // that triggered them (which catches the rethrow), not the shared
+  // editorError banner — the delete flow in particular turns the
+  // server's "these passages still point here" 409 into a repoint
+  // control right where the author clicked, and duplicating it in a
+  // page-level banner would read as two separate problems.
+  const handleCreateNode = useCallback(
+    async (nodeId: string, options?: { content?: string; afterNodeId?: string | null }) => {
+      await createNode(projectId, nodeId, options ?? {});
+      setEditorError(null);
+      // Awaited so a caller can select / scroll to the new id once
+      // this resolves rather than reading a storyGraph that predates
+      // it.
+      await onStoryUpdated();
+    },
+    [projectId, onStoryUpdated],
+  );
+
+  const handleDeleteNode = useCallback(
+    async (nodeId: string, repointTo?: string) => {
+      await deleteNode(projectId, nodeId, repointTo);
+      setEditorError(null);
+      await onStoryUpdated();
+    },
+    [projectId, onStoryUpdated],
+  );
+
   const handleMetadataSave = useCallback(
     async (nodeId: string, patch: Partial<NodeMetadata>) => {
       const initialProjectId = projectId;
@@ -505,6 +548,8 @@ export function useNodeEditor({
     handleDeleteChoice,
     handleSwapChoices,
     handleRenameNode,
+    handleCreateNode,
+    handleDeleteNode,
     handleMetadataSave,
     editorError,
     clearEditorError,
