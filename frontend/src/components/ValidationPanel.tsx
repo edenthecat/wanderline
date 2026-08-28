@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ValidationMessage, ValidationType } from '../api/client';
 
 interface Props {
@@ -83,6 +83,10 @@ function ItemRow({
         <span className="validation-icon" aria-hidden="true">
           {severity === 'error' ? '✖' : '⚠'}
         </span>
+        {/* The glyph and the left border are both colour/shape only.
+            An item read on its own needs to say which it is, so the
+            severity is spelled out for assistive tech. */}
+        <span className="sr-only">{severity === 'error' ? 'Error: ' : 'Warning: '}</span>
         <span className="validation-title">{h.title}</span>
       </div>
       {(msg.nodeId || msg.lineNumber !== undefined) && (
@@ -121,7 +125,6 @@ function ItemRow({
 export default function ValidationPanel({ errors, warnings, onNodeJump }: Props) {
   const total = errors.length + warnings.length;
   const [open, setOpen] = useState(true);
-  if (total === 0) return null;
 
   const severity: 'error' | 'warning' = errors.length > 0 ? 'error' : 'warning';
   const summary =
@@ -132,31 +135,84 @@ export default function ValidationPanel({ errors, warnings, onNodeJump }: Props)
           : '')
       : `${warnings.length} warning${warnings.length === 1 ? '' : 's'}`;
 
+  // Validation re-runs on every edit and the result was silent: the
+  // panel is the only report, and it appears, changes, and vanishes
+  // without a word. The live region below outlives the panel — it is
+  // rendered whether or not there is anything wrong — so it can
+  // announce the last problem clearing, not only the first appearing.
+  const status = total === 0 ? 'No problems in your story.' : `${summary} in your story.`;
+  const [announcement, setAnnouncement] = useState('');
+  const lastStatus = useRef<string | null>(null);
+  useEffect(() => {
+    // Stay quiet on first render: the initial state isn't news, and
+    // announcing it would talk over whatever opened the tab.
+    if (lastStatus.current === null) {
+      lastStatus.current = status;
+      return;
+    }
+    if (lastStatus.current !== status) {
+      lastStatus.current = status;
+      setAnnouncement(status);
+    }
+  }, [status]);
+
   return (
-    <section
-      className={`validation-panel validation-panel-${severity}`}
-      data-testid="validation-panel"
-    >
-      <button
-        type="button"
-        className="validation-toggle"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={open}
-      >
-        <span className="validation-toggle-icon">{open ? '▼' : '▶'}</span>
-        <strong>{summary}</strong>
-        <span className="text-muted text-sm">{open ? 'in your story' : '— click to expand'}</span>
-      </button>
-      {open && (
-        <ul className="validation-list">
-          {errors.map((e, i) => (
-            <ItemRow key={`e${i}`} msg={e} severity="error" onNodeJump={onNodeJump} />
-          ))}
-          {warnings.map((w, i) => (
-            <ItemRow key={`w${i}`} msg={w} severity="warning" onNodeJump={onNodeJump} />
-          ))}
-        </ul>
+    <>
+      <div role="status" aria-live="polite" className="sr-only" data-testid="validation-status">
+        {announcement}
+      </div>
+      {total > 0 && (
+        <section
+          className={`validation-panel validation-panel-${severity}`}
+          data-testid="validation-panel"
+        >
+          <button
+            type="button"
+            className="validation-toggle"
+            onClick={() => setOpen((o) => !o)}
+            aria-expanded={open}
+          >
+            <span className="validation-toggle-icon" aria-hidden="true">
+              {open ? '▼' : '▶'}
+            </span>
+            <strong>{summary}</strong>
+            <span className="text-muted text-sm">
+              {open ? 'in your story' : '— click to expand'}
+            </span>
+          </button>
+          {open && (
+            <>
+              {/* Two lists, not one. "Your story will not build" and
+                  "this knot is unreachable" were interleaved and told
+                  apart only by a border colour. */}
+              {errors.length > 0 && (
+                <>
+                  <h3 className="validation-group-heading">
+                    Errors <span className="text-muted text-sm">— these stop the build</span>
+                  </h3>
+                  <ul className="validation-list">
+                    {errors.map((e, i) => (
+                      <ItemRow key={`e${i}`} msg={e} severity="error" onNodeJump={onNodeJump} />
+                    ))}
+                  </ul>
+                </>
+              )}
+              {warnings.length > 0 && (
+                <>
+                  <h3 className="validation-group-heading">
+                    Warnings <span className="text-muted text-sm">— the story still builds</span>
+                  </h3>
+                  <ul className="validation-list">
+                    {warnings.map((w, i) => (
+                      <ItemRow key={`w${i}`} msg={w} severity="warning" onNodeJump={onNodeJump} />
+                    ))}
+                  </ul>
+                </>
+              )}
+            </>
+          )}
+        </section>
       )}
-    </section>
+    </>
   );
 }

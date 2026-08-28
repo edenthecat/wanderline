@@ -1147,7 +1147,7 @@ function GraphTabInner({
           </ReactFlow>
           {hoverNode && hoverPos && <HoverPreview node={hoverNode} x={hoverPos.x} y={hoverPos.y} />}
           {retargetError && (
-            <div className="graph-retarget-error" role="status" data-testid="graph-retarget-error">
+            <div className="graph-retarget-error" role="alert" data-testid="graph-retarget-error">
               <span>{retargetError}</span>
               <button
                 type="button"

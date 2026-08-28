@@ -2310,6 +2310,14 @@ details[open] > .audio-section-summary {
   gap: 12px;
 }
 
+/* Errors and warnings each get their own heading + list so the two
+   are told apart by structure, not only by the left border colour. */
+.validation-group-heading {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 16px 0 0;
+}
+
 .validation-item {
   padding: 10px 12px;
   border-radius: 6px;

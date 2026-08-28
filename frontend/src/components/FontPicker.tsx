@@ -49,7 +49,11 @@ const rowStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'baseline',
   justifyContent: 'space-between',
-  padding: '6px 10px',
+  // The left border is the keyboard-highlight marker. It stays in the
+  // box model as `transparent` on unhighlighted rows so turning it on
+  // never reflows the list; `padding-left` is reduced to match.
+  borderLeft: '3px solid transparent',
+  padding: '6px 10px 6px 7px',
   cursor: 'pointer',
   gap: 12,
 };
@@ -76,7 +80,9 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
   const [highlight, setHighlight] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const dropdownRef = useRef<HTMLDivElement | null>(null);
+  const optionRefs = useRef<(HTMLDivElement | null)[]>([]);
   const listboxId = useId();
+  const optionId = (i: number) => `${listboxId}-option-${i}`;
 
   const filtered = useMemo(() => filterFonts(filter), [filter]);
 
@@ -106,6 +112,17 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
       document.removeEventListener('keydown', onKey);
     };
   }, [open]);
+
+  // Keep the keyboard highlight inside the scroll box. The dropdown is
+  // `maxHeight: 280`, so without this the highlight slides out of view
+  // somewhere around the eighth family and arrowing further looks like
+  // nothing is happening.
+  useEffect(() => {
+    if (!open) return;
+    // jsdom doesn't implement scrollIntoView, and neither do some older
+    // browsers — calling it is an enhancement, not a requirement.
+    optionRefs.current[highlight]?.scrollIntoView?.({ block: 'nearest' });
+  }, [open, highlight]);
 
   function pick(entry: GoogleFontEntry) {
     onChange(entry.family);
@@ -146,6 +163,11 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
         value={open ? filter : value}
         onChange={(e) => {
           setFilter(e.target.value);
+          // Retyping rebuilds `filtered`, so a carried-over index can
+          // point past the end of the new list — which would leave
+          // aria-activedescendant naming an id that isn't rendered.
+          // Start each new result set at the top.
+          setHighlight(0);
           // Reflect typed text directly so users can hand-enter a
           // family that isn't in the catalog.
           onChange(e.target.value);
@@ -154,9 +176,12 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
         onFocus={() => setOpen(true)}
         onKeyDown={handleKeyDown}
         placeholder={placeholder}
+        role="combobox"
         aria-label={ariaLabel}
         aria-expanded={open}
         aria-controls={listboxId}
+        aria-autocomplete="list"
+        aria-activedescendant={open && filtered[highlight] ? optionId(highlight) : undefined}
         autoComplete="off"
         spellCheck={false}
         style={{ width: '100%', fontFamily: value ? `'${value}', sans-serif` : undefined }}
@@ -181,8 +206,17 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
               return (
                 <div
                   key={entry.family}
+                  id={optionId(i)}
+                  ref={(el) => {
+                    optionRefs.current[i] = el;
+                  }}
                   role="option"
-                  aria-selected={selected}
+                  // The listbox never takes focus in a combobox, so
+                  // `aria-selected` marks the row the arrow keys are on —
+                  // the one `aria-activedescendant` names. The committed
+                  // value is announced by the "(current font)" text
+                  // below instead of competing for this attribute.
+                  aria-selected={highlighted}
                   onMouseEnter={() => setHighlight(i)}
                   onMouseDown={(e) => {
                     e.preventDefault();
@@ -190,15 +224,24 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
                   }}
                   style={{
                     ...rowStyle,
+                    // Highlight vs. selected used to be colour alone, and
+                    // the two backgrounds composited 1.041:1 against each
+                    // other. The border and the weight carry the
+                    // distinction now; the background is a third cue.
+                    borderLeftColor: highlighted ? 'var(--color-primary, #0f766e)' : 'transparent',
+                    fontWeight: highlighted ? 600 : 400,
                     background: highlighted
-                      ? 'rgba(78,205,196,0.12)'
+                      ? 'rgba(78,205,196,0.28)'
                       : selected
                         ? 'rgba(78,205,196,0.06)'
                         : 'transparent',
                     fontFamily: `'${entry.family}', sans-serif`,
                   }}
                 >
-                  <span>{entry.family}</span>
+                  <span>
+                    {entry.family}
+                    {selected && <span className="sr-only"> (current font)</span>}
+                  </span>
                   <span
                     className="text-sm text-muted"
                     style={{ fontFamily: 'system-ui, sans-serif', fontSize: 11 }}
