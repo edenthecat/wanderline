@@ -3,8 +3,14 @@
 // time; toggling to another id auto-stops the previous. The caller
 // passes a fully-resolved URL to `toggle(id, url)` — the hook itself
 // is transport-agnostic and doesn't know how the URL was built.
+//
+// Exclusivity ACROSS instances (a second expanded node panel, a
+// passage mix playing elsewhere) comes from lib/exclusiveAudio: this
+// hook claims the floor when it starts and releases it when it stops
+// or unmounts.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { claimAudio, releaseAudio } from '../lib/exclusiveAudio';
 
 export interface UseAuditionResult {
   /** id currently playing, or null. */
@@ -49,6 +55,7 @@ export function useAudition(): UseAuditionResult {
   }, []);
 
   const stop = useCallback(() => {
+    releaseAudio(stop);
     const a = audioRef.current;
     if (!a) return;
     a.pause();
@@ -69,6 +76,10 @@ export function useAudition(): UseAuditionResult {
         return;
       }
       a.pause();
+      // Claim the editor-wide floor before starting: another panel's
+      // clip, or a passage mix in a NodeDetail further down the list,
+      // has to go quiet rather than play underneath this one.
+      claimAudio(stop);
       a.src = url;
       // Same guard as in stop() — some browsers throw on currentTime = 0
       // before any media has loaded.
@@ -101,11 +112,12 @@ export function useAudition(): UseAuditionResult {
   // of a state update on an unmounted component.
   useEffect(() => {
     return () => {
+      releaseAudio(stop);
       const a = audioRef.current;
       audioRef.current = null;
       if (a) a.pause();
     };
-  }, []);
+  }, [stop]);
 
   return { playingId, toggle, stop };
 }

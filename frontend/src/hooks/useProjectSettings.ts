@@ -6,7 +6,9 @@
 // (optimistic update, key-scoped rollback on failure).
 
 import { useEffect, useRef, useState } from 'react';
+import * as Y from 'yjs';
 import { fetchProjectSettings, updateProjectSettings, type ProjectSettings } from '../api/client';
+import { bumpLiveSignal, PROJECT_SETTINGS_SIGNAL } from './useLiveSignal';
 
 export interface UseProjectSettingsResult {
   settings: ProjectSettings | null;
@@ -32,7 +34,17 @@ export interface UseProjectSettingsResult {
   reload: () => Promise<void>;
 }
 
-export function useProjectSettings(projectId: string): UseProjectSettingsResult {
+/**
+ * @param yDoc optional collab doc. When passed, a successful save
+ * tells peers to re-read settings — without it a change here reaches
+ * other people's open tabs only when they remount. That matters for
+ * volumes: the node panel mixes at them, so a stale copy is a mix
+ * that is silently not what the author set.
+ */
+export function useProjectSettings(
+  projectId: string,
+  yDoc: Y.Doc | null = null,
+): UseProjectSettingsResult {
   const [settings, setSettings] = useState<ProjectSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -82,6 +94,7 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
         [key]: next,
       });
       setSettings(updated);
+      bumpLiveSignal(yDoc, PROJECT_SETTINGS_SIGNAL);
     } catch (err) {
       setSettings((prev) => {
         if (!prev) return prev;
@@ -109,6 +122,7 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
           [key]: next,
         });
         setSettings(updated);
+        bumpLiveSignal(yDoc, PROJECT_SETTINGS_SIGNAL);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to save');
       } finally {

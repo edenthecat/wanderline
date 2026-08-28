@@ -763,6 +763,21 @@ function NodeAudioPreview({
     mixPlayer.toggle(plan.mix);
   };
 
+  // Everything the running mix is made of, as one comparable value.
+  const mixSignature = plan ? plan.layers.map((l) => `${l.url}@${l.gain}`).join('|') : '';
+  const stopMix = mixPlayer.stop;
+  useEffect(() => {
+    // The mix changed underneath what is sounding — a collaborator
+    // reassigned this passage's clips, an author moved a volume, or
+    // the project lookup failed and took `plan` (and with it the Stop
+    // button) away. Returning null from a component doesn't unmount
+    // it, so nothing else would stop the audio: an ambience-only mix
+    // loops with no natural end, and the author would be left with a
+    // sound they can't stop without leaving the tab. Whatever is
+    // playing describes a mix that no longer exists; stop it.
+    stopMix();
+  }, [mixSignature, stopMix]);
+
   if (!nodeAudio) return null;
   const rows = AUDIO_SLOTS.map((slot) => ({ ...slot, fileId: nodeAudio[slot.key] })).filter(
     (r): r is { key: (typeof AUDIO_SLOTS)[number]['key']; label: string; fileId: string } =>
@@ -813,6 +828,9 @@ function NodeAudioPreview({
                 <span className="text-muted">
                   {layer.volume}%{layer.name ? ` · ${layer.name}` : ''}
                 </span>
+                {layer.note && (
+                  <span className="node-audio-context-note text-muted"> — {layer.note}</span>
+                )}
               </li>
             ))}
           </ul>

@@ -13,6 +13,7 @@
 // them by nothing, which is the whole point of it existing.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { claimAudio, releaseAudio } from '../lib/exclusiveAudio';
 
 export interface MixLayer {
   /** Fully-resolved URL to play. */
@@ -81,14 +82,10 @@ export function usePassageMix(): UsePassageMixResult {
   }, []);
 
   const stop = useCallback(() => {
+    releaseAudio(stop);
     teardown();
     setPlaying(false);
   }, [teardown]);
-
-  // stop() through a ref so the per-element callbacks below don't have
-  // to be rebuilt (or captured stale) on every render.
-  const stopRef = useRef(stop);
-  stopRef.current = stop;
 
   const start = useCallback(
     (mix: PassageMix) => {
@@ -116,7 +113,7 @@ export function usePassageMix(): UsePassageMixResult {
         // The lead failing leaves nothing to be in context of, and the
         // last bed failing leaves silence. Either way the control must
         // not sit there claiming to play.
-        if (isLead || live === 0) stopRef.current();
+        if (isLead || live === 0) stop();
       };
 
       const elements = layers.map(({ layer, isLead }, index) => {
@@ -129,13 +126,16 @@ export function usePassageMix(): UsePassageMixResult {
         el.addEventListener('error', () => fail(index, isLead));
         if (isLead) {
           el.addEventListener('ended', () => {
-            if (epochRef.current === epoch) stopRef.current();
+            if (epochRef.current === epoch) stop();
           });
         }
         return { el, isLead, index };
       });
 
       elementsRef.current = elements.map(({ el }) => el);
+      // Claim the editor-wide floor: a clip auditioning in another
+      // node panel has to stop rather than sound over the mix.
+      claimAudio(stop);
       setPlaying(true);
       // Started only after the list is recorded, so a rejection (which
       // lands a microtask later, at the earliest) always finds the state
@@ -144,7 +144,7 @@ export function usePassageMix(): UsePassageMixResult {
         startPlayback(el, () => fail(index, isLead));
       }
     },
-    [teardown],
+    [stop, teardown],
   );
 
   const toggle = useCallback(
@@ -160,8 +160,15 @@ export function usePassageMix(): UsePassageMixResult {
 
   // Switching passage or tab unmounts the panel; nothing it started
   // may outlive it. teardown() rather than stop() so we don't push a
-  // state update into a component that's on its way out.
-  useEffect(() => teardown, [teardown]);
+  // state update into a component that's on its way out — the floor
+  // still has to be given up, or the next player would "stop" a
+  // component that no longer exists.
+  useEffect(() => {
+    return () => {
+      releaseAudio(stop);
+      teardown();
+    };
+  }, [stop, teardown]);
 
   return { playing, toggle, stop };
 }

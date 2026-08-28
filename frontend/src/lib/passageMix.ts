@@ -36,6 +36,8 @@ export interface MixLayerSummary extends MixLayer {
   label: string;
   /** Uploaded filename, when the name lookup knows it. */
   name?: string;
+  /** A caveat the author needs to read before trusting this layer. */
+  note?: string;
   /** The resolved percentage behind `gain`, shown next to the control
    *  so a wrong mix is visible and not just audible. */
   volume: number;
@@ -73,10 +75,12 @@ export function buildPassageMix(
     fileId: string,
     volume: number,
     name?: string,
+    note?: string,
   ): MixLayerSummary => ({
     key,
     label,
     name: name ?? audioNames?.[fileId],
+    note,
     url: audioFileUrl(projectId, fileId),
     volume,
     // The ONE conversion. `resolved / 100` and nothing else — the
@@ -96,7 +100,21 @@ export function buildPassageMix(
     // honest approximation: it is the same kind of layer, a looping bed
     // beneath the narration. When the player learns to play ambience,
     // this line is the one that has to agree with it.
-    layers.push(layer('ambience', 'Ambience', ambienceId, context.volumes.backgroundMusic));
+    //
+    // Until then the divergence is on screen, not just in this comment.
+    // A control that claims to be what a listener hears, quietly adding
+    // a layer no listener hears, could send an author off re-recording
+    // a voiceover to fix masking that does not exist in the build.
+    layers.push(
+      layer(
+        'ambience',
+        'Ambience',
+        ambienceId,
+        context.volumes.backgroundMusic,
+        undefined,
+        'the generated app does not play node ambience yet',
+      ),
+    );
   }
   if (context.backgroundMusic) {
     layers.push(

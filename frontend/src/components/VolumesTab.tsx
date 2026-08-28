@@ -1,5 +1,6 @@
 import { VOLUME_DEFAULTS } from '@wanderline/shared';
 import { useProjectSettings } from '../hooks/useProjectSettings';
+import { useYjs } from '../hooks/useYjs';
 
 interface Props {
   projectId: string;
@@ -36,7 +37,12 @@ const ROWS = [
 ];
 
 export default function VolumesTab({ projectId }: Props) {
-  const { settings, loading, error, updateDebounced } = useProjectSettings(projectId);
+  // Through the collab doc so a save here reaches a co-author's open
+  // node panel: it auditions passages at these volumes, and a stale
+  // copy of them is exactly the silently-wrong mix this project has
+  // shipped once already.
+  const { doc: yDoc } = useYjs(projectId);
+  const { settings, loading, error, updateDebounced } = useProjectSettings(projectId, yDoc);
   if (loading) return <div className="page-loader">Loading volumes...</div>;
 
   return (

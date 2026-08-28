@@ -17,6 +17,16 @@ import * as Y from 'yjs';
 
 const SIGNALS_KEY = '__signals__';
 
+/**
+ * Bumped whenever a project setting is saved. Subscribed by anything
+ * that mixes at, or displays, the author's chosen volumes — the node
+ * panel's in-context audition resolves through project settings, so a
+ * peer lowering the music bed has to reach it. Exported (rather than
+ * redeclared per call site, as the older signal keys are) because a
+ * publisher and a subscriber that disagree on the string fail silently.
+ */
+export const PROJECT_SETTINGS_SIGNAL = 'project-settings';
+
 function getSignalsMap(doc: Y.Doc): Y.Map<number> {
   return doc.getMap<number>(SIGNALS_KEY);
 }

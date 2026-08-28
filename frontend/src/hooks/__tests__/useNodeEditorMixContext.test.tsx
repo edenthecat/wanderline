@@ -1,5 +1,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import * as Y from 'yjs';
+import { bumpLiveSignal, PROJECT_SETTINGS_SIGNAL } from '../useLiveSignal';
 
 // The project half of the in-context mix: the author's volumes and the
 // track a listener would have playing underneath this passage.
@@ -36,9 +38,9 @@ const audioFile = (id: string, original_name: string, category: string) =>
     ReturnType<typeof client.fetchAudioFiles>
   >['audioFiles'][number];
 
-function mountEditor() {
+function mountEditor(yDoc: Y.Doc | null = null) {
   return renderHook(() =>
-    useNodeEditor({ projectId: 'p1', storyGraph: null, onStoryUpdated: vi.fn() }),
+    useNodeEditor({ projectId: 'p1', storyGraph: null, onStoryUpdated: vi.fn(), yDoc }),
   );
 }
 
@@ -89,6 +91,30 @@ describe('useNodeEditor — mix context', () => {
     const { result } = mountEditor();
     await waitFor(() => expect(result.current.mixContext).not.toBeNull());
     expect(result.current.mixContext!.backgroundMusic).toBeNull();
+  });
+
+  // A co-author moving the music slider used to leave this panel
+  // mixing at the old level indefinitely — the same silently-wrong mix
+  // the whole control exists to surface, arriving through the door the
+  // control itself opened.
+  it('re-reads the volumes when a peer saves a setting', async () => {
+    vi.mocked(client.fetchProjectSettings)
+      .mockResolvedValueOnce({ settings: { backgroundMusicVolume: 30 } })
+      .mockResolvedValue({ settings: { backgroundMusicVolume: 10 } });
+    const doc = new Y.Doc();
+    const peer = new Y.Doc();
+    const { result } = mountEditor(doc);
+
+    await waitFor(() => expect(result.current.mixContext?.volumes.backgroundMusic).toBe(30));
+
+    // What a remote save looks like locally: the peer's bump arrives
+    // as a non-local transaction on our doc.
+    await act(async () => {
+      bumpLiveSignal(peer, PROJECT_SETTINGS_SIGNAL);
+      Y.applyUpdate(doc, Y.encodeStateAsUpdate(peer));
+    });
+
+    await waitFor(() => expect(result.current.mixContext?.volumes.backgroundMusic).toBe(10));
   });
 
   it.each([['fetchProjectSettings'], ['fetchAudioFiles']] as const)(

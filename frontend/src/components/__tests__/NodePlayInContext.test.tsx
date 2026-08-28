@@ -229,6 +229,106 @@ describe('NodeDetail — play in context stays exclusive', () => {
   });
 });
 
+describe('NodeDetail — one sound at a time across panels', () => {
+  // StoryTab mounts a NodeDetail per listed passage, so two can be
+  // expanded at once. Exclusivity within one panel isn't enough: two
+  // three-layer mixes sounding together defeat the exact judgement the
+  // control exists for, and an ambience-only mix loops with no end.
+  function renderTwoPanels() {
+    return render(
+      <>
+        <NodeDetail
+          {...baseProps}
+          nodeId="a"
+          nodeAudio={{ voiceover: 'vo-a', sfx: [] }}
+          mixContext={mixContext()}
+        />
+        <NodeDetail
+          {...baseProps}
+          nodeId="b"
+          nodeAudio={{ voiceover: 'vo-b', sfx: [] }}
+          mixContext={mixContext()}
+        />
+      </>,
+    );
+  }
+
+  it("a second panel's mix silences the first", async () => {
+    renderTwoPanels();
+    const [playA, playB] = screen.getAllByLabelText('Play in context');
+    await act(async () => fireEvent.click(playA));
+    await act(async () => fireEvent.click(playB));
+
+    expect(forSrc('vo-a')[0].paused).toBe(true);
+    expect(forSrc('vo-b')[0].paused).toBe(false);
+    // Two layers, both from panel B.
+    expect(playing()).toHaveLength(2);
+  });
+
+  it("a clip auditioned in another panel silences the first panel's mix", async () => {
+    renderTwoPanels();
+    await act(async () => fireEvent.click(screen.getAllByLabelText('Play in context')[0]));
+    await act(async () => fireEvent.click(screen.getAllByLabelText('Play Voiceover')[1]));
+
+    expect(forSrc('vo-a')[0].paused).toBe(true);
+    expect(playing()).toHaveLength(1);
+  });
+});
+
+describe('NodeDetail — a mix that no longer describes the passage', () => {
+  // Returning null from a component does not unmount it, so hiding the
+  // Stop button does not stop the audio. An ambience-only mix loops
+  // with no natural end: the author would be stuck with a sound and no
+  // control for it.
+  it('stops when the project mix lookup drops out from under it', async () => {
+    const { rerender } = render(
+      <NodeDetail {...baseProps} nodeAudio={fullAudio} mixContext={mixContext()} />,
+    );
+    await clickPlayInContext();
+    await act(async () => {
+      rerender(<NodeDetail {...baseProps} nodeAudio={fullAudio} mixContext={null} />);
+    });
+
+    expect(playing()).toHaveLength(0);
+    expect(screen.queryByLabelText('Stop in-context playback')).toBeNull();
+  });
+
+  it('stops when a volume changes underneath it', async () => {
+    const { rerender } = render(
+      <NodeDetail
+        {...baseProps}
+        nodeAudio={fullAudio}
+        mixContext={mixContext({ backgroundMusicVolume: 30 })}
+      />,
+    );
+    await clickPlayInContext();
+    await act(async () => {
+      rerender(
+        <NodeDetail
+          {...baseProps}
+          nodeAudio={fullAudio}
+          mixContext={mixContext({ backgroundMusicVolume: 10 })}
+        />,
+      );
+    });
+
+    expect(playing()).toHaveLength(0);
+    expect(screen.getByLabelText('Play in context')).toBeTruthy();
+  });
+
+  it('keeps playing across a re-render that changes nothing about the mix', async () => {
+    const { rerender } = render(
+      <NodeDetail {...baseProps} nodeAudio={fullAudio} mixContext={mixContext()} />,
+    );
+    await clickPlayInContext();
+    await act(async () => {
+      rerender(<NodeDetail {...baseProps} nodeAudio={fullAudio} mixContext={mixContext()} />);
+    });
+
+    expect(playing()).toHaveLength(3);
+  });
+});
+
 describe('NodeDetail — when the in-context control is offered', () => {
   it('is absent until the project mix is known', () => {
     render(<NodeDetail {...baseProps} nodeAudio={fullAudio} />);
@@ -239,6 +339,13 @@ describe('NodeDetail — when the in-context control is offered', () => {
 
   // Playing a bed on its own says nothing about a passage that has no
   // sound of its own.
+  // A layer the player never plays could send an author off
+  // re-recording a voiceover to fix masking that isn't in the build.
+  it('says on screen that the app does not play ambience yet', () => {
+    render(<NodeDetail {...baseProps} nodeAudio={fullAudio} mixContext={mixContext()} />);
+    expect(screen.getByText(/does not play node ambience yet/)).toBeTruthy();
+  });
+
   it('is absent for a node with only choice cues', () => {
     render(
       <NodeDetail

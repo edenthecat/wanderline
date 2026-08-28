@@ -1,6 +1,8 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as Y from 'yjs';
 import { useProjectSettings } from '../useProjectSettings';
+import { PROJECT_SETTINGS_SIGNAL } from '../useLiveSignal';
 
 // end-to-end hook coverage for the optimistic-update path.
 // The hook mounts, reads server state, PATCHes on updateOne, rolls
@@ -109,5 +111,40 @@ describe('useProjectSettings', () => {
     // But the PATCH is scheduled behind the 250ms debounce, so it
     // hasn't fired yet on the same tick.
     expect(mockedUpdate).not.toHaveBeenCalled();
+  });
+});
+
+// Settings reach peers only if a save says so. The node panel mixes
+// passages at these volumes, so a peer that never hears about a change
+// keeps auditioning at levels the author has already moved on from.
+describe('useProjectSettings — telling peers', () => {
+  const signalTick = (doc: Y.Doc) => doc.getMap<number>('__signals__').get(PROJECT_SETTINGS_SIGNAL);
+
+  it('signals peers after a successful save', async () => {
+    mockedFetch.mockResolvedValueOnce({ settings: {} });
+    mockedUpdate.mockResolvedValueOnce({ settings: { backgroundMusicVolume: 10 } });
+    const doc = new Y.Doc();
+    const { result } = renderHook(() => useProjectSettings('p1', doc));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.updateOne('backgroundMusicVolume', 10);
+    });
+
+    expect(typeof signalTick(doc)).toBe('number');
+  });
+
+  it('stays quiet when the save fails — there is nothing for peers to re-read', async () => {
+    mockedFetch.mockResolvedValueOnce({ settings: {} });
+    mockedUpdate.mockRejectedValueOnce(new Error('offline'));
+    const doc = new Y.Doc();
+    const { result } = renderHook(() => useProjectSettings('p1', doc));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.updateOne('backgroundMusicVolume', 10);
+    });
+
+    expect(signalTick(doc)).toBeUndefined();
   });
 });
