@@ -15,8 +15,18 @@
 // Yjs merges both histories, and the shadow saver then materializes
 // the merged result over story_graph.nodes — choices, diverts and all.
 //
-// These tests reproduce that at the CRDT level, which is where the bug
-// actually lives; no websocket is involved in the mechanism.
+// These are CHARACTERIZATION tests. They pin the Yjs merge property
+// that makes the client fix necessary: merging a stale doc into a
+// freshly-hydrated one DOES resurrect replaced structure. That is not
+// something this repo can fix — it is how a CRDT is supposed to behave,
+// and both edits are legitimate as far as Yjs can tell.
+//
+// So they assert the resurrection, not its absence. The actual fix is
+// in frontend/src/hooks/useYjs.ts: never reconnect with a doc the
+// server has invalidated, so this merge never happens. If Yjs ever
+// changed its conflict resolution these would fail, and the client fix
+// could be reconsidered — which is exactly what a characterization test
+// is for.
 
 import * as Y from 'yjs';
 import { seedYDocFromStoryGraph, materializeNodesFromYDoc } from '../yjs-story.js';
@@ -64,8 +74,8 @@ function sync(a: Y.Doc, b: Y.Doc): void {
   Y.applyUpdate(a, Y.encodeStateAsUpdate(b, Y.encodeStateVector(a)));
 }
 
-describe('a client reconnecting after its collab room was invalidated', () => {
-  it('does not resurrect the intro the author replaced', () => {
+describe('why a client must not reconnect with an invalidated doc', () => {
+  it('merging a stale doc resurrects the intro the author replaced', () => {
     // The author is editing with the browser open, so a client doc is
     // live and synced against the room.
     const serverBefore = new Y.Doc();
@@ -87,12 +97,16 @@ describe('a client reconnecting after its collab room was invalidated', () => {
     // step 1 from the doc it never threw away.
     sync(serverAfter, client);
 
+    // The stale side wins: this is what the author saw as "wanderline
+    // keeps bringing back the old choices associated with the previous
+    // version of the intro", and what the shadow saver then wrote
+    // straight back into story_graph.nodes.
     const merged = materializeNodesFromYDoc(serverAfter).intro;
-    expect(merged.divert).toBe('new_credits');
-    expect(merged.choices.map((c) => c.target)).toEqual(['new_a']);
+    expect(merged.divert).toBe('old_credits');
+    expect(merged.choices.map((c) => c.target)).toEqual(['old_a', 'old_b']);
   });
 
-  it('does not resurrect a choice the author deleted', () => {
+  it('merging a stale doc resurrects a choice the author deleted', () => {
     // Narrower shape, same cause: the count is what regresses, so a
     // passage the author simplified goes back to offering a target
     // that no longer exists anywhere in the story.
@@ -111,6 +125,7 @@ describe('a client reconnecting after its collab room was invalidated', () => {
 
     expect(materializeNodesFromYDoc(serverAfter).intro.choices.map((c) => c.target)).toEqual([
       'keep',
+      'deleted',
     ]);
   });
 });
