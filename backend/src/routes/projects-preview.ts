@@ -238,12 +238,17 @@ export function renderPreviewHtml(
     );
   }
 
-  html = html.replace(/<title>[^<]*<\/title>/, `<title>${escapeHtml(title)}</title>`);
+  // Replacer function, not a replacement string: `$&`, `` $` ``, `$'`
+  // and `$1` are special in a replacement string, so a project named
+  // "Cost $& up" spliced the matched <title> element back into itself
+  // and mangled the tab title. escapeHtml doesn't neutralise `$`.
+  // prepareDistHtml already does it this way for the built page.
+  html = html.replace(/<title>[^<]*<\/title>/, () => `<title>${escapeHtml(title)}</title>`);
 
   // no-referrer keeps signed-URL query strings + Idempotency
   // keys from leaking via the Referer header when the story navigates
   // to an external link.
-  html = html.replace(/<head>/, `<head>\n    <meta name="referrer" content="no-referrer">`);
+  html = html.replace(/<head>/, () => `<head>\n    <meta name="referrer" content="no-referrer">`);
 
   // +: theme injection. Pulls fonts from Google's CDN
   // via <link> and sets CSS variables on :root. The `<style>` block
@@ -254,7 +259,7 @@ export function renderPreviewHtml(
   let themeFragment = renderThemeForPreview(theme);
   if (themeFragment) {
     themeFragment = themeFragment.replace(/<style\b/g, `<style nonce="${nonce}"`);
-    html = html.replace('</head>', `${themeFragment}\n</head>`);
+    html = html.replace('</head>', () => `${themeFragment}\n</head>`);
   }
 
   // nonce on the story-data script so it runs under strict CSP.
@@ -290,8 +295,19 @@ document.addEventListener('click',function(e){
     throw new Error('Player template missing expected markers (</head> or <div id="root">)');
   }
 
-  html = html.replace('</head>', `${bannerStyle}\n${storyScript}\n${closeScript}\n</head>`);
-  html = html.replace(/<div\s+id="root"[^>]*><\/div>/, `${bannerHtml}\n    <div id="root"></div>`);
+  // Replacer functions throughout. `$&`, `` $` ``, `$'` and `$1` are
+  // special in a REPLACEMENT STRING, and these replacements carry
+  // author-controlled text: the project name reaches storyScript (via
+  // the story JSON) and bannerHtml. A name containing `` $` `` spliced
+  // the document's own head — including a `</script>` — into the middle
+  // of the story-data script, terminating it early and corrupting the
+  // payload the player reads. escapeHtml and the JSON `<` escaping both
+  // run BEFORE this, so neither one helps: the expansion happens here.
+  html = html.replace('</head>', () => `${bannerStyle}\n${storyScript}\n${closeScript}\n</head>`);
+  html = html.replace(
+    /<div\s+id="root"[^>]*><\/div>/,
+    () => `${bannerHtml}\n    <div id="root"></div>`,
+  );
   return html;
 }
 
