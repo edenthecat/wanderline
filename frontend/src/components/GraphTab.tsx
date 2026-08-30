@@ -943,6 +943,19 @@ function GraphTabInner({
     setMatchCursor((c) => c + 1);
   }, [matchedIds, matchCursor, focusNode]);
 
+  // Whether the slide-in source editor holds an unsaved draft. StoryTab
+  // has carried this for its own view switch; GraphTab never wired it,
+  // so nothing here could tell a clean panel from a dirty one.
+  const sourceDirtyRef = useRef(false);
+  const handleSourceDirtyChange = useCallback((dirty: boolean) => {
+    sourceDirtyRef.current = dirty;
+  }, []);
+  // Closing the panel discards the draft with it, so the flag must not
+  // survive into the next time it opens.
+  useEffect(() => {
+    if (!sourceOpen) sourceDirtyRef.current = false;
+  }, [sourceOpen]);
+
   // Cross-tab jump from the command palette. `focusNode` changes
   // identity when the layout does, so a request that arrives before
   // dagre has placed the node retries once the nodes land.
@@ -961,6 +974,24 @@ function GraphTabInner({
     // AND the detail rail, so a jump would centre the passage under
     // it and hide the rail that confirms the selection. Evict it, the
     // way StoryTab forces its own nodes view.
+    //
+    // Ask first when it holds unsaved work. StoryTab guards its own
+    // view switch this way; without the same guard here, an author
+    // mid-rewrite who pressed Cmd-K to check a passage name lost the
+    // draft with no prompt and no undo — and Cmd-K then Enter is a far
+    // easier accident than deliberately clicking the panel's close
+    // button. Acknowledge the request either way, or a declined
+    // confirm leaves it pending and it re-fires on the next mount.
+    if (sourceDirtyRef.current) {
+      const ok = window.confirm(
+        'You have unsaved changes in the Source editor. Leave the Source view anyway?\n\n' +
+          'Your unsaved edits will be discarded.',
+      );
+      if (!ok) {
+        onJumpHandled?.();
+        return;
+      }
+    }
     setSourceOpen(false);
     onJumpHandled?.();
   }, [jumpRequest, storyGraph, focusNode, onJumpHandled]);
@@ -1276,6 +1307,7 @@ function GraphTabInner({
           <InkSourceEditor
             initialSource={inkSource ?? ''}
             onSave={handleSaveInkSource}
+            onDirtyChange={handleSourceDirtyChange}
             onClose={() => setSourceOpen(false)}
             resetKey={`${projectId}#${sourceResetKey}`}
           />

@@ -3767,7 +3767,21 @@ which is context rather than a problem. */ .node-flag-badge {
 
 .command-palette-option.is-active {
   background: var(--color-bg);
-  box-shadow: inset 2px 0 0 var(--color-primary);
+  /* border-left rather than an inset box-shadow: forced-colors mode
+     drops shadows and overrides backgrounds, which left the keyboard
+     selection with no visible marker at all. aria-selected still
+     carried it for a screen reader, but a low-vision author arrowing
+     the list saw nothing move. Padding compensates so rows don't
+     shift as the selection travels. */
+  border-left: 2px solid var(--color-primary);
+  padding-left: 10px;
+}
+
+@media (forced-colors: active) {
+  .command-palette-option.is-active {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
 }
 
 .command-palette-option-label {

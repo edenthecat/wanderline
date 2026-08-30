@@ -126,6 +126,22 @@ describe('StoryTab jumpRequest', () => {
     expect(onJumpHandled).toHaveBeenCalled();
   });
 
+  it('moves keyboard focus to the passage, not just the viewport', async () => {
+    // The palette restores focus to whatever invoked it, so without
+    // this a screen-reader author pressed Enter, heard nothing, and was
+    // left at the top of the page while the list scrolled somewhere
+    // else. The knot header is a real button carrying aria-expanded, so
+    // landing there announces the passage and its state.
+    const { rerender } = render(tab());
+    rerender(tab({ jumpRequest: { nodeId: 'harbour' }, onJumpHandled: vi.fn() }));
+
+    await waitFor(() => {
+      const group = document.querySelector('[data-node-id="harbour"]');
+      expect(group).not.toBeNull();
+      expect(group!.contains(document.activeElement)).toBe(true);
+    });
+  });
+
   it('does nothing without a request', () => {
     const { onJumpHandled } = renderTab();
     expect(knotToggle('harbour')).toHaveAttribute('aria-expanded', 'false');

@@ -5,8 +5,9 @@
 // ReactFlow canvas, every text input), and the shortcut has to work
 // from all of them.
 //
-// The chord is exactly one modifier — the platform's own — plus K.
-// On macOS
+// The chord is exactly one modifier — the platform's own — plus K:
+// Cmd-K on Apple, Ctrl-K everywhere else. Deliberately not "either
+// modifier". Off Apple we DO take Ctrl-K, and there
 // Ctrl-K is emacs' kill-to-end-of-line, which CodeMirror's
 // defaultKeymap installs for real (via emacsStyleKeymap) in both
 // source editors — accepting it here would open the palette AND eat

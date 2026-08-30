@@ -403,6 +403,17 @@ export default function StoryTab({
         const el = document.querySelector(selector);
         if (el) {
           el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          // Move the keyboard point of regard too, not just the
+          // viewport. The palette restores focus to whatever invoked
+          // it, so without this a screen-reader author pressed Enter,
+          // heard nothing, and was left at the top of the page while
+          // the list silently scrolled four hundred passages down —
+          // on the one feature whose entire purpose is moving where
+          // you are. The knot header is a real <button> carrying
+          // aria-expanded, so landing there announces the passage and
+          // its state.
+          const header = el.querySelector('button.node-header') as HTMLElement | null;
+          (header ?? (el as HTMLElement)).focus?.();
           return;
         }
         if (attempts++ < 10) setTimeout(tryScroll, 50);

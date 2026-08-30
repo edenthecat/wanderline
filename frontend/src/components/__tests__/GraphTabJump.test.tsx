@@ -84,7 +84,13 @@ vi.mock('../../hooks/useYjs', () => ({ useYjs: () => ({ doc: null }) }));
 vi.mock('../../hooks/useStoryYDoc', () => ({ useYjsSeedReady: () => true }));
 vi.mock('../../hooks/useNodeEditor', () => ({ useNodeEditor: () => h.editor }));
 vi.mock('../NodeDetail', () => ({ default: () => <div data-testid="node-detail" /> }));
-vi.mock('../InkSourceEditor', () => ({ default: () => <div data-testid="source-editor" /> }));
+vi.mock('../InkSourceEditor', () => ({
+  default: ({ onDirtyChange }: { onDirtyChange?: (d: boolean) => void }) => (
+    <div data-testid="source-editor">
+      <button onClick={() => onDirtyChange?.(true)}>make dirty</button>
+    </div>
+  ),
+}));
 
 import GraphTab from '../GraphTab';
 
@@ -132,6 +138,38 @@ describe('GraphTab jumpRequest', () => {
     rerender(tab({ jumpRequest: { nodeId: 'deleted_passage' }, onJumpHandled }));
     await waitFor(() => expect(onJumpHandled).toHaveBeenCalled());
     expect(h.setCenter).not.toHaveBeenCalled();
+  });
+
+  it('asks before a jump discards an unsaved source draft, and honours a no', async () => {
+    // Cmd-K then Enter is a far easier accident than clicking the
+    // panel's close button, and the draft goes with the panel. StoryTab
+    // has guarded its own view switch this way; GraphTab tore the panel
+    // down with no prompt and no undo.
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const onJumpHandled = vi.fn();
+    const { rerender } = render(tab());
+    fireEvent.click(screen.getByRole('button', { name: 'Edit source' }));
+    fireEvent.click(screen.getByRole('button', { name: 'make dirty' }));
+
+    rerender(tab({ jumpRequest: { nodeId: 'harbour' }, onJumpHandled }));
+
+    await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
+    // Declined: the draft survives...
+    expect(screen.getByTestId('source-editor')).toBeInTheDocument();
+    // ...and the request is still acknowledged, or it re-fires on the
+    // next mount as a stale jump.
+    expect(onJumpHandled).toHaveBeenCalled();
+  });
+
+  it('does not ask when the source panel is clean', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const { rerender } = render(tab());
+    fireEvent.click(screen.getByRole('button', { name: 'Edit source' }));
+
+    rerender(tab({ jumpRequest: { nodeId: 'harbour' }, onJumpHandled: vi.fn() }));
+
+    await waitFor(() => expect(screen.queryByTestId('source-editor')).toBeNull());
+    expect(confirmSpy).not.toHaveBeenCalled();
   });
 
   it('closes the slide-in source panel so it cannot cover the target', async () => {

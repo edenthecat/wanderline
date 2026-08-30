@@ -371,7 +371,7 @@ export default function CommandPalette({
 
         {commands.length === 0 && <p className="command-palette-empty">No matches.</p>}
         {truncated && (
-          <p className="command-palette-truncated">
+          <p className="command-palette-truncated" aria-hidden="true">
             Showing {commands.length} of {totalCount} — keep typing to narrow.
           </p>
         )}
