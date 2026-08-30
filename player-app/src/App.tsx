@@ -106,7 +106,70 @@ type PlayerState = 'loading' | 'ready' | 'playing' | 'paused' | 'ended' | 'error
 type PreloadState = 'idle' | 'loading' | 'complete' | 'error';
 
 import { fallThroughTarget } from './fall-through';
+import { isFromInteractiveElement, keyBelongsToTarget } from './keyboard-target';
 export { fallThroughTarget };
+
+/**
+ * A line of screen-reader-only text plus a monotonic sequence number.
+ *
+ * The number is not read out; it exists so consecutive announcements
+ * with identical wording still change the DOM. Assistive tech fires on
+ * a MUTATION inside a live region, and React skips the update entirely
+ * when a string is re-set to its current value — so in a hub-and-spoke
+ * story where two passages offer the same two choices, arrival at the
+ * second one was silent. Rendered as `<span key={seq}>`, so each
+ * announcement replaces the previous node rather than editing it.
+ */
+type Announcement = { text: string; seq: number };
+
+const EMPTY_ANNOUNCEMENT: Announcement = { text: '', seq: 0 };
+
+const speak =
+  (text: string) =>
+  (prev: Announcement): Announcement => ({ text, seq: prev.seq + 1 });
+
+const clearAnnouncement = (prev: Announcement): Announcement =>
+  prev.text === '' ? prev : { text: '', seq: prev.seq + 1 };
+
+/**
+ * The only global shortcuts that still fire while focus is inside the
+ * settings panel: pause, and the two "get me unstuck" keys for a failed
+ * clip. Reaching for pause while adjusting the volume is exactly what a
+ * listener does; everything else belongs to the panel.
+ *
+ * An allowlist rather than a block-list, because the keys worth
+ * blocking are the ones that throw work away, and they are easy to miss
+ * when enumerating. `r` sends the story back to its start node and
+ * empties the history — from inside the save-slot UI, with focus on a
+ * Load or Rename button, that was one keystroke away. (The `r` handler
+ * resets in place and leaves the slots alone; the header's Restart
+ * button goes further and calls `restart()`, which clears every slot.
+ * Anyone tempted to collapse the two should keep this guard in mind.)
+ */
+const SHORTCUTS_ALLOWED_IN_SETTINGS = new Set<string>([' ', 'Escape', 's', 'S']);
+
+/** Keys that move the armed choice. */
+const CHOICE_CYCLE_KEYS = new Set<string>(['ArrowUp', 'ArrowDown']);
+
+const SETTINGS_PANEL_ID = 'settings-panel';
+
+function isFromSettingsPanel(e: { target: EventTarget | null }): boolean {
+  const target = e.target;
+  if (!target || typeof (target as Element).closest !== 'function') return false;
+  return (target as Element).closest('#' + SETTINGS_PANEL_ID) !== null;
+}
+
+/**
+ * Confirm an irreversible wipe. Extracted so the call site reads as one
+ * decision and so a host without `window.confirm` (or a test that has
+ * not stubbed it) proceeds rather than throwing.
+ */
+function confirmRestart(): boolean {
+  if (typeof window === 'undefined' || typeof window.confirm !== 'function') return true;
+  return window.confirm(
+    'Restart the story? This deletes every save for this story, including manual saves.',
+  );
+}
 
 const STORAGE_PREFIX = 'wanderline_';
 
@@ -256,6 +319,14 @@ export default function App() {
   const [audioDuration, setAudioDuration] = useState(0);
   const [history, setHistory] = useState<string[]>([]);
   const [captionsEnabled, setCaptionsEnabled] = useState(true);
+  // Whether keyboard focus is inside the choice list. Drives two
+  // things: revealing an author-hidden list, and standing the spoken
+  // choice status down, since assistive tech already reads the focused
+  // button and would otherwise say it twice.
+  const [choiceNavFocused, setChoiceNavFocused] = useState(false);
+  const choiceNavRef = useRef<HTMLElement | null>(null);
+  const mainRef = useRef<HTMLElement | null>(null);
+  const focusMainAfterNavRef = useRef(false);
   const [audioError, setAudioError] = useState<string | null>(null);
   const [audioStalled, setAudioStalled] = useState(false);
   const [retryingAudio, setRetryingAudio] = useState(false);
@@ -1440,6 +1511,15 @@ export default function App() {
 
   const restart = useCallback(() => {
     if (story) {
+      // Confirm first. Restart wipes every manual save as well as the
+      // autosave, and it is one keypress from the header toolbar — the
+      // target guard handed Space and Enter back to buttons, so this
+      // became reachable by keyboard for the first time. A listener
+      // tabbing the toolbar for the pause control lands on Restart and
+      // presses Space, which the footer advertises as pause, and their
+      // saves are gone with no undo. The `r` shortcut is already kept
+      // out of the settings panel for exactly this reason.
+      if (saveSlots.length > 0 && !confirmRestart()) return;
       // also wipe the new slots key. Manual saves get removed
       // alongside the autosave so a "restart" is a clean slate.
       clearAllSlots(story.id);
@@ -1456,7 +1536,7 @@ export default function App() {
       setPlayerState('ready');
       pendingAutoplayNodeIdRef.current = null;
     }
-  }, [story]);
+  }, [story, saveSlots]);
 
   // — save slot management. These operate against the slot
   // array in state, then persist via writeSlots(). They're stable
@@ -1668,6 +1748,46 @@ export default function App() {
     const handleKey = (e: KeyboardEvent) => {
       // Ignore keyboard shortcuts while instructions or password screen is visible
       if (showInstructions || !isAuthenticated) return;
+      // A keystroke the focused control acts on belongs to that
+      // control. This listener is on `window` and calls
+      // preventDefault() for Space / Enter / arrows / Backspace, which
+      // is exactly the set a button, checkbox or slider needs to
+      // receive: without this bail, tabbing to Settings and pressing
+      // Enter advanced the story instead of opening the panel, and the
+      // auto-advance checkbox could not be toggled by keyboard at all.
+      // Scoped per key rather than per element: a <button> consumes
+      // only Space and Enter, so Backspace, `r`, `s` and Escape still
+      // reach the shortcuts with focus sitting on one. The arrows are
+      // the exception, handled just below.
+      if (keyBelongsToTarget(e)) return;
+      // Focus inside the settings panel is a task of its own: only the
+      // playback keys reach past it.
+      if (isFromSettingsPanel(e) && !SHORTCUTS_ALLOWED_IN_SETTINGS.has(e.key)) return;
+      // The arrows move the armed choice, and Enter — which a control
+      // does claim — activates whatever has focus. Left global while
+      // focus sat on, say, the Play button, the two disagreed: arrow
+      // twice, hear "Choice 3 of 3", press Enter, and play/pause fired.
+      // Rather than standing the arrows down, hand focus INTO the list:
+      // then Enter and the armed choice agree by construction, which is
+      // all the bail was ever for. Standing down cost more than it
+      // bought — every browser leaves focus on a <button> after a
+      // pointer click, so a listener who clicked Play or Back lost
+      // arrow cycling entirely, with nothing on screen to say why.
+      //
+      // A control that genuinely owns the arrows (a volume slider) has
+      // already returned at keyBelongsToTarget above, so this only ever
+      // catches controls with no claim on them.
+      if (
+        CHOICE_CYCLE_KEYS.has(e.key) &&
+        isFromInteractiveElement(e) &&
+        !choiceNavRef.current?.contains(e.target as Node | null)
+      ) {
+        const armed = choiceNavRef.current?.querySelectorAll('button')[selectedChoice];
+        // No list to move into (a passage with a plain divert): leave
+        // the press alone rather than cycling something invisible.
+        if (!armed) return;
+        armed.focus();
+      }
 
       switch (e.key) {
         case ' ':
@@ -1770,6 +1890,168 @@ export default function App() {
     setSelectedChoice,
   });
 
+  // The passage as text, for the screen-reader-only announcement below.
+  // Mirrors the caption card's own precedence: an explicit transcript
+  // wins, otherwise the Ink content lines.
+  const passageText = useMemo(() => {
+    if (!currentNode) return '';
+    const transcript = currentNode.metadata?.transcript?.trim();
+    if (transcript) return transcript;
+    return currentNode.content
+      .map((c) => c.text)
+      .join(' ')
+      .trim();
+  }, [currentNode]);
+
+  // Screen readers announce MUTATIONS to a live region they have
+  // already registered: text present the moment the region is inserted
+  // is not announced at all, and re-rendering identical wording is not
+  // a mutation. Both of the regions below are built around that — the
+  // passage one through `narrationRegistered` and `passageKey`, the
+  // choice one through its own state and sequence number — and both
+  // stand down until the story screen is up.
+  const storyScreenVisible = !showInstructions && isAuthenticated;
+
+  // Identity for "which visit to which passage is on screen". The
+  // history length is what separates a self-loop from standing still:
+  // an Ink knot that diverts to itself sets `currentNodeId` to the
+  // value it already holds, so the node id alone never moves and the
+  // replayed audio arrived with no words behind it. Every navigation
+  // pushes or pops history, so the pair always changes.
+  const passageKey = `${currentNode?.id ?? ''}:${history.length}`;
+
+  // False for the story screen's first commit so the live region below
+  // is registered before it ever has content. Tracks `storyScreenVisible`
+  // rather than latching: the Help button puts the instructions screen
+  // back up, which unmounts <main> and the region with it, and a latched
+  // flag would have re-inserted the region already populated on the way
+  // back — silent again, exactly what it exists to prevent.
+  const [narrationRegistered, setNarrationRegistered] = useState(false);
+  // useEffect, NOT useLayoutEffect. The empty commit exists to give the
+  // live region an insertion of its own to be registered on before any
+  // content lands in it. useLayoutEffect runs synchronously in the same
+  // task as the commit that inserted <main>, so both operations can
+  // coalesce into a single accessibility-tree update and the region is
+  // observed already populated — precisely the case this is meant to
+  // avoid, and it fails silently on the opening passage, the one a
+  // blind listener has no other way to learn about.
+  //
+  // Letting a paint separate them costs at most one frame of story
+  // screen without a caption card, which is the right trade.
+  //
+  // No test pins this: swapping the two leaves the whole suite green,
+  // because the assertions check the SHAPE of the DOM change rather
+  // than registration timing. Verify on hardware before changing it.
+  useEffect(() => {
+    setNarrationRegistered(storyScreenVisible);
+  }, [storyScreenVisible]);
+
+  // The <nav>'s own onBlur cannot carry this alone: React's onBlur is
+  // focusout, which browsers do not fire when the focused element is
+  // REMOVED, and choosing an option removes it — so an author-hidden
+  // list, once revealed, stayed on screen for the rest of the session.
+  // Re-read where focus actually is rather than assuming the button is
+  // gone: two passages offering the same choices in the same order share
+  // a key, so React reuses the DOM nodes and the focus on them survives,
+  // and assuming otherwise re-clipped the list to 1px with the keyboard
+  // focus still inside it.
+  useEffect(() => {
+    setChoiceNavFocused(!!choiceNavRef.current?.contains(document.activeElement));
+  }, [currentNode, history]);
+
+  // Runs after the new passage has committed, so the focus lands on a
+  // story region that is already describing where the listener now is.
+  useEffect(() => {
+    if (!focusMainAfterNavRef.current) return;
+    focusMainAfterNavRef.current = false;
+    mainRef.current?.focus();
+  }, [currentNode, history]);
+
+  // Focus and the armed choice have to agree. The arrows move
+  // `selectedChoice` — a <button> does not claim them — while Enter goes
+  // to whatever has focus, so a listener who tabbed into the list and
+  // arrowed down twice heard "Choice 3 of 3", saw aria-current on the
+  // third button, and then activated the first. Only engages when focus
+  // is already inside the list: cycling from a headphone button with the
+  // screen off must not start moving focus around.
+  useEffect(() => {
+    const nav = choiceNavRef.current;
+    if (!nav || !nav.contains(document.activeElement)) return;
+    const target = nav.querySelectorAll('button')[selectedChoice];
+    if (target && target !== document.activeElement) target.focus();
+  }, [selectedChoice, currentNode]);
+
+  // What the choice status region says. Cycling choices with a
+  // headphone button — the product's signature interaction, phone in a
+  // pocket — only moved `aria-current`, which a screen reader reads
+  // solely when focus happens to sit on that button. Nothing announced
+  // which option was armed, and nothing announced the options at all on
+  // arriving at a passage.
+  const [choiceAnnouncement, setChoiceAnnouncement] = useState(EMPTY_ANNOUNCEMENT);
+  const lastChoiceAnnouncedRef = useRef<{
+    nodeId: string;
+    selected: number;
+    history: string[];
+  } | null>(null);
+  useEffect(() => {
+    const choices = currentNode?.choices ?? [];
+    if (!storyScreenVisible || !currentNode || choices.length === 0) {
+      lastChoiceAnnouncedRef.current = null;
+      setChoiceAnnouncement(clearAnnouncement);
+      return;
+    }
+    if (choiceNavFocused) {
+      // Assistive tech reads the focused button, so saying it again is
+      // noise. The marker is deliberately left alone: clearing it made
+      // tabbing out of the list look like a fresh arrival, and the whole
+      // list was read over whatever control the listener had just moved
+      // to — every time they passed through.
+      setChoiceAnnouncement(clearAnnouncement);
+      return;
+    }
+    // Idempotent on purpose. StrictMode replays mount effects with refs
+    // intact, so a marker that only recorded "which node did I last
+    // speak for" saw itself on the second pass and downgraded the
+    // arrival announcement to a selection one — under `npm run dev` the
+    // opening choice list was never read. Recording the selection too
+    // makes the replay a no-op.
+    const last = lastChoiceAnnouncedRef.current;
+    if (
+      last &&
+      last.nodeId === currentNode.id &&
+      last.selected === selectedChoice &&
+      last.history === history
+    ) {
+      return;
+    }
+    // A fresh `history` array means a navigation, so a self-loop counts
+    // as an arrival and re-reads the list rather than reporting the
+    // armed choice.
+    const arrived = !last || last.nodeId !== currentNode.id || last.history !== history;
+    lastChoiceAnnouncedRef.current = {
+      nodeId: currentNode.id,
+      selected: selectedChoice,
+      history,
+    };
+    if (arrived) {
+      // Read the whole list on arrival, so the listener knows what is
+      // on offer before cycling through it.
+      setChoiceAnnouncement(
+        speak(
+          `${choices.length} choice${choices.length === 1 ? '' : 's'}: ` +
+            choices.map((c, i) => `${i + 1}. ${c.text}`).join(', '),
+        ),
+      );
+      return;
+    }
+    const armed = choices[selectedChoice];
+    if (armed) {
+      setChoiceAnnouncement(
+        speak(`Choice ${selectedChoice + 1} of ${choices.length}: ${armed.text}`),
+      );
+    }
+  }, [storyScreenVisible, choiceNavFocused, currentNode, selectedChoice, history]);
+
   if (playerState === 'error' || !story) {
     return (
       <div style={styles.container}>
@@ -1806,7 +2088,16 @@ export default function App() {
             <h2 style={styles.passwordTitle}>Enter Password</h2>
             <p style={styles.passwordSubtitle}>This story is password protected</p>
             <form onSubmit={handlePasswordSubmit} style={styles.passwordForm}>
+              {/* A placeholder is not a label: it is dropped as soon as
+                  the field has content and several screen readers never
+                  announce it, so this field used to read as an unnamed
+                  edit box. The label is visually hidden because the card
+                  heading already carries the visible wording. */}
+              <label htmlFor="story-password" style={styles.srOnly}>
+                Password
+              </label>
               <input
+                id="story-password"
                 type="password"
                 value={passwordInput}
                 onChange={(e) => {
@@ -1818,9 +2109,18 @@ export default function App() {
                   ...styles.passwordInput,
                   ...(passwordError ? styles.passwordInputError : {}),
                 }}
+                aria-invalid={passwordError || undefined}
+                aria-describedby={passwordError ? 'story-password-error' : undefined}
                 autoFocus
               />
-              {passwordError && <p style={styles.passwordErrorText}>Incorrect password</p>}
+              {/* role="alert" so a wrong password is spoken. Without it
+                  the only feedback was a red border and a paragraph
+                  nobody was told about. */}
+              {passwordError && (
+                <p id="story-password-error" role="alert" style={styles.passwordErrorText}>
+                  Incorrect password
+                </p>
+              )}
               <button type="submit" style={styles.passwordBtn}>
                 Enter
               </button>
@@ -2012,6 +2312,7 @@ export default function App() {
   // continues into its next sibling. Not materialised by the parser, so
   // it has to be resolved here or a chapter's opening prose reads as
   // the end of the story.
+  const choiceListHidden = story?.settings?.showChoiceList === false;
   const fallThrough = story ? fallThroughTarget(currentNode.id, currentNode, story.nodes) : null;
   const isEnd =
     reachedEnding ||
@@ -2043,12 +2344,15 @@ export default function App() {
      elements that must stay unmarked. Marking them would need wrapper
      elements that break the landmark structure they exist to provide. */
   return (
-    <div
-      style={styles.container}
-      onClick={() => playerState === 'ready' && !audioError && playVoiceover()}
-      role="application"
-      aria-label={(story?.title || 'Audio Story') + ' - Audio Story'}
-    >
+    // No role="application" here. It suppressed the screen-reader
+    // virtual cursor across the whole page, so a blind listener could
+    // not arrow through the caption text to re-read a passage and lost
+    // heading/landmark quick-nav — on an audio medium whose captions
+    // ARE the transcript, that removed the ability to read the story.
+    // Every control below is a real button or input, so nothing here
+    // needed the application role. The story title is announced by the
+    // <h1> and by the <main> landmark's label.
+    <div style={styles.container}>
       <OfflineControls support={offline} audioUrls={allAudioUrls} />
       <a
         href="#main-content"
@@ -2070,11 +2374,12 @@ export default function App() {
       </a>
       <header style={styles.header} role="banner" data-theme-component="header">
         <div style={styles.headerRow}>
+          {/* No stopPropagation on the header controls or the settings
+              panel: tap-to-play lives on <main> now, so nothing above it
+              has a click to swallow. The calls that remain inside <main>
+              are load-bearing. */}
           <button
-            onClick={(e) => {
-              e.stopPropagation();
-              setCaptionsEnabled(!captionsEnabled);
-            }}
+            onClick={() => setCaptionsEnabled(!captionsEnabled)}
             style={{ ...styles.headerBtn, ...(captionsEnabled ? styles.headerBtnActive : {}) }}
             aria-pressed={captionsEnabled}
             aria-label={
@@ -2088,21 +2393,19 @@ export default function App() {
           </button>
           <h1 style={styles.title}>{story?.title || 'Audio Story'}</h1>
           <div style={styles.headerBtnGroup} role="toolbar" aria-label="Story controls" lang="en">
+            {/* aria-controls only while the panel exists: an IDREF
+                pointing at an absent id is invalid, and axe flags it. */}
             <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setShowSettings(!showSettings);
-              }}
+              onClick={() => setShowSettings(!showSettings)}
               style={{ ...styles.headerBtn, ...(showSettings ? styles.headerBtnActive : {}) }}
-              aria-pressed={showSettings}
               aria-expanded={showSettings}
+              {...(showSettings ? { 'aria-controls': SETTINGS_PANEL_ID } : {})}
               aria-label="Settings"
             >
               <Settings width={18} height={18} />
             </button>
             <button
-              onClick={(e) => {
-                e.stopPropagation();
+              onClick={() => {
                 if (audioRef.current) {
                   audioRef.current.pause();
                   audioRef.current = null;
@@ -2115,10 +2418,7 @@ export default function App() {
               <ChatBubble width={18} height={18} />
             </button>
             <button
-              onClick={(e) => {
-                e.stopPropagation();
-                restart();
-              }}
+              onClick={() => restart()}
               style={styles.headerBtn}
               aria-label="Restart story from beginning"
             >
@@ -2128,14 +2428,23 @@ export default function App() {
         </div>
       </header>
 
+      {/* A disclosure, not a dialog. It claimed role="dialog" with no
+          focus management of any kind — nothing moved focus in, Escape
+          did not close it, and focus never returned to the cog — which
+          is a worse experience than no dialog semantics at all. It is
+          also genuinely not modal (aria-modal was already "false"): the
+          story keeps playing and every control behind it stays live, so
+          trapping focus would be wrong. The cog exposes aria-expanded
+          and aria-controls, and the panel is the next thing in DOM
+          order, which is the pattern that actually matches the
+          behaviour. */}
       {showSettings && (
         <div
+          id={SETTINGS_PANEL_ID}
           style={styles.settingsPanel}
           data-theme-component="settingsPanel"
-          onClick={(e) => e.stopPropagation()}
-          role="dialog"
+          role="group"
           aria-labelledby="settings-title"
-          aria-modal="false"
           lang="en"
         >
           <h3 id="settings-title" style={styles.settingsTitle}>
@@ -2297,10 +2606,43 @@ export default function App() {
         </div>
       )}
 
-      <main id="main-content" style={styles.main} role="main" aria-label="Story content">
+      {/* Tap-to-play lives on the story region rather than the page
+          root. Autoplay-blocked mobile needs a big forgiving target,
+          but hanging it off the root meant a stray tap on the header
+          or footer chrome started narration. Keyboard users reach the
+          same action via Space and the Play button, so this handler
+          carries no keyboard duty of its own. */}
+      <main
+        id="main-content"
+        ref={mainRef}
+        tabIndex={-1}
+        style={{ ...styles.main, outline: 'none' }}
+        role="main"
+        aria-label={(story?.title || 'Audio Story') + ' - story content'}
+        onClick={() => playerState === 'ready' && !audioError && playVoiceover()}
+      >
+        {/* Assistive tech announces a MUTATION inside a live region it
+            has already registered. Two consequences, both of which used
+            to lose announcements:
+
+            Content present the instant the region is inserted is never
+            announced. The story screen mounts <main> and this region in
+            one commit, so the opening passage — the one a listener has
+            no other way to learn about — was the one thing never spoken.
+            `narrationRegistered` flips in an effect, holding the region
+            empty for that first commit only.
+
+            Re-rendering identical prose is not a mutation at all, so
+            returning to a hub that reads the same way as the last one
+            was silent too. `passageKey` changes on every navigation,
+            self-loops included, and replaces the child outright — in the
+            same commit as the new text, so each passage produces exactly
+            one mutation rather than two a screen reader might speak
+            twice. */}
         <div aria-live="polite" aria-atomic="true" role="region" aria-label="Story narration">
-          {captionsEnabled && (
+          {narrationRegistered && captionsEnabled && (
             <article
+              key={passageKey}
               style={{
                 ...styles.card,
                 ...(currentNode.metadata?.theme && THEME_COLORS[currentNode.metadata.theme]
@@ -2347,6 +2689,17 @@ export default function App() {
                 ))
               )}
             </article>
+          )}
+          {/* Captions are a project setting (captionsDefault), and the
+              caption card used to be this region's only child — so a
+              story shipped with captions off left it empty for the whole
+              length of the story and announced nothing on any passage
+              change. This keeps the transcript spoken whatever the
+              visual setting. */}
+          {narrationRegistered && !captionsEnabled && (
+            <p key={passageKey} style={styles.srOnly}>
+              {passageText ? `Now playing: ${passageText}` : 'Now playing'}
+            </p>
           )}
         </div>
 
@@ -2423,20 +2776,65 @@ export default function App() {
           </div>
         )}
 
-        {currentNode.choices.length > 0 && story.settings?.showChoiceList !== false && (
+        {/* Announces the choice list on arrival and the armed choice as
+            it is cycled. Separate from the <nav> because it tracks the
+            armed selection rather than focus: cycling with a headphone
+            button moves neither focus nor the page, so `aria-current`
+            alone — read only when focus happens to sit on that button —
+            told a listener with the screen off nothing at all. */}
+        <div style={styles.srOnly} role="status" aria-live="polite" aria-atomic="true">
+          {choiceAnnouncement.text ? (
+            <span key={choiceAnnouncement.seq}>{choiceAnnouncement.text}</span>
+          ) : null}
+        </div>
+
+        {/* Rendered even when the author turns the visible list off.
+            Hiding it is a visual decision — the setting's own help text
+            calls it "headphone- / keyboard-only" — but dropping the
+            buttons from the DOM made the choices unreachable for anyone
+            in a screen reader's browse mode, which swallows the arrow
+            keys before the global shortcuts ever see them. Off-screen
+            until something inside takes focus, then shown, so a sighted
+            keyboard user can see where they are. */}
+        {currentNode.choices.length > 0 && (
           <nav
-            style={styles.choices}
+            ref={choiceNavRef}
+            style={choiceListHidden && !choiceNavFocused ? styles.srOnly : styles.choices}
             role="navigation"
             aria-label="Story choices"
             data-theme-component="choiceButton"
+            onFocus={() => setChoiceNavFocused(true)}
+            onBlur={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                setChoiceNavFocused(false);
+              }
+            }}
           >
+            {/* Keyed by destination rather than index so React does not
+                reuse a button across a navigation, and blurred on
+                activation so focus cannot survive one that reuses it
+                anyway — a self-loop, or two passages that offer the same
+                option at the same position. Focus left sitting on a
+                button whose meaning has changed turns the next Space,
+                meant to pause, into a second press of whatever now
+                occupies that slot. */}
             {currentNode.choices.map((c, i) => (
               <button
-                key={i}
+                key={`${c.target}|${c.text}|${i}`}
                 onClick={(e) => {
                   e.stopPropagation();
+                  // `detail === 0` is a keyboard-synthesised click.
+                  // Blurring alone would strand such a listener at
+                  // <body>, restarting every Tab from the skip link, so
+                  // hand focus to the story region instead once the new
+                  // passage is up. A pointer click gets the blur without
+                  // the hand-off — moving focus under a mouse user is
+                  // not wanted.
+                  if (e.detail === 0) focusMainAfterNavRef.current = true;
+                  e.currentTarget.blur();
                   navigateToTarget(c.target);
                 }}
+                onFocus={() => setSelectedChoice(i)}
                 style={{ ...styles.choice, ...(i === selectedChoice ? styles.choiceSelected : {}) }}
                 aria-label={'Choice ' + (i + 1) + ': ' + c.text}
                 aria-current={i === selectedChoice ? 'true' : undefined}
@@ -2537,7 +2935,13 @@ export default function App() {
       </main>
 
       <footer style={styles.footer} role="contentinfo" lang="en">
-        Keyboard: Space/Arrows/Enter | Headphones: 1-tap Pause, 2-tap Choice 1, 3-tap Choice 2
+        {/* Qualified deliberately: a focused button owns Space and
+            Enter, as it does everywhere on the web, so the global
+            shortcuts are what you get when you have not tabbed onto a
+            control. Saying so is better than fighting the platform for
+            it. */}
+        Keyboard (outside a button): Space plays and pauses, Arrows move between choices, Enter
+        takes the one you are on | Headphones: 1-tap Pause, 2-tap Choice 1, 3-tap Choice 2
       </footer>
     </div>
   );
