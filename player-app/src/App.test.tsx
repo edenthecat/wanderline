@@ -330,7 +330,7 @@ describe('App', () => {
       expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
     });
 
-    it('choice list is hidden when settings.showChoiceList is false', async () => {
+    it('choice list is visually hidden when settings.showChoiceList is false', async () => {
       (window as any).__WANDERLINE_STORY__ = {
         ...mockStory,
         settings: { showChoiceList: false },
@@ -341,10 +341,13 @@ describe('App', () => {
 
       // Wait for the narration to mount so we know the post-start view is up
       await screen.findByText('Welcome to the story.');
-      // Choice nav and its buttons should not render
-      expect(screen.queryByRole('navigation', { name: /story choices/i })).not.toBeInTheDocument();
-      expect(screen.queryByText('Go left')).not.toBeInTheDocument();
-      expect(screen.queryByText('Go right')).not.toBeInTheDocument();
+      // The nav stays in the DOM but is clipped off-screen. Removing it
+      // entirely also removed the only way a screen-reader user in
+      // browse mode — where the arrow keys never reach the page — could
+      // pick a choice at all, so "hidden" here means visually hidden.
+      const nav = screen.getByRole('navigation', { name: /story choices/i });
+      expect(nav).toHaveStyle({ position: 'absolute', width: '1px', height: '1px' });
+      expect(screen.getByText('Go left')).toBeInTheDocument();
     });
 
     // The listener-facing "Auto-continue" toggle was removed on
@@ -396,6 +399,52 @@ describe('App', () => {
       expect(() => document.dispatchEvent(new Event('visibilitychange'))).not.toThrow();
       Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
       expect(() => document.dispatchEvent(new Event('visibilitychange'))).not.toThrow();
+    });
+  });
+
+  // A generated build sets <html lang> to the story's own language, so
+  // the captions are read with the right voice. Everything this app
+  // says in its own words is English regardless, and without a marker
+  // a Japanese story would have a screen reader announce "Settings"
+  // and "Restart story from beginning" with Japanese phonetics.
+  describe('chrome language', () => {
+    // Typed rather than the file's `as any` so this block adds no new
+    // lint warnings.
+    const seedStory = (story: unknown) => {
+      (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = story;
+    };
+
+    it('marks the English chrome as English', async () => {
+      seedStory(mockStory);
+      const { container } = render(<App />);
+      // Pre-start: the instructions screen is all our own copy.
+      await screen.findByLabelText('Start the story');
+      expect(container.querySelector('[role="main"][lang="en"]')).not.toBeNull();
+
+      await startTheStory();
+      await screen.findByText('Welcome to the story.');
+      expect(container.querySelector('[role="toolbar"][lang="en"]')).not.toBeNull();
+      expect(container.querySelector('[aria-label="Playback controls"][lang="en"]')).not.toBeNull();
+      expect(container.querySelector('footer[lang="en"]')).not.toBeNull();
+    });
+
+    // The story's own words must inherit the document language.
+    // Marking a WRAPPER — <header>, which holds the story title, or
+    // <main>, which holds the narration and the choice labels — is the
+    // bug inverted: lang can't be un-set on a descendant, so the story
+    // would be announced with an English voice.
+    it.each([
+      ['the story title', 'h1'],
+      ['the narration region', '[aria-label="Story narration"]'],
+      ['the choice list', '[aria-label="Story choices"]'],
+    ])('leaves %s to inherit the document language', async (_label, selector) => {
+      seedStory(mockStory);
+      const { container } = render(<App />);
+      await startTheStory();
+      await screen.findByText('Welcome to the story.');
+      const el = container.querySelector(selector);
+      expect(el).not.toBeNull();
+      expect(el!.closest('[lang]')).toBeNull();
     });
   });
 });

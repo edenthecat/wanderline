@@ -58,4 +58,10 @@ describe('renderBuildReadme', () => {
     expect(DEFAULT_README_TEMPLATE).toMatch(/Android/);
     expect(DEFAULT_README_TEMPLATE).toMatch(/Desktop/);
   });
+
+  // A bare ⋮ is announced as "vertical ellipsis" or skipped entirely,
+  // which leaves the Android instruction pointing at nothing.
+  it('names the Android menu in words, not only as a glyph', () => {
+    expect(DEFAULT_README_TEMPLATE).toContain('three-dot browser menu (⋮)');
+  });
 });

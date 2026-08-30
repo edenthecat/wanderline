@@ -117,6 +117,23 @@ export const styles: Record<string, React.CSSProperties> = {
   },
   headerBtnActive: { background: 'rgba(78,205,196,0.2)', borderColor: '#4ecdc4', color: '#4ecdc4' },
   main: { flex: 1, display: 'flex', flexDirection: 'column', gap: '1.5rem' },
+  // Off-screen but still in the accessibility tree, for text that only
+  // screen readers need: passage announcements when the author ships
+  // with captions off, and the armed-choice status. `display: none` or
+  // `visibility: hidden` would take it out of the tree entirely, and a
+  // live region that is not in the tree never announces.
+  srOnly: {
+    position: 'absolute',
+    width: '1px',
+    height: '1px',
+    padding: 0,
+    margin: '-1px',
+    overflow: 'hidden',
+    clip: 'rect(0 0 0 0)',
+    clipPath: 'inset(50%)',
+    whiteSpace: 'nowrap',
+    border: 0,
+  },
   // +: themed surfaces. The storyCard layer reads
   // `--wl-storyCard-*` first, falling back to the global card vars so
   // per-component overrides only kick in when explicitly set.

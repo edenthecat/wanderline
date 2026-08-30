@@ -3362,6 +3362,19 @@ details[open] > .audio-section-summary {
   min-height: 160px;
 }
 
+/* Export tab: language code.
+   Narrow because the content is a BCP-47 tag ("en", "pt-BR"), never
+   prose; monospace so a hyphen and a lowercase L stay distinguishable. */
+.settings-language-input {
+  /* 14ch, not 10: box-sizing is border-box globally, so 10ch minus
+     padding and border left ~7 visible characters — enough to clip
+     `zh-Hans` from our own datalist, and `zh-Hant-TW` scrolled out of
+     view while being typed. */
+  width: 14ch;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  padding: 6px 8px;
+}
+
 /* Running-version badge in the header.
    Deliberately quiet — it's diagnostic information, not navigation, so
    it sits next to the logo without competing with it. Full detail

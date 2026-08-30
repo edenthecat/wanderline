@@ -751,7 +751,10 @@ export default function StoryTab({
                         >
                           {knotPeers.map((peer) => (
                             <span
-                              key={peer.clientId}
+                              // Per person, matching PresenceChips: a
+                              // clientId changes on every reconnect, so
+                              // keying on it remounts the dot.
+                              key={peer.userId ?? `anon-${peer.clientId}`}
                               className="node-peer-dot"
                               style={{ background: peer.color }}
                               title={`${peer.displayName} is editing this`}

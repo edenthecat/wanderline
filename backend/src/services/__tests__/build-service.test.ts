@@ -574,6 +574,100 @@ describe('build-service unit', () => {
       const html = renderSmokeHtml(empty);
       expect(html).toMatch(/window\.__WANDERLINE_STORY__/);
     });
+
+    // The build README tells authors to open this page to verify a
+    // build, and plenty of them will do that on a phone. Without a
+    // viewport meta it renders at desktop width and has to be
+    // pinch-zoomed to read (WCAG 1.4.10).
+    it('declares a responsive viewport', () => {
+      const html = renderSmokeHtml(sampleStory);
+      expect(html).toMatch(/<meta name="viewport" content="width=device-width[^"]*"/i);
+    });
+
+    // The audio-reachability check is a network round-trip, so the
+    // page genuinely sits on "Running…" for a while. Without a live
+    // region a screen-reader author is never told it finished.
+    it('announces completion through the summary', () => {
+      const html = renderSmokeHtml(sampleStory);
+      const summary = /<div class="summary" id="summary"[^>]*>/i.exec(html);
+      expect(summary).not.toBeNull();
+      expect(summary![0]).toContain('role="status"');
+      expect(summary![0]).toContain('aria-live="polite"');
+    });
+
+    // role="status" implies aria-atomic="true" and render() replaces
+    // this container wholesale, so making it live would speak every
+    // problem on a failing build as one uninterruptible utterance
+    // straight after the summary already announced the outcome.
+    it('leaves the results list navigable rather than live', () => {
+      const html = renderSmokeHtml(sampleStory);
+      const results = /<div id="results"[^>]*>/i.exec(html);
+      expect(results).not.toBeNull();
+      expect(results![0]).not.toContain('aria-live');
+      expect(results![0]).not.toContain('role="status"');
+      // Still reachable: a named landmark, plus an <h2> per check.
+      expect(results![0]).toContain('role="region"');
+      expect(results![0]).toContain('aria-label="Check results"');
+    });
+
+    // ✓ / ✗ read as "check mark" / "multiplication x", or get skipped
+    // entirely — which left pass and fail distinguishable only by a
+    // border colour.
+    it('spells out pass and fail instead of relying on the glyphs', () => {
+      const html = renderSmokeHtml(sampleStory);
+      expect(html).toContain('>Passed: <');
+      expect(html).toContain('>Failed: <');
+      // The glyphs stay for sighted readers but are hidden from AT.
+      expect(html).toMatch(/aria-hidden="true">✓/);
+      expect(html).toMatch(/aria-hidden="true">✗/);
+      expect(html).toMatch(/\.visually-hidden\s*\{/);
+    });
+
+    // Entirely script-driven: with JS off it would otherwise sit on
+    // "Running…" forever with no explanation.
+    it('explains itself when JavaScript is unavailable', () => {
+      const html = renderSmokeHtml(sampleStory);
+      const blocks = html.match(/<noscript>[\s\S]*?<\/noscript>/gi) ?? [];
+      expect(blocks.join('\n')).toMatch(/needs JavaScript/i);
+    });
+
+    // The status region would otherwise assert "Running…" forever for
+    // work that never starts.
+    it('hides the live regions when JavaScript is unavailable', () => {
+      const html = renderSmokeHtml(sampleStory);
+      expect(html).toMatch(
+        /<noscript><style>#summary, #results \{ display: none; \}<\/style><\/noscript>/,
+      );
+    });
+
+    // No second <h1>: the page heading renders with scripting off too,
+    // so a fallback that repeats it announces the title twice.
+    it('does not repeat the page heading in the fallback', () => {
+      const html = renderSmokeHtml(sampleStory);
+      expect(html.match(/<h1>/g)).toHaveLength(1);
+    });
+
+    describe('lang', () => {
+      // The page's own chrome — "Running…", the check labels,
+      // "Passed:" — is English whatever the story is written in, so
+      // tagging the document with the project language would have a
+      // screen reader read our diagnostics with the wrong phonetics.
+      it('leaves the document in English, since its chrome is English', () => {
+        expect(renderSmokeHtml(sampleStory, 'ja')).toMatch(/<html lang="en">/);
+      });
+
+      it('tags the story title with the project language', () => {
+        expect(renderSmokeHtml(sampleStory, 'fr')).toMatch(/<h1><span lang="fr">/);
+      });
+
+      it('defaults to en when unset', () => {
+        expect(renderSmokeHtml(sampleStory)).toMatch(/<h1><span lang="en">/);
+      });
+
+      it('falls back to en rather than emitting a malformed tag', () => {
+        expect(renderSmokeHtml(sampleStory, 'en" onload="x')).toMatch(/<h1><span lang="en">/);
+      });
+    });
   });
 
   // env-var integer parsing with fallback + clamp.

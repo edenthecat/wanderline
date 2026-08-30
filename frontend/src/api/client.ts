@@ -1111,6 +1111,11 @@ export interface ProjectSettings {
   // to the default template (which includes the install-as-an-app
   // instructions) — see backend/src/services/build-readme.ts.
   exportReadme?: string;
+  // BCP-47 tag for the story's own language ("en", "fr", "pt-BR").
+  // Written into <html lang> and the manifest of every generated
+  // build, so a screen reader reads the captions with the right voice
+  // and phonetics. Unset falls back to "en" at build time.
+  language?: string;
   // PWA identity for the generated player: home-screen name comes from
   // the story title, artwork and colours from here.
   appIcon?: AppIconSettings;

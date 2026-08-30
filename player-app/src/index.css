@@ -308,3 +308,34 @@ button:disabled {
     background: rgba(20, 20, 30, 0.88);
   }
 }
+
+/* Scripting-disabled fallback (the <noscript> in index.html, and the
+   copy the build pipeline substitutes into it — see
+   renderNoscriptFallback in backend/src/services/build-html.ts).
+
+   Classes rather than `style="..."` attributes: the preview endpoint
+   serves this same document under a CSP whose style-src has no
+   'unsafe-inline', so inline styles are dropped there.
+
+   Deliberately sets no colour or font family: inheriting from `body`
+   is the only way to stay on the right side of the theme. `body`
+   resolves text through `var(--wl-page-textColor, var(--wl-text))`,
+   and Theme > Page > "Text color" is a separate knob from the global
+   one — an author who lightens the page background there and darkens
+   the page text would get `--wl-text`'s default near-white on their
+   own light surface if this block named a colour of its own. */
+.wl-noscript {
+  padding: 3rem 1.5rem;
+}
+.wl-noscript-inner {
+  max-width: 34rem;
+  margin: 0 auto;
+}
+.wl-noscript h1 {
+  font-size: 1.5rem;
+  line-height: 1.3;
+  margin-bottom: 1rem;
+}
+.wl-noscript p {
+  line-height: 1.6;
+}
