@@ -168,6 +168,71 @@ describe('renderPreviewHtml', () => {
     expect(html).toMatch(/data-wl-close="1"/);
   });
 
+  // The player template ships lang="en", and /public-preview/:token is
+  // listener-facing — so a French story previewed there was announced
+  // as English exactly like an unfixed exported build.
+  describe('lang', () => {
+    it('carries the project language', () => {
+      const html = renderPreviewHtml(story, 'T', 'Preview Mode', 'N1', null, 'fr');
+      expect(html).toMatch(/<html lang="fr"/i);
+    });
+
+    it('defaults to en when the project has no language set', () => {
+      const html = renderPreviewHtml(story, 'T', 'Preview Mode', 'N1');
+      expect(html).toMatch(/<html lang="en"/i);
+    });
+
+    it('falls back to en rather than emitting a malformed tag', () => {
+      const html = renderPreviewHtml(story, 'T', 'Preview Mode', 'N1', null, 'en" onload="x');
+      expect(html).toMatch(/<html lang="en"/i);
+      expect(html).not.toMatch(/onload=/i);
+    });
+
+    // The banner is our own untranslated chrome sitting inside a
+    // document now tagged with the story's language.
+    it('marks the preview banner as English', () => {
+      const html = renderPreviewHtml(story, 'T', 'Preview Mode', 'N1', null, 'fr');
+      expect(html).toMatch(/<div class="wl-preview-banner" lang="en">/);
+    });
+  });
+
+  // A listener sent a /public-preview link with scripting off was
+  // told "Wanderline Player" rather than the name of the story.
+  describe('noscript fallback', () => {
+    it('names the story rather than the player', () => {
+      const html = renderPreviewHtml(
+        { ...story, title: 'Ghost Radio' },
+        'Ghost Radio - Preview',
+        'Preview Mode',
+        'N1',
+      );
+      const block = /<noscript>[\s\S]*?<\/noscript>/i.exec(html);
+      expect(block).not.toBeNull();
+      expect(block![0]).toContain('Ghost Radio');
+      expect(block![0]).not.toContain('Wanderline Player');
+      // The tab suffix belongs in <title>, not in the reader's face.
+      expect(block![0]).not.toContain('- Preview');
+    });
+
+    it('escapes a story title containing HTML', () => {
+      const html = renderPreviewHtml(
+        { ...story, title: '<img src=x onerror=alert(1)>' },
+        'T',
+        'Preview Mode',
+        'N1',
+      );
+      const block = /<noscript>[\s\S]*?<\/noscript>/i.exec(html)![0];
+      expect(block).not.toMatch(/<img/i);
+      expect(block).toContain('&lt;img');
+    });
+
+    it('falls back to the tab title when the story has no title', () => {
+      const html = renderPreviewHtml({ ...story, title: '   ' }, 'Untitled', 'Preview Mode', 'N1');
+      const block = /<noscript>[\s\S]*?<\/noscript>/i.exec(html)![0];
+      expect(block).toContain('Untitled');
+    });
+  });
+
   it('injects a meta referrer=no-referrer to keep signed URLs off Referer', () => {
     const html = renderPreviewHtml(story, 'T', 'Preview Mode', 'N1');
     expect(html).toMatch(/<meta name="referrer" content="no-referrer">/);

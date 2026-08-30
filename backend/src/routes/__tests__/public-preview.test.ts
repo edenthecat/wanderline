@@ -334,6 +334,121 @@ describe('GET /public-preview/:token — anonymous HTML', () => {
     expect(res.text).toMatch(new RegExp(`/public-preview/${validToken}/audio/`));
   });
 
+  // This is the listener-facing surface, reached before any build
+  // exists. Shipping the player's hardcoded lang="en" here has a
+  // screen reader read a French story's captions with an English
+  // voice — the same defect the exported build fixes.
+  it('tags the document with the project language', async () => {
+    const { pool } = makePool([
+      () => ({ rows: [{ id: 'p1' }] }),
+      () => ({
+        rows: [
+          {
+            id: 'p1',
+            name: 'Le Fantôme',
+            story_graph: { title: 'Le Fantôme', nodes: {}, initialNode: null },
+            settings: { language: 'fr' },
+          },
+        ],
+      }),
+      () => ({ rows: [] }),
+      () => ({ rows: [] }),
+      () => ({ rows: [] }),
+      () => ({ rows: [] }),
+    ]);
+    const app = express();
+    attachLog(app);
+    const router = express.Router();
+    mountPublicPreviewRoutes(router, pool);
+    app.use('/public-preview', router);
+
+    const res = await request(app).get(`/public-preview/${validToken}`);
+    expect(res.status).toBe(200);
+    expect(res.text).toMatch(/<html lang="fr"/i);
+  });
+
+  it('keeps a project name containing $& intact in the title', async () => {
+    // `$&`, `` $` ``, `$'` and `$1` are special in a REPLACEMENT STRING.
+    // With one, a name like this spliced the matched <title> element
+    // back into itself and the tab read `Cost <title>Wanderline Player`.
+    // escapeHtml does not neutralise `$`, so only a replacer function
+    // fixes it.
+    const { pool } = makePool([
+      () => ({ rows: [{ id: 'p1' }] }),
+      () => ({
+        rows: [
+          {
+            id: 'p1',
+            name: 'Cost $& and $` end',
+            story_graph: { title: 'Cost $& and $` end', nodes: {}, initialNode: null },
+            settings: {},
+          },
+        ],
+      }),
+      () => ({ rows: [] }),
+      () => ({ rows: [] }),
+      () => ({ rows: [] }),
+      () => ({ rows: [] }),
+    ]);
+    const app = express();
+    attachLog(app);
+    const router = express.Router();
+    mountPublicPreviewRoutes(router, pool);
+    app.use('/public-preview', router);
+
+    const res = await request(app).get(`/public-preview/${validToken}`);
+    expect(res.status).toBe(200);
+    expect(res.text).toMatch(/<title>Cost \$&amp; and \$` end - Preview<\/title>/);
+    // The matched element must not reappear inside itself.
+    expect(res.text).not.toMatch(/<title>[^<]*<title>/);
+  });
+
+  it("keeps a project name containing $' out of the story payload", async () => {
+    // Worse than the title: the story JSON is spliced into the document
+    // with a replacement string, so `` $` `` expanded to the document's
+    // own head — including a </script> — INSIDE the story-data script
+    // block. That terminates the script early and corrupts the payload
+    // the player reads. The JSON's `<` escaping runs before the splice,
+    // so it does not help.
+    const nasty = "Ghost $` and $' and $& end";
+    const { pool } = makePool([
+      () => ({ rows: [{ id: 'p1' }] }),
+      () => ({
+        rows: [
+          {
+            id: 'p1',
+            name: nasty,
+            story_graph: { title: nasty, nodes: {}, initialNode: null },
+            settings: {},
+          },
+        ],
+      }),
+      () => ({ rows: [] }),
+      () => ({ rows: [] }),
+      () => ({ rows: [] }),
+      () => ({ rows: [] }),
+    ]);
+    const app = express();
+    attachLog(app);
+    const router = express.Router();
+    mountPublicPreviewRoutes(router, pool);
+    app.use('/public-preview', router);
+
+    const res = await request(app).get(`/public-preview/${validToken}`);
+    expect(res.status).toBe(200);
+    const script = res.text.match(/window\.__WANDERLINE_STORY__=(.*?);<\/script>/s);
+    expect(script).not.toBeNull();
+    const payload = script![1];
+    // The title survives verbatim...
+    expect(payload).toContain(JSON.stringify(nasty).slice(1, -1));
+    // ...and no document markup was spliced into it.
+    expect(payload).not.toContain('<!doctype');
+    expect(payload).not.toContain('</head>');
+    expect(payload).not.toContain('\\u003c/script');
+    // Exactly one story-data script, not one torn in half.
+    expect(res.text.match(/window\.__WANDERLINE_STORY__=/g)).toHaveLength(1);
+  });
+
   it('404s when the token is unknown', async () => {
     const { pool } = makePool([() => ({ rows: [] })]);
     const app = express();

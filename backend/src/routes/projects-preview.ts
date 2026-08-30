@@ -13,6 +13,8 @@ import {
   useSignedUrlDownloads,
 } from '../services/storage.js';
 import { renderThemeForPreview, type ThemeConfig } from '../services/theme-render.js';
+import { setHtmlLang, setNoscriptFallback } from '../services/build-html.js';
+import { normalizeBuildLanguage } from '../services/build-language.js';
 import { logger } from '../logger.js';
 
 /**
@@ -182,6 +184,12 @@ export function generatePreviewNonce(): string {
  * header. `sriOverride` lets the build-preview route pin the SRI to
  * a historical build's recorded hash; live preview passes null and
  * we read the current bundle-info.json.
+ *
+ * `language` is the project's own BCP-47 tag. The player template
+ * ships `lang="en"`, and the shareable /public-preview link is
+ * listener-facing, so leaving it alone would have a screen reader read
+ * a French story's captions with an English voice — the same defect
+ * the exported build fixes. Unset or malformed falls back to 'en'.
  */
 export function renderPreviewHtml(
   storyData: unknown,
@@ -189,8 +197,17 @@ export function renderPreviewHtml(
   bannerLabel: string,
   nonce: string,
   sriOverride: string | null = null,
+  language?: string,
 ): string {
   let html = getPlayerHtmlTemplate();
+  html = setHtmlLang(html, normalizeBuildLanguage(language));
+  // Same reasoning as the language: a listener sent a preview link
+  // with scripting off would otherwise be told "Wanderline Player"
+  // instead of the name of the story they were sent. The story's own
+  // title is preferred over `title`, which carries the " - Preview" /
+  // " — Build #3" suffix meant for the tab.
+  const storyTitle = (storyData as { title?: string } | null)?.title;
+  html = setNoscriptFallback(html, escapeHtml(storyTitle?.trim() || title));
 
   // Rewrite asset paths to use the global player assets route (no auth required)
   // Handle both absolute (/assets/) and relative (./assets/) paths from Vite builds
@@ -221,12 +238,17 @@ export function renderPreviewHtml(
     );
   }
 
-  html = html.replace(/<title>[^<]*<\/title>/, `<title>${escapeHtml(title)}</title>`);
+  // Replacer function, not a replacement string: `$&`, `` $` ``, `$'`
+  // and `$1` are special in a replacement string, so a project named
+  // "Cost $& up" spliced the matched <title> element back into itself
+  // and mangled the tab title. escapeHtml doesn't neutralise `$`.
+  // prepareDistHtml already does it this way for the built page.
+  html = html.replace(/<title>[^<]*<\/title>/, () => `<title>${escapeHtml(title)}</title>`);
 
   // no-referrer keeps signed-URL query strings + Idempotency
   // keys from leaking via the Referer header when the story navigates
   // to an external link.
-  html = html.replace(/<head>/, `<head>\n    <meta name="referrer" content="no-referrer">`);
+  html = html.replace(/<head>/, () => `<head>\n    <meta name="referrer" content="no-referrer">`);
 
   // +: theme injection. Pulls fonts from Google's CDN
   // via <link> and sets CSS variables on :root. The `<style>` block
@@ -237,7 +259,7 @@ export function renderPreviewHtml(
   let themeFragment = renderThemeForPreview(theme);
   if (themeFragment) {
     themeFragment = themeFragment.replace(/<style\b/g, `<style nonce="${nonce}"`);
-    html = html.replace('</head>', `${themeFragment}\n</head>`);
+    html = html.replace('</head>', () => `${themeFragment}\n</head>`);
   }
 
   // nonce on the story-data script so it runs under strict CSP.
@@ -256,7 +278,12 @@ export function renderPreviewHtml(
 .wl-preview-banner{background:#4caf50;color:white;text-align:center;padding:.5rem;font-size:.85rem}
 .wl-preview-banner button{background:none;border:none;color:white;cursor:pointer;margin-left:1rem;text-decoration:underline;font:inherit}
 </style>`;
-  const bannerHtml = `<div class="wl-preview-banner">${escapeHtml(bannerLabel)} <button data-wl-close="1">Close</button></div>`;
+  // lang="en": the document now carries the STORY's language, and this
+  // banner is our own untranslated chrome ("Preview Mode", "Build #3",
+  // "Close"). Without the marker a screen reader on a French preview
+  // link announces it with French phonetics — the same reason the
+  // player marks its own toolbar and footer.
+  const bannerHtml = `<div class="wl-preview-banner" lang="en">${escapeHtml(bannerLabel)} <button data-wl-close="1">Close</button></div>`;
   const closeScript = `<script nonce="${nonce}">
 document.addEventListener('click',function(e){
   var t=e.target;
@@ -268,8 +295,19 @@ document.addEventListener('click',function(e){
     throw new Error('Player template missing expected markers (</head> or <div id="root">)');
   }
 
-  html = html.replace('</head>', `${bannerStyle}\n${storyScript}\n${closeScript}\n</head>`);
-  html = html.replace(/<div\s+id="root"[^>]*><\/div>/, `${bannerHtml}\n    <div id="root"></div>`);
+  // Replacer functions throughout. `$&`, `` $` ``, `$'` and `$1` are
+  // special in a REPLACEMENT STRING, and these replacements carry
+  // author-controlled text: the project name reaches storyScript (via
+  // the story JSON) and bannerHtml. A name containing `` $` `` spliced
+  // the document's own head — including a `</script>` — into the middle
+  // of the story-data script, terminating it early and corrupting the
+  // payload the player reads. escapeHtml and the JSON `<` escaping both
+  // run BEFORE this, so neither one helps: the expansion happens here.
+  html = html.replace('</head>', () => `${bannerStyle}\n${storyScript}\n${closeScript}\n</head>`);
+  html = html.replace(
+    /<div\s+id="root"[^>]*><\/div>/,
+    () => `${bannerHtml}\n    <div id="root"></div>`,
+  );
   return html;
 }
 
@@ -321,8 +359,20 @@ export async function respondWithPreviewHtml(
       passwordExposure: 'omit',
     });
     const projectName = (project as Record<string, unknown>).name as string;
+    // Read from the raw settings rather than storyData: buildStoryData
+    // allowlists what reaches the player payload, and the language tag
+    // is document metadata rather than runtime data.
+    const projectSettings = (project as Record<string, unknown>).settings as
+      Record<string, unknown> | undefined;
     const nonce = generatePreviewNonce();
-    const html = renderPreviewHtml(storyData, `${projectName} - Preview`, opts.bannerLabel, nonce);
+    const html = renderPreviewHtml(
+      storyData,
+      `${projectName} - Preview`,
+      opts.bannerLabel,
+      nonce,
+      null,
+      projectSettings?.language as string | undefined,
+    );
     applyPreviewHeaders(res, nonce);
     res.send(html);
   } catch (error) {
