@@ -4,7 +4,7 @@
 // it's tested here with the tabs themselves stubbed out.
 
 import { useEffect } from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectDetail, StoryGraph, StoryNode } from '../../api/client';
 
@@ -113,6 +113,13 @@ import ProjectDetailPage from '../ProjectDetailPage';
 async function renderPage() {
   render(<ProjectDetailPage />);
   await waitFor(() => expect(screen.getByTestId('story-tab')).toBeInTheDocument());
+  // The chord binds in an effect, and waitFor resolves as soon as the
+  // element is in the DOM — which can be before that effect has run.
+  // Pressing into an unbound listener made these tests flake roughly
+  // one run in three, and only in the full suite, where the extra load
+  // widens the gap. Flush pending effects so the listener is attached
+  // before any test presses the chord.
+  await act(async () => {});
 }
 
 // The chord is platform-gated (⌘K on Apple, Ctrl-K elsewhere) and
