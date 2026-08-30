@@ -21,6 +21,15 @@ describe('mergeSettingsObject — allow-list', () => {
     expect(merged.somethingInvented).toBeUndefined();
   });
 
+  // Same failure mode as choiceIndicatorAudio: the build pipeline
+  // reads settings.language for <html lang> and the manifest, so
+  // dropping it here would leave the Settings control a no-op and
+  // every build stuck on English.
+  it('keeps the project language', () => {
+    const merged = mergeSettingsObject({}, { language: 'pt-BR' });
+    expect(merged.language).toBe('pt-BR');
+  });
+
   it('leaves the other known keys alone', () => {
     const merged = mergeSettingsObject(
       { voiceoverVolume: 80 },

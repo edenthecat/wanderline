@@ -36,7 +36,7 @@ Playing in a normal browser tab works, but audio is more likely to stall on
 a patchy connection and some phones will pause it when you lock the screen.
 
 - **iPhone / iPad (Safari):** tap **Share**, then **Add to Home Screen**.
-- **Android (Chrome):** tap the **⋮** menu, then **Install app** or **Add to Home screen**.
+- **Android (Chrome):** tap the **three-dot browser menu (⋮)**, then **Install app** or **Add to Home screen**.
 - **Desktop (Chrome / Edge):** click the **install** icon at the right-hand
   end of the address bar.
 

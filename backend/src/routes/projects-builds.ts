@@ -654,11 +654,27 @@ export function mountBuildRoutes(
       //; earlier rows carry null and the preview falls
       // back to the current bundle's SRI.
       const result = await pool.query(
+        // ps.settings is joined for the project's language tag only:
+        // the snapshot predates the setting and the player template
+        // ships lang="en", so without it a French build previews as
+        // English. LEFT JOIN because a project with no settings row
+        // must still preview.
+        //
+        // Deliberately the project's CURRENT language rather than the
+        // one the build shipped with. Recording it per build would
+        // mean either a new column or a new field inside
+        // story_snapshot — and the snapshot IS the payload that gets
+        // hashed into story_snapshot_hash, so adding to it would churn
+        // every project's hash. An author who changes the setting
+        // afterwards sees this preview disagree with that build's zip;
+        // that is a smaller wrong than every preview reading English.
         `SELECT pb.story_snapshot, pb.status, pb.build_number, pb.label,
                 pb.player_bundle_sri_hash,
-                p.name as project_name
+                p.name as project_name,
+                ps.settings as project_settings
          FROM project_builds pb
          JOIN projects p ON p.id = pb.project_id
+         LEFT JOIN project_settings ps ON ps.project_id = pb.project_id
          WHERE pb.id = $1 AND pb.project_id = $2 AND pb.deleted_at IS NULL`,
         [buildId, id],
       );
@@ -689,12 +705,14 @@ export function mountBuildRoutes(
         ? `Build #${row.build_number} — ${row.label}`
         : `Build #${row.build_number}`;
       const nonce = generatePreviewNonce();
+      const buildSettings = row.project_settings as Record<string, unknown> | null;
       const html = renderPreviewHtml(
         snapshot,
         `${row.project_name} — ${banner}`,
         banner,
         nonce,
         row.player_bundle_sri_hash ?? null,
+        buildSettings?.language as string | undefined,
       );
       applyPreviewHeaders(res, nonce);
       res.send(html);

@@ -101,6 +101,56 @@ function clearAwarenessField(awareness: Awareness, field: string): void {
   }
 }
 
+/**
+ * One chip per PERSON, not per connection.
+ *
+ * A Y.js awareness clientID is per WebSocket, so it changes every time
+ * a peer reconnects — a flaky network, a laptop waking, a server
+ * restart, or the room being invalidated after someone re-uploads. The
+ * chips are keyed on it, so each reconnect unmounted a peer's chip and
+ * mounted a new one: with a peer reconnecting in a loop the strip
+ * strobes. The same peer with two tabs open also drew two chips, which
+ * is just wrong on its own terms.
+ *
+ * Collapsing on userId makes a reconnect invisible — same key, same
+ * chip, nothing remounts. Peers with no userId (anonymous awareness,
+ * allowed by the server's filter) keep one entry per connection, since
+ * there is nothing else to identify them by.
+ *
+ * Keeps the LOWEST clientId per user so the surviving entry is stable
+ * while a peer reconnects: a new connection has a higher id, so it does
+ * not displace the entry already on screen. Sorted in here rather than
+ * relying on the caller's ordering, so the guarantee holds for any
+ * input — the exported test hook bypasses that caller entirely.
+ */
+export const _dedupeByUserForTests = (list: PresentUser[]) => dedupeByUser(list);
+
+function dedupeByUser(list: PresentUser[]): PresentUser[] {
+  const byUser = new Map<string, PresentUser>();
+  const anonymous: PresentUser[] = [];
+  for (const u of [...list].sort((a, b) => a.clientId - b.clientId)) {
+    if (!u.userId) {
+      anonymous.push(u);
+      continue;
+    }
+    const seen = byUser.get(u.userId);
+    if (!seen) {
+      byUser.set(u.userId, u);
+      continue;
+    }
+    // Prefer whichever connection is actually focused on a node, so a
+    // peer's "editing this" dot doesn't vanish because their other tab
+    // sorted first.
+    // Take ONLY the editing field from the later connection: spreading
+    // `u` wholesale carried its higher clientId across and undid the
+    // stability the ordering just bought.
+    if (!seen.editingNodeId && u.editingNodeId) {
+      byUser.set(u.userId, { ...seen, editingNodeId: u.editingNodeId });
+    }
+  }
+  return [...byUser.values(), ...anonymous].sort((a, b) => a.clientId - b.clientId);
+}
+
 function samePresence(a: PresentUser[], b: PresentUser[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
@@ -218,7 +268,7 @@ export function usePresence({
       // Stable ordering — chips shouldn't reshuffle when an
       // unrelated awareness field updates.
       list.sort((a, b) => a.clientId - b.clientId);
-      setOthers((prev) => (samePresence(prev, list) ? prev : list));
+      setOthers((prev) => (samePresence(prev, dedupeByUser(list)) ? prev : dedupeByUser(list)));
     };
     recompute();
     awareness.on('change', recompute);

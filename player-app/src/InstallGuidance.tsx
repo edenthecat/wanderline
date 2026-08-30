@@ -50,7 +50,10 @@ const INSTRUCTIONS: Record<Platform, { steps: string; note?: string }> = {
     note: 'On iPhone and iPad this only works in Safari.',
   },
   android: {
-    steps: 'Open the browser menu (⋮), then “Install app” or “Add to Home screen”.',
+    // Named in words, not just the glyph: a screen reader announces a
+    // bare ⋮ as "vertical ellipsis" or skips it, which leaves the
+    // instruction pointing at nothing.
+    steps: 'Open the three-dot browser menu (⋮), then “Install app” or “Add to Home screen”.',
   },
   desktop: {
     steps: 'Click the install icon at the right-hand end of the address bar.',
