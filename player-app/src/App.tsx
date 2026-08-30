@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useOfflineSupport } from './useOfflineSupport';
 import { useMediaControls } from './useMediaControls';
 import { useAudioCache } from './useAudioCache';
@@ -157,6 +157,18 @@ function isFromSettingsPanel(e: { target: EventTarget | null }): boolean {
   const target = e.target;
   if (!target || typeof (target as Element).closest !== 'function') return false;
   return (target as Element).closest('#' + SETTINGS_PANEL_ID) !== null;
+}
+
+/**
+ * Confirm an irreversible wipe. Extracted so the call site reads as one
+ * decision and so a host without `window.confirm` (or a test that has
+ * not stubbed it) proceeds rather than throwing.
+ */
+function confirmRestart(): boolean {
+  if (typeof window === 'undefined' || typeof window.confirm !== 'function') return true;
+  return window.confirm(
+    'Restart the story? This deletes every save for this story, including manual saves.',
+  );
 }
 
 const STORAGE_PREFIX = 'wanderline_';
@@ -1499,6 +1511,15 @@ export default function App() {
 
   const restart = useCallback(() => {
     if (story) {
+      // Confirm first. Restart wipes every manual save as well as the
+      // autosave, and it is one keypress from the header toolbar — the
+      // target guard handed Space and Enter back to buttons, so this
+      // became reachable by keyboard for the first time. A listener
+      // tabbing the toolbar for the pause control lands on Restart and
+      // presses Space, which the footer advertises as pause, and their
+      // saves are gone with no undo. The `r` shortcut is already kept
+      // out of the settings panel for exactly this reason.
+      if (saveSlots.length > 0 && !confirmRestart()) return;
       // also wipe the new slots key. Manual saves get removed
       // alongside the autosave so a "restart" is a clean slate.
       clearAllSlots(story.id);
@@ -1515,7 +1536,7 @@ export default function App() {
       setPlayerState('ready');
       pendingAutoplayNodeIdRef.current = null;
     }
-  }, [story]);
+  }, [story, saveSlots]);
 
   // — save slot management. These operate against the slot
   // array in state, then persist via writeSlots(). They're stable
@@ -1746,15 +1767,26 @@ export default function App() {
       // does claim — activates whatever has focus. Left global while
       // focus sat on, say, the Play button, the two disagreed: arrow
       // twice, hear "Choice 3 of 3", press Enter, and play/pause fired.
-      // So the arrows stand down on any focused control, EXCEPT inside
-      // the choice list itself, where focus follows the armed choice and
-      // the two stay in step by construction.
+      // Rather than standing the arrows down, hand focus INTO the list:
+      // then Enter and the armed choice agree by construction, which is
+      // all the bail was ever for. Standing down cost more than it
+      // bought — every browser leaves focus on a <button> after a
+      // pointer click, so a listener who clicked Play or Back lost
+      // arrow cycling entirely, with nothing on screen to say why.
+      //
+      // A control that genuinely owns the arrows (a volume slider) has
+      // already returned at keyBelongsToTarget above, so this only ever
+      // catches controls with no claim on them.
       if (
         CHOICE_CYCLE_KEYS.has(e.key) &&
         isFromInteractiveElement(e) &&
         !choiceNavRef.current?.contains(e.target as Node | null)
       ) {
-        return;
+        const armed = choiceNavRef.current?.querySelectorAll('button')[selectedChoice];
+        // No list to move into (a passage with a plain divert): leave
+        // the press alone rather than cycling something invisible.
+        if (!armed) return;
+        armed.focus();
       }
 
       switch (e.key) {
@@ -1895,12 +1927,22 @@ export default function App() {
   // flag would have re-inserted the region already populated on the way
   // back — silent again, exactly what it exists to prevent.
   const [narrationRegistered, setNarrationRegistered] = useState(false);
-  // useLayoutEffect, not useEffect: the empty commit is only there to
-  // give the live region an insertion of its own to be registered on,
-  // and the accessibility tree follows DOM operations rather than
-  // paints. Running before paint keeps the announcement while sparing
-  // the listener a frame of story screen with no caption card in it.
-  useLayoutEffect(() => {
+  // useEffect, NOT useLayoutEffect. The empty commit exists to give the
+  // live region an insertion of its own to be registered on before any
+  // content lands in it. useLayoutEffect runs synchronously in the same
+  // task as the commit that inserted <main>, so both operations can
+  // coalesce into a single accessibility-tree update and the region is
+  // observed already populated — precisely the case this is meant to
+  // avoid, and it fails silently on the opening passage, the one a
+  // blind listener has no other way to learn about.
+  //
+  // Letting a paint separate them costs at most one frame of story
+  // screen without a caption card, which is the right trade.
+  //
+  // No test pins this: swapping the two leaves the whole suite green,
+  // because the assertions check the SHAPE of the DOM change rather
+  // than registration timing. Verify on hardware before changing it.
+  useEffect(() => {
     setNarrationRegistered(storyScreenVisible);
   }, [storyScreenVisible]);
 
@@ -2356,7 +2398,6 @@ export default function App() {
             <button
               onClick={() => setShowSettings(!showSettings)}
               style={{ ...styles.headerBtn, ...(showSettings ? styles.headerBtnActive : {}) }}
-              aria-pressed={showSettings}
               aria-expanded={showSettings}
               {...(showSettings ? { 'aria-controls': SETTINGS_PANEL_ID } : {})}
               aria-label="Settings"

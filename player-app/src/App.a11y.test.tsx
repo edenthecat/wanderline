@@ -49,6 +49,34 @@ class MockAudio {
   removeEventListener() {}
 }
 
+// A passage whose only way onward is a divert: no choice list exists,
+// so there is nothing for the arrows to hand focus to.
+const divertOnlyStory = {
+  id: 'a11y-divert',
+  title: 'A11y Divert',
+  audioBaseUrl: './audio/',
+  startNode: 'start',
+  nodes: {
+    start: {
+      id: 'start',
+      type: 'knot',
+      content: [{ text: 'Welcome to the story.' }],
+      choices: [],
+      divert: 'onward',
+      tags: [],
+      audio: { voiceover: 'start.mp3' },
+    },
+    onward: {
+      id: 'onward',
+      type: 'knot',
+      content: [{ text: 'Onward.' }],
+      choices: [],
+      divert: 'END',
+      tags: [],
+    },
+  },
+};
+
 const threeChoiceStory = {
   id: 'a11y-story',
   title: 'A11y Story',
@@ -332,20 +360,79 @@ describe('keyboard access to on-screen controls', () => {
     );
   });
 
-  it('leaves the arrows alone while focus sits on a control outside the list', async () => {
+  it('confirms before Restart wipes saves, and honours a cancel', async () => {
+    // The target guard handed Space and Enter back to buttons, which
+    // made the header's Restart reachable by keyboard for the first
+    // time — and it clears every manual save with no undo. A listener
+    // tabbing the toolbar for the pause control lands on it and presses
+    // Space, which the footer advertises as pause.
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      localStorage.setItem(
+        'wanderline_a11y-story_slots',
+        JSON.stringify([
+          {
+            id: 'manual-1',
+            name: 'Chapter 2',
+            nodeId: 'left',
+            history: ['start'],
+            savedAt: '2026-01-01T00:00:00.000Z',
+          },
+        ]),
+      );
+      await renderStory();
+
+      const restart = screen.getByRole('button', { name: 'Restart story from beginning' });
+      restart.focus();
+      fireEvent.keyDown(restart, { key: ' ', bubbles: true });
+      fireEvent.click(restart);
+
+      expect(confirmSpy).toHaveBeenCalled();
+      // Cancelled: the save survives.
+      expect(localStorage.getItem('wanderline_a11y-story_slots')).toContain('Chapter 2');
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it('hands focus to the choice list when the arrows come from another control', async () => {
     // The arrows move the armed choice; Enter activates whatever has
     // focus. Both global at once, the two disagree — arrow twice with
     // focus on Play, hear "Choice 3 of 3", press Enter, and playback
-    // toggles. The choice buttons are always in the DOM now, so Tab and
-    // Enter are the keyboard route from here.
+    // toggles.
+    //
+    // Standing the arrows down instead cost more than it bought: every
+    // browser leaves focus on a <button> after a pointer click, so a
+    // listener who clicked Play lost cycling entirely with nothing to
+    // say why. Moving focus INTO the list makes the two agree by
+    // construction, which is what the stand-down was for.
     await renderStory({ ...threeChoiceStory, settings: { showChoiceList: false } });
 
     const playButton = screen.getByRole('button', { name: /^(Play|Pause|Loading) / });
     const event = createEvent.keyDown(playButton, { key: 'ArrowDown', bubbles: true });
     fireEvent(playButton, event);
 
+    // Focus moved into the list, and the arrow still cycled.
+    await waitFor(() =>
+      expect(screen.getByLabelText('Choice 2: Go right')).toHaveAttribute('aria-current', 'true'),
+    );
+    expect(document.activeElement).toBe(screen.getByLabelText('Choice 2: Go right'));
+  });
+
+  it('leaves the arrows alone when there is no choice list to move into', async () => {
+    // A passage with a plain divert has no armed choice to hand focus
+    // to, so the press stays with whatever had it rather than cycling
+    // something that is not on screen.
+    await renderStory(divertOnlyStory);
+
+    const playButton = screen.getByRole('button', { name: /^(Play|Pause|Loading) / });
+    playButton.focus();
+    const event = createEvent.keyDown(playButton, { key: 'ArrowDown', bubbles: true });
+    fireEvent(playButton, event);
+
     expect(event.defaultPrevented).toBe(false);
-    expect(screen.getByLabelText('Choice 1: Go left')).toHaveAttribute('aria-current', 'true');
+    // Focus stays where it was rather than being pulled somewhere.
+    expect(document.activeElement).toBe(playButton);
   });
 
   it('still cycles choices with the arrows from inside the list', async () => {
@@ -432,7 +519,14 @@ describe('keyboard access to on-screen controls', () => {
     expect(screen.queryByText('You went left.')).not.toBeInTheDocument();
   });
 
-  it('still confirms on Enter with a story button focused', async () => {
+  it('still runs the global shortcut with focus on the story region', async () => {
+    // Fires on <main tabIndex={-1}>, not a button — which is the point.
+    // It pins the deliberate exclusion of bare [tabindex] from the
+    // interactive selector: <main> is the post-choice focus target and
+    // must keep receiving the shortcuts. Named for a button, it
+    // advertised coverage it does not have and hid the coverage it
+    // does.
+    //
     // Outside the panel the global shortcut is intact: a <button>
     // claims Enter, but the Back button is only rendered once there is
     // history, so use the story-region heading area — nothing
@@ -489,10 +583,22 @@ describe('screen-reader structure', () => {
     expect(document.querySelector('[role="application"]')).toBeNull();
   });
 
-  it('keeps the story landmarks and heading reachable', async () => {
+  it('gives the root container no role, so browse mode survives', async () => {
+    // role="application" on the root suppressed the virtual cursor in
+    // NVDA and JAWS, so a blind listener could not arrow through the
+    // captions — which are the accessible transcript of an audio
+    // medium. Asserting the landmarks alone proved nothing: the role
+    // never removed them from the DOM, so that assertion stayed green
+    // with the bug in place.
     await renderStory();
 
-    expect(screen.getByRole('banner')).toBeInTheDocument();
+    const banner = screen.getByRole('banner');
+    const root = banner.parentElement as HTMLElement;
+    expect(root).not.toBeNull();
+    expect(root.getAttribute('role')).toBeNull();
+    // And nothing else reintroduces it further up.
+    expect(document.querySelector('[role="application"]')).toBeNull();
+
     expect(screen.getByRole('main')).toBeInTheDocument();
     expect(screen.getByRole('heading', { level: 1, name: 'A11y Story' })).toBeInTheDocument();
   });
