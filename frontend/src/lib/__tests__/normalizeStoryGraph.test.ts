@@ -151,6 +151,33 @@ describe('normalizeStoryGraph', () => {
     expect(normalizeStoryGraph(g, 'ink').nodes['Hall.Door'].choices[0].target).toBe('Hall.Key');
   });
 
+  it("rewrites a node's own id to the key it is filed under", () => {
+    // Every lookup in the app is `nodes[id]`, so the record key is the
+    // real identity; a stale `node.id` shows a passage in one tab that
+    // the other can't find. The backend's rename cascade only rewrites
+    // a stitch's own id when it already matched its key.
+    const g = normalizeStoryGraph(
+      graph({ start: node('start'), 'start.two': node('stale_id', { type: 'stitch' }) }, 'start'),
+      'ink',
+    );
+    expect(g.nodes['start.two'].id).toBe('start.two');
+    expect(g.nodes.start.id).toBe('start');
+  });
+
+  it('repairs node ids on Twee graphs too, where target scoping does not apply', () => {
+    const g = graph(
+      {
+        'Hall.Door': node('stale', { choices: [{ text: 'k', target: 'Key' }] }),
+        'Hall.Key': node('Hall.Key', { divert: 'END' }),
+      },
+      'Hall.Door',
+    );
+    const out = normalizeStoryGraph(g, 'twee');
+    expect(out.nodes['Hall.Door'].id).toBe('Hall.Door');
+    // ...and the broken bare target is still left alone.
+    expect(out.nodes['Hall.Door'].choices[0].target).toBe('Key');
+  });
+
   it('keeps a node named __proto__', () => {
     const g = normalizeStoryGraph(
       graph({

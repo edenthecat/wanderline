@@ -3150,6 +3150,16 @@ details[open] > .audio-section-summary {
   display: none;
 }
 
+/* The workspace region takes focus programmatically when the command
+   palette closes and the element that opened it is gone. It's a
+   container, not a control, so a 2px ring around the whole editor is
+   noise — and Chrome would draw one, because it carries focus-visible
+   over from the palette input the focus came from. */
+.workspace-main:focus,
+.workspace-main:focus-visible {
+  outline: none;
+}
+
 .workspace-mobile-sheet-backdrop {
   display: none;
 }
@@ -3658,4 +3668,151 @@ which is context rather than a problem. */ .node-flag-badge {
   font-size: 13px;
   /* Reviewer notes are free text and may be pasted. */
   overflow-wrap: anywhere;
+}
+
+/* === ⌘K command palette === */
+
+.command-palette-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.45);
+  z-index: 200;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 12vh 16px 16px;
+  animation: command-palette-fade 120ms ease-out;
+}
+
+.command-palette {
+  width: 100%;
+  max-width: 560px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  box-shadow: 0 24px 48px -12px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+  animation: command-palette-rise 140ms ease-out;
+}
+
+/* Users who've asked their OS for less motion get the palette with
+   no fade and no rise — it just appears. */
+@media (prefers-reduced-motion: reduce) {
+  .command-palette-backdrop,
+  .command-palette {
+    animation: none;
+  }
+}
+
+@keyframes command-palette-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes command-palette-rise {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.command-palette-input {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--color-border);
+  border-radius: 0;
+  padding: 16px 18px;
+  font-size: 16px;
+  font-family: inherit;
+  color: var(--color-text);
+  background: transparent;
+}
+
+.command-palette-input:focus {
+  outline: none;
+  border-bottom-color: var(--color-primary);
+}
+
+.command-palette-list {
+  max-height: 45vh;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.command-palette-group {
+  padding: 8px 12px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.command-palette-option {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.command-palette-option.is-active {
+  background: var(--color-bg);
+  /* border-left rather than an inset box-shadow: forced-colors mode
+     drops shadows and overrides backgrounds, which left the keyboard
+     selection with no visible marker at all. aria-selected still
+     carried it for a screen reader, but a low-vision author arrowing
+     the list saw nothing move. Padding compensates so rows don't
+     shift as the selection travels. */
+  border-left: 2px solid var(--color-primary);
+  padding-left: 10px;
+}
+
+@media (forced-colors: active) {
+  .command-palette-option.is-active {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+}
+
+.command-palette-option-label {
+  font-weight: 600;
+  white-space: nowrap;
+  /* Without min-width a nowrap flex item refuses to shrink, so a long
+     knot id squeezes the excerpt to nothing and then gets clipped by
+     the palette's own overflow with no ellipsis of its own. */
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.command-palette-option-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.command-palette-empty,
+.command-palette-truncated {
+  padding: 14px 18px;
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
+.command-palette-truncated {
+  border-top: 1px solid var(--color-border);
 }

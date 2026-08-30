@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { fetchProject, type ProjectDetail } from '../api/client';
 import StoryTab from '../components/StoryTab';
@@ -18,6 +18,9 @@ import HeadphoneControlsTab from '../components/HeadphoneControlsTab';
 import PlayerDisplayTab from '../components/PlayerDisplayTab';
 import YjsDemoField from '../components/YjsDemoField';
 import { PresenceChips } from '../components/PresenceChips';
+import CommandPalette from '../components/CommandPalette';
+import { useCommandPaletteShortcut } from '../hooks/useCommandPaletteShortcut';
+import type { PaletteActions } from '../lib/commandPalette';
 import { useYjs } from '../hooks/useYjs';
 import { useYjsUndo } from '../hooks/useYjsUndo';
 import { usePresence } from '../hooks/usePresence';
@@ -107,6 +110,46 @@ export default function ProjectDetailPage() {
   const bumpSourceResetKey = useCallback(() => setSourceResetKey((n) => n + 1), []);
   const exportRef = useRef<HTMLDivElement>(null);
   const exportBtnRef = useRef<HTMLButtonElement>(null);
+
+  // ⌘K command palette. Open state lives here because the palette
+  // acts ACROSS tabs — it has to be able to switch the active tab and
+  // then hand the target passage to whichever tab took over.
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const togglePalette = useCallback(() => setPaletteOpen((v) => !v), []);
+  // Only bind the chord when there is actually a palette to show, and
+  // on the same condition the render guards below use. Otherwise it
+  // flips a palette nothing renders — which then arrives already open
+  // when the fetch lands — and swallows the browser's own Ctrl-K for
+  // nothing on the error page. `project !== null` alone isn't enough:
+  // a silent refetch failure leaves it set behind the error page, and
+  // an id change leaves it set while the next one loads.
+  useCommandPaletteShortcut(togglePalette, project !== null && !loading && !error);
+  // Focus lands here when a jump unmounts the button that opened the
+  // palette (it switched tabs). tabIndex={-1} makes the region
+  // programmatically focusable without adding a tab stop.
+  const workspaceMainRef = useRef<HTMLElement>(null);
+  const closePalette = useCallback(() => setPaletteOpen(false), []);
+  // One-shot jump request handed to a tab. `tab` says who should
+  // consume it; the consumer calls onJumpHandled and we clear it, so
+  // re-entering that tab later doesn't re-trigger a stale jump.
+  const [passageJump, setPassageJump] = useState<{ nodeId: string; tab: Tab } | null>(null);
+  const clearPassageJump = useCallback(() => setPassageJump(null), []);
+  const jumpToNode = useCallback(
+    (nodeId: string) => {
+      // Land where the passage is actually legible: the Graph tab can
+      // centre its canvas on the node, so someone working in the graph
+      // stays in the graph. From anywhere else, the Story tab's
+      // existing expand + scroll path is the destination.
+      const tab: Tab = activeTab === 'graph' ? 'graph' : 'story';
+      setActiveTab(tab);
+      // Same housekeeping as pickTab: on mobile the group sheet would
+      // otherwise stay open on top of the passage we just jumped to.
+      setMobileSheet(null);
+      setPassageJump({ nodeId, tab });
+    },
+    [activeTab],
+  );
+  const paletteActions = useMemo<PaletteActions>(() => ({ jumpToNode }), [jumpToNode]);
 
   // presence. useYjs is single-instance per project,
   // so calling it here piggybacks on the same connection StoryTab
@@ -261,7 +304,7 @@ export default function ProjectDetailPage() {
           </nav>
         </aside>
 
-        <main className="workspace-main">
+        <main className="workspace-main" ref={workspaceMainRef} tabIndex={-1}>
           <header className="workspace-toolbar">
             <div className="workspace-toolbar-title">
               <Link to="/" className="workspace-toolbar-back" aria-label="Back to projects">
@@ -355,6 +398,8 @@ export default function ProjectDetailPage() {
                 onSourceReplaced={bumpSourceResetKey}
                 otherPresence={presentUsers}
                 onSelfEditingNodeChange={setSelfEditingNodeId}
+                jumpRequest={passageJump?.tab === 'story' ? passageJump : null}
+                onJumpHandled={clearPassageJump}
               />
             )}
             {activeTab === 'audio' && (
@@ -373,6 +418,8 @@ export default function ProjectDetailPage() {
                 sourceResetKey={sourceResetKey}
                 onStoryUpdated={() => loadProject({ silent: true })}
                 onSourceReplaced={bumpSourceResetKey}
+                jumpRequest={passageJump?.tab === 'graph' ? passageJump : null}
+                onJumpHandled={clearPassageJump}
               />
             )}
             {activeTab === 'theme' && <ThemeTab projectId={id} />}
@@ -411,6 +458,14 @@ export default function ProjectDetailPage() {
           </div>
         </main>
       </div>
+
+      <CommandPalette
+        open={paletteOpen}
+        onClose={closePalette}
+        storyGraph={project.story_graph}
+        actions={paletteActions}
+        fallbackFocusRef={workspaceMainRef}
+      />
 
       {/* Mobile bottom navigation: 4 group buttons; tapping opens a
           sheet of the tools inside. Hidden on desktop via CSS. */}

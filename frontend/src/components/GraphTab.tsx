@@ -24,6 +24,7 @@ import { updateChoiceTarget, updateDivert, type StoryGraph, type StoryNode } fro
 import NodeDetail from './NodeDetail';
 import InkSourceEditor from './InkSourceEditor';
 import { useNodeEditor } from '../hooks/useNodeEditor';
+import { nodeContentText, nodeMatchesQuery, normalizeQuery } from '../lib/nodeSearch';
 import { uploadInk } from '../api/client';
 import { useYjs } from '../hooks/useYjs';
 import { useYjsSeedReady } from '../hooks/useStoryYDoc';
@@ -44,6 +45,12 @@ interface Props {
   /** Called after this tab's source-editor Save lands so the parent
    * bumps sourceResetKey for the other tabs' editors. */
   onSourceReplaced: () => void;
+  /** One-shot request from the ⌘K palette: centre the canvas on this
+   * passage and select it. A NEW object means "jump again". */
+  jumpRequest?: { nodeId: string } | null;
+  /** Called once the request above has been acted on, so the parent
+   * can clear it instead of re-firing it on a later visit. */
+  onJumpHandled?: () => void;
 }
 
 // Node sizing — fed into both the dagre layout and the React Flow render.
@@ -403,7 +410,7 @@ function buildLayout(
     const sn = storyGraph.nodes[id];
     const isStart = id === storyGraph.startNode;
     const ending = isEnding(sn);
-    const contentText = sn.content?.map((c) => c.text).join(' ') ?? '';
+    const contentText = nodeContentText(sn);
     const preview = contentText.length > 140 ? `${contentText.slice(0, 140).trim()}…` : contentText;
     const cardHeight = estimateCardHeight(sn);
     nodes.push({
@@ -547,6 +554,8 @@ function GraphTabInner({
   sourceResetKey,
   onStoryUpdated,
   onSourceReplaced,
+  jumpRequest = null,
+  onJumpHandled,
 }: Props) {
   // Same Y.Doc as StoryTab so collaborative choice-text edits stay in
   // sync across whichever tab is open. Note: useYjs maintains a
@@ -685,21 +694,17 @@ function GraphTabInner({
   // unmatched) and the path-trace bar offers a "jump to match" affordance.
   const [search, setSearch] = useState('');
   const matchedIds = useMemo(() => {
-    const q = search.trim().toLowerCase();
+    // null = no search is active, which is distinct from "a search
+    // that matched nothing" — the card overlays key off that.
+    const q = normalizeQuery(search);
     if (!q) return null;
     const ids = new Set<string>();
     if (!storyGraph) return ids;
+    // Record key, not node.id — buildLayout stamps the React Flow
+    // node ids from the same keys, and the overlay classes are looked
+    // up by those.
     for (const [id, node] of Object.entries(storyGraph.nodes)) {
-      if (id.toLowerCase().includes(q)) {
-        ids.add(id);
-        continue;
-      }
-      const text =
-        node.content
-          ?.map((c) => c.text)
-          .join(' ')
-          .toLowerCase() ?? '';
-      if (text.includes(q)) ids.add(id);
+      if (nodeMatchesQuery(id, node, q)) ids.add(id);
     }
     return ids;
   }, [search, storyGraph]);
@@ -912,22 +917,84 @@ function GraphTabInner({
   useEffect(() => {
     setMatchCursor(0);
   }, [matchedIds]);
-  const jumpToNextMatch = useCallback(() => {
-    if (!matchedIds || matchedIds.size === 0) return;
-    const order = Array.from(matchedIds);
-    const idx = matchCursor % order.length;
-    const targetId = order[idx];
-    const target = nodes.find((n) => n.id === targetId);
-    if (target) {
+  // Centre the canvas on one node and select it. Returns false when
+  // the node isn't in the current layout yet, which lets callers
+  // wait for it rather than silently doing nothing.
+  const focusNode = useCallback(
+    (nodeId: string) => {
+      const target = nodes.find((n) => n.id === nodeId);
+      if (!target) return false;
       rf.setCenter(
         target.position.x + NODE_WIDTH / 2,
         target.position.y + nodeHeightOf(target) / 2,
         { zoom: 1, duration: 300 },
       );
-      setSelectedNodeId(targetId);
-    }
+      setSelectedNodeId(nodeId);
+      return true;
+    },
+    [nodes, rf],
+  );
+
+  const jumpToNextMatch = useCallback(() => {
+    if (!matchedIds || matchedIds.size === 0) return;
+    const order = Array.from(matchedIds);
+    const idx = matchCursor % order.length;
+    focusNode(order[idx]);
     setMatchCursor((c) => c + 1);
-  }, [matchedIds, matchCursor, nodes, rf]);
+  }, [matchedIds, matchCursor, focusNode]);
+
+  // Whether the slide-in source editor holds an unsaved draft. StoryTab
+  // has carried this for its own view switch; GraphTab never wired it,
+  // so nothing here could tell a clean panel from a dirty one.
+  const sourceDirtyRef = useRef(false);
+  const handleSourceDirtyChange = useCallback((dirty: boolean) => {
+    sourceDirtyRef.current = dirty;
+  }, []);
+  // Closing the panel discards the draft with it, so the flag must not
+  // survive into the next time it opens.
+  useEffect(() => {
+    if (!sourceOpen) sourceDirtyRef.current = false;
+  }, [sourceOpen]);
+
+  // Cross-tab jump from the command palette. `focusNode` changes
+  // identity when the layout does, so a request that arrives before
+  // dagre has placed the node retries once the nodes land.
+  useEffect(() => {
+    if (!jumpRequest) return;
+    // Not in the story at all — a deleted passage, or no story loaded.
+    // Acknowledge instead of waiting forever: an unacknowledged
+    // request would re-fire the next time this tab mounts, which is
+    // exactly the stale jump onJumpHandled exists to prevent.
+    if (!storyGraph?.nodes[jumpRequest.nodeId]) {
+      onJumpHandled?.();
+      return;
+    }
+    if (!focusNode(jumpRequest.nodeId)) return;
+    // The slide-in source panel overlays the right edge of the canvas
+    // AND the detail rail, so a jump would centre the passage under
+    // it and hide the rail that confirms the selection. Evict it, the
+    // way StoryTab forces its own nodes view.
+    //
+    // Ask first when it holds unsaved work. StoryTab guards its own
+    // view switch this way; without the same guard here, an author
+    // mid-rewrite who pressed Cmd-K to check a passage name lost the
+    // draft with no prompt and no undo — and Cmd-K then Enter is a far
+    // easier accident than deliberately clicking the panel's close
+    // button. Acknowledge the request either way, or a declined
+    // confirm leaves it pending and it re-fires on the next mount.
+    if (sourceDirtyRef.current) {
+      const ok = window.confirm(
+        'You have unsaved changes in the Source editor. Leave the Source view anyway?\n\n' +
+          'Your unsaved edits will be discarded.',
+      );
+      if (!ok) {
+        onJumpHandled?.();
+        return;
+      }
+    }
+    setSourceOpen(false);
+    onJumpHandled?.();
+  }, [jumpRequest, storyGraph, focusNode, onJumpHandled]);
 
   if (!storyGraph) {
     return (
@@ -1240,6 +1307,7 @@ function GraphTabInner({
           <InkSourceEditor
             initialSource={inkSource ?? ''}
             onSave={handleSaveInkSource}
+            onDirtyChange={handleSourceDirtyChange}
             onClose={() => setSourceOpen(false)}
             resetKey={`${projectId}#${sourceResetKey}`}
           />

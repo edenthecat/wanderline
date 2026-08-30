@@ -19,6 +19,7 @@ import NodeRenameButton from './NodeRenameButton';
 import { useYjs } from '../hooks/useYjs';
 import { useNodeEditor } from '../hooks/useNodeEditor';
 import { useYjsSeedReady } from '../hooks/useStoryYDoc';
+import { nodeMatchesQuery, normalizeQuery } from '../lib/nodeSearch';
 
 interface Props {
   projectId: string;
@@ -54,6 +55,14 @@ interface Props {
    */
   otherPresence: import('../hooks/usePresence').PresentUser[];
   onSelfEditingNodeChange: (nodeId: string | null) => void;
+  /** One-shot request from the ⌘K palette: expand + scroll to this
+   * passage as soon as this tab is mounted. A NEW object means "jump
+   * again", so the same passage twice in a row still works. */
+  jumpRequest?: { nodeId: string } | null;
+  /** Called once the request above has been acted on so the parent
+   * can clear it — otherwise coming back to this tab later would
+   * re-run a stale jump. */
+  onJumpHandled?: () => void;
 }
 
 type TypeFilter = 'all' | 'knot' | 'stitch';
@@ -77,6 +86,8 @@ export default function StoryTab({
   onSourceReplaced,
   otherPresence,
   onSelfEditingNodeChange,
+  jumpRequest = null,
+  onJumpHandled,
 }: Props) {
   const vocab = useVocab(sourceLanguage, nomenclaturePreference);
   const useTweeEditor = sourceLanguage === 'twee';
@@ -103,6 +114,14 @@ export default function StoryTab({
   // surface (lets authors edit + save back to ink_source from the
   // same tab they're already in).
   const [view, setView] = useState<'nodes' | 'source'>('nodes');
+  // Read by jumpToNode, which must stay referentially stable — it's a
+  // dependency of the cross-tab jump effect below. Synced in an
+  // effect rather than during render; every jumpToNode caller runs
+  // after commit.
+  const viewRef = useRef(view);
+  useEffect(() => {
+    viewRef.current = view;
+  }, [view]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Track whether the InkSourceEditor has unsaved edits so the file-
   // upload flow can confirm with the user before discarding them.
@@ -187,6 +206,16 @@ export default function StoryTab({
   const handleSourceDirtyChange = useCallback((dirty: boolean) => {
     sourceDirtyRef.current = dirty;
   }, []);
+
+  // The source editors report dirty only on a TRANSITION and never
+  // report clean on unmount, so once the view is left while dirty the
+  // ref strands at true: the next jump (or "Replace story file") would
+  // raise a phantom "you have unsaved edits" confirm over an editor
+  // that isn't even mounted. Leaving the view means there's no draft
+  // left to lose.
+  useEffect(() => {
+    if (view !== 'source') sourceDirtyRef.current = false;
+  }, [view]);
 
   // Shared editor state + handlers. GraphTab calls the same hook so
   // both views drive the same NodeDetail panel through the same
@@ -336,8 +365,21 @@ export default function StoryTab({
   // ValidationPanel and StoryHealthPanel.
   const jumpToNode = useCallback(
     (nodeId: string) => {
+      // The node list only exists in the 'nodes' view, and jumps now
+      // arrive from the ⌘K palette while the author may be in the
+      // Source view. Leaving that view unmounts the editor and drops
+      // an unsaved draft, so ask first — same guard, and the same
+      // wording, as the "Replace story file" path below.
+      if (viewRef.current === 'source' && sourceDirtyRef.current) {
+        const ok = window.confirm(
+          'You have unsaved changes in the Source editor. Leave the Source view anyway?\n\n' +
+            'Your unsaved edits will be discarded.',
+        );
+        if (!ok) return;
+      }
       setSearch('');
       setTypeFilter('all');
+      setView('nodes');
       // Keep the editing stack in sync with expandedNodes so a
       // later toggleNode call doesn't drift. Jumping also focuses
       // the user on the target, so promote it to stack top.
@@ -361,6 +403,17 @@ export default function StoryTab({
         const el = document.querySelector(selector);
         if (el) {
           el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          // Move the keyboard point of regard too, not just the
+          // viewport. The palette restores focus to whatever invoked
+          // it, so without this a screen-reader author pressed Enter,
+          // heard nothing, and was left at the top of the page while
+          // the list silently scrolled four hundred passages down —
+          // on the one feature whose entire purpose is moving where
+          // you are. The knot header is a real <button> carrying
+          // aria-expanded, so landing there announces the passage and
+          // its state.
+          const header = el.querySelector('button.node-header') as HTMLElement | null;
+          (header ?? (el as HTMLElement)).focus?.();
           return;
         }
         if (attempts++ < 10) setTimeout(tryScroll, 50);
@@ -369,6 +422,15 @@ export default function StoryTab({
     },
     [onSelfEditingNodeChange],
   );
+
+  // Consume a cross-tab jump from the command palette. Runs on mount
+  // when the palette switched us on, and on prop change when we were
+  // already the active tab.
+  useEffect(() => {
+    if (!jumpRequest) return;
+    jumpToNode(jumpRequest.nodeId);
+    onJumpHandled?.();
+  }, [jumpRequest, jumpToNode, onJumpHandled]);
 
   function toggleNode(nodeId: string) {
     const wasExpanded = expandedNodes.has(nodeId);
@@ -427,15 +489,11 @@ export default function StoryTab({
 
   const filteredNodes = useMemo(() => {
     if (!isFiltering) return [];
-    const q = search.toLowerCase().trim();
+    const q = normalizeQuery(search);
     return nodes.filter((n) => {
       if (typeFilter !== 'all' && n.type !== typeFilter) return false;
-      if (q) {
-        const idMatch = n.id.toLowerCase().includes(q);
-        const contentMatch = n.content.some((c) => c.text.toLowerCase().includes(q));
-        if (!idMatch && !contentMatch) return false;
-      }
-      return true;
+      // node.id, matching how this list renders and scrolls to them.
+      return nodeMatchesQuery(n.id, n, q);
     });
   }, [nodes, search, typeFilter, isFiltering]);
 

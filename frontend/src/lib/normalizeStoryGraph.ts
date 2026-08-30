@@ -16,12 +16,26 @@
 // graph reporting different answers in different tabs. Normalizing at
 // the boundary keeps them consistent by construction.
 //
-// Ink only. Twee has no equivalent scoping rule: twee-parser uses the
-// passage name verbatim as the node id and never sets `parent`, and a
+// Two normalizations happen here, with different scopes.
+//
+// Target qualification is Ink only. Twee has no equivalent scoping
+// rule: twee-parser uses the passage name verbatim as the node id and
+// never sets `parent`, and a
 // period is a legal character, so `Section.Scene` naming is ordinary.
 // Applying knot-scoping there would read a broken `[[Key]]` inside
 // `Hall.Door` as `Hall.Key` and silently repoint it at a real passage —
 // hiding exactly the broken link the parser reports as an error.
+//
+// Node identity is repaired for BOTH languages. A stored graph is a
+// record keyed by node id whose values ALSO carry an `id` field, and
+// nothing has ever guaranteed the two agree — the backend's rename
+// cascade only rewrites a stitch's own `id` when it already matched
+// its key. Consumers then split: the graph tab, the ⌘K palette and
+// every `nodes[id]` lookup key off the record key, while the story
+// list renders `data-node-id={node.id}` and expands by it. A graph
+// where they diverge shows a passage in one tab that can't be found
+// from the other. The record key wins — it is the one every lookup
+// uses — and settling that here means no consumer has to know.
 //
 // The stored graph is not rewritten; edits PATCH individual fields, so
 // nothing here is persisted as a side effect.
@@ -52,14 +66,16 @@ function resolveTarget(target: string, fromNodeId: string, nodeIds: ReadonlySet<
 
 /**
  * Return a graph whose choice and divert targets all name real nodes
- * where they can. Returns the input unchanged when there is nothing to
- * qualify, so a post-fix graph costs one pass and no allocation.
+ * where they can, and whose every node carries the id it is filed
+ * under. Returns the input unchanged when there is nothing to fix, so
+ * a post-fix graph costs one pass and no allocation.
  */
 export function normalizeStoryGraph<T extends StoryGraph | null | undefined>(
   graph: T,
   sourceLanguage?: 'ink' | 'twee' | null,
 ): T {
-  if (!graph?.nodes || sourceLanguage === 'twee') return graph;
+  if (!graph?.nodes) return graph;
+  const qualifyTargets = sourceLanguage !== 'twee';
   const nodeIds = new Set(Object.keys(graph.nodes));
   let changed = false;
   // Null-prototype: `__proto__` is a legal passage name and a legal
@@ -80,19 +96,25 @@ export function normalizeStoryGraph<T extends StoryGraph | null | undefined>(
       continue;
     }
     let nodeChanged = false;
-    const choices = node.choices?.map((c) => {
-      const target = resolveTarget(c.target, id, nodeIds);
-      if (target === c.target) return c;
-      nodeChanged = true;
-      return { ...c, target };
-    });
-    const divert = node.divert ? resolveTarget(node.divert, id, nodeIds) : node.divert;
+    const choices = qualifyTargets
+      ? node.choices?.map((c) => {
+          const target = resolveTarget(c.target, id, nodeIds);
+          if (target === c.target) return c;
+          nodeChanged = true;
+          return { ...c, target };
+        })
+      : undefined;
+    const divert =
+      qualifyTargets && node.divert ? resolveTarget(node.divert, id, nodeIds) : node.divert;
     if (divert !== node.divert) nodeChanged = true;
+    const idMismatch = node.id !== id;
+    if (idMismatch) nodeChanged = true;
     if (nodeChanged) {
       changed = true;
       const next: Record<string, unknown> = { ...node };
       if (choices) next.choices = choices;
       if (divert !== node.divert) next.divert = divert;
+      if (idMismatch) next.id = id;
       nodes[id] = next;
     } else {
       nodes[id] = node;
