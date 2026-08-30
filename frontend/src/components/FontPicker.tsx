@@ -49,7 +49,11 @@ const rowStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'baseline',
   justifyContent: 'space-between',
-  padding: '6px 10px',
+  // The left border is the keyboard-highlight marker. It stays in the
+  // box model as `transparent` on unhighlighted rows so turning it on
+  // never reflows the list; `padding-left` is reduced to match.
+  borderLeft: '3px solid transparent',
+  padding: '6px 10px 6px 7px',
   cursor: 'pointer',
   gap: 12,
 };
@@ -76,7 +80,14 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
   const [highlight, setHighlight] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const dropdownRef = useRef<HTMLDivElement | null>(null);
+  const optionRefs = useRef<(HTMLDivElement | null)[]>([]);
+  // Only the keyboard should scroll the list. Hovering a row that is
+  // clipped at either fold would otherwise pull it into view, sliding
+  // the list under a stationary cursor — which lands the pointer on a
+  // different row and re-highlights it.
+  const scrollNextHighlight = useRef(false);
   const listboxId = useId();
+  const optionId = (i: number) => `${listboxId}-option-${i}`;
 
   const filtered = useMemo(() => filterFonts(filter), [filter]);
 
@@ -85,7 +96,27 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
   useEffect(() => {
     if (!open) return;
     ensureCatalogStylesheet();
-    setHighlight(0);
+    // Open ON the committed value, not on row 0. This branch moved
+    // aria-selected from the value to the keyboard highlight, so
+    // opening at the top left the picker announcing "Inter, selected,
+    // 1 of 101" to an author whose font is Source Sans 3 — a worse
+    // answer than before the change, since the real value used to be
+    // marked. A sighted keyboard author had the same problem visually:
+    // their font sat forty rows below the fold with nothing scrolling
+    // to it.
+    const current = filtered.findIndex((f) => f.family === value);
+    const target = current >= 0 ? current : 0;
+    setHighlight(target);
+    // Only arm the scroll when the highlight actually moves. Arming it
+    // unconditionally left it set when the target was already 0 —
+    // React bails on the same-value update, so the scroll effect never
+    // ran to consume the flag, and it then fired on the next hover,
+    // sliding the list under a stationary cursor.
+    scrollNextHighlight.current = target > 0;
+    // `filtered` deliberately absent: this is the on-open position, and
+    // re-running it as the author types would drag the highlight back
+    // to their committed font on every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   // Outside-click + escape close.
@@ -107,11 +138,42 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
     };
   }, [open]);
 
+  // Keep the keyboard highlight inside the scroll box. The dropdown is
+  // `maxHeight: 280`, so without this the highlight slides out of view
+  // somewhere around the eighth family and arrowing further looks like
+  // nothing is happening.
+  useEffect(() => {
+    // Read and clear first, before any early return. An arrow key into
+    // an end stop sets the flag and then changes nothing, so the effect
+    // never runs to spend it; leaving it set lets it survive the
+    // dropdown closing and fire on reopen against the *old* highlight —
+    // scrolling to the row you were on while the highlight sits back at
+    // the top, which is the very thing this is here to prevent.
+    const wanted = scrollNextHighlight.current;
+    scrollNextHighlight.current = false;
+    if (!open || !wanted) return;
+    // jsdom doesn't implement scrollIntoView, and neither do some older
+    // browsers — calling it is an enhancement, not a requirement.
+    optionRefs.current[highlight]?.scrollIntoView?.({ block: 'nearest' });
+  }, [open, highlight]);
+
+  // Set when a selection was just committed, so the input keeping focus
+  // does not re-open the dropdown. Cleared by the next real interaction.
+  const justPickedRef = useRef(false);
+
   function pick(entry: GoogleFontEntry) {
     onChange(entry.family);
     setFilter('');
     setOpen(false);
-    inputRef.current?.blur();
+    // Deliberately NOT blur(). Blurring threw focus to <body>, so an
+    // author who picked a body font with the keyboard was dumped to the
+    // top of the document and had to Tab all the way back to reach the
+    // heading picker directly below it — the same defect this branch
+    // fixes in FlaggedNodesPanel, inside the component it rebuilt.
+    // Focus stays in the input; justPicked stops the onFocus handler
+    // immediately reopening the list we just closed.
+    justPickedRef.current = true;
+    inputRef.current?.focus();
   }
 
   function handleKeyDown(e: ReactKeyboardEvent<HTMLInputElement>) {
@@ -121,9 +183,14 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
     }
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setHighlight((h) => Math.min(filtered.length - 1, h + 1));
+      scrollNextHighlight.current = true;
+      // Clamp at 0, not at `length - 1`: with no matches that's -1, and
+      // a negative index leaves the two arrow keys behaving
+      // asymmetrically until something resets it.
+      setHighlight((h) => Math.min(Math.max(filtered.length - 1, 0), h + 1));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
+      scrollNextHighlight.current = true;
       setHighlight((h) => Math.max(0, h - 1));
     } else if (e.key === 'Enter') {
       const entry = filtered[highlight];
@@ -146,17 +213,33 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
         value={open ? filter : value}
         onChange={(e) => {
           setFilter(e.target.value);
+          // Retyping rebuilds `filtered`, so a carried-over index can
+          // point past the end of the new list — which would leave
+          // aria-activedescendant naming an id that isn't rendered.
+          // Start each new result set at the top.
+          setHighlight(0);
           // Reflect typed text directly so users can hand-enter a
           // family that isn't in the catalog.
           onChange(e.target.value);
           if (!open) setOpen(true);
         }}
-        onFocus={() => setOpen(true)}
+        onFocus={() => {
+          // A focus that lands here because pick() just kept it must
+          // not reopen the list the author has finished with.
+          if (justPickedRef.current) {
+            justPickedRef.current = false;
+            return;
+          }
+          setOpen(true);
+        }}
         onKeyDown={handleKeyDown}
         placeholder={placeholder}
+        role="combobox"
         aria-label={ariaLabel}
         aria-expanded={open}
         aria-controls={listboxId}
+        aria-autocomplete="list"
+        aria-activedescendant={open && filtered[highlight] ? optionId(highlight) : undefined}
         autoComplete="off"
         spellCheck={false}
         style={{ width: '100%', fontFamily: value ? `'${value}', sans-serif` : undefined }}
@@ -171,7 +254,17 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
           data-testid={testId ? `${testId}-dropdown` : undefined}
         >
           {filtered.length === 0 ? (
-            <div style={{ padding: '10px 12px', color: 'var(--color-muted, #888)' }}>
+            // A listbox whose only child is a plain div is an
+            // `aria-required-children` violation, and the message was
+            // reachable by sight only. As a disabled option it is a
+            // legal child and it sits inside the list the combobox
+            // says it controls, so it can actually be read.
+            <div
+              role="option"
+              aria-disabled="true"
+              aria-selected="false"
+              style={{ padding: '10px 12px', color: 'var(--color-muted, #888)' }}
+            >
               No matches — keep typing to use a family that&apos;s not in our catalog.
             </div>
           ) : (
@@ -181,24 +274,50 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
               return (
                 <div
                   key={entry.family}
+                  id={optionId(i)}
+                  ref={(el) => {
+                    optionRefs.current[i] = el;
+                  }}
                   role="option"
-                  aria-selected={selected}
-                  onMouseEnter={() => setHighlight(i)}
+                  // The listbox never takes focus in a combobox, so
+                  // `aria-selected` marks the row the arrow keys are on —
+                  // the one `aria-activedescendant` names. The committed
+                  // value is announced by the "(current font)" text
+                  // below instead of competing for this attribute.
+                  aria-selected={highlighted}
+                  onMouseEnter={() => {
+                    // Clear rather than merely not-set: arrowing into
+                    // an end stop calls setHighlight with the value it
+                    // already has, React bails out, and the effect
+                    // never runs to clear the flag itself. A hover
+                    // arriving after that would inherit it and scroll.
+                    scrollNextHighlight.current = false;
+                    setHighlight(i);
+                  }}
                   onMouseDown={(e) => {
                     e.preventDefault();
                     pick(entry);
                   }}
                   style={{
                     ...rowStyle,
+                    // Highlight vs. selected used to be colour alone, and
+                    // the two backgrounds composited 1.041:1 against each
+                    // other. The border and the weight carry the
+                    // distinction now; the background is a third cue.
+                    borderLeftColor: highlighted ? 'var(--color-primary, #0f766e)' : 'transparent',
+                    fontWeight: highlighted ? 600 : 400,
                     background: highlighted
-                      ? 'rgba(78,205,196,0.12)'
+                      ? 'rgba(78,205,196,0.28)'
                       : selected
                         ? 'rgba(78,205,196,0.06)'
                         : 'transparent',
                     fontFamily: `'${entry.family}', sans-serif`,
                   }}
                 >
-                  <span>{entry.family}</span>
+                  <span>
+                    {entry.family}
+                    {selected && <span className="sr-only"> (current font)</span>}
+                  </span>
                   <span
                     className="text-sm text-muted"
                     style={{ fontFamily: 'system-ui, sans-serif', fontSize: 11 }}
