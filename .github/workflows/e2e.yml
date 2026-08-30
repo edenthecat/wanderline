@@ -61,7 +61,7 @@ jobs:
           echo "Frontend is ready"
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: npm
