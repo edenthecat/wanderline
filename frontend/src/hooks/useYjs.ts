@@ -23,6 +23,23 @@ interface DocEntry {
 
 const registry = new Map<string, DocEntry>();
 
+/**
+ * The close code the server sends when it tears a collab room down
+ * after a destructive write — an ink re-upload, a snapshot restore, a
+ * rename. See `invalidateRoom` in backend/src/services/collab-server.ts.
+ */
+const ROOM_INVALIDATED = 1012;
+
+/**
+ * Consumers to notify when a project's doc is swapped out from under
+ * them. Keyed by projectId; each `useYjs` adds one while mounted.
+ */
+const listeners = new Map<string, Set<(entry: DocEntry | null) => void>>();
+
+function notify(projectId: string, entry: DocEntry | null): void {
+  listeners.get(projectId)?.forEach((fn) => fn(entry));
+}
+
 export type CollabStatus = 'connecting' | 'connected' | 'disconnected';
 
 export interface UseYjsResult {
@@ -43,12 +60,7 @@ function makeBaseUrl(): string {
   return `${proto}//${window.location.host}/ws/projects`;
 }
 
-function acquire(projectId: string): DocEntry {
-  let entry = registry.get(projectId);
-  if (entry) {
-    entry.refCount++;
-    return entry;
-  }
+function createEntry(projectId: string): DocEntry {
   const doc = new Y.Doc();
   // y-websocket auto-reconnects with backoff by default.
   const provider = new WebsocketProvider(makeBaseUrl(), projectId, doc, {
@@ -56,13 +68,69 @@ function acquire(projectId: string): DocEntry {
     // doesn't try the global one before tree-shaking kicks in.
     WebSocketPolyfill: WebSocket,
   });
-  entry = { doc, provider, refCount: 1 };
+  const entry: DocEntry = { doc, provider, refCount: 0 };
+  // A plain reconnect must keep this doc — that is how an offline edit
+  // survives a flaky network. But when the SERVER invalidated the room,
+  // reconnecting with this doc is exactly wrong: y-websocket sends sync
+  // step 1 from it on every open, pushing state the server has already
+  // replaced back up into the freshly-hydrated doc. Yjs then merges the
+  // two histories, and because a concurrent write to the same Y.Map key
+  // is settled by comparing client ids — not by which edit is newer —
+  // the stale side wins roughly two times in three. The shadow saver
+  // materializes the merged result straight over story_graph.nodes, so
+  // an author who re-uploaded their ink watched the previous version's
+  // choices and diverts come back, intermittently, while their browser
+  // sat open on the project.
+  provider.on('connection-close', (event: CloseEvent | null) => {
+    if (event?.code !== ROOM_INVALIDATED) return;
+    // Deferred: we are inside the provider's own close handler, and
+    // destroy() unwinds the object that is mid-dispatch.
+    queueMicrotask(() => rebuild(projectId, entry));
+  });
+  return entry;
+}
+
+/**
+ * Replace a project's doc with a fresh one, keeping the consumer count.
+ * Consumers see `null` first so nothing renders against a destroyed
+ * doc, then the replacement, which hydrates from the server's current
+ * row instead of arguing with it.
+ */
+function rebuild(projectId: string, stale: DocEntry): void {
+  const current = registry.get(projectId);
+  // A newer entry already replaced this one, or everyone unmounted.
+  if (!current || current !== stale) return;
+  const refCount = current.refCount;
+  registry.delete(projectId);
+  notify(projectId, null);
+  try {
+    current.provider.destroy();
+  } catch {}
+  current.doc.destroy();
+  if (refCount <= 0) return;
+  const fresh = createEntry(projectId);
+  fresh.refCount = refCount;
+  registry.set(projectId, fresh);
+  notify(projectId, fresh);
+}
+
+function acquire(projectId: string): DocEntry {
+  const existing = registry.get(projectId);
+  if (existing) {
+    existing.refCount++;
+    return existing;
+  }
+  const entry = createEntry(projectId);
+  entry.refCount = 1;
   registry.set(projectId, entry);
   return entry;
 }
 
 function release(projectId: string): void {
   const entry = registry.get(projectId);
+  // A rebuild may have swapped the entry since this consumer acquired;
+  // the count lives on whatever is registered now, which is what the
+  // rebuild carried over.
   if (!entry) return;
   entry.refCount--;
   if (entry.refCount > 0) return;
@@ -92,18 +160,43 @@ export function useYjs(projectId: string): UseYjsResult {
   const [status, setStatus] = useState<CollabStatus>('connecting');
 
   useEffect(() => {
-    const e = acquire(projectId);
-    setEntry(e);
-    setStatus(e.provider.wsconnected ? 'connected' : 'connecting');
+    let active = acquire(projectId);
+    setEntry(active);
+    setStatus(active.provider.wsconnected ? 'connected' : 'connecting');
+
     const onStatus = (event: { status: CollabStatus }) => setStatus(event.status);
-    e.provider.on('status', onStatus);
+    active.provider.on('status', onStatus);
+
+    // The server can replace this doc mid-session (see `rebuild`). Move
+    // the status listener onto whatever doc is current, or the UI keeps
+    // reporting the connection state of a destroyed provider.
+    const onSwap = (next: DocEntry | null) => {
+      active.provider.off('status', onStatus);
+      setEntry(next);
+      if (!next) {
+        setStatus('connecting');
+        return;
+      }
+      active = next;
+      next.provider.on('status', onStatus);
+      setStatus(next.provider.wsconnected ? 'connected' : 'connecting');
+    };
+    let subs = listeners.get(projectId);
+    if (!subs) {
+      subs = new Set();
+      listeners.set(projectId, subs);
+    }
+    subs.add(onSwap);
+
     return () => {
-      e.provider.off('status', onStatus);
+      subs.delete(onSwap);
+      if (subs.size === 0) listeners.delete(projectId);
+      active.provider.off('status', onStatus);
       release(projectId);
       // Drop the local reference so a projectId change can't render
       // stale state from the previous project before the new effect
       // re-acquires.
-      setEntry((prev) => (prev === e ? null : prev));
+      setEntry((prev) => (prev === active ? null : prev));
     };
   }, [projectId]);
 
@@ -116,6 +209,7 @@ export function useYjs(projectId: string): UseYjsResult {
 
 // For tests.
 export function _resetYjsRegistry(): void {
+  listeners.clear();
   for (const entry of registry.values()) {
     try {
       entry.provider.destroy();

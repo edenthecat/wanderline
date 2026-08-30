@@ -31,7 +31,13 @@ export function PresenceChips({ users, max = 4 }: PresenceChipsProps) {
     >
       {visible.map((u) => (
         <span
-          key={u.clientId}
+          // Keyed on the person, not the connection: a peer's clientId
+          // changes on every reconnect, and keying on it remounted
+          // their chip each time — a peer reconnecting in a loop made
+          // the strip strobe. usePresence already collapses a person's
+          // connections into one entry; this stops React tearing the
+          // element down when the surviving connection changes.
+          key={u.userId ?? `anon-${u.clientId}`}
           className="presence-chip"
           style={{ backgroundColor: u.color }}
           title={u.displayName}
