@@ -77,6 +77,14 @@ describe('InstallGuidance', () => {
     expect(screen.getByText(/only works in Safari/i)).toBeTruthy();
   });
 
+  // A bare ⋮ is announced as "vertical ellipsis" or skipped entirely,
+  // so the instruction pointed at nothing for a screen-reader listener.
+  it('names the Android menu in words, not only as a glyph', () => {
+    setUserAgent(ANDROID);
+    render(<InstallGuidance hasNativePrompt={false} />);
+    expect(screen.getByText(/three-dot browser menu/i)).toBeTruthy();
+  });
+
   // When the browser gives us a real button, the manual walkthrough is
   // just noise sitting on top of it.
   it('defers to the native prompt when one is available', () => {

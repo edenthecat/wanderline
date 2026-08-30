@@ -2013,12 +2013,19 @@ export default function App() {
   if (playerState === 'error' || !story) {
     return (
       <div style={styles.container}>
-        <div style={styles.errorFull}>Failed to load story data</div>
+        <div style={styles.errorFull} lang="en">
+          Failed to load story data
+        </div>
       </div>
     );
   }
 
-  if (!currentNode) return <div style={styles.container}>Loading...</div>;
+  if (!currentNode)
+    return (
+      <div style={styles.container} lang="en">
+        Loading...
+      </div>
+    );
 
   // Password protection screen
   if (story.settings?.password && !isAuthenticated) {
@@ -2035,7 +2042,7 @@ export default function App() {
             textAlign: 'center',
           }}
         >
-          <div style={styles.passwordCard}>
+          <div style={styles.passwordCard} lang="en">
             <h2 style={styles.passwordTitle}>Enter Password</h2>
             <p style={styles.passwordSubtitle}>This story is password protected</p>
             <form onSubmit={handlePasswordSubmit} style={styles.passwordForm}>
@@ -2098,6 +2105,7 @@ export default function App() {
           }}
           role="main"
           aria-label="Instructions"
+          lang="en"
         >
           <div
             style={styles.instructionsCard}
@@ -2271,6 +2279,28 @@ export default function App() {
     currentNode.divert === 'END' ||
     currentNode.divert === 'DONE';
 
+  /* `<html lang>` carries the story's own language in a generated
+     build (see backend/src/services/build-html.ts), which is right —
+     the captions are the page's primary content and are the whole
+     accessible alternative to the audio. But this app's chrome is
+     hardcoded English, so a Japanese story would have a screen reader
+     read "Settings" and "Restart story from beginning" with Japanese
+     phonetics: the mirror of the bug the page-level tag fixes.
+
+     So `lang="en"` goes on the SMALLEST elements that hold only our
+     own words — the CC button, the header toolbar, the settings
+     dialog, the pre-story screens, the playback controls, the status
+     banners, the footer. Not on `<header>` or `<main>`: both contain
+     the story's own words (the title, the narration, the choice
+     labels), and `lang` can't be un-set on a descendant, so marking a
+     wrapper would announce the story with an English voice — the same
+     defect pointing the other way. Story text carries no `lang` at
+     all, so it inherits the document's.
+
+     Residual: the `aria-label`s naming the story regions ("Story
+     content", "Story narration", "Story choices") are English on
+     elements that must stay unmarked. Marking them would need wrapper
+     elements that break the landmark structure they exist to provide. */
   return (
     // No role="application" here. It suppressed the screen-reader
     // virtual cursor across the whole page, so a blind listener could
@@ -2315,11 +2345,17 @@ export default function App() {
                 ? 'Captions enabled, click to disable'
                 : 'Captions disabled, click to enable'
             }
+            lang="en"
           >
             CC
           </button>
           <h1 style={styles.title}>{story?.title || 'Audio Story'}</h1>
-          <div style={styles.headerBtnGroup} role="toolbar" aria-label="Story controls">
+          <div
+            style={styles.headerBtnGroup}
+            role="toolbar"
+            aria-label="Story controls"
+            lang="en"
+          >
             {/* aria-controls only while the panel exists: an IDREF
                 pointing at an absent id is invalid, and axe flags it. */}
             <button
@@ -2373,6 +2409,7 @@ export default function App() {
           data-theme-component="settingsPanel"
           role="group"
           aria-labelledby="settings-title"
+          lang="en"
         >
           <h3 id="settings-title" style={styles.settingsTitle}>
             Settings
@@ -2485,7 +2522,11 @@ export default function App() {
               {saveSlots.map((slot) => (
                 <li key={slot.id} style={styles.saveSlotRow}>
                   <div style={styles.saveSlotMeta}>
-                    <strong style={styles.saveSlotName}>{slot.name}</strong>
+                    {/* A listener-typed label: its language is genuinely unknown, and
+                        lang="" is how HTML says so rather than claiming English. */}
+                    <strong style={styles.saveSlotName} lang="">
+                      {slot.name}
+                    </strong>
                     <span style={styles.saveSlotTime}>
                       {new Date(slot.savedAt).toLocaleString()}
                     </span>
@@ -2631,7 +2672,7 @@ export default function App() {
             text-only passage — or one whose audio failed, which is
             exactly when someone wants to retreat — had no way back. */}
         {(history.length > 0 || (currentNode.audio?.voiceover && !audioError && !audioSkipped)) && (
-          <div style={styles.player} role="group" aria-label="Playback controls">
+          <div style={styles.player} role="group" aria-label="Playback controls" lang="en">
             {/* goBack was reachable only by Backspace or a headphone
                 button, so on a phone — the primary way this is listened
                 to — there was no way back at all. Hidden rather than
@@ -2776,20 +2817,27 @@ export default function App() {
             }}
             style={styles.continueBtn}
             aria-label="Continue to next part of the story"
+            lang="en"
           >
             Continue
           </button>
         )}
 
         {isEnd && (
-          <div style={styles.end} role="status" aria-live="polite" aria-label="Story complete">
+          <div
+            style={styles.end}
+            role="status"
+            aria-live="polite"
+            aria-label="Story complete"
+            lang="en"
+          >
             The End
           </div>
         )}
 
         {/* Connection status - shown below content to avoid layout shift */}
         {showConnectionIssue && !audioError && (audioStalled || retryingAudio) && (
-          <div style={styles.stalledBanner} role="status" aria-live="polite">
+          <div style={styles.stalledBanner} role="status" aria-live="polite" lang="en">
             <div style={styles.stalledSpinner} aria-hidden="true" />
             <span>{retryingAudio ? 'Reconnecting...' : 'Buffering...'}</span>
           </div>
@@ -2801,6 +2849,7 @@ export default function App() {
             role="alert"
             aria-live="assertive"
             data-theme-component="errorBanner"
+            lang="en"
           >
             <span style={styles.errorIcon} className="wl-icon" aria-hidden="true">
               <WarningTriangle width={18} height={18} />
@@ -2843,13 +2892,13 @@ export default function App() {
         )}
 
         {audioSkipped && (
-          <div style={styles.skippedBanner} role="status" aria-live="polite">
+          <div style={styles.skippedBanner} role="status" aria-live="polite" lang="en">
             Audio skipped - using text
           </div>
         )}
       </main>
 
-      <footer style={styles.footer} role="contentinfo">
+      <footer style={styles.footer} role="contentinfo" lang="en">
         {/* Qualified deliberately: a focused button owns Space and
             Enter, as it does everywhere on the web, so the global
             shortcuts are what you get when you have not tabbed onto a

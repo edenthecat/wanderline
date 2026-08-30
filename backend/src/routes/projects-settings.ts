@@ -34,6 +34,11 @@ const ALLOWED_TOP_LEVEL_KEYS = new Set([
   // Author-supplied README for the exported build. Empty / absent
   // falls back to the default template in build-readme.ts.
   'exportReadme',
+  // BCP-47 tag for the story's own language. Written into <html lang>
+  // and the manifest of every generated build so a screen reader reads
+  // the captions with the right voice. Absent / malformed falls back
+  // to 'en' at build time (see build-language.ts).
+  'language',
   // PWA identity for the generated player: { fileId, backgroundColor,
   // themeColor }. Nested-merged so setting a colour doesn't drop the
   // uploaded icon.
@@ -171,9 +176,9 @@ export function mountSettingsRoutes(router: Router, pool: Pool): void {
    *       Whitelists top-level keys (password, captionsDefault,
    *       showProgressBar, showChoiceList, bluetoothControls,
    *       backgroundMusicEnabled, backgroundMusicVolume,
-   *       indicatorVolume, choiceAudioDelayMs). `bluetoothControls`
-   *       merges key-by-key with the stored value so partial patches
-   *       don't wipe sibling keys.
+   *       indicatorVolume, choiceAudioDelayMs, language).
+   *       `bluetoothControls` merges key-by-key with the stored value
+   *       so partial patches don't wipe sibling keys.
    *     tags: [Settings]
    *     parameters:
    *       - in: path
