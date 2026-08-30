@@ -37,10 +37,23 @@ export function useYjsSeedReady(doc: Y.Doc | null): boolean {
       return;
     }
     const nodes = doc.getMap<Y.Map<unknown>>(NODES_KEY);
-    if (nodes.size > 0) {
-      setReady(true);
-      return;
-    }
+    // Authoritative, not a latch. The only setReady(false) used to sit
+    // behind `!doc`, which never runs on a doc -> doc swap — and useYjs
+    // now performs exactly that swap when the server invalidates the
+    // room. The replacement doc starts empty and seeds asynchronously,
+    // so `ready` stayed true from the PREVIOUS doc while this one had
+    // nothing in it: every CollabChoiceTextInput and
+    // CollabContentTextarea fell back to its uncontrolled REST branch,
+    // which is keyed on its initial text, so a focused author lost
+    // their caret and stopped seeing peers' edits — for the rest of the
+    // session, since the observer's setReady(true) is then a same-value
+    // set that React bails out of.
+    //
+    // Do not rely on a `null` render in between: useYjs notifies both
+    // times in one microtask and React 18 batches them into a single
+    // render straight from one doc to the next.
+    setReady(nodes.size > 0);
+    if (nodes.size > 0) return;
     const handler = () => {
       if (nodes.size > 0) {
         setReady(true);
