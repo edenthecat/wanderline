@@ -152,7 +152,10 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       scrollNextHighlight.current = true;
-      setHighlight((h) => Math.min(filtered.length - 1, h + 1));
+      // Clamp at 0, not at `length - 1`: with no matches that's -1, and
+      // a negative index leaves the two arrow keys behaving
+      // asymmetrically until something resets it.
+      setHighlight((h) => Math.min(Math.max(filtered.length - 1, 0), h + 1));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       scrollNextHighlight.current = true;
