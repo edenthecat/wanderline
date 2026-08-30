@@ -196,12 +196,17 @@ export default function FlaggedNodesPanel({
     const pending = satisfied[satisfied.length - 1];
     if (!mayTakeFocus()) return;
     const next = pending.nextId ? resolveButtons.current.get(pending.nextId) : undefined;
-    // Next Resolve button, else the panel's own toggle, else the status
-    // line — which is where you end up when that was the last flag and
-    // the panel has unmounted around you. It reads "Flag resolved." and
-    // is styled to become visible on focus, so landing there answers
-    // the question for a sighted keyboard user as well as a spoken one.
-    (next ?? summaryRef.current ?? statusRef.current)?.focus();
+    // Skip a candidate that cannot take focus. A Resolve button whose
+    // own request is still in flight is disabled ("Saving…"), and
+    // .focus() on a disabled element is a silent no-op — so committing
+    // to `next` without checking left focus on <body>, which is exactly
+    // the bug this effect exists to prevent. Reachable whenever two
+    // resolves overlap, which the queue and the `resolving` Set are
+    // built to support: resolve one flag on a slow connection, then
+    // resolve the one above it.
+    const focusable = (el: HTMLElement | null | undefined): HTMLElement | undefined =>
+      el && !(el as HTMLButtonElement).disabled ? el : undefined;
+    (focusable(next) ?? focusable(summaryRef.current) ?? statusRef.current)?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flagIdKey]);
 

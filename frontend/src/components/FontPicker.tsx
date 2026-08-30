@@ -96,7 +96,27 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
   useEffect(() => {
     if (!open) return;
     ensureCatalogStylesheet();
-    setHighlight(0);
+    // Open ON the committed value, not on row 0. This branch moved
+    // aria-selected from the value to the keyboard highlight, so
+    // opening at the top left the picker announcing "Inter, selected,
+    // 1 of 101" to an author whose font is Source Sans 3 — a worse
+    // answer than before the change, since the real value used to be
+    // marked. A sighted keyboard author had the same problem visually:
+    // their font sat forty rows below the fold with nothing scrolling
+    // to it.
+    const current = filtered.findIndex((f) => f.family === value);
+    const target = current >= 0 ? current : 0;
+    setHighlight(target);
+    // Only arm the scroll when the highlight actually moves. Arming it
+    // unconditionally left it set when the target was already 0 —
+    // React bails on the same-value update, so the scroll effect never
+    // ran to consume the flag, and it then fired on the next hover,
+    // sliding the list under a stationary cursor.
+    scrollNextHighlight.current = target > 0;
+    // `filtered` deliberately absent: this is the on-open position, and
+    // re-running it as the author types would drag the highlight back
+    // to their committed font on every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   // Outside-click + escape close.
@@ -137,11 +157,23 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
     optionRefs.current[highlight]?.scrollIntoView?.({ block: 'nearest' });
   }, [open, highlight]);
 
+  // Set when a selection was just committed, so the input keeping focus
+  // does not re-open the dropdown. Cleared by the next real interaction.
+  const justPickedRef = useRef(false);
+
   function pick(entry: GoogleFontEntry) {
     onChange(entry.family);
     setFilter('');
     setOpen(false);
-    inputRef.current?.blur();
+    // Deliberately NOT blur(). Blurring threw focus to <body>, so an
+    // author who picked a body font with the keyboard was dumped to the
+    // top of the document and had to Tab all the way back to reach the
+    // heading picker directly below it — the same defect this branch
+    // fixes in FlaggedNodesPanel, inside the component it rebuilt.
+    // Focus stays in the input; justPicked stops the onFocus handler
+    // immediately reopening the list we just closed.
+    justPickedRef.current = true;
+    inputRef.current?.focus();
   }
 
   function handleKeyDown(e: ReactKeyboardEvent<HTMLInputElement>) {
@@ -191,7 +223,15 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
           onChange(e.target.value);
           if (!open) setOpen(true);
         }}
-        onFocus={() => setOpen(true)}
+        onFocus={() => {
+          // A focus that lands here because pick() just kept it must
+          // not reopen the list the author has finished with.
+          if (justPickedRef.current) {
+            justPickedRef.current = false;
+            return;
+          }
+          setOpen(true);
+        }}
         onKeyDown={handleKeyDown}
         placeholder={placeholder}
         role="combobox"
