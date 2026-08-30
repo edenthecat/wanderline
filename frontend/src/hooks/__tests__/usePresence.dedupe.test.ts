@@ -28,9 +28,23 @@ describe('presence is per person, not per connection', () => {
   });
 
   it('keeps the lower clientId so a reconnect does not displace the chip', () => {
-    // The surviving entry must not change identity just because the
-    // peer opened a second, higher-numbered connection.
-    expect(dedupeByUser([peer({ clientId: 5 }), peer({ clientId: 90 })])[0].clientId).toBe(5);
+    // Descending input on purpose: the guarantee has to come from
+    // dedupeByUser itself, not from the caller happening to sort first.
+    // Ascending input passed even when the function kept whichever
+    // entry it saw first, so it pinned nothing.
+    expect(dedupeByUser([peer({ clientId: 90 }), peer({ clientId: 5 })])[0].clientId).toBe(5);
+  });
+
+  it('does not let the editing tab drag the surviving clientId upward', () => {
+    // The merge used to spread the later connection wholesale, carrying
+    // its higher clientId across — so a peer's chip changed identity the
+    // moment their second tab focused a passage.
+    const out = dedupeByUser([
+      peer({ clientId: 90, editingNodeId: 'inbox' }),
+      peer({ clientId: 5 }),
+    ]);
+    expect(out[0].clientId).toBe(5);
+    expect(out[0].editingNodeId).toBe('inbox');
   });
 
   it("does not lose a peer's editing dot to their other tab", () => {

@@ -119,14 +119,16 @@ function clearAwarenessField(awareness: Awareness, field: string): void {
  *
  * Keeps the LOWEST clientId per user so the surviving entry is stable
  * while a peer reconnects: a new connection has a higher id, so it does
- * not displace the entry already on screen.
+ * not displace the entry already on screen. Sorted in here rather than
+ * relying on the caller's ordering, so the guarantee holds for any
+ * input — the exported test hook bypasses that caller entirely.
  */
 export const _dedupeByUserForTests = (list: PresentUser[]) => dedupeByUser(list);
 
 function dedupeByUser(list: PresentUser[]): PresentUser[] {
   const byUser = new Map<string, PresentUser>();
   const anonymous: PresentUser[] = [];
-  for (const u of list) {
+  for (const u of [...list].sort((a, b) => a.clientId - b.clientId)) {
     if (!u.userId) {
       anonymous.push(u);
       continue;
@@ -139,7 +141,12 @@ function dedupeByUser(list: PresentUser[]): PresentUser[] {
     // Prefer whichever connection is actually focused on a node, so a
     // peer's "editing this" dot doesn't vanish because their other tab
     // sorted first.
-    if (!seen.editingNodeId && u.editingNodeId) byUser.set(u.userId, { ...seen, ...u });
+    // Take ONLY the editing field from the later connection: spreading
+    // `u` wholesale carried its higher clientId across and undid the
+    // stability the ordering just bought.
+    if (!seen.editingNodeId && u.editingNodeId) {
+      byUser.set(u.userId, { ...seen, editingNodeId: u.editingNodeId });
+    }
   }
   return [...byUser.values(), ...anonymous].sort((a, b) => a.clientId - b.clientId);
 }
