@@ -12,6 +12,14 @@
   --color-bg: #f9fafb;
   --color-surface: #ffffff;
   --color-border: #e5e7eb;
+  /* --color-border is 1.24:1 on white: fine for a decorative divider,
+     but WCAG 1.4.11 asks 3:1 of a boundary that identifies a control,
+     and at 1.24:1 the edge of a text field was essentially invisible.
+     #878e9c is 3.29:1 on --color-surface and 3.15:1 on --color-bg, so
+     it clears the bar on both surfaces a control can sit on. Kept as
+     a separate token so the 40-odd decorative uses of --color-border
+     don't all turn into hard grey rules. */
+  --color-border-control: #878e9c;
   --color-text: #111827;
   --color-text-muted: #6b7280;
   --color-danger: #dc2626;
@@ -204,7 +212,7 @@ input[type='number'],
 textarea,
 .select {
   padding: 8px 12px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-control);
   border-radius: var(--radius-sm);
   font-size: 14px;
   font-family: inherit;
@@ -263,10 +271,12 @@ textarea:focus,
   background: var(--color-primary-hover);
 }
 
+/* Ghost buttons have no fill, so this border is the only thing that
+   says "button" — a 1.4.11 boundary, hence the control token. */
 .btn-ghost {
   background: transparent;
   color: var(--color-text-muted);
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--color-border-control);
 }
 
 .btn-ghost:hover:not(:disabled) {
@@ -1060,8 +1070,14 @@ textarea:focus,
   border-right: 1px solid var(--color-border);
   color: var(--color-text-muted);
 }
+/* CodeMirror's default focus outline is a 1px dotted #212121 that
+   clashes with the panel chrome, so it was removed — but nothing
+   replaced it, leaving a keyboard user with no way to tell the Ink
+   editor had focus. Substitute the same indigo the form controls use
+   (6.29:1 on white), inset so it doesn't fight the panel border. */
 .ink-source-host .cm-focused {
-  outline: none;
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
 }
 
 /* Slide-in source-editor panel inside the Graph view. */
@@ -1878,21 +1894,97 @@ details[open] > .audio-section-summary {
   }
 }
 
-/* Overlay visuals: dim, on-path, search match/unmatched. */
-.graph-node-card.is-dim {
-  opacity: 0.32;
+/* Overlay visuals: dim, on-path, search match/unmatched.
+
+   De-emphasis is done with a recessed *surface*, not with `opacity`.
+   Card opacity fades the text along with everything else: at the old
+   0.32 the node title measured 2.07:1 and at 0.35 the search-unmatched
+   title measured 2.24:1, both far under the 4.5:1 AA floor. "Dim
+   unreachable nodes" exists precisely so authors can still see the
+   nodes rather than have them hidden — at those ratios a low-vision
+   author couldn't read them, so the setting quietly became "hide".
+
+   Recessing the fill keeps the de-emphasis obvious while the ink stays
+   at full strength. `saturate()` stays because the sRGB saturation
+   matrix is built from the luminance coefficients, so it drains hue
+   without moving luminance — it costs no contrast. */
+.graph-node-card.is-dim,
+.graph-node-card.is-unmatched {
+  /* A wash *over* the card, expressed as `background-image` so it
+     leaves `background-color` alone. These selectors have the same
+     specificity as .is-error / .is-warning / .is-missing / .is-selected
+     / :hover / .is-ending and sit later in the file, so setting
+     `background`, `border-color` or `box-shadow` here would win
+     outright: an unreachable node with a validation error would lose
+     its red border and pink wash and become indistinguishable from a
+     healthy one, and a selected dimmed node would lose its ring. The
+     old `opacity` approach had preserved all of those, faded.
+
+     Layering instead keeps every state's own colour showing through.
+     Measured over the three card fills this can land on (white,
+     #fef2f2 error, #fffbeb warning): title 13.0–13.4:1, footer
+     5.5–5.7:1, on-path border 3.66–3.75:1. */
+  background-image: linear-gradient(rgba(203, 213, 225, 0.75), rgba(203, 213, 225, 0.75));
   filter: saturate(0.35);
 }
+/* The wash is translucent, so it needs an opaque card under it. The
+   flat-fill states give it one, but `.is-start` and `.is-ending` paint
+   their violet and green tints with the `background` shorthand, which
+   resets `background-color` to transparent — a start or ending node
+   excluded by a graph search would have had the wash composite over
+   the ReactFlow canvas instead of over a card, on a surface none of
+   the measured ratios cover. Higher specificity than the state rules,
+   and scoped so it only applies while dimmed.
+
+   `.is-start` is declared BEFORE the validation states, so on a node
+   that is both broken and dimmed those states' own opaque fills win
+   and this must stand aside — at (0,3,0) it would otherwise erase the
+   pink or amber wash that says the node is broken.
+
+   `.is-ending` is declared AFTER them, so its gradient wins and there
+   is no background-color regardless of any validation state. It needs
+   the fill unconditionally; excluding it the same way would leave a
+   dimmed, broken ending node transparent under the wash. (That an
+   ending node's green already hides its own error styling is a
+   separate, pre-existing precedence quirk.) */
+.graph-node-card.is-start.is-dim:not(.is-error):not(.is-warning):not(.is-missing),
+.graph-node-card.is-start.is-unmatched:not(.is-error):not(.is-warning):not(.is-missing),
+.graph-node-card.is-ending.is-dim,
+.graph-node-card.is-ending.is-unmatched {
+  background-color: #ffffff;
+}
+/* The footer is the one piece of card text that isn't near-black;
+   #6b7280 under the wash is 4.15:1, so darken it to clear AA. */
+.graph-node-card.is-dim .graph-node-card-footer,
+.graph-node-card.is-unmatched .graph-node-card-footer {
+  color: #475569;
+}
+/* #f59e0b measured 2.15:1 on the card — under the 3:1 WCAG 1.4.11
+   asks of a boundary that carries meaning. #b45309 is 5.02:1 on white
+   and 3.66:1 at worst under the dim wash. Path membership also gets
+   the `path` chip in StoryCardNode so it is not signalled by colour
+   alone. */
 .graph-node-card.is-on-path {
-  border-color: #f59e0b;
-  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.18);
+  border-color: #b45309;
+  box-shadow: 0 0 0 3px rgba(180, 83, 9, 0.18);
 }
 .graph-node-card.is-matched {
   border-color: #2563eb;
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
 }
-.graph-node-card.is-unmatched {
-  opacity: 0.35;
+
+/* Non-colour marker for path membership. */
+.graph-node-path-chip {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #7c2d12;
+  background: #fef3c7;
+  border: 1px solid #b45309;
+  padding: 1px 5px;
+  border-radius: 999px;
+  white-space: nowrap;
 }
 
 /* On-path edges pop in front; dim edges fade back. */

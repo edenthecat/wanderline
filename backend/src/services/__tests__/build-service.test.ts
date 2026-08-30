@@ -413,11 +413,160 @@ describe('build-service unit', () => {
       expect(scriptBody).toMatch(/\\u003c\\\/script\\u003e|\\u003c\/script>/i);
     });
 
-    it('declares the three smoke checks in the embedded runner', () => {
+    it('declares every smoke check in the embedded runner', () => {
       const html = renderSmokeHtml(sampleStory);
       expect(html).toMatch(/Every node has content, a divert, or choices/);
       expect(html).toMatch(/Every divert \/ choice target resolves/);
       expect(html).toMatch(/Every referenced audio file is reachable/);
+      expect(html).toMatch(/Theme colours meet WCAG AA contrast/);
+    });
+
+    // smoke.html is the page authors are told to open before
+    // publishing, so it is where a palette nobody can read should
+    // surface. The maths comes from @wanderline/shared — the same
+    // module the editor's Theme tab warns with — so the build and the
+    // editor can't disagree about whether a story is readable.
+    describe('theme contrast check', () => {
+      function contrastPayload(html: string): { problems: string[]; unknown: string[] } {
+        const match = /window\.__WANDERLINE_CONTRAST__=(\{[^\n]*\});/.exec(html);
+        expect(match).not.toBeNull();
+        return JSON.parse(match![1]) as { problems: string[]; unknown: string[] };
+      }
+
+      it('reports no problems for a story with no theme', () => {
+        expect(contrastPayload(renderSmokeHtml(sampleStory))).toEqual({
+          problems: [],
+          unknown: [],
+        });
+      });
+
+      it('reports no problems for a readable author palette', () => {
+        const story = {
+          ...sampleStory,
+          settings: {
+            theme: {
+              variables: {
+                pageBackground: '#ffffff',
+                textColor: '#111827',
+                // Headings and the settings panel have to move with
+                // the page too — leaving either at its dark-theme
+                // default is itself a failure the check reports, which
+                // is the point.
+                headingColor: '#111827',
+                chromeColor: '#f1f5f9',
+              },
+            },
+          },
+        };
+        expect(contrastPayload(renderSmokeHtml(story))).toEqual({ problems: [], unknown: [] });
+      });
+
+      it('reports the pair and the measured ratio when a palette fails', () => {
+        const story = {
+          ...sampleStory,
+          settings: { theme: { variables: { pageBackground: '#336699', textColor: '#336699' } } },
+        };
+        const { problems } = contrastPayload(renderSmokeHtml(story));
+        expect(problems.length).toBeGreaterThan(0);
+        expect(problems.join('\n')).toMatch(/Body text on the page background: 1\.00:1/);
+        expect(problems.join('\n')).toMatch(/needs 4\.5:1/);
+      });
+
+      // The trap the character-theme defect came from: a light page
+      // under text colours chosen for the dark default.
+      it('catches a light page left with the default dark-theme text', () => {
+        const story = {
+          ...sampleStory,
+          settings: { theme: { variables: { pageBackground: '#ffffff' } } },
+        };
+        expect(contrastPayload(renderSmokeHtml(story)).problems.join('\n')).toMatch(
+          /Body text on the page background/,
+        );
+      });
+
+      // The per-component panels are what the player's `var()` chains
+      // actually resolve to, so a check that read only `variables`
+      // would stamp a green tick on a palette the listener can't read.
+      it('checks per-component overrides, not just the global variables', () => {
+        const story = {
+          ...sampleStory,
+          settings: {
+            theme: {
+              variables: { pageBackground: '#ffffff', textColor: '#111827' },
+              components: { page: { textColor: '#eeeeee' } },
+            },
+          },
+        };
+        expect(contrastPayload(renderSmokeHtml(story)).problems.join('\n')).toMatch(
+          /Body text on the page background/,
+        );
+      });
+
+      // A check that quietly didn't run is indistinguishable from one
+      // that passed, on a page whose whole job is to say "this build is
+      // fine" — so it gets said out loud.
+      it('names a colour it could not read rather than passing it', () => {
+        const story = {
+          ...sampleStory,
+          settings: { theme: { variables: { pageBackground: 'oklch(0.95 0.02 250)' } } },
+        };
+        const { problems, unknown } = contrastPayload(renderSmokeHtml(story));
+        expect(unknown.join('\n')).toMatch(/could not read oklch\(0\.95 0\.02 250\)/);
+        // But it is advice, not a verdict: an unreadable value is not
+        // evidence of a contrast failure.
+        expect(problems).toEqual([]);
+      });
+
+      // A url() page background is a supported choice. Failing the
+      // smoke check on every build that uses one would teach authors
+      // to ignore the page.
+      it('does not fail the check over a page background it cannot sample', () => {
+        const story = {
+          ...sampleStory,
+          settings: { theme: { components: { page: { backgroundImage: 'url(bg.jpg)' } } } },
+        };
+        const { problems, unknown } = contrastPayload(renderSmokeHtml(story));
+        expect(problems).toEqual([]);
+        expect(unknown.join('\n')).toMatch(/Body text on the page background/);
+        // The opaque surfaces that sit in front of it are unaffected.
+        expect(unknown.join('\n')).not.toMatch(/Start button/);
+      });
+
+      it('renders the unmeasurable list without failing a check', () => {
+        const story = {
+          ...sampleStory,
+          settings: { theme: { components: { page: { backgroundImage: 'url(bg.jpg)' } } } },
+        };
+        const html = renderSmokeHtml(story);
+        expect(html).toMatch(/Theme colours that could not be measured/);
+        // The pass/fail check still only counts measured failures.
+        expect(html).toMatch(/record\('Theme colours meet WCAG AA contrast', \(contrast\.problems/);
+      });
+
+      // `unparsed` echoes author-controlled theme values verbatim, and
+      // the free-text component props aren't colour-validated. A raw
+      // U+2028 inside the inline <script> is a line terminator on any
+      // pre-ES2019 engine, which blanks the whole build-health page.
+      it('escapes line separators smuggled in through a theme value', () => {
+        const story = {
+          ...sampleStory,
+          settings: { theme: { components: { page: { backgroundImage: 'url(a\u2028b.jpg)' } } } },
+        };
+        const html = renderSmokeHtml(story);
+        const payload = html.split('window.__WANDERLINE_CONTRAST__')[1].split('</script>')[0];
+        expect(payload).not.toContain('\u2028');
+        expect(payload).toContain('\\u2028');
+      });
+
+      it('keeps the payload from closing the inline script', () => {
+        const story = {
+          ...sampleStory,
+          settings: { theme: { variables: { textColor: '</script><b>' } } },
+        };
+        const html = renderSmokeHtml(story);
+        const body = html.split('window.__WANDERLINE_CONTRAST__')[1].split('</script>')[0];
+        expect(body).not.toMatch(/<\/script>/i);
+      });
     });
 
     it('handles a story with no nodes without throwing', () => {
