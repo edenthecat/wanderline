@@ -2350,12 +2350,7 @@ export default function App() {
             CC
           </button>
           <h1 style={styles.title}>{story?.title || 'Audio Story'}</h1>
-          <div
-            style={styles.headerBtnGroup}
-            role="toolbar"
-            aria-label="Story controls"
-            lang="en"
-          >
+          <div style={styles.headerBtnGroup} role="toolbar" aria-label="Story controls" lang="en">
             {/* aria-controls only while the panel exists: an IDREF
                 pointing at an absent id is invalid, and axe flags it. */}
             <button
