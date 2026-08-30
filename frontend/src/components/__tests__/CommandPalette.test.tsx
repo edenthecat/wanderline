@@ -1,5 +1,5 @@
-import { useRef, useState } from 'react';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { useEffect, useRef, useState } from 'react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import CommandPalette from '../CommandPalette';
 import type { StoryGraph, StoryNode } from '../../api/client';
@@ -181,10 +181,20 @@ describe('CommandPalette', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it('closes on Escape', () => {
-    const { onClose } = renderPalette();
-    fireEvent.keyDown(input(), { key: 'Escape' });
-    expect(onClose).toHaveBeenCalled();
+  it('closes on Escape without waking handlers behind the modal', () => {
+    // The page has document-level Escape handlers (export dropdown,
+    // mobile sheet). React listens at the root container, so an
+    // un-stopped Escape closes those too and yanks focus with them.
+    const behind = vi.fn();
+    document.addEventListener('keydown', behind);
+    try {
+      const { onClose } = renderPalette();
+      fireEvent.keyDown(input(), { key: 'Escape' });
+      expect(onClose).toHaveBeenCalled();
+      expect(behind).not.toHaveBeenCalled();
+    } finally {
+      document.removeEventListener('keydown', behind);
+    }
   });
 
   it('ignores non-primary mouse buttons', () => {
@@ -194,6 +204,44 @@ describe('CommandPalette', () => {
     fireEvent.mouseDown(screen.getByTestId('command-palette-backdrop'), { button: 2 });
     expect(jumpToNode).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('rescues focus when the command unmounts the invoker a commit later', async () => {
+    // React runs every passive destroy before any passive create, so
+    // the close cleanup sees an invoker the jump has not unmounted
+    // YET — StoryTab leaves its Source view from a create-phase
+    // effect, taking CodeMirror (and the focus we just restored to it)
+    // with it one commit later.
+    function Host() {
+      const [open, setOpen] = useState(false);
+      const [jumped, setJumped] = useState(false);
+      const [invokerGone, setInvokerGone] = useState(false);
+      const fallback = useRef<HTMLElement>(null);
+      useEffect(() => {
+        if (jumped) setInvokerGone(true);
+      }, [jumped]);
+      return (
+        <main ref={fallback} tabIndex={-1} data-testid="fallback">
+          {!invokerGone && <input aria-label="editor" />}
+          <CommandPalette
+            open={open}
+            onClose={() => setOpen(false)}
+            storyGraph={STORY}
+            actions={{ jumpToNode: () => setJumped(true) }}
+            fallbackFocusRef={fallback}
+          />
+          <button onClick={() => setOpen(true)}>Open</button>
+        </main>
+      );
+    }
+    render(<Host />);
+    screen.getByLabelText('editor').focus();
+    fireEvent.click(screen.getByRole('button', { name: 'Open' }));
+    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter' });
+    // The invoker is gone and focus fell to <body> — the cleanup could
+    // not have known that when it ran.
+    expect(screen.queryByLabelText('editor')).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('fallback')));
   });
 
   it('falls back when nothing was focused before it opened', () => {

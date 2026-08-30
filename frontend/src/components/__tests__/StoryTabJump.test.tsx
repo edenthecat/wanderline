@@ -168,5 +168,9 @@ describe('StoryTab jumpRequest', () => {
     expect(screen.getByRole('button', { name: 'make draft dirty' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Expand harbour/ })).toBeNull();
     expect(scrollIntoView).not.toHaveBeenCalled();
+    // The request is still consumed. Leaving it set would re-raise
+    // this same confirm on every later render and remount; the author
+    // reopens the palette instead.
+    expect(utils.onJumpHandled).toHaveBeenCalled();
   });
 });

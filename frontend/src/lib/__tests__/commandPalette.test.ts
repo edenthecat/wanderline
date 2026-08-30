@@ -80,8 +80,22 @@ describe('passageProvider', () => {
     // key downstream — offering node.id would drop the jump silently.
     const stored = graph(node('intro'));
     stored.nodes.record_key = { ...node('intro'), id: 'stale_id' };
-    const commands = passageProvider({ query: 'record', storyGraph: stored, actions: actions() });
+    const act = actions();
+    const commands = passageProvider({ query: 'record', storyGraph: stored, actions: act });
     expect(commands.map((c) => c.label)).toEqual(['record_key']);
+    // The label is only half of it — the jump has to carry the key too,
+    // or the tab resolving it finds nothing and drops it silently.
+    commands[0].run();
+    expect(act.jumpToNode).toHaveBeenCalledWith('record_key');
+  });
+
+  it('skips a null node rather than offering a row nothing can resolve', () => {
+    // normalizeStoryGraph deliberately keeps null values in a stored
+    // graph; an id-only match would otherwise list a dead passage.
+    const stored = graph(node('intro'));
+    (stored.nodes as Record<string, StoryNode | null>).ghost = null;
+    const commands = passageProvider({ query: 'ghost', storyGraph: stored, actions: actions() });
+    expect(commands).toEqual([]);
   });
 
   it('returns nothing when the project has no story yet', () => {

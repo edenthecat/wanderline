@@ -62,6 +62,10 @@ export const passageProvider: CommandProvider = ({ query, storyGraph, actions })
   // with `storyGraph.nodes[id]`), and the two are not guaranteed to
   // agree on a legacy stored graph.
   for (const [id, node] of Object.entries(storyGraph.nodes)) {
+    // normalizeStoryGraph deliberately preserves a null node rather
+    // than dropping it from a stored graph, and an id-only match would
+    // otherwise put a row here that no tab can actually jump to.
+    if (!node) continue;
     if (!nodeMatchesQuery(id, node, q)) continue;
     commands.push({
       id: `jump-node:${id}`,
@@ -115,6 +119,11 @@ export function buildCommands(
     bucket.sort((a, b) => a.rank - b.rank);
     ordered.push(...bucket);
   }
+  // The cap is applied to the concatenated group order. With one
+  // provider that is simply "the top N passages". Whoever adds the
+  // second one should decide whether a later group deserves a
+  // reserved slice — today a long list of weak matches in the first
+  // group could push a stronger later group off the end entirely.
   return {
     commands: ordered.slice(0, limit),
     totalCount,

@@ -141,8 +141,26 @@ export default function CommandPalette({
         invoker !== document.body &&
         invoker !== document.documentElement &&
         document.contains(invoker);
-      const target = usable ? invoker : (fallbackRef.current?.current ?? null);
+      const fallback = fallbackRef.current?.current ?? null;
+      const target = usable ? invoker : fallback;
       if (target && typeof target.focus === 'function') target.focus();
+      // ...and then check again once the dust settles. The command we
+      // just ran can unmount the invoker a commit LATER than this
+      // cleanup — a jump out of StoryTab's Source view unmounts
+      // CodeMirror from a create-phase effect — and the liveness check
+      // above structurally cannot see that. The browser drops focus to
+      // <body> when the focused element leaves the DOM, so re-check on
+      // a macrotask and catch it there.
+      if (!fallback || target === fallback) return;
+      // A cleanup can't itself return a cleanup, so this timer isn't
+      // cancellable — both guards below make a late run harmless: it
+      // no-ops if anything holds focus (including a palette the author
+      // has already reopened) or if the fallback is gone.
+      setTimeout(() => {
+        const active = document.activeElement;
+        const stranded = !active || active === document.body || active === document.documentElement;
+        if (stranded && document.contains(fallback)) fallback.focus();
+      }, 0);
     };
   }, [open]);
 
@@ -165,6 +183,13 @@ export default function CommandPalette({
       if (e.nativeEvent.isComposing) return;
       if (e.key === 'Escape') {
         e.preventDefault();
+        // React attaches at the root container, so without this the
+        // native event still reaches the document-level Escape
+        // handlers behind the modal: the export dropdown would close
+        // too (yanking focus to its button, ahead of our own
+        // restoration) and so would the mobile group sheet, neither of
+        // which the author asked to dismiss.
+        e.stopPropagation();
         onClose();
         return;
       }
