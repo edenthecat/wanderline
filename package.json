@@ -49,16 +49,16 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
-    "cypress": "^15.18.1",
+    "cypress": "^15.21.1",
     "eslint": "^9.39.4",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^7.1.1",
-    "globals": "^17.7.0",
+    "globals": "^17.11.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.4.0",
-    "prettier": "^3.9.5",
-    "typescript-eslint": "^8.63.0"
+    "prettier": "^3.9.6",
+    "typescript-eslint": "^8.68.0"
   },
   "lint-staged": {
     "*.{js,jsx,ts,tsx,mjs,cjs}": [
