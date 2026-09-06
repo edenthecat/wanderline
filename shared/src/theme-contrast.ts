@@ -190,7 +190,15 @@ function samplePageStops(value: string): Rgba[] | null {
   const single = parseColor(value);
   if (single) return [single];
 
-  const functions = [...value.matchAll(/([a-zA-Z][\w-]*)\(/g)].map((m) => m[1].toLowerCase());
+  // The trailing `(` is captured as an OPTIONAL group rather than
+  // required. Written as `([a-zA-Z][\w-]*)\(`, a failed match restarts
+  // the scan INSIDE the identifier it just consumed, so a theme value
+  // that is a long run of word characters with no paren — which an
+  // author can set — costs O(n^2). Consuming the identifier either way
+  // and testing whether a paren followed keeps it to one pass.
+  const functions = [...value.matchAll(/([a-zA-Z][\w-]*)(\()?/g)]
+    .filter((m) => m[2] !== undefined)
+    .map((m) => m[1].toLowerCase());
   if (functions.some((fn) => !SAMPLABLE_FUNCTION.test(fn))) return null;
 
   const tokens = value.match(colorTokenPattern()) ?? [];

@@ -686,3 +686,40 @@ describe('colours the parser cannot read are reported, never passed', () => {
     expect(checks.find((c) => c.id === 'text-on-card')!.ratio).toBeNull();
   });
 });
+
+describe('pathological theme values', () => {
+  it('does not go quadratic on a long run of word characters', () => {
+    // CodeQL js/polynomial-redos. The function-name scan was written
+    // `([a-zA-Z][\w-]*)\(` — on a value with no paren, every failure
+    // restarted the match INSIDE the identifier it had just consumed,
+    // so cost grew with the square of the length. `pageBackground` is
+    // author-supplied, so this was reachable by anyone who could set a
+    // theme.
+    //
+    // Timing is a blunt instrument for a unit test, but the difference
+    // here is orders of magnitude: the quadratic form takes seconds on
+    // this input, the linear form is imperceptible. The bound is loose
+    // enough not to flake on a loaded CI box.
+    const hostile = 'A'.repeat(60_000);
+    const started = Date.now();
+    const checks = evaluateThemeContrast({ variables: { pageBackground: hostile } });
+    const elapsed = Date.now() - started;
+
+    expect(elapsed).toBeLessThan(1000);
+    // And it still reaches the right answer: an unparseable background
+    // is reported as unmeasured, never silently passed.
+    expect(checks.length).toBeGreaterThan(0);
+  });
+
+  it('still recognises a real gradient after the change', () => {
+    // The optional-paren rewrite must not stop function names being
+    // detected, or every gradient would fall through as unsamplable.
+    const checks = evaluateThemeContrast({
+      variables: {
+        pageBackground: 'linear-gradient(to bottom, #ffffff, #000000)',
+        textColor: '#000000',
+      },
+    });
+    expect(checks.some((c) => c.ratio !== null)).toBe(true);
+  });
+});
