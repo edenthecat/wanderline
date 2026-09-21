@@ -242,7 +242,7 @@ interface PageSurface {
   beneath: string;
 }
 
-/** `none` on a component prop means "no override", not a colour. */
+/** `none` on a colour prop means "no override", not a colour. */
 function override(theme: ThemeInput | undefined, prop: string): string | undefined {
   const value = componentValue(theme, 'page', prop);
   return isSet(value) && value.toLowerCase() !== 'none' ? value : undefined;
@@ -250,20 +250,38 @@ function override(theme: ThemeInput | undefined, prop: string): string | undefin
 
 function resolvePageSurface(theme: ThemeInput | undefined): PageSurface {
   // Read through `componentValue`, not `?.trim()` — see its docblock.
-  const image = override(theme, 'backgroundImage');
-  const color = override(theme, 'background');
+  const colorOverride = override(theme, 'background');
+  // NOT through `override()`: on this field `none` is not "unset", it
+  // is the author switching the image layer off, and it has to reach
+  // the isImageValue test below to do that. renderThemeCss emits every
+  // non-empty prop verbatim, so `--wl-page-backgroundImage: none` is
+  // what the player really gets.
+  const imageOverride = componentValue(theme, 'page', 'backgroundImage');
   const variable = isSet(theme?.variables?.pageBackground)
     ? theme.variables.pageBackground.trim()
     : PLAYER_THEME_DEFAULTS.pageBackground;
 
-  // The shorthand's colour. A gradient there paints as an image and
+  // `background: <shorthand>`. A gradient here paints as an image and
   // leaves background-color at its initial `transparent`, which shows
-  // the browser's own canvas.
-  const beneath = color ?? (isImageValue(variable) ? '#ffffff' : variable);
+  // the browser's own canvas — so the colour beneath is the canvas,
+  // not the gradient. Testing the *override* and not just the variable
+  // matters: the Page → Background knob is free text, and a gradient
+  // typed into it used to land in `beneath`, where parseColor can only
+  // return null. The whole page then came back "couldn't measure this"
+  // for a surface samplePageStops reads perfectly well.
+  const shorthand = colorOverride ?? variable;
+  const beneath = isImageValue(shorthand) ? '#ffffff' : shorthand;
 
-  if (image) return { value: image, beneath };
-  if (isImageValue(variable)) return { value: variable, beneath };
-  return { value: beneath, beneath };
+  // `background-image: <value>`, declared after the shorthand, so it
+  // decides the image layer outright. A value that is not an image is
+  // invalid at computed-value time and computes to `none` — which
+  // wipes the shorthand's image rather than painting itself. Trusting
+  // this field to be an image signed off on white-on-white: a colour
+  // typed into Page → Background image was scored as the surface the
+  // text sits on, while the player showed the background-color
+  // underneath it.
+  const imageDecl = isSet(imageOverride) ? imageOverride : variable;
+  return { value: isImageValue(imageDecl) ? imageDecl : beneath, beneath };
 }
 
 // The surfaces text actually lands on in the player. Headings are
@@ -408,13 +426,17 @@ export function evaluateThemeContrast(theme: ThemeInput | undefined): ThemeContr
       worst = Math.min(worst, contrastRatio(ink, surface));
     }
 
-    const ratio = Math.round(worst * 100) / 100;
+    // Compare before rounding. Rounding first certified everything in
+    // [4.495, 4.5) as clearing AA — a 4.4961:1 page reported "4.5:1,
+    // passes" — which is the checker handing out the exact false green
+    // tick it exists to prevent. 2dp is a display concern only.
+    const passes = worst >= pair.required;
     results.push({
       id: pair.id,
       label: pair.label,
       required: pair.required,
-      ratio,
-      passes: ratio >= pair.required,
+      ratio: Math.round(worst * 100) / 100,
+      passes,
       unparsed: [],
     });
   }

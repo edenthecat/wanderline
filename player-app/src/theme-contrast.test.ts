@@ -528,6 +528,44 @@ describe('the page surface follows the player, not the knob names', () => {
     expect(evaluateThemeContrast(hostile)).toEqual(evaluateThemeContrast(undefined));
   });
 
+  it('ignores a colour typed into Page → Background image', () => {
+    // The field is free text, so a colour lands in it easily — and
+    // `background-image: #000000` is invalid at computed-value time,
+    // computes to `none`, and paints nothing. Trusting it as the
+    // surface scored this palette at 21:1 and handed out a green tick
+    // for a page the player renders white-on-white.
+    const checks = evaluateThemeContrast({
+      variables: { pageBackground: '#ffffff', textColor: '#ffffff' },
+      components: { page: { backgroundImage: '#000000' } },
+    });
+    const page = checks.find((c) => c.id === 'text-on-page')!;
+    expect(page.ratio).toBe(1);
+    expect(page.passes).toBe(false);
+  });
+
+  it('wipes the gradient when the image layer is switched off', () => {
+    // `background-image` is declared after the shorthand, so a value
+    // that computes to `none` takes the shorthand's gradient with it —
+    // leaving the background-color, which a gradient page never set.
+    // The listener gets #eee on the browser's white canvas.
+    const failures = failingThemeContrast({ components: { page: { backgroundImage: 'none' } } });
+    expect(failures.map((f) => f.id)).toContain('text-on-page');
+  });
+
+  it('samples a gradient typed into Page → Background instead of giving up', () => {
+    // That knob feeds the `background` shorthand, where a gradient
+    // paints as the image layer. Putting it into `beneath` — which
+    // only ever holds a flat colour — made parseColor return null and
+    // reported the whole page as unmeasurable, for a surface
+    // samplePageStops reads perfectly well.
+    const checks = evaluateThemeContrast({
+      components: { page: { background: 'linear-gradient(#000000, #111111)' } },
+    });
+    const page = checks.find((c) => c.id === 'text-on-page')!;
+    expect(page.ratio).not.toBeNull();
+    expect(page.unparsed).toEqual([]);
+  });
+
   it('falls through a background image cleared with `none`', () => {
     // `none` is how an author clears the image layer; it isn't a
     // colour we failed to read, and the colour underneath is what
@@ -543,6 +581,28 @@ describe('the page surface follows the player, not the knob names', () => {
 // A check that silently didn't run reads exactly like a check that
 // passed, and the place it surfaces is a page captioned "Theme colours
 // meet WCAG AA contrast ✓".
+describe('the ratio is compared before it is rounded', () => {
+  it('does not round a near-miss up into a pass', () => {
+    // #ffffff on #6363f8 is 4.4961:1 — below the 4.5 AA floor.
+    // Rounding to 2dp first turned that into "4.5:1, passes", which is
+    // the checker issuing the exact false green tick it exists to
+    // prevent. The displayed 4.5 is fine; the verdict is not.
+    const checks = evaluateThemeContrast({
+      variables: { pageBackground: '#6363f8', textColor: '#ffffff' },
+    });
+    const page = checks.find((c) => c.id === 'text-on-page')!;
+    expect(page.ratio).toBe(4.5);
+    expect(page.passes).toBe(false);
+  });
+
+  it('still passes a pair that genuinely clears the floor', () => {
+    const checks = evaluateThemeContrast({
+      variables: { pageBackground: '#ffffff', textColor: '#595959' },
+    });
+    expect(checks.find((c) => c.id === 'text-on-page')!.passes).toBe(true);
+  });
+});
+
 describe('colours the parser cannot read are reported, never passed', () => {
   it('marks the pair unevaluated rather than dropping or passing it', () => {
     const checks = evaluateThemeContrast({ variables: { textColor: 'oklch(0.7 0.1 200)' } });
