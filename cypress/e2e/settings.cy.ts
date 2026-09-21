@@ -64,30 +64,33 @@ describe('Project Settings (split)', () => {
       cy.contains('button', 'Player display').click();
     });
 
-    it('toggles "Show choice list" and persists it', () => {
-      cy.contains('strong', 'Show choice list')
-        .parents('label')
-        .find('input[type=checkbox]')
-        .as('toggle');
-      cy.get('@toggle').should('be.checked').uncheck();
+    // Unchecking fires a PATCH that useProjectSettings does NOT
+    // debounce, but it is still a network round trip, and the
+    // assertion below reads the row straight back over a *separate*
+    // connection. Nothing ordered the two, so the GET could — and
+    // intermittently did — land first and read the pre-toggle row:
+    // `expected undefined to equal false`. The checkbox assertion in
+    // between is not a fix either, because the box flips from local
+    // state before the PATCH is even sent. Waiting on the request
+    // itself is the only thing that actually orders them.
+    function uncheckAndPersist(label: string, key: string) {
+      cy.intercept('PATCH', `/api/projects/${projectId}/settings`).as('saveSetting');
+      cy.contains('strong', label).parents('label').find('input[type=checkbox]').as('toggle');
+      cy.get('@toggle').uncheck();
       cy.get('@toggle').should('not.be.checked');
+      cy.wait('@saveSetting').its('response.statusCode').should('eq', 200);
 
       cy.request('GET', `/api/projects/${projectId}/settings`).then((res) => {
-        expect(res.body.settings.showChoiceList).to.eq(false);
+        expect(res.body.settings[key]).to.eq(false);
       });
+    }
+
+    it('toggles "Show choice list" and persists it', () => {
+      uncheckAndPersist('Show choice list', 'showChoiceList');
     });
 
     it('toggles "Captions on by default" independently', () => {
-      cy.contains('strong', 'Captions on by default')
-        .parents('label')
-        .find('input[type=checkbox]')
-        .as('toggle');
-      cy.get('@toggle').uncheck();
-      cy.get('@toggle').should('not.be.checked');
-
-      cy.request('GET', `/api/projects/${projectId}/settings`).then((res) => {
-        expect(res.body.settings.captionsDefault).to.eq(false);
-      });
+      uncheckAndPersist('Captions on by default', 'captionsDefault');
     });
   });
 
