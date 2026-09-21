@@ -3,7 +3,7 @@
 // input with `aria-expanded` and no `role`, driving a highlight that
 // existed only as a background colour.
 
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import FontPicker from '../FontPicker';
 import { GOOGLE_FONTS } from '../../api/google-fonts';
@@ -160,6 +160,58 @@ describe('FontPicker accessibility', () => {
     expect(document.body).not.toBe(document.activeElement);
     // And keeping focus must not immediately reopen the list.
     expect(screen.queryByRole('listbox')).toBeNull();
+  });
+
+  it("reopens on the author's next genuine focus after a pick", () => {
+    // pick() armed the justPicked guard and then called .focus() on an
+    // input that already had focus — Enter never moves it, and the
+    // row's mousedown is preventDefault'd precisely so it doesn't. A
+    // no-op focus() fires no event, so nothing spent the flag and it
+    // sat there waiting to eat the author's next real focus.
+    //
+    // fireEvent.focus cannot see this: it dispatches an event without
+    // moving focus, so pick()'s focus() *does* fire one there and the
+    // flag clears. This test drives the real DOM methods.
+    const onChange = vi.fn();
+    render(<FontPicker value="" onChange={onChange} ariaLabel="Body font" />);
+    const input = screen.getByLabelText('Body font') as HTMLInputElement;
+
+    // act() because these are real DOM calls, not fireEvent — the
+    // state they schedule has to flush before the assertion reads it.
+    act(() => input.focus());
+    expect(screen.getByRole('listbox')).toBeInTheDocument();
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect(document.activeElement).toBe(input);
+
+    // Tab to the heading picker and Shift-Tab back: the list must open.
+    act(() => input.blur());
+    act(() => input.focus());
+    expect(screen.getByRole('listbox')).toBeInTheDocument();
+  });
+
+  it('scrolls to the committed font on open, not to whatever row 0 is', () => {
+    // The on-open effect sets the highlight; the scroll effect runs in
+    // the same passive flush and so still sees the pre-open highlight.
+    // Pairing the request with "the next highlight" therefore scrolled
+    // row 0 and spent itself, and the corrected render found nothing
+    // left to do — the author's font stayed forty rows below the fold,
+    // which is the whole reason the scroll is here.
+    const scrolled: Element[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (Element.prototype as any).scrollIntoView = function (this: Element) {
+      scrolled.push(this);
+    };
+    try {
+      const { input } = open(GOOGLE_FONTS[40].family);
+      expect(scrolled).toHaveLength(1);
+      // The row we scrolled to has to be the row we say we are on.
+      expect(scrolled[0]).toBe(activeOption(input));
+    } finally {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      delete (Element.prototype as any).scrollIntoView;
+    }
   });
 
   it('opens on the font already chosen, not on the first row', () => {

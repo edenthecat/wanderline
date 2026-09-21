@@ -370,6 +370,77 @@ describe('FlaggedNodesPanel accessibility', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Already resolved');
   });
 
+  it('lands focus somewhere real when a failed resolve outlives its row', async () => {
+    // The same race as the test above, asked about focus. A
+    // collaborator clears the flag first, the refetch unmounts the row
+    // — the ref callback deletes the button from the map — and only
+    // then does the author's own request 404. Looking the button up by
+    // id returns undefined, so without the success path's
+    // next ?? summary ?? status fallback the author is left on <body>
+    // with an assertive alert about a button they'd have to go find.
+    let fail!: (e: Error) => void;
+    vi.spyOn(client, 'resolveNodeFlag').mockReturnValue(
+      new Promise<void>((_resolve, reject) => {
+        fail = reject;
+      }),
+    );
+    const { update } = renderPanel({ her: [flag({ id: 'a' }), flag({ id: 'b' })] });
+    expand();
+
+    const [first] = resolveButtons();
+    first.focus();
+    fireEvent.click(first);
+    await waitFor(() => expect(first).toBeDisabled());
+
+    // The row goes before the rejection arrives; jsdom drops focus to
+    // <body> when the focused element is removed, which is where a
+    // real browser leaves it too.
+    update({ her: [flag({ id: 'b' })] });
+    expect(document.activeElement).toBe(document.body);
+
+    await act(async () => {
+      fail(new Error('Already resolved'));
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Already resolved'));
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(screen.getByRole('button', { expanded: true }));
+  });
+
+  it('speaks a second resolve that reads identically to the first', async () => {
+    // Resolving one flag while a collaborator raises another leaves the
+    // count flat, so both announcements are the same string — and
+    // setting a live region to the text it already holds mutates
+    // nothing, so a screen reader says nothing the second time. That is
+    // the exact "your click did nothing" silence the flat-count branch
+    // exists to break, reintroduced one resolve later.
+    vi.spyOn(client, 'resolveNodeFlag').mockResolvedValue(undefined as never);
+    const { update } = renderPanel({
+      her: [flag({ id: 'a' }), flag({ id: 'b' }), flag({ id: 'c' })],
+    });
+    expand();
+    const status = screen.getByTestId('flagged-panel-status');
+    const spoken = 'Flag resolved. 3 open flags across 1 passage.';
+
+    await act(async () => {
+      fireEvent.click(resolveButtons()[0]);
+    });
+    update({ her: [flag({ id: 'b' }), flag({ id: 'c' }), flag({ id: 'd' })] });
+    await waitFor(() => expect(status.textContent).toBe(spoken));
+    const firstSpan = status.firstElementChild;
+
+    await act(async () => {
+      fireEvent.click(resolveButtons()[0]);
+    });
+    update({ her: [flag({ id: 'c' }), flag({ id: 'd' }), flag({ id: 'e' })] });
+
+    // Same words — so the only evidence the region changed at all is
+    // that the node carrying them was replaced.
+    await waitFor(() => expect(status.firstElementChild).not.toBe(firstSpan));
+    expect(status.textContent).toBe(spoken);
+  });
+
   it('has no axe violations, collapsed or expanded', async () => {
     const { container } = renderPanel({
       her: [flag({ id: 'a', note: 'wrong take' })],

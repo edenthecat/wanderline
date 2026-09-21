@@ -81,11 +81,16 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
   const inputRef = useRef<HTMLInputElement | null>(null);
   const dropdownRef = useRef<HTMLDivElement | null>(null);
   const optionRefs = useRef<(HTMLDivElement | null)[]>([]);
-  // Only the keyboard should scroll the list. Hovering a row that is
-  // clipped at either fold would otherwise pull it into view, sliding
-  // the list under a stationary cursor — which lands the pointer on a
-  // different row and re-highlights it.
-  const scrollNextHighlight = useRef(false);
+  // The row the keyboard asked to scroll to, or null. It carries the
+  // index rather than a bare "yes please" because the effect that
+  // spends it can run before the matching `highlight` render: opening
+  // on the committed value sets the highlight from another effect in
+  // the same flush, so a flag-plus-`highlight` pairing scrolled row 0
+  // and then found itself already spent. Only the keyboard sets it —
+  // hovering a row clipped at either fold would otherwise pull it into
+  // view, sliding the list under a stationary cursor, which lands the
+  // pointer on a different row and re-highlights it.
+  const scrollToIndex = useRef<number | null>(null);
   const listboxId = useId();
   const optionId = (i: number) => `${listboxId}-option-${i}`;
 
@@ -112,7 +117,7 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
     // React bails on the same-value update, so the scroll effect never
     // ran to consume the flag, and it then fired on the next hover,
     // sliding the list under a stationary cursor.
-    scrollNextHighlight.current = target > 0;
+    scrollToIndex.current = target > 0 ? target : null;
     // `filtered` deliberately absent: this is the on-open position, and
     // re-running it as the author types would drag the highlight back
     // to their committed font on every keystroke.
@@ -149,12 +154,15 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
     // dropdown closing and fire on reopen against the *old* highlight —
     // scrolling to the row you were on while the highlight sits back at
     // the top, which is the very thing this is here to prevent.
-    const wanted = scrollNextHighlight.current;
-    scrollNextHighlight.current = false;
-    if (!open || !wanted) return;
+    const wanted = scrollToIndex.current;
+    scrollToIndex.current = null;
+    if (!open || wanted === null) return;
+    // Scroll to the row the ref names, not to `highlight`. On open they
+    // disagree: the on-open effect above sets the highlight in this
+    // same passive flush, so this one still sees the pre-open 0.
     // jsdom doesn't implement scrollIntoView, and neither do some older
     // browsers — calling it is an enhancement, not a requirement.
-    optionRefs.current[highlight]?.scrollIntoView?.({ block: 'nearest' });
+    optionRefs.current[wanted]?.scrollIntoView?.({ block: 'nearest' });
   }, [open, highlight]);
 
   // Set when a selection was just committed, so the input keeping focus
@@ -172,8 +180,25 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
     // fixes in FlaggedNodesPanel, inside the component it rebuilt.
     // Focus stays in the input; justPicked stops the onFocus handler
     // immediately reopening the list we just closed.
-    justPickedRef.current = true;
+    // Only arm the guard when the .focus() below will actually fire an
+    // event. Both callers reach here with the input already focused —
+    // Enter from its own keydown, a row from a preventDefault'd
+    // mousedown — and re-focusing a focused element is a no-op, so
+    // arming it unconditionally left the flag set with nothing coming
+    // to clear it. It then ate the author's next genuine refocus and
+    // the dropdown refused to open.
+    justPickedRef.current = document.activeElement !== inputRef.current;
     inputRef.current?.focus();
+  }
+
+  // Arrowing into an end stop must arm nothing at all. Setting the ref
+  // and then calling setHighlight with the value it already holds lets
+  // React bail on the update, so the scroll effect never runs to spend
+  // it — and the next hover inherits it and scrolls.
+  function moveHighlight(next: number) {
+    if (next === highlight) return;
+    scrollToIndex.current = next;
+    setHighlight(next);
   }
 
   function handleKeyDown(e: ReactKeyboardEvent<HTMLInputElement>) {
@@ -183,15 +208,13 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
     }
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      scrollNextHighlight.current = true;
       // Clamp at 0, not at `length - 1`: with no matches that's -1, and
       // a negative index leaves the two arrow keys behaving
       // asymmetrically until something resets it.
-      setHighlight((h) => Math.min(Math.max(filtered.length - 1, 0), h + 1));
+      moveHighlight(Math.min(Math.max(filtered.length - 1, 0), highlight + 1));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      scrollNextHighlight.current = true;
-      setHighlight((h) => Math.max(0, h - 1));
+      moveHighlight(Math.max(0, highlight - 1));
     } else if (e.key === 'Enter') {
       const entry = filtered[highlight];
       if (entry) {
@@ -286,12 +309,11 @@ export default function FontPicker({ value, onChange, placeholder, ariaLabel, te
                   // below instead of competing for this attribute.
                   aria-selected={highlighted}
                   onMouseEnter={() => {
-                    // Clear rather than merely not-set: arrowing into
-                    // an end stop calls setHighlight with the value it
-                    // already has, React bails out, and the effect
-                    // never runs to clear the flag itself. A hover
-                    // arriving after that would inherit it and scroll.
-                    scrollNextHighlight.current = false;
+                    // Clear rather than merely not-set: a request armed
+                    // by the keyboard and not yet spent would otherwise
+                    // be inherited by this hover and scroll the list
+                    // out from under a stationary cursor.
+                    scrollToIndex.current = null;
                     setHighlight(i);
                   }}
                   onMouseDown={(e) => {

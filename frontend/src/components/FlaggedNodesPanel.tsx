@@ -18,6 +18,20 @@ import { FLAG_REASON_LABELS } from './flagLabels';
 // can attach itself to an unrelated change minutes later.
 const RECENT_RESOLVE_MS = 5000;
 
+/**
+ * Skip a focus candidate that cannot take focus. A Resolve button whose
+ * own request is still in flight is disabled ("Saving…"), and .focus()
+ * on a disabled element is a silent no-op — so committing to a
+ * candidate without checking leaves focus on <body>, which is the very
+ * thing the re-homing exists to prevent. Reachable whenever two
+ * resolves overlap, which the queue and the `resolving` Set are built
+ * to support: resolve one flag on a slow connection, then the one
+ * above it.
+ */
+function focusable(el: HTMLElement | null | undefined): HTMLElement | undefined {
+  return el && !(el as HTMLButtonElement).disabled ? el : undefined;
+}
+
 interface Props {
   projectId: string;
   /** Open flags keyed by the passage they were raised against. */
@@ -113,7 +127,14 @@ export default function FlaggedNodesPanel({
     `${total} open flag${total === 1 ? '' : 's'} across ${entries.length} passage${
       entries.length === 1 ? '' : 's'
     }` + (truncated ? ', showing the most recent.' : '.');
-  const [announcement, setAnnouncement] = useState('');
+  // Carries a sequence number alongside the text. Two resolves in a row
+  // that leave the count flat produce the byte-identical string, and
+  // setting a live region to the text it already holds mutates nothing
+  // — so the second one is never read, which is the "your click did
+  // nothing" silence this region exists to break. The seq keys the span
+  // below, so an unchanged string is still a removal and an insertion.
+  const [announcement, setAnnouncement] = useState({ text: '', seq: 0 });
+  const announce = (text: string) => setAnnouncement((prev) => ({ text, seq: prev.seq + 1 }));
   const lastTotal = useRef<number | null>(null);
   useEffect(() => {
     // Credits expire on their own: a resolve can't vouch for a change
@@ -141,7 +162,7 @@ export default function FlaggedNodesPanel({
     if (prev === total) {
       // Staying silent when the count holds steady across a resolve
       // reads as "your click did nothing", so say both halves.
-      if (landed > 0) setAnnouncement(`Flag resolved. ${openSummary}`);
+      if (landed > 0) announce(`Flag resolved. ${openSummary}`);
       return;
     }
     lastTotal.current = total;
@@ -152,10 +173,10 @@ export default function FlaggedNodesPanel({
       // review queue is clear" is not ours to say. Report the thing we
       // watched succeed instead, and stay quiet when the emptiness
       // arrived from somewhere we can't vouch for.
-      setAnnouncement(ours ? 'Flag resolved.' : '');
+      announce(ours ? 'Flag resolved.' : '');
       return;
     }
-    setAnnouncement(openSummary);
+    announce(openSummary);
     // `flagIdKey` is the stable string form of `flagIds`; depending on
     // the array itself would re-run this on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -196,16 +217,6 @@ export default function FlaggedNodesPanel({
     const pending = satisfied[satisfied.length - 1];
     if (!mayTakeFocus()) return;
     const next = pending.nextId ? resolveButtons.current.get(pending.nextId) : undefined;
-    // Skip a candidate that cannot take focus. A Resolve button whose
-    // own request is still in flight is disabled ("Saving…"), and
-    // .focus() on a disabled element is a silent no-op — so committing
-    // to `next` without checking left focus on <body>, which is exactly
-    // the bug this effect exists to prevent. Reachable whenever two
-    // resolves overlap, which the queue and the `resolving` Set are
-    // built to support: resolve one flag on a slow connection, then
-    // resolve the one above it.
-    const focusable = (el: HTMLElement | null | undefined): HTMLElement | undefined =>
-      el && !(el as HTMLButtonElement).disabled ? el : undefined;
     (focusable(next) ?? focusable(summaryRef.current) ?? statusRef.current)?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flagIdKey]);
@@ -218,7 +229,16 @@ export default function FlaggedNodesPanel({
     if (!id || resolving.has(id)) return;
     refocusOnFailure.current = null;
     if (!mayTakeFocus()) return;
-    resolveButtons.current.get(id)?.focus();
+    // Same fallback chain as the success path. The button is usually
+    // still there — a failed resolve leaves its row in place — but not
+    // always: a collaborator resolving the same flag drops the row on
+    // the next refetch, and then the ref lookup returns undefined and
+    // focus is left on <body> with an assertive alert showing.
+    (
+      focusable(resolveButtons.current.get(id)) ??
+      focusable(summaryRef.current) ??
+      statusRef.current
+    )?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resolvingKey]);
 
@@ -275,7 +295,7 @@ export default function FlaggedNodesPanel({
       className="sr-only sr-only-focusable"
       data-testid="flagged-panel-status"
     >
-      {announcement}
+      <span key={announcement.seq}>{announcement.text}</span>
     </div>
   );
 
