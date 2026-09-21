@@ -446,6 +446,26 @@ textarea:focus,
   border: 0;
 }
 
+/* Hidden until it takes focus. For status text a component hands focus
+   to because the control the user was on has just deleted itself — a
+   screen reader gets the words either way, and this gives a sighted
+   keyboard user something to see the focus ring on rather than a ring
+   on a 1px box. */
+.sr-only-focusable:focus {
+  position: static;
+  width: auto;
+  height: auto;
+  margin: 0;
+  padding: 8px 12px;
+  overflow: visible;
+  clip: auto;
+  white-space: normal;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 6px;
+  background: var(--color-surface, #fff);
+  font-size: 13px;
+}
+
 /* === Project Grid === */
 
 .project-grid {
@@ -2308,6 +2328,14 @@ details[open] > .audio-section-summary {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* Errors and warnings each get their own heading + list so the two
+   are told apart by structure, not only by the left border colour. */
+.validation-group-heading {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 16px 0 0;
 }
 
 .validation-item {
