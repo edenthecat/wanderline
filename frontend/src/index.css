@@ -3581,27 +3581,10 @@ details[open] > .audio-section-summary {
   white-space: nowrap;
   border: 0;
 }
-Flag
-  markers.
-  Red
-  because
-  these
-  are
-  someone
-  saying
-  a
-  passage
-  is
-  wrong
-  —
-  louder
-  than
-  the
-  character
-  chip
-  beside
-  them,
-which is context rather than a problem. */ .node-flag-badge {
+/* Flag markers. Red because these are someone saying a passage is
+   wrong — louder than the character chip beside them, which is
+   context rather than a problem. */
+.node-flag-badge {
   font-weight: 600;
 }
 .graph-node-flag {
