@@ -110,13 +110,23 @@ describe('useYjs when the server invalidates the room', () => {
     await waitFor(() => expect(a.result.current.doc).not.toBeNull());
     await waitFor(() => expect(b.result.current.doc).not.toBeNull());
     expect(a.result.current.doc).toBe(b.result.current.doc);
+    const stale = a.result.current.doc;
 
     act(() => {
       providers[0].emit('connection-close', { code: 1012 });
     });
 
-    await waitFor(() => expect(a.result.current.doc).not.toBeNull());
-    expect(a.result.current.doc).toBe(b.result.current.doc);
+    // Wait for the REPLACEMENT, the way the first test in this file
+    // does. Waiting for `doc` to be non-null synchronised with nothing
+    // at all: it was already non-null, holding the doc being replaced,
+    // so the guard passed on its first poll whether or not the rebuild
+    // had happened.
+    await waitFor(() => expect(a.result.current.doc).not.toBe(stale));
+    // And then for b to land on it. The two hooks re-render
+    // independently, so a can be on the new doc while b is still on
+    // the old one — which is this assertion failing on a busy machine,
+    // reported as the two consumers disagreeing.
+    await waitFor(() => expect(b.result.current.doc).toBe(a.result.current.doc));
     expect(providers).toHaveLength(2);
   });
 });
