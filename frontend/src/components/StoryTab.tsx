@@ -412,8 +412,25 @@ export default function StoryTab({
           // you are. The knot header is a real <button> carrying
           // aria-expanded, so landing there announces the passage and
           // its state.
-          const header = el.querySelector('button.node-header') as HTMLElement | null;
-          (header ?? (el as HTMLElement)).focus?.();
+          //
+          // `.node-child-header` is in the selector because only knots
+          // render that <button>. A stitch is a plain div, and so is a
+          // search result, so querying for the button alone found
+          // nothing and the fallback called focus() on a div with no
+          // tabindex — a no-op in every browser. Stitches are most of
+          // the passages in an Ink story, which made this a no-op for
+          // most jumps: the list scrolled and the point of regard
+          // stayed where the palette left it. The two div headers
+          // carry tabIndex={-1} so they can receive this.
+          //
+          // preventScroll because focus() otherwise scrolls the
+          // element into view itself, with `nearest` semantics — which
+          // cancels the smooth scroll above mid-flight and leaves the
+          // passage against the viewport edge instead of centred.
+          const header = el.querySelector(
+            'button.node-header, .node-header-static, .node-child-header',
+          ) as HTMLElement | null;
+          (header ?? (el as HTMLElement)).focus?.({ preventScroll: true });
           return;
         }
         if (attempts++ < 10) setTimeout(tryScroll, 50);
@@ -682,7 +699,10 @@ export default function StoryTab({
               </h3>
               {filteredNodes.map((node) => (
                 <div key={node.id} className="node-group" data-node-id={node.id}>
-                  <div className="node-header node-header-static">
+                  {/* tabIndex={-1}: not in the tab order, but the
+                      jump-to-passage handler moves the point of regard
+                      here, and focus() is a no-op without it. */}
+                  <div className="node-header node-header-static" tabIndex={-1}>
                     <span
                       className={`node-type badge ${node.type === 'knot' ? 'badge-blue' : 'badge-gray'}`}
                     >
@@ -883,7 +903,8 @@ export default function StoryTab({
                         />
                         {children.map((child) => (
                           <div key={child.id} className="node-child" data-node-id={child.id}>
-                            <div className="node-child-header">
+                            {/* tabIndex={-1}: see node-header-static. */}
+                            <div className="node-child-header" tabIndex={-1}>
                               <span className="node-type badge badge-gray">{child.type}</span>
                               <span className="node-name">{child.id.split('.').pop()}</span>
                               {hasAudio(child) && <span className="badge badge-green">audio</span>}

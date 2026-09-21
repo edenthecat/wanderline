@@ -969,32 +969,52 @@ function GraphTabInner({
       onJumpHandled?.();
       return;
     }
-    if (!focusNode(jumpRequest.nodeId)) return;
     // The slide-in source panel overlays the right edge of the canvas
     // AND the detail rail, so a jump would centre the passage under
     // it and hide the rail that confirms the selection. Evict it, the
     // way StoryTab forces its own nodes view.
+    //
+    // All of that happens BEFORE focusNode, in two passes, because
+    // focusNode has side effects the author has not agreed to yet:
+    //
+    //   - Centring first meant a declined confirm still moved the
+    //     canvas and changed the selection. The author said "no, keep
+    //     my draft" and the jump had already half happened underneath
+    //     them.
+    //   - rf.setCenter measures the container, so centring while the
+    //     panel is still mounted lands the passage under it — the
+    //     exact problem closing the panel is here to avoid. Closing is
+    //     a state change, and the canvas is not wider until React has
+    //     committed it, so this pass closes and returns *without*
+    //     acknowledging; `sourceOpen` is in the deps, so the effect
+    //     re-runs against the widened canvas and centres then.
     //
     // Ask first when it holds unsaved work. StoryTab guards its own
     // view switch this way; without the same guard here, an author
     // mid-rewrite who pressed Cmd-K to check a passage name lost the
     // draft with no prompt and no undo — and Cmd-K then Enter is a far
     // easier accident than deliberately clicking the panel's close
-    // button. Acknowledge the request either way, or a declined
-    // confirm leaves it pending and it re-fires on the next mount.
-    if (sourceDirtyRef.current) {
-      const ok = window.confirm(
-        'You have unsaved changes in the Source editor. Leave the Source view anyway?\n\n' +
-          'Your unsaved edits will be discarded.',
-      );
-      if (!ok) {
-        onJumpHandled?.();
-        return;
+    // button. Acknowledge a declined confirm, or the request stays
+    // pending and re-fires on the next mount.
+    if (sourceOpen) {
+      if (sourceDirtyRef.current) {
+        const ok = window.confirm(
+          'You have unsaved changes in the Source editor. Leave the Source view anyway?\n\n' +
+            'Your unsaved edits will be discarded.',
+        );
+        if (!ok) {
+          onJumpHandled?.();
+          return;
+        }
       }
+      // Closing clears sourceDirtyRef (see the effect on `sourceOpen`),
+      // so the second pass cannot re-ask.
+      setSourceOpen(false);
+      return;
     }
-    setSourceOpen(false);
+    if (!focusNode(jumpRequest.nodeId)) return;
     onJumpHandled?.();
-  }, [jumpRequest, storyGraph, focusNode, onJumpHandled]);
+  }, [jumpRequest, storyGraph, focusNode, onJumpHandled, sourceOpen]);
 
   if (!storyGraph) {
     return (

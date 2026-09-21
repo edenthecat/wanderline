@@ -123,7 +123,17 @@ export default function ProjectDetailPage() {
   // nothing on the error page. `project !== null` alone isn't enough:
   // a silent refetch failure leaves it set behind the error page, and
   // an id change leaves it set while the next one loads.
-  useCommandPaletteShortcut(togglePalette, project !== null && !loading && !error);
+  const paletteAvailable = project !== null && !loading && !error;
+  useCommandPaletteShortcut(togglePalette, paletteAvailable);
+  // Gating the chord gates the binding, not the flag. A silent
+  // refetch that fails while the palette is open unmounts it with
+  // `paletteOpen` still true, and the next refetch that succeeds
+  // brings it straight back — open, over whatever the author had
+  // moved on to, with no keypress behind it. Nothing reopens a
+  // palette except the author, so drop the flag with the palette.
+  useEffect(() => {
+    if (!paletteAvailable) setPaletteOpen(false);
+  }, [paletteAvailable]);
   // Focus lands here when a jump unmounts the button that opened the
   // palette (it switched tabs). tabIndex={-1} makes the region
   // programmatically focusable without adding a tab stop.

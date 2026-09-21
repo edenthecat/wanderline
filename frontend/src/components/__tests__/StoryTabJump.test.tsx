@@ -20,10 +20,18 @@ function node(id: string): StoryNode {
   };
 }
 
+function stitch(id: string, parent: string): StoryNode {
+  return { ...node(id), type: 'stitch', parent };
+}
+
 const storyGraph: StoryGraph = {
   id: 'g1',
   title: 'Test story',
-  nodes: { intro: node('intro'), harbour: node('harbour') },
+  nodes: {
+    intro: node('intro'),
+    harbour: node('harbour'),
+    'harbour.dock': stitch('harbour.dock', 'harbour'),
+  },
   startNode: 'intro',
   validation: { valid: true, errors: [], warnings: [] },
 };
@@ -140,6 +148,37 @@ describe('StoryTab jumpRequest', () => {
       expect(group).not.toBeNull();
       expect(group!.contains(document.activeElement)).toBe(true);
     });
+  });
+
+  it('moves focus onto a stitch too, not just a knot', async () => {
+    // Only knots render a <button class="node-header">; a stitch is a
+    // plain div. Querying for the button alone found nothing, and the
+    // fallback called focus() on a div with no tabindex — a no-op. So
+    // the point of regard never moved for the passages that make up
+    // most of an Ink story: the list scrolled and the author stayed
+    // where the palette left them. Every fixture here was a knot,
+    // which is why the suite agreed this worked.
+    const { rerender } = render(tab());
+    rerender(tab({ jumpRequest: { nodeId: 'harbour.dock' }, onJumpHandled: vi.fn() }));
+
+    await waitFor(() => {
+      const row = document.querySelector('[data-node-id="harbour.dock"]');
+      expect(row).not.toBeNull();
+      expect(row!.contains(document.activeElement)).toBe(true);
+    });
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it('does not let focus() cancel the smooth scroll it just started', async () => {
+    // focus() scrolls the element into view itself, with `nearest`
+    // semantics, which aborts the in-flight smooth scroll and drops
+    // the passage at the viewport edge instead of centred.
+    const focusSpy = vi.spyOn(HTMLElement.prototype, 'focus');
+    const { rerender } = render(tab());
+    rerender(tab({ jumpRequest: { nodeId: 'harbour' }, onJumpHandled: vi.fn() }));
+
+    await waitFor(() => expect(focusSpy).toHaveBeenCalled());
+    expect(focusSpy).toHaveBeenCalledWith({ preventScroll: true });
   });
 
   it('does nothing without a request', () => {

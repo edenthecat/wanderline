@@ -187,6 +187,43 @@ describe('ProjectDetailPage ⌘K palette', () => {
     expect(palette()).toBeNull();
   });
 
+  it('does not come back by itself after an error unmounted it', async () => {
+    // Gating the chord gates the binding, not the flag. Two silent
+    // refetches overlap — a save and a jump land together — the first
+    // fails and unmounts the palette with `paletteOpen` still set, and
+    // the second succeeds and clears the error. The workspace comes
+    // back, and the palette comes back with it: open, over whatever
+    // the author had moved on to, with no keypress behind it.
+    await renderPage();
+    pressCommandK();
+    expect(palette()).toBeInTheDocument();
+
+    let resolveSecond: (value: { project: ProjectDetail }) => void = () => {};
+    vi.mocked(fetchProject)
+      .mockRejectedValueOnce(new Error('nope'))
+      .mockReturnValueOnce(
+        new Promise((r) => {
+          resolveSecond = r;
+        }),
+      );
+    // hidden: true — the open palette takes the rest of the page out
+    // of the accessibility tree, which is what it should do. Both
+    // clicks land while the tab is still mounted.
+    const refetch = screen.getByRole('button', { name: 'refetch from story', hidden: true });
+    fireEvent.click(refetch);
+    fireEvent.click(refetch);
+
+    await waitFor(() => expect(screen.getByText('nope')).toBeInTheDocument());
+    expect(palette()).toBeNull();
+
+    await act(async () => {
+      resolveSecond({ project });
+    });
+    await waitFor(() => expect(screen.getByTestId('story-tab')).toBeInTheDocument());
+    await act(async () => {});
+    expect(palette()).toBeNull();
+  });
+
   it('is closed until the chord is pressed, and toggles back shut', async () => {
     await renderPage();
     expect(palette()).toBeNull();

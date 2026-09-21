@@ -161,6 +161,45 @@ describe('GraphTab jumpRequest', () => {
     expect(onJumpHandled).toHaveBeenCalled();
   });
 
+  it('leaves the canvas where it was when the confirm is declined', async () => {
+    // The centre-then-ask order meant "no, keep my draft" still moved
+    // the viewport and changed the selection: the jump half happened
+    // under an author who had just refused it.
+    vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const { rerender } = render(tab());
+    fireEvent.click(screen.getByRole('button', { name: 'Edit source' }));
+    fireEvent.click(screen.getByRole('button', { name: 'make dirty' }));
+    h.setCenter.mockClear();
+
+    rerender(tab({ jumpRequest: { nodeId: 'harbour' }, onJumpHandled: vi.fn() }));
+
+    await waitFor(() => expect(screen.getByTestId('source-editor')).toBeInTheDocument());
+    expect(h.setCenter).not.toHaveBeenCalled();
+  });
+
+  it('closes the panel before it measures where the centre is', async () => {
+    // rf.setCenter measures the container. Centring while the panel is
+    // still mounted puts the passage under it — the exact thing
+    // closing the panel is here to prevent — so the centring has to
+    // wait for the commit that widens the canvas.
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const { rerender } = render(tab());
+    fireEvent.click(screen.getByRole('button', { name: 'Edit source' }));
+    h.setCenter.mockClear();
+    // Asserting "the panel is gone" after the fact proves nothing —
+    // it is gone either way by then. Record what the DOM looked like
+    // at the instant we measured.
+    let panelWasUp: boolean | null = null;
+    h.setCenter.mockImplementationOnce(() => {
+      panelWasUp = document.querySelector('[data-testid="source-editor"]') !== null;
+    });
+
+    rerender(tab({ jumpRequest: { nodeId: 'harbour' }, onJumpHandled: vi.fn() }));
+
+    await waitFor(() => expect(h.setCenter).toHaveBeenCalled());
+    expect(panelWasUp).toBe(false);
+  });
+
   it('does not ask when the source panel is clean', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
     const { rerender } = render(tab());
