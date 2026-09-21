@@ -47,6 +47,12 @@
   "engines": {
     "node": "20.20.2"
   },
+  "overrides": {
+    "fast-uri": "^3.1.8",
+    "@apidevtools/json-schema-ref-parser": {
+      "js-yaml": "^4.3.2"
+    }
+  },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
     "cypress": "^15.18.1",
