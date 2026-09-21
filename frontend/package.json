@@ -40,7 +40,7 @@
     "axe-core": "4.12.1",
     "jest-axe": "^11.0.0",
     "jsdom": "^29.1.1",
-    "typescript": "^6.0.3",
+    "typescript": "^7.0.2",
     "vite": "^5.4.0",
     "vitest": "^4.1.10"
   }
