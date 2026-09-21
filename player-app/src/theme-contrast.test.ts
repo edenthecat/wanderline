@@ -616,6 +616,27 @@ describe('the colour parser refuses what it cannot actually read', () => {
     expect(parseColor('rgba(0,0,0,50%)')).toEqual({ rgb: [0, 0, 0], alpha: 0.5 });
   });
 
+  it('does not go quadratic on a long run of digits', () => {
+    // The number regexes guarding alpha, hue, saturation and lightness
+    // all take author-controlled theme text. `\d+\.?\d*` lets a digit
+    // run be divided between two quantifiers in as many ways as it is
+    // long, so an anchored match that fails at the end backtracks
+    // through every one — CodeQL js/polynomial-redos.
+    //
+    // An absolute ceiling rather than a ratio: the fixed parser runs
+    // this in well under a millisecond, and comparing two
+    // sub-millisecond timings measures noise. The old shape took 52ms
+    // at 8k digits, so 32k — four times that, sixteen times the work —
+    // would be roughly 800ms. 150ms sits an order of magnitude above
+    // anything linear and comfortably below anything quadratic, so a
+    // slow CI box cannot trip it and a regression cannot hide under it.
+    const value = `rgba(0,0,0,${'0'.repeat(32000)}x)`;
+    parseColor(`rgba(0,0,0,${'0'.repeat(4000)}x)`); // warm the JIT
+    const start = performance.now();
+    expect(parseColor(value)).toBeNull();
+    expect(performance.now() - start).toBeLessThan(150);
+  });
+
   it('carries an unreadable alpha up into an unmeasured verdict', () => {
     const checks = evaluateThemeContrast({
       variables: { pageBackground: '#ffffff', textColor: 'rgba(0,0,0,banana)' },
