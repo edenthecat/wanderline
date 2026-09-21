@@ -29,6 +29,30 @@ export interface ThemePalette {
 export interface ThemeInput {
   variables?: ThemePalette;
   components?: Record<string, Record<string, string | undefined> | undefined>;
+  /**
+   * Author CSS. renderThemeCss appends it verbatim *after* the `:root`
+   * block, and the Theme tab tells authors their selectors win — so it
+   * outranks every variable measured here, `!important` or not.
+   */
+  customCss?: string;
+}
+
+/**
+ * Whether author CSS could be overriding what the pairs above measured.
+ *
+ * Nothing here parses that CSS, and a single
+ * `body { color: #fff !important }` is enough to make a measured 13:1
+ * page unreadable. The pairs are still worth reporting — they are what
+ * the knobs produce — but a silent list and a green tick both read as
+ * "your palette is fine", which is a claim this module cannot make
+ * over arbitrary CSS. Callers that state a verdict say so alongside it.
+ *
+ * Deliberately not folded into the checks themselves: marking every
+ * pair unmeasured whenever custom CSS exists would delete the feature
+ * for the authors most likely to need it.
+ */
+export function themeContrastMayBeOverridden(theme: ThemeInput | undefined): boolean {
+  return typeof theme?.customCss === 'string' && theme.customCss.trim().length > 0;
 }
 
 /**

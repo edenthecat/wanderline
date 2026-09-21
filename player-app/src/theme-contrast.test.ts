@@ -10,6 +10,7 @@ import {
   failingThemeContrast,
   unevaluatedThemeContrast,
   parseColor,
+  themeContrastMayBeOverridden,
   type Rgb,
 } from '@wanderline/shared';
 import { styles } from './styles';
@@ -581,6 +582,74 @@ describe('the page surface follows the player, not the knob names', () => {
 // A check that silently didn't run reads exactly like a check that
 // passed, and the place it surfaces is a page captioned "Theme colours
 // meet WCAG AA contrast ✓".
+describe('the colour parser refuses what it cannot actually read', () => {
+  it('reads every CSS angle unit the same way the browser does', () => {
+    // Number.parseFloat took the digits and dropped the unit, so half
+    // a turn — cyan — came out as hue 0.5, which is red, with a
+    // confident contrast ratio attached to it.
+    const cyan = parseColor('hsl(180deg 100% 50%)');
+    expect(cyan).not.toBeNull();
+    expect(parseColor('hsl(0.5turn 100% 50%)')).toEqual(cyan);
+    expect(parseColor('hsl(200grad 100% 50%)')).toEqual(cyan);
+    const rad = parseColor('hsl(3.14159rad 100% 50%)')!;
+    // Radians don't land on an exact integer channel; near enough.
+    expect(rad.rgb[0]).toBeCloseTo(cyan!.rgb[0], 2);
+    expect(rad.rgb[1]).toBeCloseTo(cyan!.rgb[1], 2);
+  });
+
+  it('rejects a hue or component carrying a unit that is not an angle', () => {
+    expect(parseColor('hsl(180px 100% 50%)')).toBeNull();
+    expect(parseColor('hsl(180 100px 50%)')).toBeNull();
+    expect(parseColor('hsl(banana 100% 50%)')).toBeNull();
+  });
+
+  it('rejects an alpha that was written but cannot be read', () => {
+    // Defaulting to 1 made this opaque black — the most contrasting
+    // thing available — for a declaration the browser discards
+    // outright. The checker was scoring a surface nobody paints.
+    expect(parseColor('rgba(0,0,0,banana)')).toBeNull();
+    expect(parseColor('rgb(0 0 0 / banana)')).toBeNull();
+    expect(parseColor('rgb(0 0 0 / )')).toBeNull();
+    // A real alpha still reads, and an absent one is still 1.
+    expect(parseColor('rgba(0,0,0,0.5)')).toEqual({ rgb: [0, 0, 0], alpha: 0.5 });
+    expect(parseColor('rgb(0,0,0)')).toEqual({ rgb: [0, 0, 0], alpha: 1 });
+    expect(parseColor('rgba(0,0,0,50%)')).toEqual({ rgb: [0, 0, 0], alpha: 0.5 });
+  });
+
+  it('carries an unreadable alpha up into an unmeasured verdict', () => {
+    const checks = evaluateThemeContrast({
+      variables: { pageBackground: '#ffffff', textColor: 'rgba(0,0,0,banana)' },
+    });
+    const page = checks.find((c) => c.id === 'text-on-page')!;
+    expect(page.ratio).toBeNull();
+    expect(page.passes).toBe(false);
+  });
+});
+
+describe('custom CSS is not something this can vouch for', () => {
+  it('flags the verdict as overridable when the author wrote custom CSS', () => {
+    // renderThemeCss appends customCss after the :root block, so one
+    // `body { color: #fff !important }` beats every variable measured
+    // here — and nothing here parses it. A silent warning list and a
+    // green tick both read as "your palette is fine", which is not a
+    // claim this module is in a position to make.
+    expect(themeContrastMayBeOverridden(undefined)).toBe(false);
+    expect(themeContrastMayBeOverridden({ variables: { textColor: '#111' } })).toBe(false);
+    expect(themeContrastMayBeOverridden({ customCss: '   ' })).toBe(false);
+    expect(themeContrastMayBeOverridden({ customCss: 'body { color: #fff }' })).toBe(true);
+  });
+
+  it('still reports the pairs it measured', () => {
+    // The measurements are what the knobs produce and stay useful;
+    // only the claim of completeness is withdrawn.
+    const checks = evaluateThemeContrast({
+      variables: { pageBackground: '#ffffff', textColor: '#111827' },
+      customCss: 'body { color: #fff !important }',
+    });
+    expect(checks.find((c) => c.id === 'text-on-page')!.ratio).not.toBeNull();
+  });
+});
+
 describe('the ratio is compared before it is rounded', () => {
   it('does not round a near-miss up into a pass', () => {
     // #ffffff on #6363f8 is 4.4961:1 — below the 4.5 AA floor.

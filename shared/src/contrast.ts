@@ -56,14 +56,64 @@ function parseChannel(raw: string): number | null {
   return clamp(pct ? (n / 100) * 255 : n, 0, 255);
 }
 
-function parseAlpha(raw: string | undefined): number {
+/**
+ * Alpha, or null when one was written and cannot be read.
+ *
+ * Defaulting a bad token to 1 made `rgba(0, 0, 0, banana)` parse as
+ * opaque black — a value the browser throws out entirely, so the
+ * checker was measuring a colour no listener would ever see, and
+ * measuring it as the most contrasting thing available. `undefined`
+ * still means "no alpha written", which is a real 1.
+ */
+function parseAlpha(raw: string | undefined): number | null {
   if (raw === undefined) return 1;
   const t = raw.trim();
-  if (!t) return 1;
+  if (!t) return null;
   const pct = t.endsWith('%');
-  const n = Number.parseFloat(pct ? t.slice(0, -1) : t);
-  if (!Number.isFinite(n)) return 1;
+  const body = pct ? t.slice(0, -1) : t;
+  if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(body.trim())) return null;
+  const n = Number.parseFloat(body);
+  if (!Number.isFinite(n)) return null;
   return clamp(pct ? n / 100 : n, 0, 1);
+}
+
+/**
+ * A hue in degrees. CSS allows `deg`, `rad`, `grad` and `turn`, and a
+ * bare number means degrees.
+ *
+ * Number.parseFloat alone read the digits and dropped the unit, so
+ * `hsl(0.5turn 100% 50%)` — half a turn, which is cyan — came out as
+ * hue 0.5, which is red. Silently, and with a confident contrast ratio
+ * attached to it.
+ */
+function parseHue(raw: string): number | null {
+  const m = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)(deg|rad|grad|turn)?$/i.exec(raw.trim());
+  if (!m) return null;
+  const n = Number.parseFloat(m[1]);
+  if (!Number.isFinite(n)) return null;
+  switch ((m[2] ?? 'deg').toLowerCase()) {
+    case 'rad':
+      return (n * 180) / Math.PI;
+    case 'grad':
+      return n * 0.9;
+    case 'turn':
+      return n * 360;
+    default:
+      return n;
+  }
+}
+
+/**
+ * An hsl() saturation or lightness: a percentage, or a bare number
+ * meaning the same. Anything carrying another unit is not a valid
+ * component and is rejected rather than having its digits taken.
+ */
+function parseHslComponent(raw: string): number | null {
+  const t = raw.trim();
+  const body = t.endsWith('%') ? t.slice(0, -1) : t;
+  if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(body)) return null;
+  const n = Number.parseFloat(body);
+  return Number.isFinite(n) ? n : null;
 }
 
 /**
@@ -116,9 +166,11 @@ export function parseColor(input: string): Rgba | null {
   if (hslFn) {
     const parts = splitColorArgs(hslFn[1]);
     if (!parts) return null;
-    const [h, s, l] = parts.values.map((p) => Number.parseFloat(p));
-    if (![h, s, l].every(Number.isFinite)) return null;
-    return { rgb: hslToRgb(h, s / 100, l / 100), alpha: parts.alpha };
+    const h = parseHue(parts.values[0]);
+    const sat = parseHslComponent(parts.values[1]);
+    const light = parseHslComponent(parts.values[2]);
+    if (h === null || sat === null || light === null) return null;
+    return { rgb: hslToRgb(h, sat / 100, light / 100), alpha: parts.alpha };
   }
 
   return null;
@@ -136,10 +188,12 @@ function splitColorArgs(args: string): { values: [string, string, string]; alpha
     .map((p) => p.trim())
     .filter(Boolean);
   if (parts.length !== 3 && parts.length !== 4) return null;
-  return {
-    values: parts.slice(0, 3) as [string, string, string],
-    alpha: parseAlpha(alphaPart ?? parts[3]),
-  };
+  // An alpha that was written but can't be read fails the whole
+  // colour. The browser discards the declaration outright, so guessing
+  // 1 here would measure a surface that is never painted.
+  const alpha = parseAlpha(alphaPart ?? parts[3]);
+  if (alpha === null) return null;
+  return { values: parts.slice(0, 3) as [string, string, string], alpha };
 }
 
 /** CSS Color 3 hsl() → sRGB. Hue in degrees, s/l as 0–1 fractions. */

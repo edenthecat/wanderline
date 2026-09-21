@@ -32,7 +32,11 @@ import {
 } from './build-manifest.js';
 import { storyHash } from './story-hash.js';
 import { bundleGoogleFonts, renderThemeCss, type ThemeConfig } from './theme-render.js';
-import { evaluateThemeContrast, type ThemeInput } from '@wanderline/shared';
+import {
+  evaluateThemeContrast,
+  themeContrastMayBeOverridden,
+  type ThemeInput,
+} from '@wanderline/shared';
 import { prepareDistHtml } from './build-html.js';
 import { DEFAULT_BUILD_LANGUAGE, normalizeBuildLanguage } from './build-language.js';
 
@@ -871,6 +875,12 @@ export function renderSmokeHtml(storyData: unknown, language?: string): string {
   const contrastJson = JSON.stringify({
     problems: contrastProblems,
     unknown: contrastUnknown,
+    // A tick that says "meets AA" is a claim about what the listener
+    // sees, and custom CSS is appended after the variables — one
+    // `body { color: #fff !important }` and the measured palette is
+    // not what gets painted. The checks still run; the page just
+    // stops pretending they are the whole story.
+    overridable: themeContrastMayBeOverridden(theme),
   })
     .replace(/</g, '\\u003c')
     .replace(/\u2028/g, '\\u2028')
@@ -1051,6 +1061,12 @@ export function renderSmokeHtml(storyData: unknown, language?: string): string {
       // Colours nobody could measure are said out loud rather than
       // folded into the tick above — but they don't fail the build,
       // because a url() page background is a legitimate choice.
+      if (contrast.overridable) {
+        out.innerHTML += '<div class="check note"><h2>! Custom CSS can override these colours' +
+          '</h2><p class="note-help">The contrast check above measures your theme settings. ' +
+          'Your custom CSS is applied after them, so a rule that sets a colour there wins — ' +
+          'and nothing here can read it. Check those colours yourself.</p></div>';
+      }
       var unknown = contrast.unknown || [];
       if (unknown.length) {
         out.innerHTML += '<div class="check note"><h2>! Theme colours that could not be measured' +

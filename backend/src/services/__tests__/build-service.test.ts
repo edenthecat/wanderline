@@ -427,16 +427,25 @@ describe('build-service unit', () => {
     // module the editor's Theme tab warns with — so the build and the
     // editor can't disagree about whether a story is readable.
     describe('theme contrast check', () => {
-      function contrastPayload(html: string): { problems: string[]; unknown: string[] } {
+      function contrastPayload(html: string): {
+        problems: string[];
+        unknown: string[];
+        overridable: boolean;
+      } {
         const match = /window\.__WANDERLINE_CONTRAST__=(\{[^\n]*\});/.exec(html);
         expect(match).not.toBeNull();
-        return JSON.parse(match![1]) as { problems: string[]; unknown: string[] };
+        return JSON.parse(match![1]) as {
+          problems: string[];
+          unknown: string[];
+          overridable: boolean;
+        };
       }
 
       it('reports no problems for a story with no theme', () => {
         expect(contrastPayload(renderSmokeHtml(sampleStory))).toEqual({
           problems: [],
           unknown: [],
+          overridable: false,
         });
       });
 
@@ -458,7 +467,31 @@ describe('build-service unit', () => {
             },
           },
         };
-        expect(contrastPayload(renderSmokeHtml(story))).toEqual({ problems: [], unknown: [] });
+        expect(contrastPayload(renderSmokeHtml(story))).toEqual({
+          problems: [],
+          unknown: [],
+          overridable: false,
+        });
+      });
+
+      it('says the tick cannot account for custom CSS', () => {
+        // customCss is appended after the :root block, so one
+        // `body { color: #fff !important }` beats every variable the
+        // check measured — and a green "meets WCAG AA contrast" is a
+        // claim about what the listener sees. The checks still run;
+        // the page stops presenting them as the whole story.
+        const story = {
+          ...sampleStory,
+          settings: {
+            theme: {
+              variables: { pageBackground: '#ffffff', textColor: '#111827' },
+              customCss: 'body { color: #fff !important }',
+            },
+          },
+        };
+        const html = renderSmokeHtml(story);
+        expect(contrastPayload(html).overridable).toBe(true);
+        expect(html).toContain('Custom CSS can override these colours');
       });
 
       it('reports the pair and the measured ratio when a palette fails', () => {

@@ -9,6 +9,7 @@ import { promoteWeight, toggleWeight } from '../lib/font-weights';
 import {
   COMPONENT_SPECS,
   evaluateThemeContrast,
+  themeContrastMayBeOverridden,
   type ComponentId,
   type ComponentSpec,
   type ComponentPropSpec,
@@ -224,6 +225,11 @@ export default function ThemeTab({ projectId }: Props) {
   // their colours are fine when we never managed to measure them is
   // worse than admitting we couldn't.
   const contrastUnknown = contrast.filter((c) => c.ratio === null);
+  // Silence above reads as "your palette is fine", and custom CSS is
+  // appended after these variables — so it outranks every one of them
+  // and nothing here parses it. Say so rather than letting an empty
+  // list stand as a clean bill of health.
+  const contrastOverridable = themeContrastMayBeOverridden(theme);
 
   useEffect(() => {
     let cancelled = false;
@@ -417,6 +423,13 @@ export default function ThemeTab({ projectId }: Props) {
                       </li>
                     ))}
                   </ul>
+                </div>
+              )}
+              {contrastOverridable && (
+                <div className="alert alert-warning" data-testid="theme-contrast-overridable">
+                  <strong>Your custom CSS can override these.</strong> The check above reads your
+                  theme settings. Custom CSS is applied after them, so a rule that sets a colour
+                  there wins — and nothing here can read it.
                 </div>
               )}
               {contrastUnknown.length > 0 && (
