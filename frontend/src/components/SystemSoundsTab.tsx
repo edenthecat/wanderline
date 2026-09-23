@@ -74,8 +74,13 @@ function IndicatorPicker({
   );
 }
 
+// Matches the player's own fallback (player-app/src/App.tsx) so the
+// control reflects the same silence a listener hears before any
+// project override is set.
+const DEFAULT_CHOICE_AUDIO_DELAY_MS = 3000;
+
 export default function SystemSoundsTab({ projectId }: Props) {
-  const { settings, loading, error, updateOne } = useProjectSettings(projectId);
+  const { settings, loading, error, updateOne, updateDebounced } = useProjectSettings(projectId);
   const [indicatorAudio, setIndicatorAudio] = useState<AudioFile[]>([]);
   const { playingId, toggle } = useAudition();
 
@@ -108,6 +113,7 @@ export default function SystemSoundsTab({ projectId }: Props) {
   if (loading) return <div className="page-loader">Loading sounds...</div>;
 
   const noIndicators = indicatorAudio.length === 0;
+  const choiceAudioDelayMs = settings?.choiceAudioDelayMs ?? DEFAULT_CHOICE_AUDIO_DELAY_MS;
 
   return (
     <div className="tab-panel">
@@ -170,6 +176,34 @@ export default function SystemSoundsTab({ projectId }: Props) {
             Upload audio in the <code>indicator</code> category to use these.
           </span>
         )}
+      </section>
+
+      <section className="settings-section">
+        <h2>Choice timing</h2>
+        <p className="text-muted">
+          Silence before a choice option&apos;s audio starts, once the passage&apos;s own narration
+          finishes. Gives listeners a beat to think before the options begin reading themselves out.
+        </p>
+        <div className="ui-option settings-volume-row">
+          <div className="settings-volume-meta">
+            <strong>Pause before choices</strong>
+          </div>
+          <div className="settings-volume-control">
+            <input
+              type="range"
+              min={0}
+              max={8000}
+              step={250}
+              value={choiceAudioDelayMs}
+              onChange={(e) => updateDebounced('choiceAudioDelayMs', Number(e.target.value))}
+              aria-label="Pause before choices"
+              aria-valuetext={`${(choiceAudioDelayMs / 1000).toFixed(2)} seconds`}
+            />
+            <span className="settings-volume-value" aria-hidden="true">
+              {(choiceAudioDelayMs / 1000).toFixed(2)}s
+            </span>
+          </div>
+        </div>
       </section>
     </div>
   );

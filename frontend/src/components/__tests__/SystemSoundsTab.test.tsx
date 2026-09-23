@@ -112,3 +112,35 @@ describe('per-choice indicator controls', () => {
     expect(patch).toEqual({ defaultIndicatorAudioId: 'beep-2' });
   });
 });
+
+// Editor surface for settings.choiceAudioDelayMs. The backend and
+// player already honour this (default 3000ms of silence before a
+// choice option's audio starts), but nothing in the editor could
+// read or write it, so an author with the wrong pacing for their
+// story had no way to change it.
+describe('choice-audio pause control', () => {
+  it('defaults to the player’s own fallback when unset', async () => {
+    mount();
+    const slider = (await screen.findByLabelText('Pause before choices')) as HTMLInputElement;
+    expect(slider.value).toBe('3000');
+    expect(screen.getByText('3.00s')).toBeInTheDocument();
+  });
+
+  it('reflects a stored value', async () => {
+    mount({ choiceAudioDelayMs: 1500 });
+    const slider = (await screen.findByLabelText('Pause before choices')) as HTMLInputElement;
+    await waitFor(() => expect(slider.value).toBe('1500'));
+    expect(screen.getByText('1.50s')).toBeInTheDocument();
+  });
+
+  it('debounce-saves choiceAudioDelayMs when moved', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mount();
+    const slider = await screen.findByLabelText('Pause before choices');
+    fireEvent.change(slider, { target: { value: '2000' } });
+
+    await vi.advanceTimersByTimeAsync(300);
+    expect(mockedUpdate).toHaveBeenCalledWith('p1', { choiceAudioDelayMs: 2000 });
+    vi.useRealTimers();
+  });
+});
