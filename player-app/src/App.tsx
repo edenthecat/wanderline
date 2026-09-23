@@ -283,6 +283,41 @@ export function autoAdvanceTarget(
   return null;
 }
 
+/** The passage as text: an explicit transcript wins, otherwise the Ink content lines joined. */
+export function nodeText(node: {
+  content: { text: string }[];
+  metadata?: { transcript?: string | null };
+}): string {
+  const transcript = node.metadata?.transcript?.trim();
+  if (transcript) return transcript;
+  return node.content
+    .map((c) => c.text)
+    .join(' ')
+    .trim();
+}
+
+// Silent-reading pace used only as an auto-advance floor, not a
+// transcription of any real study — deliberately on the slow side
+// since the cost of guessing low is a listener swept off a passage
+// before they finish it.
+const AUTO_ADVANCE_READING_WPM = 200;
+
+/**
+ * Minimum time to hold a passage that has no voiceover before
+ * auto-advance may move on, based on how much there is to read.
+ *
+ * autoAdvanceDelayMs exists to give a listener who just heard the
+ * narration finish a beat to react — it was never sized to also cover
+ * reading unvoiced text from a standing start, so a silent passage
+ * with a full paragraph and the 2-second default got swept away
+ * mid-sentence.
+ */
+export function readingFloorMs(text: string): number {
+  const words = text.split(/\s+/).filter(Boolean).length;
+  if (words === 0) return 0;
+  return Math.round((words / AUTO_ADVANCE_READING_WPM) * 60_000);
+}
+
 function createInitialClickState(): ClickDetectionState {
   return { clickCount: 0, lastClickTime: 0, timeoutId: null };
 }
@@ -1461,11 +1496,16 @@ export default function App() {
     if (currentNode.audio?.voiceover) return; // handled by playVoiceover's audio.onended
     const target = autoAdvanceTarget(currentNode, { autoAdvance }, story.nodes);
     if (!target) return;
-    // Compose: pre-roll → (no audio) → post-audio hold → onward.
+    // Compose: pre-roll → (no audio, so hold at least long enough to
+    // read it) → post-audio hold → onward.
+    const holdMs = Math.max(
+      currentNode.metadata?.autoAdvanceDelayMs ?? 2000,
+      readingFloorMs(nodeText(currentNode)),
+    );
     const totalDelay =
       (currentNode.metadata?.delayBeforeMs ?? 0) +
       (currentNode.metadata?.delayAfterMs ?? 0) +
-      (currentNode.metadata?.autoAdvanceDelayMs ?? 2000);
+      holdMs;
     const t = setTimeout(() => {
       if (currentNodeIdRef.current !== currentNode.id) return;
       // navigateToTarget, not navigateToNode: a choice target may be
@@ -1883,17 +1923,7 @@ export default function App() {
   });
 
   // The passage as text, for the screen-reader-only announcement below.
-  // Mirrors the caption card's own precedence: an explicit transcript
-  // wins, otherwise the Ink content lines.
-  const passageText = useMemo(() => {
-    if (!currentNode) return '';
-    const transcript = currentNode.metadata?.transcript?.trim();
-    if (transcript) return transcript;
-    return currentNode.content
-      .map((c) => c.text)
-      .join(' ')
-      .trim();
-  }, [currentNode]);
+  const passageText = useMemo(() => (currentNode ? nodeText(currentNode) : ''), [currentNode]);
 
   // Screen readers announce MUTATIONS to a live region they have
   // already registered: text present the moment the region is inserted
