@@ -3179,13 +3179,34 @@ details[open] > .audio-section-summary {
 }
 
 /* The workspace region takes focus programmatically when the command
-   palette closes and the element that opened it is gone. It's a
-   container, not a control, so a 2px ring around the whole editor is
-   noise — and Chrome would draw one, because it carries focus-visible
-   over from the palette input the focus came from. */
-.workspace-main:focus,
+   palette closes and the element that opened it is gone — most often
+   a Graph jump, where the ReactFlow canvas takes the node focus itself
+   rather than a keyboard-focusable control, so this is the only visual
+   anchor a keyboard user gets that focus moved anywhere at all.
+   Suppressing the ring outright (the previous rule here) meant a
+   sighted keyboard user had no indication of that whatsoever.
+
+   An inset ring (negative offset, same treatment as
+   .workspace-toolbar-back elsewhere in this file) rather than the browser default: on a
+   container this size a ring drawn OUTSIDE the box is mostly off-screen
+   or overlapping neighbouring chrome, where one traced along the
+   inside edge of the viewport stays fully visible without the "glowing
+   halo around the whole editor" noise the removed rule's own comment
+   was avoiding.
+
+   :focus-visible only, no :focus. There is no styled fallback for
+   :focus, which is intentional: whenever :focus-visible's heuristic
+   doesn't consider this focus move visible-worthy — a browser with a
+   stricter rule than Chrome's for "did this follow from a keyboard
+   interaction" — the browser's own native outline still applies,
+   because nothing here suppresses it. That is a safer default than
+   the reverse (style :focus-visible, still suppress :focus): if the
+   custom ring's rule ever failed to match for any reason, THAT version
+   would fall silently back to invisible rather than to a plain native
+   ring. */
 .workspace-main:focus-visible {
-  outline: none;
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
 }
 
 .workspace-mobile-sheet-backdrop {
