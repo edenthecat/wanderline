@@ -89,10 +89,22 @@ export function normalizeStoryGraph<T extends StoryGraph | null | undefined>(
     // and each rebuild would add `choices` / `divert` keys to nodes
     // that never had them.
     if (!node) {
-      // Every other consumer tolerates a null node in a stored graph.
-      // This runs inside fetchProject, so throwing here would turn one
-      // oddly-rendered tab into a project page that won't open at all.
-      nodes[id] = node;
+      // Dropped, not preserved. The comment that used to sit here
+      // claimed every consumer tolerates a null entry; they don't —
+      // StoryTab's childrenByParent reads `n.parent` over every node
+      // with no guard, and GraphTab's buildLayout reads `node.choices`
+      // the same way, so a null here crashed both tabs outright rather
+      // than degrading gracefully.
+      //
+      // Removing the id from the record instead routes through
+      // machinery that already exists for a genuinely broken link: any
+      // choice or divert target that pointed at it resolves through
+      // GraphTab's own `missingIds` / "(missing)" handling, the same
+      // path a target naming nothing at all already takes. That is the
+      // graceful degradation this function intended — this just
+      // actually delivers it, instead of asserting it and leaving the
+      // real crash for whichever tab opened first.
+      changed = true;
       continue;
     }
     let nodeChanged = false;

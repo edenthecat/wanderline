@@ -135,6 +135,61 @@ describe('normalizeStoryGraph', () => {
     expect(normalizeStoryGraph(null)).toBeNull();
   });
 
+  // A project uploaded, or edited, in a way that left a null entry in
+  // the stored graph — the backend's own rename cascade and the
+  // editor's collab merge path have both been known to produce one.
+  // This file used to preserve it on the theory that every consumer
+  // tolerates a null node; they don't. StoryTab's childrenByParent
+  // reads `n.parent` over every node with no guard, and GraphTab's
+  // buildLayout reads `node.choices` the same way — either one throws
+  // outright on a null entry, turning "one node is broken" into "this
+  // project's editor won't open at all".
+  describe('a null entry in the stored graph', () => {
+    it('is dropped rather than preserved', () => {
+      const g = graph({
+        inbox: node('inbox', { choices: [{ text: 'go', target: 'ghost' }] }),
+        ghost: null,
+      });
+      const out = normalizeStoryGraph(g);
+      expect(Object.prototype.hasOwnProperty.call(out.nodes, 'ghost')).toBe(false);
+      expect(Object.values(out.nodes).every((n) => n !== null)).toBe(true);
+    });
+
+    it('rebuilds the graph even when dropping the null entry is the only change', () => {
+      // The `if (!changed) return graph;` fast path has to notice this
+      // case specifically — nothing else about the graph needed fixing.
+      const g = graph({
+        inbox: node('inbox', { divert: 'END' }),
+        ghost: null,
+      });
+      const out = normalizeStoryGraph(g);
+      expect(out).not.toBe(g);
+      expect(Object.prototype.hasOwnProperty.call(out.nodes, 'ghost')).toBe(false);
+    });
+
+    it('leaves a target that pointed at the dropped node as the same broken-link string', () => {
+      // Not rewritten to something else, and not crashing either — it
+      // becomes exactly the "genuinely broken link" case this file's
+      // own target resolution already surfaces as "(missing)" for a
+      // link that never named anything at all.
+      const g = graph({
+        inbox: node('inbox', { choices: [{ text: 'go', target: 'ghost' }] }),
+        ghost: null,
+      });
+      const out = normalizeStoryGraph(g);
+      expect(out.nodes['inbox'].choices[0].target).toBe('ghost');
+    });
+
+    it('leaves an unrelated valid node untouched', () => {
+      const g = graph({
+        inbox: node('inbox', { divert: 'END' }),
+        ghost: null,
+      });
+      const out = normalizeStoryGraph(g);
+      expect(out.nodes['inbox']).toBe(g.nodes['inbox']);
+    });
+  });
+
   it('leaves Twee graphs alone — no knot scoping there', () => {
     // `Hall.Door` / `Hall.Key` are ordinary Twee passage names, and
     // `[[Key]]` is a genuinely broken link the parser reports as an
