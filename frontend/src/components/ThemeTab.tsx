@@ -8,9 +8,12 @@ import {
 import { promoteWeight, toggleWeight } from '../lib/font-weights';
 import {
   COMPONENT_SPECS,
+  evaluateThemeContrast,
+  themeContrastMayBeOverridden,
   type ComponentId,
   type ComponentSpec,
   type ComponentPropSpec,
+  type ThemeContrastCheck,
 } from '@wanderline/shared';
 import FontPicker from './FontPicker';
 
@@ -204,6 +207,29 @@ export default function ThemeTab({ projectId }: Props) {
   const [activeComponent, setActiveComponent] = useState<ComponentId | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [contrast, setContrast] = useState<ThemeContrastCheck[]>([]);
+
+  // Debounced so the warning doesn't churn per keystroke. `updateGlobalVariable`
+  // fires on every character typed into a colour field and continuously while
+  // a native colour picker is dragged; recomputing inline meant the list
+  // appeared and disappeared through `#3` → `#33` → `#336`, and since it is a
+  // live region a screen reader would interrupt the author on every one of
+  // those. Settling first means one announcement, of the answer.
+  useEffect(() => {
+    const timer = setTimeout(() => setContrast(evaluateThemeContrast(theme)), 400);
+    return () => clearTimeout(timer);
+  }, [theme]);
+
+  const contrastWarnings = contrast.filter((c) => c.ratio !== null && !c.passes);
+  // Values we couldn't parse are reported separately: telling an author
+  // their colours are fine when we never managed to measure them is
+  // worse than admitting we couldn't.
+  const contrastUnknown = contrast.filter((c) => c.ratio === null);
+  // Silence above reads as "your palette is fine", and custom CSS is
+  // appended after these variables — so it outranks every one of them
+  // and nothing here parses it. Say so rather than letting an empty
+  // list stand as a clean bill of health.
+  const contrastOverridable = themeContrastMayBeOverridden(theme);
 
   useEffect(() => {
     let cancelled = false;
@@ -365,6 +391,61 @@ export default function ThemeTab({ projectId }: Props) {
             <p className="text-muted">
               Affect every component unless overridden in the per-component panels below.
             </p>
+            {/* Until this existed an author could set body text and
+                page background to the same colour and ship it: nothing
+                in the editor or the backend looked at the pair, and the
+                first person to find out was a listener who couldn't
+                read the story. Unset knobs are measured against the
+                player's real defaults, per-component overrides are
+                measured ahead of the globals they beat in the CSS, and
+                a gradient page is measured at every stop.
+
+                `role="status"` rather than "alert": this is worth
+                hearing, but not worth cutting off whatever the author
+                is in the middle of typing.
+
+                The live region is mounted empty and always present. A
+                region inserted into the DOM together with its content
+                lands in the same commit as the text, and screen
+                readers register regions before mutations — NVDA, JAWS
+                and VoiceOver all tend to say nothing at all in that
+                case. Keeping the wrapper and changing only its
+                children is what makes the announcement happen. */}
+            <div role="status" data-testid="theme-contrast-live">
+              {contrastWarnings.length > 0 && (
+                <div className="alert alert-warning" data-testid="theme-contrast-warning">
+                  <strong>Hard to read for some listeners.</strong> These pairs fall below the WCAG
+                  AA minimum:
+                  <ul>
+                    {contrastWarnings.map((w) => (
+                      <li key={w.id}>
+                        {w.label} — {w.ratio!.toFixed(2)}:1, needs {w.required}:1
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {contrastOverridable && (
+                <div className="alert alert-warning" data-testid="theme-contrast-overridable">
+                  <strong>Your custom CSS can override these.</strong> The check above reads your
+                  theme settings. Custom CSS is applied after them, so a rule that sets a colour
+                  there wins — and nothing here can read it.
+                </div>
+              )}
+              {contrastUnknown.length > 0 && (
+                <div className="alert alert-warning" data-testid="theme-contrast-unknown">
+                  <strong>Couldn&apos;t check these.</strong> Use a hex, <code>rgb()</code> or{' '}
+                  <code>hsl()</code> value if you want them measured:
+                  <ul>
+                    {contrastUnknown.map((w) => (
+                      <li key={w.id}>
+                        {w.label} — {w.unparsed.join(', ')}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
             <ul className="ui-options-list" data-testid="theme-colors">
               {VARIABLE_KNOBS.map((knob) => {
                 const value = vars[knob.key] ?? '';

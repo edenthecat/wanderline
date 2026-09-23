@@ -32,6 +32,11 @@ import {
 } from './build-manifest.js';
 import { storyHash } from './story-hash.js';
 import { bundleGoogleFonts, renderThemeCss, type ThemeConfig } from './theme-render.js';
+import {
+  evaluateThemeContrast,
+  themeContrastMayBeOverridden,
+  type ThemeInput,
+} from '@wanderline/shared';
 import { prepareDistHtml } from './build-html.js';
 import { DEFAULT_BUILD_LANGUAGE, normalizeBuildLanguage } from './build-language.js';
 
@@ -813,6 +818,13 @@ function escapeHtml(text: string): string {
  *      (GET request to ./audio/<filename> with cache:no-cache; HEAD
  *      isn't reliably allowed on file:// URLs so we use the smallest
  *      method that works in all target browsers).
+ *   4) Every text/surface pair in the project's theme clears the WCAG
+ *      AA contrast minimum. Authors are told to open this page before
+ *      publishing, and an unreadable palette is as much a broken build
+ *      as a missing audio file — the difference is that only the
+ *      listener finds out. Computed here rather than in the page's
+ *      inline script so it uses the same @wanderline/shared code the
+ *      editor's Theme tab warns with.
  *
  * Designed to run on file://  — no fetch of story.json, no React, no
  * imports, no build step. Just paste into a browser, get a green
@@ -825,6 +837,8 @@ export function renderSmokeHtml(storyData: unknown, language?: string): string {
     .replace(/</g, '\\u003c')
     .replace(/\u2028/g, '\\u2028')
     .replace(/\u2029/g, '\\u2029');
+  // main's split: the story's own title carries the project language
+  // via a <span lang>, while the page chrome stays English.
   const storyTitle = escapeHtml((storyData as { title?: string }).title ?? 'Wanderline build');
   const title = `${storyTitle} — smoke test`;
   // The document is our diagnostic tool and every word of its chrome is
@@ -833,6 +847,45 @@ export function renderSmokeHtml(storyData: unknown, language?: string): string {
   // have a screen reader read "Every divert / choice target resolves"
   // with, say, Japanese phonetics.
   const lang = normalizeBuildLanguage(language ?? DEFAULT_BUILD_LANGUAGE);
+
+  // Contrast is resolved at build time — the palette is already known
+  // and the maths needs no DOM, so shipping the answer beats shipping
+  // a second copy of the algorithm into the inline script. The whole
+  // theme goes in, not just `variables`: the per-component overrides
+  // win in the player's CSS, so checking only the globals would sign
+  // off on a palette the listener never sees.
+  const theme = (storyData as { settings?: { theme?: ThemeInput } }).settings?.theme;
+  const contrastChecks = evaluateThemeContrast(theme);
+  const contrastProblems = contrastChecks
+    .filter((check) => check.ratio !== null && !check.passes)
+    .map((check) => `${check.label}: ${check.ratio!.toFixed(2)}:1 (needs ${check.required}:1)`);
+  // Colours we couldn't read are surfaced as advice, not as a failed
+  // check. They aren't a pass — the page says plainly that they went
+  // unmeasured — but a page background written as `url(...)` is a
+  // supported, sensible choice, and failing every build that uses one
+  // would train authors to ignore the whole page.
+  const contrastUnknown = contrastChecks
+    .filter((check) => check.ratio === null)
+    .map((check) => `${check.label}: could not read ${check.unparsed.join(', ')}`);
+  // Same escaping as the story payload above: `unparsed` echoes
+  // author-controlled theme values verbatim, and the free-text
+  // component props aren't colour-validated — U+2028 in one of them
+  // would be a raw line terminator inside the inline <script> and
+  // blank the whole build-health page on any pre-ES2019 engine.
+  const contrastJson = JSON.stringify({
+    problems: contrastProblems,
+    unknown: contrastUnknown,
+    // A tick that says "meets AA" is a claim about what the listener
+    // sees, and custom CSS is appended after the variables — one
+    // `body { color: #fff !important }` and the measured palette is
+    // not what gets painted. The checks still run; the page just
+    // stops pretending they are the whole story.
+    overridable: themeContrastMayBeOverridden(theme),
+  })
+    .replace(/</g, '\\u003c')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+
   // The runner is inlined as a regular <script> so file:// pages can
   // execute it without module-loader gymnastics.
   return `<!doctype html>
@@ -852,6 +905,9 @@ export function renderSmokeHtml(storyData: unknown, language?: string): string {
     .check { padding: 0.5rem 0.75rem; border-radius: 6px; margin: 0.5rem 0; }
     .check.pass { background: rgba(76,175,80,0.15); border-left: 3px solid #4caf50; }
     .check.fail { background: rgba(244,67,54,0.15); border-left: 3px solid #f44336; }
+    /* Advisory, not a verdict: things nobody could measure. */
+    .check.note { background: rgba(255,193,7,0.12); border-left: 3px solid #ffc107; }
+    .note-help { margin: 0.4rem 0 0; font-size: 0.85rem; opacity: 0.85; }
     .check h2 { margin: 0 0 0.25rem; font-size: 1rem; }
     ul.problems { margin: 0.25rem 0 0; padding-left: 1.25rem; font-size: 0.85rem; opacity: 0.85; }
     code { background: rgba(255,255,255,0.07); padding: 0 0.25rem; border-radius: 3px; }
@@ -894,7 +950,8 @@ export function renderSmokeHtml(storyData: unknown, language?: string): string {
     <p>This page runs the build&rsquo;s checks in your browser, so it needs JavaScript.
        Turn JavaScript on in your browser settings, then reload this page.</p>
   </noscript>
-  <script>window.__WANDERLINE_STORY__=${storyJsonStr};</script>
+  <script>window.__WANDERLINE_STORY__=${storyJsonStr};
+  window.__WANDERLINE_CONTRAST__=${contrastJson};</script>
   <script>
   (function () {
     var story = window.__WANDERLINE_STORY__ || {};
@@ -903,10 +960,24 @@ export function renderSmokeHtml(storyData: unknown, language?: string): string {
     var SYNTHETIC = { END: true, DONE: true };
     var checks = [];
     var passCount = 0;
-    function record(label, problems) {
+    // Checks that never ran count toward neither passCount nor
+    // ratedCount, so "N / M checks passing" only ever counts checks
+    // that actually had an answer.
+    var ratedCount = 0;
+    function record(label, problems, indeterminate) {
+      if (indeterminate) {
+        checks.push({ label: label, ok: false, state: 'unknown', problems: problems });
+        return;
+      }
       var ok = problems.length === 0;
+      ratedCount++;
       if (ok) passCount++;
-      checks.push({ label: label, ok: ok, problems: problems });
+      checks.push({ label: label, ok: ok, state: ok ? 'pass' : 'fail', problems: problems });
+    }
+    function escapeText(s) {
+      return String(s).replace(/[<>&]/g, function (ch) {
+        return ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[ch];
+      });
     }
 
     // 1) Node completeness
@@ -946,6 +1017,24 @@ export function renderSmokeHtml(storyData: unknown, language?: string): string {
     });
     record('Every divert / choice target resolves', missingTargets);
 
+    // 2b) Theme readability, computed at build time from the same
+    // rules the editor's Theme tab warns with.
+    var contrast = window.__WANDERLINE_CONTRAST__ || { problems: [], unknown: [] };
+    var contrastProblems = (contrast.problems || []).slice();
+    var contrastUnknownList = contrast.unknown || [];
+    // No measured failures but something went unmeasured: this is not
+    // a pass, it is a check that could not run. Recording it the same
+    // way as every other check made an all-unmeasured palette show a
+    // green 'Theme colours meet WCAG AA contrast' tick and count toward
+    // 'N / M checks passing' — an affirmative pass for a check that
+    // never happened, on the page authors are told to open before
+    // publishing. When there ARE measured failures alongside unmeasured
+    // colours, this stays a real fail: known problems don't get
+    // softened into 'unknown' just because something else was also
+    // unreadable.
+    var contrastIndeterminate = contrastProblems.length === 0 && contrastUnknownList.length > 0;
+    record('Theme colours meet WCAG AA contrast', contrastProblems, contrastIndeterminate);
+
     // 3) Audio reachability — fire HEAD requests in parallel and wait.
     var audioRefs = [];
     var seen = {};
@@ -974,29 +1063,59 @@ export function renderSmokeHtml(storyData: unknown, language?: string): string {
 
     function render() {
       var sum = document.getElementById('summary');
-      sum.innerHTML = '<strong>' + passCount + ' / ' + checks.length + ' checks passing</strong>' +
+      // Denominator is ratedCount, not checks.length: a check that
+      // never ran (state 'unknown') is neither a pass nor a fail, so
+      // it does not belong in "N / M checks passing" on either side.
+      sum.innerHTML = '<strong>' + passCount + ' / ' + ratedCount + ' checks passing</strong>' +
         '<div>' + nodeIds.length + ' nodes · ' + audioRefs.length + ' audio refs</div>';
       var out = document.getElementById('results');
       out.innerHTML = checks.map(function (c) {
         var problemHtml = c.problems.length
           ? '<ul class="problems">' + c.problems.map(function (p) {
-              return '<li><code>' + p.replace(/[<>&]/g, function (ch) {
-                return ({ '<':'&lt;', '>':'&gt;', '&':'&amp;' })[ch];
-              }) + '</code></li>';
+              return '<li><code>' + escapeText(p) + '</code></li>';
             }).join('') + '</ul>'
           : '';
         // The state is spelled out for assistive tech; the glyph is
         // decorative and hidden from it, so nothing reads "check mark".
-        var state = c.ok
+        var state = c.state === 'pass'
           ? '<span class="visually-hidden">Passed: </span><span aria-hidden="true">✓ </span>'
-          : '<span class="visually-hidden">Failed: </span><span aria-hidden="true">✗ </span>';
-        return '<div class="check ' + (c.ok ? 'pass' : 'fail') + '">' +
+          : c.state === 'fail'
+            ? '<span class="visually-hidden">Failed: </span><span aria-hidden="true">✗ </span>'
+            : '<span class="visually-hidden">Not checked: </span><span aria-hidden="true">! </span>';
+        // 'unknown' reuses the same amber .note treatment as the
+        // advisory blocks appended below, rather than a fourth colour —
+        // both mean "not a verdict".
+        var cssState = c.state === 'unknown' ? 'note' : c.state;
+        return '<div class="check ' + cssState + '">' +
           '<h2>' + state + c.label + '</h2>' + problemHtml + '</div>';
       }).join('');
+      // Colours nobody could measure are said out loud rather than
+      // folded into the tick above — but they don't fail the build,
+      // because a url() page background is a legitimate choice.
+      if (contrast.overridable) {
+        out.innerHTML += '<div class="check note"><h2>! Custom CSS can override these colours' +
+          '</h2><p class="note-help">The contrast check above measures your theme settings. ' +
+          'Your custom CSS is applied after them, so a rule that sets a colour there wins — ' +
+          'and nothing here can read it. Check those colours yourself.</p></div>';
+      }
+      var unknown = contrast.unknown || [];
+      if (unknown.length) {
+        out.innerHTML += '<div class="check note"><h2>! Theme colours that could not be measured' +
+          '</h2><ul class="problems">' + unknown.map(function (p) {
+            return '<li><code>' + escapeText(p) + '</code></li>';
+          }).join('') + '</ul>' +
+          '<p class="note-help">Use a hex, rgb() or hsl() value if you want these checked.</p></div>';
+      }
       // Also log to console so headless smoke runners can capture it.
+      // total mirrors the visible summary's denominator: a check that
+      // never ran does not belong in "how many of these passed" either
+      // way, for a script parsing this the same as for someone reading
+      // the page.
       console.log('[wanderline-smoke]', JSON.stringify({
-        passing: passCount, total: checks.length,
-        problems: checks.filter(function (c) { return !c.ok; })
+        passing: passCount, total: ratedCount,
+        problems: checks.filter(function (c) { return c.state === 'fail'; }),
+        notChecked: checks.filter(function (c) { return c.state === 'unknown'; }),
+        unmeasured: unknown
       }));
     }
   })();
