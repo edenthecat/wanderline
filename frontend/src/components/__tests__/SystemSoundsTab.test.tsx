@@ -112,3 +112,61 @@ describe('per-choice indicator controls', () => {
     expect(patch).toEqual({ defaultIndicatorAudioId: 'beep-2' });
   });
 });
+
+// Editor surface for settings.choiceAudioDelayMs. The backend and
+// player already honour this (default 3000ms of silence before a
+// choice option's audio starts), but nothing in the editor could
+// read or write it, so an author with the wrong pacing for their
+// story had no way to change it.
+describe('choice-audio pause control', () => {
+  it('defaults to the player’s own fallback when unset', async () => {
+    mount();
+    const slider = (await screen.findByLabelText('Pause before choices')) as HTMLInputElement;
+    expect(slider.value).toBe('3000');
+    expect(screen.getByText('3.00s')).toBeInTheDocument();
+  });
+
+  it('reflects a stored value', async () => {
+    mount({ choiceAudioDelayMs: 1500 });
+    const slider = (await screen.findByLabelText('Pause before choices')) as HTMLInputElement;
+    await waitFor(() => expect(slider.value).toBe('1500'));
+    expect(screen.getByText('1.50s')).toBeInTheDocument();
+  });
+
+  it('debounce-saves choiceAudioDelayMs when moved', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mount();
+    const slider = await screen.findByLabelText('Pause before choices');
+    fireEvent.change(slider, { target: { value: '2000' } });
+
+    await vi.advanceTimersByTimeAsync(300);
+    expect(mockedUpdate).toHaveBeenCalledWith('p1', { choiceAudioDelayMs: 2000 });
+    vi.useRealTimers();
+  });
+
+  // Nothing validates this range server-side, so a value set some other
+  // way (a direct API call, a future feature) can sit above the 8s the
+  // slider was designed around. A fixed max would clamp the thumb to
+  // 8000 while the number beside it kept showing the real, higher value
+  // — and touching the slider at all would silently overwrite the
+  // stored value downward the moment it moved.
+  it('widens the range rather than clamping a value above the slider ceiling', async () => {
+    mount({ choiceAudioDelayMs: 12000 });
+    const slider = (await screen.findByLabelText('Pause before choices')) as HTMLInputElement;
+    await waitFor(() => expect(slider.value).toBe('12000'));
+    expect(slider.max).toBe('12000');
+    expect(screen.getByText('12.00s')).toBeInTheDocument();
+  });
+
+  // The other half of the same desync: min={0} on the slider can't
+  // itself produce a negative value, but a project could still have
+  // one stored some other way. Without clamping the resolved value,
+  // the native control would clamp its own display to 0 while the
+  // text beside it kept printing the raw negative number.
+  it('clamps a negative stored value instead of disagreeing with the slider', async () => {
+    mount({ choiceAudioDelayMs: -500 });
+    const slider = (await screen.findByLabelText('Pause before choices')) as HTMLInputElement;
+    await waitFor(() => expect(slider.value).toBe('0'));
+    expect(screen.getByText('0.00s')).toBeInTheDocument();
+  });
+});
