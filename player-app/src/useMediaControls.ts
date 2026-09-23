@@ -519,7 +519,20 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
   useEffect(() => {
     const ms = navigator.mediaSession;
     if (!ms || typeof ms.setPositionState !== 'function') return;
-    if (!Number.isFinite(audioDuration) || audioDuration <= 0) return;
+    if (!Number.isFinite(audioDuration) || audioDuration <= 0) {
+      // App resets audioDuration to 0 on every navigation, including
+      // onto a voiceover-less node where it's never set again. Without
+      // this, the OS goes on reporting the PREVIOUS node's duration
+      // and position — a MediaSession is page-level, not per-node, so
+      // nothing else here would ever overwrite it. Calling with no
+      // arguments is the spec's own way to clear position state.
+      try {
+        ms.setPositionState();
+      } catch {
+        // See below — clearing is best-effort too.
+      }
+      return;
+    }
     const position = Math.min(Math.max(audioProgress, 0), audioDuration);
     try {
       ms.setPositionState({ duration: audioDuration, playbackRate: 1, position });

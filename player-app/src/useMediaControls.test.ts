@@ -30,43 +30,48 @@ function harnessHooks(overrides: Partial<Parameters<typeof useMediaControls>[0]>
   const startStory = vi.fn();
   const setSelectedChoice = vi.fn();
 
-  const { result } = renderHook(() => {
-    // vi.fn() returns a generic Mock; cast to the specific signature
-    // each ref carries so TSC accepts the initial value.
-    const navigateToTargetRef = useRef<((t: string) => void) | null>(
-      spies.navigateToTarget as unknown as (t: string) => void,
-    );
-    const navigateToNodeRef = useRef<((n: string) => void) | null>(
-      spies.navigateToNode as unknown as (n: string) => void,
-    );
-    const goBackRef = useRef<(() => void) | null>(spies.goBack as unknown as () => void);
-    const onHeadphoneButtonPressRef = useRef<(() => void) | null>(
-      spies.onHeadphoneButtonPress as unknown as () => void,
-    );
-    const currentNodeRef = useRef(overrides.currentNode ?? null);
-    const selectedChoiceRef = useRef(0);
-    return useMediaControls({
-      story: null,
-      currentNode: null,
-      showInstructions: false,
-      isAuthenticated: false,
-      playerState: 'loading',
-      audioProgress: 0,
-      audioDuration: 0,
-      startStory,
-      handlers: {
-        navigateToTargetRef,
-        navigateToNodeRef,
-        goBackRef,
-        onHeadphoneButtonPressRef,
-      },
-      currentNodeRef,
-      selectedChoiceRef,
-      setSelectedChoice,
-      ...overrides,
-    });
-  });
-  return { result, spies, startStory, setSelectedChoice };
+  const { result, rerender } = renderHook(
+    (props: Partial<Parameters<typeof useMediaControls>[0]>) => {
+      // vi.fn() returns a generic Mock; cast to the specific signature
+      // each ref carries so TSC accepts the initial value.
+      const navigateToTargetRef = useRef<((t: string) => void) | null>(
+        spies.navigateToTarget as unknown as (t: string) => void,
+      );
+      const navigateToNodeRef = useRef<((n: string) => void) | null>(
+        spies.navigateToNode as unknown as (n: string) => void,
+      );
+      const goBackRef = useRef<(() => void) | null>(spies.goBack as unknown as () => void);
+      const onHeadphoneButtonPressRef = useRef<(() => void) | null>(
+        spies.onHeadphoneButtonPress as unknown as () => void,
+      );
+      const currentNodeRef = useRef(props.currentNode ?? null);
+      currentNodeRef.current = props.currentNode ?? null;
+      const selectedChoiceRef = useRef(0);
+      return useMediaControls({
+        story: null,
+        currentNode: null,
+        showInstructions: false,
+        isAuthenticated: false,
+        playerState: 'loading',
+        audioProgress: 0,
+        audioDuration: 0,
+        startStory,
+        handlers: {
+          navigateToTargetRef,
+          navigateToNodeRef,
+          goBackRef,
+          onHeadphoneButtonPressRef,
+        },
+        currentNodeRef,
+        selectedChoiceRef,
+        setSelectedChoice,
+        ...props,
+      });
+    },
+    { initialProps: overrides },
+  );
+  const rerenderWith = (next: Partial<Parameters<typeof useMediaControls>[0]>) => rerender(next);
+  return { result, spies, startStory, setSelectedChoice, rerender: rerenderWith };
 }
 
 // Track MediaSession bindings so we can assert on them without
@@ -470,7 +475,7 @@ describe('useMediaControls — position state', () => {
     });
   });
 
-  it('does not call it before the duration is known', () => {
+  it('clears position state before the duration is known', () => {
     harnessHooks({
       story: runningStory,
       currentNode: { id: 'home', content: [{ text: 'Hi.' }], choices: [], divert: null },
@@ -480,7 +485,43 @@ describe('useMediaControls — position state', () => {
       audioProgress: 0,
       audioDuration: 0,
     });
-    expect(setPositionStateSpy).not.toHaveBeenCalled();
+    // Called with no arguments, which is the spec's way to clear
+    // position state — not skipped, which would leave whatever the
+    // browser's default/prior state was in place.
+    expect(setPositionStateSpy).toHaveBeenCalledWith();
+  });
+
+  // The bug a review flagged: App resets audioDuration to 0 on every
+  // navigation, including onto a node with no voiceover that never
+  // sets it again. MediaSession is page-level, so nothing else would
+  // ever overwrite a stale position — the OS would go on reporting
+  // the PREVIOUS node's progress against the NEW node indefinitely.
+  it('clears a previous node’s position on navigating to one with no duration yet', () => {
+    const { rerender } = harnessHooks({
+      story: runningStory,
+      currentNode: { id: 'home', content: [{ text: 'Hi.' }], choices: [], divert: null },
+      showInstructions: false,
+      isAuthenticated: true,
+      playerState: 'playing',
+      audioProgress: 40,
+      audioDuration: 90,
+    });
+    expect(setPositionStateSpy).toHaveBeenLastCalledWith({
+      duration: 90,
+      playbackRate: 1,
+      position: 40,
+    });
+
+    rerender({
+      story: runningStory,
+      currentNode: { id: 'kitchen', content: [{ text: 'Bye.' }], choices: [], divert: null },
+      showInstructions: false,
+      isAuthenticated: true,
+      playerState: 'loading',
+      audioProgress: 0,
+      audioDuration: 0,
+    });
+    expect(setPositionStateSpy).toHaveBeenLastCalledWith();
   });
 
   it('clamps a stale position left over from the previous node rather than throwing', () => {
