@@ -1870,6 +1870,8 @@ export default function App() {
     showInstructions,
     isAuthenticated,
     playerState,
+    audioProgress,
+    audioDuration,
     startStory,
     handlers: {
       navigateToTargetRef,

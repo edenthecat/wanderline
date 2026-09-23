@@ -30,41 +30,48 @@ function harnessHooks(overrides: Partial<Parameters<typeof useMediaControls>[0]>
   const startStory = vi.fn();
   const setSelectedChoice = vi.fn();
 
-  const { result } = renderHook(() => {
-    // vi.fn() returns a generic Mock; cast to the specific signature
-    // each ref carries so TSC accepts the initial value.
-    const navigateToTargetRef = useRef<((t: string) => void) | null>(
-      spies.navigateToTarget as unknown as (t: string) => void,
-    );
-    const navigateToNodeRef = useRef<((n: string) => void) | null>(
-      spies.navigateToNode as unknown as (n: string) => void,
-    );
-    const goBackRef = useRef<(() => void) | null>(spies.goBack as unknown as () => void);
-    const onHeadphoneButtonPressRef = useRef<(() => void) | null>(
-      spies.onHeadphoneButtonPress as unknown as () => void,
-    );
-    const currentNodeRef = useRef(overrides.currentNode ?? null);
-    const selectedChoiceRef = useRef(0);
-    return useMediaControls({
-      story: null,
-      currentNode: null,
-      showInstructions: false,
-      isAuthenticated: false,
-      playerState: 'loading',
-      startStory,
-      handlers: {
-        navigateToTargetRef,
-        navigateToNodeRef,
-        goBackRef,
-        onHeadphoneButtonPressRef,
-      },
-      currentNodeRef,
-      selectedChoiceRef,
-      setSelectedChoice,
-      ...overrides,
-    });
-  });
-  return { result, spies, startStory, setSelectedChoice };
+  const { result, rerender } = renderHook(
+    (props: Partial<Parameters<typeof useMediaControls>[0]>) => {
+      // vi.fn() returns a generic Mock; cast to the specific signature
+      // each ref carries so TSC accepts the initial value.
+      const navigateToTargetRef = useRef<((t: string) => void) | null>(
+        spies.navigateToTarget as unknown as (t: string) => void,
+      );
+      const navigateToNodeRef = useRef<((n: string) => void) | null>(
+        spies.navigateToNode as unknown as (n: string) => void,
+      );
+      const goBackRef = useRef<(() => void) | null>(spies.goBack as unknown as () => void);
+      const onHeadphoneButtonPressRef = useRef<(() => void) | null>(
+        spies.onHeadphoneButtonPress as unknown as () => void,
+      );
+      const currentNodeRef = useRef(props.currentNode ?? null);
+      currentNodeRef.current = props.currentNode ?? null;
+      const selectedChoiceRef = useRef(0);
+      return useMediaControls({
+        story: null,
+        currentNode: null,
+        showInstructions: false,
+        isAuthenticated: false,
+        playerState: 'loading',
+        audioProgress: 0,
+        audioDuration: 0,
+        startStory,
+        handlers: {
+          navigateToTargetRef,
+          navigateToNodeRef,
+          goBackRef,
+          onHeadphoneButtonPressRef,
+        },
+        currentNodeRef,
+        selectedChoiceRef,
+        setSelectedChoice,
+        ...props,
+      });
+    },
+    { initialProps: overrides },
+  );
+  const rerenderWith = (next: Partial<Parameters<typeof useMediaControls>[0]>) => rerender(next);
+  return { result, spies, startStory, setSelectedChoice, rerender: rerenderWith };
 }
 
 // Track MediaSession bindings so we can assert on them without
@@ -79,6 +86,7 @@ const setActionHandlerCalls = new Map<string, number>();
 // `vi.stubGlobal('navigator', …)` because the latter would clear the
 // MediaMetadata / matchMedia globals the file-level test-setup.ts
 // stubs — those are needed by the hook we're testing.
+const setPositionStateSpy = vi.fn();
 const fakeMediaSession = {
   metadata: null as MediaMetadata | null,
   playbackState: 'none' as MediaSessionPlaybackState,
@@ -86,11 +94,13 @@ const fakeMediaSession = {
     mediaSessionHandlers.set(action, handler);
     setActionHandlerCalls.set(action, (setActionHandlerCalls.get(action) ?? 0) + 1);
   },
+  setPositionState: setPositionStateSpy,
 };
 
 beforeEach(() => {
   mediaSessionHandlers.clear();
   setActionHandlerCalls.clear();
+  setPositionStateSpy.mockClear();
   fakeMediaSession.metadata = null;
   fakeMediaSession.playbackState = 'none';
   Object.defineProperty(navigator, 'mediaSession', {
@@ -271,6 +281,8 @@ describe('useMediaControls — keydown fallback', () => {
           showInstructions: false,
           isAuthenticated: true,
           playerState: 'playing',
+          audioProgress: 0,
+          audioDuration: 0,
           startStory,
           // NEW object literal every render — this is what App.tsx
           // does at the call site. Pre-fix, this would cascade
@@ -436,5 +448,115 @@ describe('useMediaControls — Bluetooth transport faults', () => {
       expect(spies.goBack).toHaveBeenCalledTimes(1);
       expect(spies.navigateToTarget).not.toHaveBeenCalled();
     });
+  });
+});
+
+// setPositionState() feeds the OS-level transport (Control Center,
+// lock screen widget, AirPods) a position to work from. WebKit has
+// been observed leaving the Now Playing session in a state where
+// remote commands land unreliably without one — the closest thing to
+// a root cause behind "the AirPods button sometimes just doesn't
+// work" that's reproducible without the actual hardware.
+describe('useMediaControls — position state', () => {
+  it('reports duration and position once both are known', () => {
+    harnessHooks({
+      story: runningStory,
+      currentNode: { id: 'home', content: [{ text: 'Hi.' }], choices: [], divert: null },
+      showInstructions: false,
+      isAuthenticated: true,
+      playerState: 'playing',
+      audioProgress: 12.5,
+      audioDuration: 90,
+    });
+    expect(setPositionStateSpy).toHaveBeenCalledWith({
+      duration: 90,
+      playbackRate: 1,
+      position: 12.5,
+    });
+  });
+
+  it('clears position state before the duration is known', () => {
+    harnessHooks({
+      story: runningStory,
+      currentNode: { id: 'home', content: [{ text: 'Hi.' }], choices: [], divert: null },
+      showInstructions: false,
+      isAuthenticated: true,
+      playerState: 'loading',
+      audioProgress: 0,
+      audioDuration: 0,
+    });
+    // Called with no arguments, which is the spec's way to clear
+    // position state — not skipped, which would leave whatever the
+    // browser's default/prior state was in place.
+    expect(setPositionStateSpy).toHaveBeenCalledWith();
+  });
+
+  // The bug a review flagged: App resets audioDuration to 0 on every
+  // navigation, including onto a node with no voiceover that never
+  // sets it again. MediaSession is page-level, so nothing else would
+  // ever overwrite a stale position — the OS would go on reporting
+  // the PREVIOUS node's progress against the NEW node indefinitely.
+  it('clears a previous node’s position on navigating to one with no duration yet', () => {
+    const { rerender } = harnessHooks({
+      story: runningStory,
+      currentNode: { id: 'home', content: [{ text: 'Hi.' }], choices: [], divert: null },
+      showInstructions: false,
+      isAuthenticated: true,
+      playerState: 'playing',
+      audioProgress: 40,
+      audioDuration: 90,
+    });
+    expect(setPositionStateSpy).toHaveBeenLastCalledWith({
+      duration: 90,
+      playbackRate: 1,
+      position: 40,
+    });
+
+    rerender({
+      story: runningStory,
+      currentNode: { id: 'kitchen', content: [{ text: 'Bye.' }], choices: [], divert: null },
+      showInstructions: false,
+      isAuthenticated: true,
+      playerState: 'loading',
+      audioProgress: 0,
+      audioDuration: 0,
+    });
+    expect(setPositionStateSpy).toHaveBeenLastCalledWith();
+  });
+
+  it('clamps a stale position left over from the previous node rather than throwing', () => {
+    // setPositionState() throws if position > duration. A node change
+    // can land a render where audioProgress hasn't reset yet against
+    // the new node's (shorter) duration.
+    harnessHooks({
+      story: runningStory,
+      currentNode: { id: 'kitchen', content: [{ text: 'Hi.' }], choices: [], divert: null },
+      showInstructions: false,
+      isAuthenticated: true,
+      playerState: 'playing',
+      audioProgress: 45,
+      audioDuration: 10,
+    });
+    expect(setPositionStateSpy).toHaveBeenCalledWith({
+      duration: 10,
+      playbackRate: 1,
+      position: 10,
+    });
+  });
+
+  it('does nothing when the browser has no setPositionState to call', () => {
+    // @ts-expect-error -- simulating a browser without the method.
+    delete fakeMediaSession.setPositionState;
+    expect(() =>
+      harnessHooks({
+        story: runningStory,
+        currentNode: { id: 'home', content: [{ text: 'Hi.' }], choices: [], divert: null },
+        showInstructions: false,
+        isAuthenticated: true,
+        playerState: 'playing',
+        audioProgress: 5,
+        audioDuration: 30,
+      }),
+    ).not.toThrow();
   });
 });

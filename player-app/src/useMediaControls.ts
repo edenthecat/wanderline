@@ -117,6 +117,16 @@ export interface UseMediaControlsArgs {
   showInstructions: boolean;
   isAuthenticated: boolean;
   playerState: PlayerState;
+  /** Current voiceover element's playback position + duration, in
+   * seconds. Feeds `MediaSession.setPositionState()` so the OS-level
+   * transport (lock screen widget, AirPods double/triple-tap) has a
+   * position to work from. Without it, WebKit has been observed
+   * leaving the Now Playing session in an inconsistent state where
+   * remote commands land unreliably — the closest thing to a root
+   * cause behind "the AirPods button sometimes just doesn't work"
+   * that doesn't require the actual hardware to reproduce. */
+  audioProgress: number;
+  audioDuration: number;
   /** Stable callback for "start the story from the instructions
    * screen". Called by both the instructions MediaSession binding
    * and the keydown-fallback path when it fires on the instructions
@@ -165,6 +175,8 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
     showInstructions,
     isAuthenticated,
     playerState,
+    audioProgress,
+    audioDuration,
     startStory,
     handlers,
     currentNodeRef,
@@ -491,6 +503,49 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
       ms.playbackState = 'paused';
     }
   }, [playerState, story]);
+
+  // 8. Feed MediaSession.setPositionState() from the voiceover
+  // element's own progress. The Media Session spec treats this as
+  // optional, but WebKit's iOS implementation leans on it more than
+  // that: without a position state, the Now Playing session it hands
+  // to Control Center / the lock screen / AirPods can end up in a
+  // state where remote commands don't reliably reach the page at all,
+  // which reads to a listener as "the button sometimes just doesn't
+  // work" rather than a clean failure. `duration` has to be a finite,
+  // positive number and `position` within `[0, duration]` or the call
+  // throws — both true for the whole of narration playback, neither
+  // true before metadata has loaded or once it's over, so this only
+  // ever fires in between.
+  useEffect(() => {
+    const ms = navigator.mediaSession;
+    if (!ms || typeof ms.setPositionState !== 'function') return;
+    if (!Number.isFinite(audioDuration) || audioDuration <= 0) {
+      // App resets audioDuration to 0 on every navigation, including
+      // onto a voiceover-less node where it's never set again. Without
+      // this, the OS goes on reporting the PREVIOUS node's duration
+      // and position — a MediaSession is page-level, not per-node, so
+      // nothing else here would ever overwrite it. Calling with no
+      // arguments is the spec's own way to clear position state.
+      try {
+        ms.setPositionState();
+      } catch {
+        // See below — clearing is best-effort too.
+      }
+      return;
+    }
+    const position = Math.min(Math.max(audioProgress, 0), audioDuration);
+    try {
+      ms.setPositionState({ duration: audioDuration, playbackRate: 1, position });
+    } catch {
+      // A stale duration/position pair can still slip through a race
+      // between a node change and this effect's re-run (e.g. the new
+      // node's audio hasn't reported its own duration yet, so a leftover
+      // `position` from the previous node exceeds it for one tick).
+      // The OS keeping the last-known position for a moment is a far
+      // better failure mode than an uncaught exception unmounting the
+      // player.
+    }
+  }, [audioProgress, audioDuration]);
 
   return { mediaActions };
 }
