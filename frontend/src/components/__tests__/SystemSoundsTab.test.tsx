@@ -143,4 +143,18 @@ describe('choice-audio pause control', () => {
     expect(mockedUpdate).toHaveBeenCalledWith('p1', { choiceAudioDelayMs: 2000 });
     vi.useRealTimers();
   });
+
+  // Nothing validates this range server-side, so a value set some other
+  // way (a direct API call, a future feature) can sit above the 8s the
+  // slider was designed around. A fixed max would clamp the thumb to
+  // 8000 while the number beside it kept showing the real, higher value
+  // — and touching the slider at all would silently overwrite the
+  // stored value downward the moment it moved.
+  it('widens the range rather than clamping a value above the slider ceiling', async () => {
+    mount({ choiceAudioDelayMs: 12000 });
+    const slider = (await screen.findByLabelText('Pause before choices')) as HTMLInputElement;
+    await waitFor(() => expect(slider.value).toBe('12000'));
+    expect(slider.max).toBe('12000');
+    expect(screen.getByText('12.00s')).toBeInTheDocument();
+  });
 });

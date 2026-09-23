@@ -192,7 +192,15 @@ export default function SystemSoundsTab({ projectId }: Props) {
             <input
               type="range"
               min={0}
-              max={8000}
+              // 8000 covers any pacing an author would reasonably pick from
+              // this control, but the backend stores choiceAudioDelayMs
+              // without a range check and the player consumes it as-is.
+              // Widening the ceiling to the stored value itself means a
+              // number set some other way (an API call, a future feature)
+              // never gets silently clamped down the moment someone opens
+              // this tab and the slider's thumb sits at 8000 while the
+              // number beside it disagrees.
+              max={Math.max(8000, choiceAudioDelayMs)}
               step={250}
               value={choiceAudioDelayMs}
               onChange={(e) => updateDebounced('choiceAudioDelayMs', Number(e.target.value))}
