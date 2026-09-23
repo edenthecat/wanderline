@@ -157,4 +157,16 @@ describe('choice-audio pause control', () => {
     expect(slider.max).toBe('12000');
     expect(screen.getByText('12.00s')).toBeInTheDocument();
   });
+
+  // The other half of the same desync: min={0} on the slider can't
+  // itself produce a negative value, but a project could still have
+  // one stored some other way. Without clamping the resolved value,
+  // the native control would clamp its own display to 0 while the
+  // text beside it kept printing the raw negative number.
+  it('clamps a negative stored value instead of disagreeing with the slider', async () => {
+    mount({ choiceAudioDelayMs: -500 });
+    const slider = (await screen.findByLabelText('Pause before choices')) as HTMLInputElement;
+    await waitFor(() => expect(slider.value).toBe('0'));
+    expect(screen.getByText('0.00s')).toBeInTheDocument();
+  });
 });

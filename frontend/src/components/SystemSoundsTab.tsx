@@ -113,7 +113,16 @@ export default function SystemSoundsTab({ projectId }: Props) {
   if (loading) return <div className="page-loader">Loading sounds...</div>;
 
   const noIndicators = indicatorAudio.length === 0;
-  const choiceAudioDelayMs = settings?.choiceAudioDelayMs ?? DEFAULT_CHOICE_AUDIO_DELAY_MS;
+  // The settings endpoint stores this number without a range check, so
+  // a value set some other way could be negative. `min={0}` on the
+  // slider below can't itself produce one, but clamp what's rendered
+  // so a stored negative can't desync the slider (clamped by the
+  // native control) from the text beside it (which would otherwise
+  // just print the raw negative number).
+  const choiceAudioDelayMs = Math.max(
+    0,
+    settings?.choiceAudioDelayMs ?? DEFAULT_CHOICE_AUDIO_DELAY_MS,
+  );
 
   return (
     <div className="tab-panel">
