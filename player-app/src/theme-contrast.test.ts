@@ -373,6 +373,73 @@ describe('author-chosen palettes are checked, not just the defaults', () => {
 // and the card resolves `var(--wl-storyCard-background, ...)`.
 // Checking only the globals would hand a green light to a palette
 // nobody can read.
+// Four rendered surfaces (choice buttons, the instructions card, the
+// resume picker, the error banner) and the password field's focus ring
+// were never in PAIRS at all — an author could set a choice button's
+// background and text to the same colour and every check would still
+// come back green, because nothing was measuring that pair. Each test
+// here fails against the OLD PAIRS list (the surface simply wasn't
+// checked) and passes now.
+describe('every rendered surface the theme editor can touch is checked', () => {
+  it('checks the choice button, not just the story card', () => {
+    const failures = failingThemeContrast({
+      components: { choiceButton: { background: '#eeeeee', textColor: '#eeeeee' } },
+    });
+    expect(failures.map((f) => f.id)).toContain('text-on-choice-button');
+  });
+
+  it('checks the instructions card', () => {
+    const failures = failingThemeContrast({
+      components: { instructionsCard: { background: '#eeeeee', textColor: '#eeeeee' } },
+    });
+    expect(failures.map((f) => f.id)).toContain('text-on-instructions-card');
+  });
+
+  it('checks the resume picker through the instructions card it sits inside', () => {
+    // Nested, not a sibling of the card — a translucent picker
+    // background measured against the page alone (skipping the card)
+    // would land on the wrong backdrop.
+    const failures = failingThemeContrast({
+      components: {
+        instructionsCard: { background: '#000000' },
+        resumePicker: { textColor: '#000000' },
+      },
+    });
+    expect(failures.map((f) => f.id)).toContain('text-on-resume-picker');
+
+    // And the reverse: a picker override alone, without touching the
+    // card, is still measured against whatever the card resolves to.
+    const clean = failingThemeContrast({
+      components: { resumePicker: { textColor: '#eeeeee' } },
+    });
+    expect(clean.map((f) => f.id)).not.toContain('text-on-resume-picker');
+  });
+
+  it('checks the error banner', () => {
+    const failures = failingThemeContrast({
+      components: { errorBanner: { textColor: '#d9534f' } },
+    });
+    expect(failures.map((f) => f.id)).toContain('text-on-error-banner');
+  });
+
+  it('checks the password field focus ring against the light theme it turns out to fail', () => {
+    // The default accent (#4ecdc4) is fine on the default dark page but
+    // loses most of its contrast once the page — and so the password
+    // card's translucent white wash — goes light. Nothing warned about
+    // this before the ring had its own pair.
+    const failures = failingThemeContrast({
+      variables: { pageBackground: '#ffffff', accentColor: '#4ecdc4' },
+    });
+    expect(failures.map((f) => f.id)).toContain('password-focus-ring');
+
+    // A darker accent restores it.
+    const fixed = failingThemeContrast({
+      variables: { pageBackground: '#ffffff', accentColor: '#0f766e' },
+    });
+    expect(fixed.map((f) => f.id)).not.toContain('password-focus-ring');
+  });
+});
+
 describe('per-component overrides are checked alongside the globals', () => {
   it('flags a Page text override the page background no longer suits', () => {
     // Globals alone would pass here; the override is the whole defect.
@@ -445,6 +512,24 @@ describe('per-component overrides are checked alongside the globals', () => {
       components: { settingsPanel: { background: '#1a1a2e' } },
     });
     expect(both.map((f) => f.id)).not.toContain('text-on-settings-panel');
+  });
+
+  it('does not silently fall through a component override literally set to none', () => {
+    // renderThemeCss forwards `none` verbatim for every component prop,
+    // not just the page background's dedicated handling above. Falling
+    // through to --wl-card-bg here — what this used to do — measured a
+    // colour the player never paints: `background: none` on the story
+    // card is valid CSS with real, different consequences (transparent,
+    // showing the page through) that this generic resolver has no way
+    // to model precisely, so it is reported as unmeasured rather than
+    // guessed via the global.
+    const checks = evaluateThemeContrast({
+      variables: { cardBackground: '#ffffff', textColor: '#eeeeee' },
+      components: { storyCard: { background: 'none' } },
+    });
+    const card = checks.find((c) => c.id === 'text-on-card')!;
+    expect(card.ratio).toBeNull();
+    expect(card.unparsed).toContain('none');
   });
 });
 
@@ -579,6 +664,146 @@ describe('the page surface follows the player, not the knob names', () => {
   });
 });
 
+describe('the page background can be explicitly cleared', () => {
+  it('shows the browser canvas when Page -> Background is set to none', () => {
+    // `background: none` is valid CSS on the shorthand itself (`none`
+    // is an acceptable <bg-image> token), unlike backgroundImage's
+    // `none`, which just wipes the image layer. It clears the whole
+    // shorthand's own colour role too, so the canvas shows through —
+    // not the dark global default, which is what treating this `none`
+    // as "unset" used to fall through to.
+    const checks = evaluateThemeContrast({
+      variables: { pageBackground: '#1a1a2e', textColor: '#f5f5f5' },
+      components: { page: { background: 'none' } },
+    });
+    const page = checks.find((c) => c.id === 'text-on-page')!;
+    // #f5f5f5 on white is a near-fail, not the ~14:1 the dark default
+    // would have reported.
+    expect(page.ratio).not.toBeNull();
+    expect(page.ratio!).toBeLessThan(2);
+    expect(page.passes).toBe(false);
+  });
+});
+
+describe('gradients are sampled between stops, not only at them', () => {
+  it('fails a mid-grey that only crosses the gradient in the middle', () => {
+    // #767676 is famously the grey that sits right at 4.5:1 against
+    // white — the endpoints of a black-to-white gradient individually
+    // read as fine (black: high contrast; white: right at the
+    // boundary), but the gradient interpolates continuously through
+    // every shade of grey in between, including one indistinguishable
+    // from the text itself. Sampling only the two stops — what this
+    // used to do — missed that crossing entirely.
+    const checks = evaluateThemeContrast({
+      variables: { pageBackground: 'linear-gradient(#000000, #ffffff)', textColor: '#767676' },
+    });
+    const page = checks.find((c) => c.id === 'text-on-page')!;
+    expect(page.ratio).not.toBeNull();
+    expect(page.passes).toBe(false);
+    expect(page.ratio!).toBeLessThan(2);
+  });
+
+  it('still passes a gradient with genuinely good contrast throughout', () => {
+    // Guards against the interpolation itself introducing false
+    // failures — a light gradient against dark text should stay clean
+    // at every sampled point, not just the two ends.
+    const checks = evaluateThemeContrast({
+      variables: { pageBackground: 'linear-gradient(#f5f5f5, #e5e5e5)', textColor: '#111111' },
+    });
+    const page = checks.find((c) => c.id === 'text-on-page')!;
+    expect(page.passes).toBe(true);
+  });
+});
+
+describe('multi-layer backgrounds', () => {
+  it('reads a trailing solid colour on the shorthand as the true backdrop', () => {
+    // CSS allows exactly one plain colour, on the LAST layer of a
+    // multi-layer `background:` value. Backing this with a separate,
+    // clean single-layer image (in backgroundImage) isolates the
+    // shorthand's colour role from the image-declaration checks below
+    // — this is testing specifically that the trailing #111111 becomes
+    // the backdrop the image composites over, not white.
+    const checks = evaluateThemeContrast({
+      variables: { textColor: '#666666' },
+      components: {
+        page: {
+          background: 'linear-gradient(rgba(0,0,0,.2), rgba(0,0,0,.2)), #111111',
+          backgroundImage: 'linear-gradient(rgba(255,255,255,.5), rgba(255,255,255,.5))',
+        },
+      },
+    });
+    const page = checks.find((c) => c.id === 'text-on-page')!;
+    // The scrim composites to roughly #888 over the correct #111
+    // backdrop; #666 text there is 1.6:1, a clear fail. Composited
+    // over a wrongly-assumed white canvas instead it would come out
+    // close to white and pass outright — the false-pass the trailing
+    // colour being ignored used to produce.
+    expect(page.ratio).not.toBeNull();
+    expect(page.passes).toBe(false);
+  });
+
+  it('does not double-composite a translucent flat page colour', () => {
+    // With no separate image layer, the flat/translucent shorthand
+    // paints directly onto the canvas ONCE. Reporting it as both the
+    // layer and the backdrop composited it twice: white text on
+    // rgba(0,0,0,.5) measured against roughly #404040 (double
+    // composite) instead of the correct ~#808080 — 3.95:1, just under
+    // AA, exactly the false-pass Copilot's review flagged.
+    const checks = evaluateThemeContrast({
+      variables: { pageBackground: 'rgba(0,0,0,.5)', textColor: '#ffffff' },
+    });
+    const page = checks.find((c) => c.id === 'text-on-page')!;
+    expect(page.ratio).not.toBeNull();
+    // The correct single-composite surface (~#808080) is darker than
+    // the buggy double-composite one (~#404040), which counterintuitively
+    // means it has LESS contrast against white — the honest failure the
+    // bug was hiding behind a false pass.
+    expect(page.passes).toBe(false);
+    expect(page.ratio!).toBeCloseTo(3.95, 1);
+  });
+
+  it('treats a multi-layer background-image with a trailing colour as no image at all', () => {
+    // Unlike the shorthand, `background-image` alone has no colour
+    // sub-property — every layer must be an image or the WHOLE
+    // declaration is invalid at computed-value time. Per the custom
+    // properties spec an invalid declaration still wins its cascade
+    // slot, resolving to the property's initial value (`none`) rather
+    // than falling back to whatever an earlier declaration set — so
+    // the gradient here never renders at all, only the flat colour
+    // underneath does.
+    const checks = evaluateThemeContrast({
+      variables: { pageBackground: '#111111', textColor: '#666666' },
+      components: {
+        page: { backgroundImage: 'linear-gradient(rgba(0,0,0,.2), rgba(0,0,0,.2)), #111111' },
+      },
+    });
+    const page = checks.find((c) => c.id === 'text-on-page')!;
+    // Measured, not guessed: this is the SAME as never having set
+    // backgroundImage at all — the invalid declaration there discards
+    // its image layer entirely, leaving only the flat #111111 the
+    // shorthand's own colour role already carried.
+    const flatEquivalent = evaluateThemeContrast({
+      variables: { pageBackground: '#111111', textColor: '#666666' },
+    }).find((c) => c.id === 'text-on-page')!;
+    expect(page.ratio).toEqual(flatEquivalent.ratio);
+    expect(page.passes).toBe(flatEquivalent.passes);
+  });
+
+  it('reports a bare var() in the image field as genuinely unmeasured', () => {
+    // Unlike the trailing-colour case above, CSS itself cannot resolve
+    // this without the author's own custom CSS defining the variable —
+    // there is a real image behind it or there is nothing, and this
+    // module has no way to tell which.
+    const checks = evaluateThemeContrast({
+      components: { page: { backgroundImage: 'var(--my-custom-bg)' } },
+    });
+    const page = checks.find((c) => c.id === 'text-on-page')!;
+    expect(page.ratio).toBeNull();
+    expect(page.passes).toBe(false);
+    expect(page.unparsed).toContain('var(--my-custom-bg)');
+  });
+});
+
 // A check that silently didn't run reads exactly like a check that
 // passed, and the place it surfaces is a page captioned "Theme colours
 // meet WCAG AA contrast ✓".
@@ -635,6 +860,26 @@ describe('the colour parser refuses what it cannot actually read', () => {
     const start = performance.now();
     expect(parseColor(value)).toBeNull();
     expect(performance.now() - start).toBeLessThan(150);
+  });
+
+  it('rejects an rgb() channel that is not a clean CSS number', () => {
+    // parseChannel used Number.parseFloat with no grammar check, so it
+    // read the leading digits and threw away everything after —
+    // `rgb(255,0,0junk)` parsed as channel 0 for a declaration the
+    // browser discards outright, the same shape of bug already fixed
+    // for alpha and hue.
+    expect(parseColor('rgb(255,0,0junk)')).toBeNull();
+    expect(parseColor('rgb(1e2,0,0)')).toEqual({ rgb: [100, 0, 0], alpha: 1 });
+    expect(parseColor('rgb(100%,0,0)')).toEqual({ rgb: [255, 0, 0], alpha: 1 });
+  });
+
+  it('rejects a second slash in the space + alpha syntax', () => {
+    // `args.split('/')` returns every segment; destructuring only the
+    // first two silently dropped anything past a second slash, so
+    // `rgb(0 0 0 / 0.5 / 0)` — invalid CSS the browser rejects outright
+    // — read as alpha 0.5 instead of failing.
+    expect(parseColor('rgb(0 0 0 / 0.5 / 0)')).toBeNull();
+    expect(parseColor('rgb(0 0 0 / 0.5)')).toEqual({ rgb: [0, 0, 0], alpha: 0.5 });
   });
 
   it('carries an unreadable alpha up into an unmeasured verdict', () => {

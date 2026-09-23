@@ -1,5 +1,6 @@
 import {
   AA_LARGE_TEXT,
+  AA_NON_TEXT,
   AA_NORMAL_TEXT,
   composite,
   contrastRatio,
@@ -150,6 +151,71 @@ const HEADER_BACKGROUND: Source[] = [
   { literal: 'transparent' },
 ];
 
+// styles.choice: `color: var(--wl-choiceButton-textColor, var(--wl-text, #eee))`
+// / `background: var(--wl-choiceButton-background, rgba(255,255,255,0.08))`.
+// Sits directly on the page (a sibling of the story card, not nested
+// in it), same pattern as HEADING_TEXT/HEADER_BACKGROUND above.
+const CHOICE_BUTTON_TEXT: Source[] = [
+  { component: 'choiceButton', prop: 'textColor' },
+  { variable: 'textColor' },
+];
+const CHOICE_BUTTON_BACKGROUND: Source[] = [
+  { component: 'choiceButton', prop: 'background' },
+  { literal: 'rgba(255,255,255,0.08)' },
+];
+
+// styles.instructionsCard: `var(--wl-instructionsCard-background, var(--wl-card-bg, ...))`
+// / `color: var(--wl-instructionsCard-textColor, var(--wl-text, inherit))`.
+// The pre-game screen's own card, directly on the page.
+const INSTRUCTIONS_CARD_TEXT: Source[] = [
+  { component: 'instructionsCard', prop: 'textColor' },
+  { variable: 'textColor' },
+];
+const INSTRUCTIONS_CARD_BACKGROUND: Source[] = [
+  { component: 'instructionsCard', prop: 'background' },
+  { variable: 'cardBackground' },
+];
+
+// styles.resumePicker: `background: var(--wl-resumePicker-background, rgba(78,205,196,0.08))`
+// / `color: var(--wl-resumePicker-textColor, var(--wl-text, inherit))`.
+// Rendered nested INSIDE the instructions card (App.tsx), not as a
+// sibling — the layer chain has to stack both, page → instructions
+// card → resume picker, or a translucent picker background measured
+// against the page alone would miss whatever the card underneath it
+// contributes.
+const RESUME_PICKER_TEXT: Source[] = [
+  { component: 'resumePicker', prop: 'textColor' },
+  { variable: 'textColor' },
+];
+const RESUME_PICKER_BACKGROUND: Source[] = [
+  { component: 'resumePicker', prop: 'background' },
+  { literal: 'rgba(78,205,196,0.08)' },
+];
+
+// styles.errorBanner: `background: var(--wl-errorBanner-background, rgba(255,107,107,0.15))`
+// / `color: var(--wl-errorBanner-textColor, #ff6b6b)`. A sibling of the
+// story card, not nested in it (App.tsx renders it after the card's
+// closing tag).
+const ERROR_BANNER_TEXT: Source[] = [
+  { component: 'errorBanner', prop: 'textColor' },
+  { literal: '#ff6b6b' },
+];
+const ERROR_BANNER_BACKGROUND: Source[] = [
+  { component: 'errorBanner', prop: 'background' },
+  { literal: 'rgba(255,107,107,0.15)' },
+];
+
+// index.css .wl-password-input:focus-visible: `outline: 2px solid
+// var(--wl-accent, #4ecdc4)`. Not theme-editable itself (a fixed
+// index.css rule, not a var() chain an author's Theme tab touches),
+// but the colour IT USES is — an accent chosen to match the page would
+// make the one focus indicator on the control gating the whole story
+// disappear, and nothing else in this module was checking that pair.
+// The ring sits on the password card's own fixed translucent wash,
+// itself over the page.
+const FOCUS_RING: Source[] = [{ variable: 'accentColor' }];
+const PASSWORD_CARD_BACKGROUND: Source[] = [{ literal: 'rgba(255,255,255,0.1)' }];
+
 /** Does this CSS value paint an image layer rather than a flat colour? */
 function isImageValue(value: string): boolean {
   return /(^|[\s,])(?:repeating-)?(?:linear|radial|conic)-gradient\(|url\(/i.test(value);
@@ -264,22 +330,84 @@ interface PageSurface {
   value: string;
   /** The opaque `background-color` painted underneath it. */
   beneath: string;
+  /**
+   * True when `value` cannot be trusted even though it happens to be
+   * syntactically parseable — e.g. a `background-image` value whose
+   * grammar this module cannot fully validate. Forces the caller to
+   * treat the pair as unmeasured rather than measuring the wrong
+   * thing with full confidence.
+   */
+  indeterminate?: boolean;
 }
 
-/** `none` on a colour prop means "no override", not a colour. */
-function override(theme: ThemeInput | undefined, prop: string): string | undefined {
-  const value = componentValue(theme, 'page', prop);
-  return isSet(value) && value.toLowerCase() !== 'none' ? value : undefined;
+/**
+ * Split a CSS value list on top-level commas only — one inside a
+ * function's parens (a gradient's colour stops, an rgba() alpha) is
+ * not a layer boundary. Paren-depth tracking, not a regex: the
+ * comma-separated grammar this reads is author-controlled and a
+ * backtracking split here would be the same class of bug the number
+ * grammars above were rewritten to avoid.
+ */
+function splitTopLevel(value: string, separator: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < value.length; i++) {
+    const ch = value[i];
+    if (ch === '(') depth++;
+    else if (ch === ')') depth = Math.max(0, depth - 1);
+    else if (ch === separator && depth === 0) {
+      out.push(value.slice(start, i));
+      start = i + 1;
+    }
+  }
+  out.push(value.slice(start));
+  return out;
+}
+
+/**
+ * The trailing flat colour of a multi-layer background value, if
+ * there is one — CSS only allows a plain colour on the LAST
+ * comma-separated layer. `linear-gradient(rgba(0,0,0,.2),
+ * rgba(0,0,0,.2)), #111111` paints that gradient over `#111`, not over
+ * the white canvas a single-layer value assumes.
+ *
+ * Returns null both for a single-layer value (nothing to find) and for
+ * a multi-layer value whose last segment is itself image-shaped
+ * (nothing IS painted underneath it — the canvas assumption is
+ * correct there), so callers only get a colour back when one is
+ * actually present to find.
+ */
+function trailingLayerColor(value: string): string | null {
+  const layers = splitTopLevel(value, ',');
+  if (layers.length < 2) return null;
+  const last = layers[layers.length - 1].trim();
+  return last && !isImageValue(last) ? last : null;
+}
+
+/** Does this value contain a `var()` reference this module cannot resolve? */
+function hasUnresolvedVar(value: string): boolean {
+  return /var\(/i.test(value);
 }
 
 function resolvePageSurface(theme: ThemeInput | undefined): PageSurface {
   // Read through `componentValue`, not `?.trim()` — see its docblock.
-  const colorOverride = override(theme, 'background');
-  // NOT through `override()`: on this field `none` is not "unset", it
-  // is the author switching the image layer off, and it has to reach
-  // the isImageValue test below to do that. renderThemeCss emits every
-  // non-empty prop verbatim, so `--wl-page-backgroundImage: none` is
-  // what the player really gets.
+  const colorRaw = componentValue(theme, 'page', 'background');
+  // `background: none` is valid CSS for the shorthand — `none` is an
+  // acceptable `<bg-image>` token on its own, so it clears
+  // background-image and leaves background-color at its initial
+  // `transparent`. That is a real, renderable state (the browser
+  // canvas shows through), not "no override": treating it as unset —
+  // what every other component prop's `none` means in this module —
+  // measured the dark global default against a page an author who
+  // wrote this never gets.
+  const colorCleared = isSet(colorRaw) && colorRaw.trim().toLowerCase() === 'none';
+  const colorOverride = isSet(colorRaw) && !colorCleared ? colorRaw.trim() : undefined;
+  // NOT the same treatment: on THIS field `none` is not "unset" either,
+  // it is the author switching the image layer off, and it has to
+  // reach the isImageValue test below to do that. renderThemeCss emits
+  // every non-empty prop verbatim, so `--wl-page-backgroundImage: none`
+  // is what the player really gets.
   const imageOverride = componentValue(theme, 'page', 'backgroundImage');
   const variable = isSet(theme?.variables?.pageBackground)
     ? theme.variables.pageBackground.trim()
@@ -293,8 +421,18 @@ function resolvePageSurface(theme: ThemeInput | undefined): PageSurface {
   // typed into it used to land in `beneath`, where parseColor can only
   // return null. The whole page then came back "couldn't measure this"
   // for a surface samplePageStops reads perfectly well.
-  const shorthand = colorOverride ?? variable;
-  const beneath = isImageValue(shorthand) ? '#ffffff' : shorthand;
+  const shorthand = colorCleared ? 'transparent' : (colorOverride ?? variable);
+
+  // The shorthand's OWN `background-color` sub-property. This is a
+  // separate concept from the image LAYER below: the full `background:`
+  // shorthand grammar allows a plain colour as the last comma-separated
+  // layer (that's what lets an author combine an image and a colour in
+  // one field), so the colour underneath everything comes from here
+  // regardless of what `background-image` later decides to paint on
+  // top of it.
+  const shorthandTrailingColor = trailingLayerColor(shorthand);
+  const backgroundColor =
+    shorthandTrailingColor ?? (isImageValue(shorthand) ? 'transparent' : shorthand);
 
   // `background-image: <value>`, declared after the shorthand, so it
   // decides the image layer outright. A value that is not an image is
@@ -305,7 +443,45 @@ function resolvePageSurface(theme: ThemeInput | undefined): PageSurface {
   // text sits on, while the player showed the background-color
   // underneath it.
   const imageDecl = isSet(imageOverride) ? imageOverride : variable;
-  return { value: isImageValue(imageDecl) ? imageDecl : beneath, beneath };
+  const hasImageLayer = isImageValue(imageDecl);
+  // Unlike the full shorthand, `background-image` alone has no colour
+  // sub-property — every comma-separated layer must itself be an
+  // image, or the WHOLE declaration is invalid at computed-value time.
+  // Per the custom-properties spec, an invalid declaration still wins
+  // its slot in the cascade; it just resolves to the property's
+  // initial value instead of its literal text — so this isn't merely
+  // unmeasurable, it is a background-image the browser genuinely
+  // renders as `none`, discarding whatever image layer the shorthand
+  // above implicitly carried. Same end state as the field being unset.
+  const imageTrailingColor = hasImageLayer ? trailingLayerColor(imageDecl) : null;
+  const imageDeclInvalid = imageTrailingColor !== null;
+
+  if (hasImageLayer && !imageDeclInvalid) {
+    // A real image sits on top of `backgroundColor` — two genuinely
+    // distinct layers, composited once each by evaluateThemeContrast's
+    // stops-over-beneath pipeline.
+    return { value: imageDecl, beneath: backgroundColor };
+  }
+
+  // A bare `var(...)` can resolve to a real image through the author's
+  // own custom CSS — this module has no way to know, unlike the case
+  // above, which CSS itself resolves to `none` regardless of anything
+  // external. Neither "an image we can sample" nor "not an image, fall
+  // through to the flat colour" is true here, so it is reported as
+  // genuinely indeterminate rather than guessed either way.
+  if (!hasImageLayer && !imageDeclInvalid && hasUnresolvedVar(imageDecl)) {
+    return { value: imageDecl, beneath: backgroundColor, indeterminate: true };
+  }
+
+  // No image layer (including the invalid-image-declaration case
+  // above): backgroundColor is the only thing painted, straight onto
+  // the canvas. Reporting it as ALSO `beneath` — what this used to do —
+  // told the caller's stops-over-beneath pipeline there were two layers
+  // of the same colour, double-compositing a translucent value: white
+  // text on rgba(0,0,0,.5) measured against roughly #404040 (composited
+  // twice) instead of the ~#808080 the browser actually paints
+  // (composited once).
+  return { value: backgroundColor, beneath: '#ffffff' };
 }
 
 // The surfaces text actually lands on in the player. Headings are
@@ -353,6 +529,44 @@ const PAIRS: PairSpec[] = [
     layers: [[{ component: 'startButton', prop: 'background' }, { variable: 'accentColor' }]],
     required: AA_NORMAL_TEXT,
   },
+  {
+    id: 'text-on-choice-button',
+    label: 'Choice button label',
+    foreground: CHOICE_BUTTON_TEXT,
+    layers: [CHOICE_BUTTON_BACKGROUND],
+    required: AA_NORMAL_TEXT,
+  },
+  {
+    id: 'text-on-instructions-card',
+    label: 'Text on the instructions card',
+    foreground: INSTRUCTIONS_CARD_TEXT,
+    layers: [INSTRUCTIONS_CARD_BACKGROUND],
+    required: AA_NORMAL_TEXT,
+  },
+  {
+    id: 'text-on-resume-picker',
+    label: 'Text on a resume-from-save row',
+    foreground: RESUME_PICKER_TEXT,
+    layers: [INSTRUCTIONS_CARD_BACKGROUND, RESUME_PICKER_BACKGROUND],
+    required: AA_NORMAL_TEXT,
+  },
+  {
+    id: 'text-on-error-banner',
+    label: 'Error banner text',
+    foreground: ERROR_BANNER_TEXT,
+    layers: [ERROR_BANNER_BACKGROUND],
+    required: AA_NORMAL_TEXT,
+  },
+  {
+    // Non-text: this is the visible boundary of a focus indicator, not
+    // a body of text, so it's held to the graphical/UI-component floor
+    // (WCAG 1.4.11) rather than the text ratios above.
+    id: 'password-focus-ring',
+    label: 'Password field focus ring',
+    foreground: FOCUS_RING,
+    layers: [PASSWORD_CARD_BACKGROUND],
+    required: AA_NON_TEXT,
+  },
 ];
 
 function isSet(value: string | undefined): value is string {
@@ -368,15 +582,65 @@ function resolveSource(theme: ThemeInput | undefined, chain: Source[]): string |
     if ('literal' in source) return source.literal;
     if ('component' in source) {
       const value = theme?.components?.[source.component]?.[source.prop];
-      // `none` means "no override", not "a value we couldn't read", so
-      // it falls through to whatever is underneath.
-      if (isSet(value) && value.trim().toLowerCase() !== 'none') return value.trim();
-      continue;
+      if (!isSet(value)) continue;
+      // Earlier code treated `none` here the same as unset ("no
+      // override, fall through to whatever is underneath"), which is
+      // only true for the ONE prop with dedicated background-layer
+      // modelling above (page.background). renderThemeCss forwards
+      // `none` verbatim for every other prop too, and what it means
+      // once rendered depends on the prop: valid-and-transparent for a
+      // background, invalid-at-computed-value-time (falls back to
+      // inherited/initial, not to this chain's next link) for a text
+      // colour — two different outcomes this generic resolver has no
+      // way to distinguish. Returning it here rather than special-
+      // casing it lets it reach parseColor, which correctly fails on
+      // it, so the pair is reported as unmeasured instead of silently
+      // measuring whatever this chain's NEXT source happened to be —
+      // which was never what the player actually renders either way.
+      return value.trim();
     }
     const value = theme?.variables?.[source.variable];
     return isSet(value) ? value.trim() : PLAYER_THEME_DEFAULTS[source.variable];
   }
   return undefined;
+}
+
+// Interior samples per stop-to-stop segment. A CSS gradient interpolates
+// continuously, and the worst-contrast point can sit anywhere along
+// that interpolation, not only at a stop: black->white with mid-grey
+// text clears AA at both ends and crosses near 1:1 somewhere in the
+// middle. Sampling only the stops — what this used to do — missed
+// exactly that case. 8 is a fixed, cheap-enough count for text-sized
+// palettes (a handful of stops); real CSS stop *positions* aren't
+// modelled here either (see samplePageStops), so even spacing between
+// extracted stops is already the model's working assumption and this
+// keeps that assumption rather than inventing new precision the rest
+// of the module doesn't have.
+const GRADIENT_SAMPLES_PER_SEGMENT = 8;
+
+function interpolateRgba(a: Rgba, b: Rgba, t: number): Rgba {
+  return {
+    rgb: [0, 1, 2].map((i) => a.rgb[i] + (b.rgb[i] - a.rgb[i]) * t) as Rgb,
+    alpha: a.alpha + (b.alpha - a.alpha) * t,
+  };
+}
+
+/**
+ * Insert interior samples between every adjacent pair of extracted
+ * gradient stops. A single-stop (flat colour) list passes through
+ * unchanged — there is nothing to interpolate.
+ */
+function interpolateGradientStops(stops: Rgba[]): Rgba[] {
+  if (stops.length < 2) return stops;
+  const out: Rgba[] = [];
+  for (let i = 0; i < stops.length - 1; i++) {
+    out.push(stops[i]);
+    for (let step = 1; step < GRADIENT_SAMPLES_PER_SEGMENT; step++) {
+      out.push(interpolateRgba(stops[i], stops[i + 1], step / GRADIENT_SAMPLES_PER_SEGMENT));
+    }
+  }
+  out.push(stops[stops.length - 1]);
+  return out;
 }
 
 /**
@@ -394,11 +658,18 @@ export function evaluateThemeContrast(theme: ThemeInput | undefined): ThemeContr
   // The page, flattened once: its visible layer composited over the
   // background-color painted beneath it, over the browser canvas.
   const page = resolvePageSurface(theme);
-  const stops = samplePageStops(page.value);
+  // `indeterminate` overrides whatever samplePageStops would say:
+  // resolvePageSurface sets it when `page.value` is syntactically
+  // parseable but structurally untrustworthy (a background-image value
+  // with a trailing colour the grammar does not allow there) — a case
+  // the purely syntactic stop-extraction below cannot itself detect.
+  const stops = page.indeterminate ? null : samplePageStops(page.value);
   const beneath = parseColor(page.beneath);
   const pageBases: Rgb[] | null =
     stops && beneath
-      ? stops.map((stop) => composite(stop.rgb, flatten([beneath], [255, 255, 255]), stop.alpha))
+      ? interpolateGradientStops(stops).map((stop) =>
+          composite(stop.rgb, flatten([beneath], [255, 255, 255]), stop.alpha),
+        )
       : null;
   // Name whichever half we couldn't read, so the author knows which
   // field to change.

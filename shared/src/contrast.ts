@@ -47,11 +47,29 @@ const NAMED: Record<string, Rgb> = {
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
 
+// Anchored CSS-number grammar, shared with parseAlpha and
+// parseHslComponent below. Number.parseFloat alone reads a leading
+// run of digits and silently drops the rest of the string —
+// `rgb(255,0,0junk)` parsed as channel 0 instead of being rejected,
+// so the checker measured a colour the browser never painted (the
+// whole declaration is invalid and discarded) and could hand back a
+// confident, wrong verdict for it.
+const CSS_NUMBER_TOKEN = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
+// Same token, with an optional angle unit — built once at module load
+// rather than per call, since parseHue runs once per gradient stop on
+// an author-controlled string.
+const CSS_HUE_TOKEN = new RegExp(
+  `^(${CSS_NUMBER_TOKEN.source.slice(1, -1)})(deg|rad|grad|turn)?$`,
+  'i',
+);
+
 function parseChannel(raw: string): number | null {
   const t = raw.trim();
   if (!t) return null;
   const pct = t.endsWith('%');
-  const n = Number.parseFloat(pct ? t.slice(0, -1) : t);
+  const body = pct ? t.slice(0, -1) : t;
+  if (!CSS_NUMBER_TOKEN.test(body)) return null;
+  const n = Number.parseFloat(body);
   if (!Number.isFinite(n)) return null;
   return clamp(pct ? (n / 100) * 255 : n, 0, 255);
 }
@@ -83,7 +101,7 @@ function parseAlpha(raw: string | undefined): number | null {
   if (!t) return null;
   const pct = t.endsWith('%');
   const body = pct ? t.slice(0, -1) : t;
-  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(body.trim())) return null;
+  if (!CSS_NUMBER_TOKEN.test(body.trim())) return null;
   const n = Number.parseFloat(body);
   if (!Number.isFinite(n)) return null;
   return clamp(pct ? n / 100 : n, 0, 1);
@@ -99,7 +117,7 @@ function parseAlpha(raw: string | undefined): number | null {
  * attached to it.
  */
 function parseHue(raw: string): number | null {
-  const m = /^([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?)(deg|rad|grad|turn)?$/i.exec(raw.trim());
+  const m = CSS_HUE_TOKEN.exec(raw.trim());
   if (!m) return null;
   const n = Number.parseFloat(m[1]);
   if (!Number.isFinite(n)) return null;
@@ -123,7 +141,7 @@ function parseHue(raw: string): number | null {
 function parseHslComponent(raw: string): number | null {
   const t = raw.trim();
   const body = t.endsWith('%') ? t.slice(0, -1) : t;
-  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(body)) return null;
+  if (!CSS_NUMBER_TOKEN.test(body)) return null;
   const n = Number.parseFloat(body);
   return Number.isFinite(n) ? n : null;
 }
@@ -194,15 +212,25 @@ export function parseColor(input: string): Rgba | null {
  * space + `/` syntax.
  */
 function splitColorArgs(args: string): { values: [string, string, string]; alpha: number } | null {
-  const [head, alphaPart] = args.split('/');
+  // CSS allows at most one `/` in this syntax (`rgb(0 0 0 / 50%)`).
+  // `args.split('/')` doesn't enforce that: destructuring only the
+  // first two elements of the result silently drops everything after
+  // a second slash, so `rgb(0 0 0 / 0.5 / 0)` — which the browser
+  // rejects outright — read as alpha 0.5 here instead of failing.
+  const segments = args.split('/');
+  if (segments.length > 2) return null;
+  const [head, alphaPart] = segments;
   const parts = head
     .split(/[,\s]+/)
     .map((p) => p.trim())
     .filter(Boolean);
   if (parts.length !== 3 && parts.length !== 4) return null;
-  // An alpha that was written but can't be read fails the whole
-  // colour. The browser discards the declaration outright, so guessing
-  // 1 here would measure a surface that is never painted.
+  // Comma syntax puts alpha as a 4th comma-separated value
+  // (`rgba(0,0,0,0.5)`); slash syntax puts it after `/`. The two are
+  // mutually exclusive in real CSS — mixing them (`rgb(0,0,0/0.5)`)
+  // is invalid — but this function is a lenient value-extractor, not
+  // a full grammar, so it only refuses to silently pick one arbitrarily
+  // when both are absent and there's nothing to guess from.
   const alpha = parseAlpha(alphaPart ?? parts[3]);
   if (alpha === null) return null;
   return { values: parts.slice(0, 3) as [string, string, string], alpha };

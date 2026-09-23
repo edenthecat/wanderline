@@ -2007,10 +2007,13 @@ details[open] > .audio-section-summary {
   white-space: nowrap;
 }
 
-/* On-path edges pop in front; dim edges fade back. */
+/* On-path edges pop in front; dim edges fade back. #b45309 matches the
+   node border fix above (5.02:1 on white) — the edge stroke is the
+   same WCAG 1.4.11 graphical-boundary case and was left on the old
+   #f59e0b (2.15:1) when the node border was fixed. */
 .graph-edge-on-path .react-flow__edge-path,
 .react-flow__edge.graph-edge-on-path .react-flow__edge-path {
-  stroke: #f59e0b !important;
+  stroke: #b45309 !important;
   stroke-width: 2.4 !important;
 }
 .graph-edge-dim .react-flow__edge-path,
@@ -2434,7 +2437,9 @@ details[open] > .audio-section-summary {
   padding: 10px 12px;
   border-radius: 6px;
   background: #ffffff;
-  border-left: 4px solid #f59e0b;
+  /* Same #f59e0b/white pairing as the graph's on-path edge (2.15:1) —
+     fixed to the same #b45309 (5.02:1) for the same WCAG 1.4.11 reason. */
+  border-left: 4px solid #b45309;
 }
 
 .validation-item-error {

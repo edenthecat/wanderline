@@ -463,6 +463,21 @@ describe('build-service unit', () => {
                 // is the point.
                 headingColor: '#111827',
                 chromeColor: '#f1f5f9',
+                // The error banner and the password focus ring are
+                // fixed/accent-driven rather than following textColor,
+                // so a page this light needs them addressed too —
+                // otherwise this "readable" palette isn't, which is
+                // exactly the class of gap the newly-added checks for
+                // those two surfaces exist to catch.
+                accentColor: '#0f766e',
+              },
+              components: {
+                errorBanner: { textColor: '#b91c1c', background: 'rgba(220,38,38,0.12)' },
+                // The default accent chosen above is dark enough for
+                // the focus ring to read against the password card's
+                // near-white wash, which makes the hardcoded #1a1a2e
+                // start-button label too dark to read on it in turn.
+                startButton: { textColor: '#ffffff' },
               },
             },
           },
@@ -572,8 +587,35 @@ describe('build-service unit', () => {
         };
         const html = renderSmokeHtml(story);
         expect(html).toMatch(/Theme colours that could not be measured/);
-        // The pass/fail check still only counts measured failures.
-        expect(html).toMatch(/record\('Theme colours meet WCAG AA contrast', \(contrast\.problems/);
+        // The pass/fail check reports this as indeterminate, not a
+        // silent pass: record() gets contrastIndeterminate, computed
+        // from the exact same problems/unknown split that decides
+        // whether the "could not be measured" block above renders, so
+        // the tick and the advisory can never disagree with each other.
+        expect(html).toMatch(
+          /record\('Theme colours meet WCAG AA contrast', contrastProblems, contrastIndeterminate\)/,
+        );
+      });
+
+      it('does not count an all-unmeasurable contrast check as passing', () => {
+        // Direct regression coverage for the false green tick: when
+        // every colour on the page went unmeasured, contrastProblems
+        // is empty (nothing FAILED) but contrastIndeterminate must
+        // still be true (nothing was CONFIRMED either), or the summary
+        // counts a check that never ran toward "N / M checks passing".
+        const story = {
+          ...sampleStory,
+          settings: { theme: { components: { page: { backgroundImage: 'url(bg.jpg)' } } } },
+        };
+        const html = renderSmokeHtml(story);
+        expect(html).toMatch(
+          /contrastIndeterminate = contrastProblems\.length === 0 && contrastUnknownList\.length > 0/,
+        );
+        // Never counted toward the denominator when indeterminate:
+        // ratedCount only increments outside the `if (indeterminate)`
+        // branch of record().
+        expect(html).toMatch(/ratedCount\+\+/);
+        expect(html).toMatch(/passCount \+ ' \/ ' \+ ratedCount \+ ' checks passing<\/strong>'/);
       });
 
       // `unparsed` echoes author-controlled theme values verbatim, and

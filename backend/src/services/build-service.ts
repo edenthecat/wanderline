@@ -960,10 +960,19 @@ export function renderSmokeHtml(storyData: unknown, language?: string): string {
     var SYNTHETIC = { END: true, DONE: true };
     var checks = [];
     var passCount = 0;
-    function record(label, problems) {
+    // Checks that never ran count toward neither passCount nor
+    // ratedCount, so "N / M checks passing" only ever counts checks
+    // that actually had an answer.
+    var ratedCount = 0;
+    function record(label, problems, indeterminate) {
+      if (indeterminate) {
+        checks.push({ label: label, ok: false, state: 'unknown', problems: problems });
+        return;
+      }
       var ok = problems.length === 0;
+      ratedCount++;
       if (ok) passCount++;
-      checks.push({ label: label, ok: ok, problems: problems });
+      checks.push({ label: label, ok: ok, state: ok ? 'pass' : 'fail', problems: problems });
     }
     function escapeText(s) {
       return String(s).replace(/[<>&]/g, function (ch) {
@@ -1011,7 +1020,20 @@ export function renderSmokeHtml(storyData: unknown, language?: string): string {
     // 2b) Theme readability, computed at build time from the same
     // rules the editor's Theme tab warns with.
     var contrast = window.__WANDERLINE_CONTRAST__ || { problems: [], unknown: [] };
-    record('Theme colours meet WCAG AA contrast', (contrast.problems || []).slice());
+    var contrastProblems = (contrast.problems || []).slice();
+    var contrastUnknownList = contrast.unknown || [];
+    // No measured failures but something went unmeasured: this is not
+    // a pass, it is a check that could not run. Recording it the same
+    // way as every other check made an all-unmeasured palette show a
+    // green 'Theme colours meet WCAG AA contrast' tick and count toward
+    // 'N / M checks passing' — an affirmative pass for a check that
+    // never happened, on the page authors are told to open before
+    // publishing. When there ARE measured failures alongside unmeasured
+    // colours, this stays a real fail: known problems don't get
+    // softened into 'unknown' just because something else was also
+    // unreadable.
+    var contrastIndeterminate = contrastProblems.length === 0 && contrastUnknownList.length > 0;
+    record('Theme colours meet WCAG AA contrast', contrastProblems, contrastIndeterminate);
 
     // 3) Audio reachability — fire HEAD requests in parallel and wait.
     var audioRefs = [];
@@ -1041,7 +1063,10 @@ export function renderSmokeHtml(storyData: unknown, language?: string): string {
 
     function render() {
       var sum = document.getElementById('summary');
-      sum.innerHTML = '<strong>' + passCount + ' / ' + checks.length + ' checks passing</strong>' +
+      // Denominator is ratedCount, not checks.length: a check that
+      // never ran (state 'unknown') is neither a pass nor a fail, so
+      // it does not belong in "N / M checks passing" on either side.
+      sum.innerHTML = '<strong>' + passCount + ' / ' + ratedCount + ' checks passing</strong>' +
         '<div>' + nodeIds.length + ' nodes · ' + audioRefs.length + ' audio refs</div>';
       var out = document.getElementById('results');
       out.innerHTML = checks.map(function (c) {
@@ -1052,10 +1077,16 @@ export function renderSmokeHtml(storyData: unknown, language?: string): string {
           : '';
         // The state is spelled out for assistive tech; the glyph is
         // decorative and hidden from it, so nothing reads "check mark".
-        var state = c.ok
+        var state = c.state === 'pass'
           ? '<span class="visually-hidden">Passed: </span><span aria-hidden="true">✓ </span>'
-          : '<span class="visually-hidden">Failed: </span><span aria-hidden="true">✗ </span>';
-        return '<div class="check ' + (c.ok ? 'pass' : 'fail') + '">' +
+          : c.state === 'fail'
+            ? '<span class="visually-hidden">Failed: </span><span aria-hidden="true">✗ </span>'
+            : '<span class="visually-hidden">Not checked: </span><span aria-hidden="true">! </span>';
+        // 'unknown' reuses the same amber .note treatment as the
+        // advisory blocks appended below, rather than a fourth colour —
+        // both mean "not a verdict".
+        var cssState = c.state === 'unknown' ? 'note' : c.state;
+        return '<div class="check ' + cssState + '">' +
           '<h2>' + state + c.label + '</h2>' + problemHtml + '</div>';
       }).join('');
       // Colours nobody could measure are said out loud rather than
@@ -1076,9 +1107,14 @@ export function renderSmokeHtml(storyData: unknown, language?: string): string {
           '<p class="note-help">Use a hex, rgb() or hsl() value if you want these checked.</p></div>';
       }
       // Also log to console so headless smoke runners can capture it.
+      // total mirrors the visible summary's denominator: a check that
+      // never ran does not belong in "how many of these passed" either
+      // way, for a script parsing this the same as for someone reading
+      // the page.
       console.log('[wanderline-smoke]', JSON.stringify({
-        passing: passCount, total: checks.length,
-        problems: checks.filter(function (c) { return !c.ok; }),
+        passing: passCount, total: ratedCount,
+        problems: checks.filter(function (c) { return c.state === 'fail'; }),
+        notChecked: checks.filter(function (c) { return c.state === 'unknown'; }),
         unmeasured: unknown
       }));
     }

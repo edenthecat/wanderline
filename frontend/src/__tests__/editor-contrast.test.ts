@@ -55,6 +55,18 @@ function rgb(value: string): Rgb {
   return parsed!.rgb;
 }
 
+/**
+ * Pull the colour out of a value that isn't a bare colour on its own —
+ * a `border-left: 4px solid #b45309` shorthand, or a value carrying a
+ * trailing `!important`. rgb() expects the WHOLE string to parse as
+ * one colour and fails on either.
+ */
+function colorIn(value: string): Rgb {
+  const [first] = extractColors(value);
+  expect(first, `expected a colour in "${value}"`).toBeDefined();
+  return first.rgb;
+}
+
 const SURFACE = rgb('#ffffff'); // --color-surface
 const PAGE = rgb('#f9fafb'); // --color-bg
 const NODE_TITLE = rgb('#0f172a'); // .graph-node-card-title
@@ -217,6 +229,24 @@ describe('graph overlay borders carry enough contrast to mean something', () => 
     const color = rgb(declaration('.graph-node-path-chip', 'color')!);
     const background = rgb(declaration('.graph-node-path-chip', 'background')!);
     expect(contrastRatio(color, background)).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
+  });
+
+  // The node border above was fixed from #f59e0b (2.15:1) to #b45309
+  // (5.02:1); the edge stroke carrying the SAME "this is on the path"
+  // meaning was left on the old value. Same WCAG 1.4.11 floor applies —
+  // a route drawn in a colour this close to the canvas isn't really
+  // drawn at all.
+  it('the on-path edge stroke clears the non-text minimum', () => {
+    const stroke = colorIn(declaration('.graph-edge-on-path .react-flow__edge-path', 'stroke')!);
+    expect(contrastRatio(stroke, PAGE)).toBeGreaterThanOrEqual(AA_NON_TEXT);
+  });
+});
+
+describe('validation list items carry a real boundary colour', () => {
+  it('the default (warning) item border clears the non-text minimum', () => {
+    const border = colorIn(declaration('.validation-item', 'border-left')!);
+    const background = rgb(declaration('.validation-item', 'background')!);
+    expect(contrastRatio(border, background)).toBeGreaterThanOrEqual(AA_NON_TEXT);
   });
 });
 
