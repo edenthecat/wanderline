@@ -135,6 +135,61 @@ describe('normalizeStoryGraph', () => {
     expect(normalizeStoryGraph(null)).toBeNull();
   });
 
+  // A project uploaded, or edited, in a way that left a null entry in
+  // the stored graph — the backend's own rename cascade and the
+  // editor's collab merge path have both been known to produce one.
+  // This file used to preserve it on the theory that every consumer
+  // tolerates a null node; they don't. StoryTab's childrenByParent
+  // reads `n.parent` over every node with no guard, and GraphTab's
+  // buildLayout reads `node.choices` the same way — either one throws
+  // outright on a null entry, turning "one node is broken" into "this
+  // project's editor won't open at all".
+  describe('a null entry in the stored graph', () => {
+    it('is dropped rather than preserved', () => {
+      const g = graph({
+        inbox: node('inbox', { choices: [{ text: 'go', target: 'ghost' }] }),
+        ghost: null,
+      });
+      const out = normalizeStoryGraph(g);
+      expect(Object.prototype.hasOwnProperty.call(out.nodes, 'ghost')).toBe(false);
+      expect(Object.values(out.nodes).every((n) => n !== null)).toBe(true);
+    });
+
+    it('rebuilds the graph even when dropping the null entry is the only change', () => {
+      // The `if (!changed) return graph;` fast path has to notice this
+      // case specifically — nothing else about the graph needed fixing.
+      const g = graph({
+        inbox: node('inbox', { divert: 'END' }),
+        ghost: null,
+      });
+      const out = normalizeStoryGraph(g);
+      expect(out).not.toBe(g);
+      expect(Object.prototype.hasOwnProperty.call(out.nodes, 'ghost')).toBe(false);
+    });
+
+    it('leaves a target that pointed at the dropped node as the same broken-link string', () => {
+      // Not rewritten to something else, and not crashing either — it
+      // becomes exactly the "genuinely broken link" case this file's
+      // own target resolution already surfaces as "(missing)" for a
+      // link that never named anything at all.
+      const g = graph({
+        inbox: node('inbox', { choices: [{ text: 'go', target: 'ghost' }] }),
+        ghost: null,
+      });
+      const out = normalizeStoryGraph(g);
+      expect(out.nodes['inbox'].choices[0].target).toBe('ghost');
+    });
+
+    it('leaves an unrelated valid node untouched', () => {
+      const g = graph({
+        inbox: node('inbox', { divert: 'END' }),
+        ghost: null,
+      });
+      const out = normalizeStoryGraph(g);
+      expect(out.nodes['inbox']).toBe(g.nodes['inbox']);
+    });
+  });
+
   it('leaves Twee graphs alone — no knot scoping there', () => {
     // `Hall.Door` / `Hall.Key` are ordinary Twee passage names, and
     // `[[Key]]` is a genuinely broken link the parser reports as an
@@ -149,6 +204,33 @@ describe('normalizeStoryGraph', () => {
     expect(normalizeStoryGraph(g, 'twee')).toBe(g);
     // Same graph read as Ink would qualify — that's the difference.
     expect(normalizeStoryGraph(g, 'ink').nodes['Hall.Door'].choices[0].target).toBe('Hall.Key');
+  });
+
+  it("rewrites a node's own id to the key it is filed under", () => {
+    // Every lookup in the app is `nodes[id]`, so the record key is the
+    // real identity; a stale `node.id` shows a passage in one tab that
+    // the other can't find. The backend's rename cascade only rewrites
+    // a stitch's own id when it already matched its key.
+    const g = normalizeStoryGraph(
+      graph({ start: node('start'), 'start.two': node('stale_id', { type: 'stitch' }) }, 'start'),
+      'ink',
+    );
+    expect(g.nodes['start.two'].id).toBe('start.two');
+    expect(g.nodes.start.id).toBe('start');
+  });
+
+  it('repairs node ids on Twee graphs too, where target scoping does not apply', () => {
+    const g = graph(
+      {
+        'Hall.Door': node('stale', { choices: [{ text: 'k', target: 'Key' }] }),
+        'Hall.Key': node('Hall.Key', { divert: 'END' }),
+      },
+      'Hall.Door',
+    );
+    const out = normalizeStoryGraph(g, 'twee');
+    expect(out.nodes['Hall.Door'].id).toBe('Hall.Door');
+    // ...and the broken bare target is still left alone.
+    expect(out.nodes['Hall.Door'].choices[0].target).toBe('Key');
   });
 
   it('keeps a node named __proto__', () => {
