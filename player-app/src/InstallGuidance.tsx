@@ -11,6 +11,12 @@
 // standalone window keeps audio alive across screen lock on more
 // devices, and it's the only context where the service worker's
 // offline cache is reliably retained.
+//
+// None of that applies on a desktop browser. There's no screen to
+// lock, and a desktop listener is overwhelmingly likely to be on a
+// stable connection that doesn't need an offline cache to finish a
+// story. Suggesting an install there is just friction in front of a
+// benefit that isn't there, so this only ever guides mobile.
 
 import { useEffect, useState } from 'react';
 
@@ -81,9 +87,10 @@ export default function InstallGuidance({ hasNativePrompt }: Props) {
     }
   }, []);
 
-  if (hasNativePrompt || isStandalone() || dismissed) return null;
-
   const platform = detectPlatform(typeof navigator === 'undefined' ? '' : navigator.userAgent);
+
+  if (hasNativePrompt || isStandalone() || dismissed || platform === 'desktop') return null;
+
   const { steps, note } = INSTRUCTIONS[platform];
 
   const dismiss = () => {

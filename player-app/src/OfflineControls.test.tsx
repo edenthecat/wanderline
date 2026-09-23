@@ -1,5 +1,5 @@
 import { render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import OfflineControls from './OfflineControls';
 import type { OfflineSupport } from './useOfflineSupport';
 
@@ -16,6 +16,21 @@ function support(overrides: Partial<OfflineSupport> = {}): OfflineSupport {
     showInstallPrompt: vi.fn(async () => {}),
     ...overrides,
   };
+}
+
+function setUserAgent(ua: string) {
+  Object.defineProperty(navigator, 'userAgent', { value: ua, configurable: true });
+}
+
+const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/120 Mobile';
+const MAC = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120';
+
+/** BeforeInstallPromptEvent isn't in lib.dom; a minimal stub is enough here. */
+function fakeInstallPrompt(): OfflineSupport['installPrompt'] {
+  return {
+    prompt: vi.fn(async () => {}),
+    userChoice: Promise.resolve({ outcome: 'accepted' as const }),
+  } as unknown as OfflineSupport['installPrompt'];
 }
 
 const URLS = ['./audio/a.mp3', './audio/b.mp3'];
@@ -116,5 +131,36 @@ describe('OfflineControls — offline readiness', () => {
     );
     expect(screen.getByText(/isn’t available for this story/)).toBeTruthy();
     expect(screen.queryByText(/Retry download/)).toBeNull();
+  });
+});
+
+describe('the install prompt is mobile-only', () => {
+  const originalUA = navigator.userAgent;
+  afterEach(() => setUserAgent(originalUA));
+
+  // `beforeinstallprompt` fires on desktop Chrome/Edge same as mobile,
+  // but a desktop listener has no real use for installing — see
+  // InstallGuidance.tsx for why. The button should stay hidden there
+  // even though the browser handed us a real prompt to show.
+  it('does not show "Add to home screen" on desktop', () => {
+    setUserAgent(MAC);
+    render(
+      <OfflineControls
+        support={support({ installPrompt: fakeInstallPrompt(), swReady: false })}
+        audioUrls={[]}
+      />,
+    );
+    expect(screen.queryByText('Add to home screen')).toBeNull();
+  });
+
+  it('shows "Add to home screen" on mobile when the browser offers one', () => {
+    setUserAgent(ANDROID);
+    render(
+      <OfflineControls
+        support={support({ installPrompt: fakeInstallPrompt(), swReady: false })}
+        audioUrls={[]}
+      />,
+    );
+    expect(screen.getByText('Add to home screen')).toBeTruthy();
   });
 });
