@@ -8,6 +8,16 @@
 import { useEffect, useRef, useState } from 'react';
 import { fetchProjectSettings, updateProjectSettings, type ProjectSettings } from '../api/client';
 
+// How long a same-key save waits for the one ahead of it before giving up
+// on the queue and sending anyway. Chaining same-key saves (see
+// runSerialized) fixes them arriving out of order, but it also means a
+// predecessor that never settles — a dropped connection, a stalled proxy
+// — would otherwise wedge every later save of that key behind it forever,
+// silently: nothing rejects, so no error surfaces and the control just
+// stops saving. This bounds that wait; on a normal request it never
+// matters, since requests settle in milliseconds.
+const STUCK_SAVE_TIMEOUT_MS = 15000;
+
 export interface UseProjectSettingsResult {
   settings: ProjectSettings | null;
   loading: boolean;
@@ -137,7 +147,9 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
   /**
    * Run a save for `key` only once the save already in flight for that
    * key has finished, so two PATCHes for one key can't arrive at the
-   * endpoint in the opposite order to the one they were sent in.
+   * endpoint in the opposite order to the one they were sent in — unless
+   * the one ahead of it is stuck, past STUCK_SAVE_TIMEOUT_MS, in which
+   * case this one stops waiting and goes anyway.
    *
    * `body` is expected to handle its own failures; a predecessor that
    * rejects anyway is swallowed here rather than poisoning the chain for
@@ -147,7 +159,15 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     const inFlight = inFlightRef.current;
     const previous = inFlight.get(key);
     const run = (async () => {
-      if (previous) await previous.catch(() => {});
+      if (previous) {
+        // Race rather than a bare await: a predecessor stuck past the
+        // timeout is given up on, and this save proceeds without it
+        // rather than waiting forever. See STUCK_SAVE_TIMEOUT_MS.
+        await Promise.race([
+          previous.catch(() => {}),
+          new Promise<void>((resolve) => setTimeout(resolve, STUCK_SAVE_TIMEOUT_MS)),
+        ]);
+      }
       await body();
     })();
     inFlight.set(key, run);
@@ -174,10 +194,13 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     const name = key as string;
     const generation = nextGeneration(name);
     await runSerialized(name, async () => {
-      // Queueing may have taken long enough for another change to this
-      // key to supersede us. Sending a value nobody is looking at any
-      // more would only overwrite the newer one.
-      if (!isCurrentGeneration(name, generation)) return;
+      // Always send, even if queueing let a newer change to this key
+      // take over first. `next` is a complete value for a scalar key,
+      // but for a nested-merge key like choiceIndicatorAudio it's a
+      // *partial* patch — one dropdown's worth — that the newer save
+      // knows nothing about. Skipping it here would silently drop that
+      // sub-field rather than superseding it: only the response is
+      // superseded below, not the request.
       try {
         const { settings: updated } = await updateProjectSettings(projectId, {
           [key]: next,
@@ -238,12 +261,15 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
   ): Promise<void> {
     const name = key as string;
     await runSerialized(name, async () => {
-      if (!isCurrentGeneration(name, generation)) return;
+      // Same reasoning as updateOne: always send. Only skip applying
+      // whatever comes back, once it's known whether this is still the
+      // save the user is looking at.
       try {
         const { settings: updated } = await updateProjectSettings(projectId, {
           [key]: next,
         });
         if (!isCurrentGeneration(name, generation)) return;
+        setError(null);
         applyServerValue(key, updated);
       } catch (err) {
         if (!isCurrentGeneration(name, generation)) return;

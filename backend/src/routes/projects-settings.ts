@@ -65,6 +65,16 @@ const NESTED_MERGE_KEYS = new Set([
 // The editor's own controls can't produce a bad value here, but this
 // endpoint is the contract: a script, a migration or a future feature
 // patching settings directly goes through the same door.
+// setTimeout takes a signed 32-bit millisecond count; a delay above this
+// clamps to 1ms internally in Node/browsers and effectively fires right
+// away instead of waiting longer. Both readers of choiceAudioDelayMs
+// (player-app/src/App.tsx) drive it through setTimeout, so a value past
+// this point wouldn't lengthen the pause — it would silently erase it,
+// the opposite of what a project storing such a value intends. This is
+// the actual limit the readers share, not a product opinion about pacing
+// — see the "no ceiling" note below.
+const MAX_SET_TIMEOUT_DELAY_MS = 2_147_483_647;
+
 const VALUE_GUARDS = new Map<string, (value: unknown) => unknown>([
   [
     // Milliseconds of silence before a choice option's audio starts.
@@ -74,9 +84,16 @@ const VALUE_GUARDS = new Map<string, (value: unknown) => unknown>([
     // the number printed beside it disagreeing. A non-number is worse:
     // the player's delay would resolve immediately and the editor would
     // print "NaNs". Enforced here so neither reader has to guess.
+    //
+    // No *product* ceiling on purpose — the player just waits this long,
+    // so a pacing opinion belongs to the author, not this endpoint — but
+    // it is still capped at MAX_SET_TIMEOUT_DELAY_MS, since past that the
+    // readers' own timer mechanism can't represent the value at all.
     'choiceAudioDelayMs',
     (value) =>
-      typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : undefined,
+      typeof value === 'number' && Number.isFinite(value)
+        ? Math.min(Math.max(0, value), MAX_SET_TIMEOUT_DELAY_MS)
+        : undefined,
   ],
 ]);
 

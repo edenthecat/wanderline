@@ -93,6 +93,18 @@ export default function SystemSoundsTab({ projectId }: Props) {
   // below returns early; it's read and raised further down, once the
   // stored pause is known.
   const delayCeilingRef = useRef(CHOICE_AUDIO_SLIDER_MAX_MS);
+  // The tab isn't remounted when the author switches projects — the
+  // parent route just passes a new projectId — so the ref above would
+  // otherwise carry one project's raised ceiling into the next: leaving
+  // project A with a 30s pause would widen project B's slider to match,
+  // even though B's own pause is nowhere near it. Reset the ceiling the
+  // moment projectId itself changes.
+  const delayCeilingProjectRef = useRef(projectId);
+  const projectJustChanged = delayCeilingProjectRef.current !== projectId;
+  if (projectJustChanged) {
+    delayCeilingProjectRef.current = projectId;
+    delayCeilingRef.current = CHOICE_AUDIO_SLIDER_MAX_MS;
+  }
 
   useEffect(() => {
     fetchAudioFiles(projectId)
@@ -144,12 +156,20 @@ export default function SystemSoundsTab({ projectId }: Props) {
   // the author can always still raise it, and a value set some other way
   // (an API call, a future feature) is never silently clamped down the
   // moment someone opens this tab.
-  delayCeilingRef.current = Math.max(
-    delayCeilingRef.current,
-    choiceAudioDelayMs > CHOICE_AUDIO_SLIDER_MAX_MS
-      ? choiceAudioDelayMs + CHOICE_AUDIO_SLIDER_MAX_MS
-      : CHOICE_AUDIO_SLIDER_MAX_MS,
-  );
+  //
+  // Skipped on the render where projectId just changed: `loading` lags
+  // a render behind the new prop (it only flips once the hook's own
+  // effect runs), so on that one render `settings` is still the
+  // previous project's — widening from it would immediately re-raise
+  // the ceiling this same render just reset.
+  if (!projectJustChanged) {
+    delayCeilingRef.current = Math.max(
+      delayCeilingRef.current,
+      choiceAudioDelayMs > CHOICE_AUDIO_SLIDER_MAX_MS
+        ? choiceAudioDelayMs + CHOICE_AUDIO_SLIDER_MAX_MS
+        : CHOICE_AUDIO_SLIDER_MAX_MS,
+    );
+  }
 
   return (
     <div className="tab-panel">

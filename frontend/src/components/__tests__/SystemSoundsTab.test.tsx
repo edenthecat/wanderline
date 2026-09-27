@@ -181,6 +181,29 @@ describe('choice-audio pause control', () => {
     expect(slider.max).toBe(ceiling);
   });
 
+  // The ceiling ref lives on the component instance, and the tab isn't
+  // remounted when the author switches projects — the parent route just
+  // passes a new projectId. Without resetting it there, project A's raised
+  // ceiling would carry into project B's slider even though B's own pause
+  // is nowhere near it.
+  it('does not carry a raised ceiling from one project into the next', async () => {
+    mockedFetchSettings
+      .mockResolvedValueOnce({ settings: { choiceAudioDelayMs: 12000 } } as never)
+      .mockResolvedValueOnce({ settings: { choiceAudioDelayMs: 3000 } } as never);
+    mockedAudio.mockResolvedValue({ audioFiles: AUDIO } as never);
+
+    const { rerender } = render(<SystemSoundsTab projectId="project-a" />);
+    let slider = (await screen.findByLabelText('Pause before choices')) as HTMLInputElement;
+    await waitFor(() => expect(slider.value).toBe('12000'));
+    const raisedCeiling = Number(slider.max);
+    expect(raisedCeiling).toBeGreaterThan(12000);
+
+    rerender(<SystemSoundsTab projectId="project-b" />);
+    slider = (await screen.findByLabelText('Pause before choices')) as HTMLInputElement;
+    await waitFor(() => expect(slider.value).toBe('3000'));
+    expect(Number(slider.max)).toBeLessThan(raisedCeiling);
+  });
+
   // Same premise as the negative case: a project written before the
   // endpoint guarded this key can hold a value that isn't a number at
   // all. Rendering it raw put NaN on the range input — React warns and

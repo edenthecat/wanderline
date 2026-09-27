@@ -132,11 +132,23 @@ describe('mergeSettingsObject — choiceAudioDelayMs range', () => {
     expect(merged.choiceAudioDelayMs).toBe(0);
   });
 
-  // No ceiling on purpose: the player simply waits this long, so a cap
-  // here would be the settings contract inventing a product limit.
+  // No *product* ceiling on purpose: the player simply waits this long,
+  // so a cap here would be the settings contract inventing a pacing
+  // opinion that belongs to the author.
   it('leaves a long pause alone', () => {
     const merged = mergeSettingsObject({}, { choiceAudioDelayMs: 30000 });
     expect(merged.choiceAudioDelayMs).toBe(30000);
+  });
+
+  // ...but there is still a *technical* ceiling: both readers drive this
+  // through setTimeout, which takes a signed 32-bit millisecond count and
+  // clamps anything past it to fire almost immediately. A value beyond
+  // that wouldn't lengthen the pause, it would erase it — the opposite of
+  // what storing such a value intends — so it's held to what the timer
+  // can actually represent.
+  it('caps a pause beyond what setTimeout can represent', () => {
+    const merged = mergeSettingsObject({}, { choiceAudioDelayMs: 9_999_999_999 });
+    expect(merged.choiceAudioDelayMs).toBe(2_147_483_647);
   });
 
   // The player's `await delay(...)` would resolve immediately on a

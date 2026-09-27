@@ -372,4 +372,136 @@ describe('useProjectSettings — overlapping saves', () => {
 
     expect(result.current.settings?.choiceAudioDelayMs).toBe(0);
   });
+
+  // updateOne's generation guard is safe for a scalar — the newest call
+  // carries the complete value, so skipping an older one loses nothing.
+  // choiceIndicatorAudio breaks that assumption: SystemSoundsTab patches
+  // one side at a time (`{ choice2FileId: 'b' }`), so a superseded call
+  // is not a stale duplicate of the next one, it's a *different*
+  // sub-field that nothing else will ever send. Skipping it — as an
+  // earlier version of this generation guard did — silently dropped
+  // that sub-field. Only the *response* may be superseded; every request
+  // has to go out.
+  it('sends every patch for a key even when a newer one supersedes it while queued', async () => {
+    mockedFetch.mockResolvedValueOnce({ settings: {} });
+    const resolvers = deferredPatches();
+
+    const { result } = renderHook(() => useProjectSettings('p1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // Three edits to two different sub-fields of one nested key, fired
+    // before any of them has answered — choice 1, then choice 2, then
+    // choice 1 again.
+    act(() => {
+      void result.current.updateOne('choiceIndicatorAudio', { choice1FileId: 'a' });
+    });
+    act(() => {
+      void result.current.updateOne('choiceIndicatorAudio', { choice2FileId: 'b' });
+    });
+    act(() => {
+      void result.current.updateOne('choiceIndicatorAudio', { choice1FileId: 'c' });
+    });
+
+    expect(mockedUpdate).toHaveBeenCalledTimes(1);
+    act(() => resolvers[0]({ settings: { choiceIndicatorAudio: { choice1FileId: 'a' } } }));
+
+    // The choice-2 patch is not skipped just because a third call for
+    // choice 1 had already superseded it by the time its turn came.
+    await waitFor(() => expect(mockedUpdate).toHaveBeenCalledTimes(2));
+    expect(mockedUpdate).toHaveBeenNthCalledWith(2, 'p1', {
+      choiceIndicatorAudio: { choice2FileId: 'b' },
+    });
+
+    act(() =>
+      resolvers[1]({
+        settings: { choiceIndicatorAudio: { choice1FileId: 'a', choice2FileId: 'b' } },
+      }),
+    );
+    await waitFor(() => expect(mockedUpdate).toHaveBeenCalledTimes(3));
+    expect(mockedUpdate).toHaveBeenNthCalledWith(3, 'p1', {
+      choiceIndicatorAudio: { choice1FileId: 'c' },
+    });
+
+    // The server processed the patches in the order they were sent, so
+    // by the time the last (current) one answers, its response reflects
+    // both edits correctly merged.
+    await act(async () => {
+      resolvers[2]({
+        settings: { choiceIndicatorAudio: { choice1FileId: 'c', choice2FileId: 'b' } },
+      });
+    });
+    expect(result.current.settings?.choiceIndicatorAudio).toEqual({
+      choice1FileId: 'c',
+      choice2FileId: 'b',
+    });
+  });
+
+  // A finished request clears its own key's error, but a *successful*
+  // one has to clear a failure left behind by an earlier attempt too —
+  // otherwise a transient blip's error banner outlives the retry that
+  // fixed it, telling the author their change didn't save when it did.
+  it('clears a stale error once a later save for the same key succeeds', async () => {
+    mockedFetch.mockResolvedValueOnce({ settings: { choiceAudioDelayMs: 3000 } });
+    mockedUpdate
+      .mockRejectedValueOnce(new Error('network blip'))
+      .mockResolvedValueOnce({ settings: { choiceAudioDelayMs: 5000 } });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+
+    const { result } = renderHook(() => useProjectSettings('p1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => result.current.updateDebounced('choiceAudioDelayMs', 2000));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(result.current.error).toMatch(/network blip/);
+
+    act(() => result.current.updateDebounced('choiceAudioDelayMs', 5000));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+
+    expect(result.current.error).toBeNull();
+    expect(result.current.settings?.choiceAudioDelayMs).toBe(5000);
+    vi.useRealTimers();
+  });
+
+  // Chaining same-key saves fixes them arriving out of order, but it
+  // also means a predecessor that never settles — a dropped connection,
+  // a stalled proxy — would otherwise wedge every later save of that key
+  // behind it forever, silently. There has to be a point where a save
+  // stops waiting and goes anyway.
+  it('stops waiting on a stuck predecessor and saves anyway', async () => {
+    mockedFetch.mockResolvedValueOnce({ settings: { choiceAudioDelayMs: 3000 } });
+    // The first PATCH never settles — simulates a stalled connection.
+    mockedUpdate.mockImplementationOnce(() => new Promise(() => {}));
+    mockedUpdate.mockResolvedValueOnce({ settings: { choiceAudioDelayMs: 5000 } });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+
+    const { result } = renderHook(() => useProjectSettings('p1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => result.current.updateDebounced('choiceAudioDelayMs', 2000));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(mockedUpdate).toHaveBeenCalledTimes(1);
+
+    act(() => result.current.updateDebounced('choiceAudioDelayMs', 5000));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    // Its own debounce has elapsed, but it's still queued behind the
+    // stuck first save.
+    expect(mockedUpdate).toHaveBeenCalledTimes(1);
+
+    // Once the stuck-predecessor timeout passes, it stops waiting.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15000);
+    });
+    expect(mockedUpdate).toHaveBeenCalledTimes(2);
+    expect(mockedUpdate).toHaveBeenLastCalledWith('p1', { choiceAudioDelayMs: 5000 });
+    expect(result.current.settings?.choiceAudioDelayMs).toBe(5000);
+    vi.useRealTimers();
+  });
 });
