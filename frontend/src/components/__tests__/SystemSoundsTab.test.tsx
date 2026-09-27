@@ -155,8 +155,41 @@ describe('choice-audio pause control', () => {
     mount({ choiceAudioDelayMs: 12000 });
     const slider = (await screen.findByLabelText('Pause before choices')) as HTMLInputElement;
     await waitFor(() => expect(slider.value).toBe('12000'));
-    expect(slider.max).toBe('12000');
+    // Past the stored value, not up to it: a ceiling of exactly 12000
+    // would sit the thumb on the right edge with nowhere left to go, so
+    // the one author who needs a long pause couldn't lengthen it.
+    expect(Number(slider.max)).toBeGreaterThan(12000);
     expect(screen.getByText('12.00s')).toBeInTheDocument();
+  });
+
+  // The ceiling has to be held apart from the live value. Deriving `max`
+  // from it meant every drag leftward pulled the ceiling down under the
+  // pointer — rescaling the track mid-gesture and ratcheting the reachable
+  // maximum lower each time, with no way back up short of a reload.
+  it('does not pull the ceiling down as the slider is dragged', async () => {
+    mount({ choiceAudioDelayMs: 12000 });
+    const slider = (await screen.findByLabelText('Pause before choices')) as HTMLInputElement;
+    await waitFor(() => expect(slider.value).toBe('12000'));
+    const ceiling = slider.max;
+
+    fireEvent.change(slider, { target: { value: '9000' } });
+    await waitFor(() => expect(slider.value).toBe('9000'));
+    expect(slider.max).toBe(ceiling);
+
+    fireEvent.change(slider, { target: { value: '1000' } });
+    await waitFor(() => expect(slider.value).toBe('1000'));
+    expect(slider.max).toBe(ceiling);
+  });
+
+  // Same premise as the negative case: a project written before the
+  // endpoint guarded this key can hold a value that isn't a number at
+  // all. Rendering it raw put NaN on the range input — React warns and
+  // the control stops being controlled — and printed "NaNs" beside it.
+  it('falls back to the default when the stored value is not a number', async () => {
+    mount({ choiceAudioDelayMs: 'soon' as unknown as number });
+    const slider = (await screen.findByLabelText('Pause before choices')) as HTMLInputElement;
+    await waitFor(() => expect(slider.value).toBe('3000'));
+    expect(screen.getByText('3.00s')).toBeInTheDocument();
   });
 
   // The other half of the same desync: min={0} on the slider can't

@@ -38,14 +38,26 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const debounceTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
-  // Per-key counter naming the newest save started for that key. Two
-  // PATCHes for one key can be in flight at once — a slider's debounce
-  // timer fires while the user keeps dragging — and nothing makes them
-  // resolve in the order they were sent. Without this, the *earlier*
-  // response could land last and snap the control back to a value the
-  // user has already moved past, or report a failure the newer save has
-  // since fixed. Only the newest save for a key writes its result.
+  // Monotonic id for saves, never reset. Deriving the next id from the
+  // per-key map below instead would re-issue numbers after the map is
+  // cleared on a project switch, and a slow response from the old
+  // project would then match the new project's first save and write its
+  // value there.
+  const nextSaveIdRef = useRef(0);
+  // The newest save id claimed for each key. A slider's debounce timer
+  // can fire while the user keeps dragging, so a key can have a save
+  // already sent and another on the way; only the newest one writes its
+  // result, or reports its failure. Without this the *earlier* response
+  // could land last and snap the control back to a value the user has
+  // already moved past.
   const saveGenerationRef = useRef<Map<string, number>>(new Map());
+  // The save currently in flight for each key, so same-key PATCHes are
+  // chained rather than raced. mergeSettings serialises concurrent
+  // writes, but whichever request *arrives* last wins — two in flight
+  // for one key could leave the database holding the older value while
+  // the editor showed the newer one, a desync that would only surface
+  // on the next reload.
+  const inFlightRef = useRef<Map<string, Promise<void>>>(new Map());
 
   async function reload() {
     setLoading(true);
@@ -65,19 +77,24 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     setError(null);
     setLoading(true);
     reload();
-    // Read both refs here rather than in the cleanup: the Maps they hold
-    // are created once and never replaced, so this is the same object
+    // Read the refs here rather than in the cleanup: the Maps they hold
+    // are created once and never replaced, so these are the same objects
     // either way, and it keeps the cleanup off `.current`.
     const timers = debounceTimersRef.current;
     const generations = saveGenerationRef.current;
+    const inFlight = inFlightRef.current;
     return () => {
       // Cancel any pending debounced saves when the project switches...
       timers.forEach((t) => clearTimeout(t));
       timers.clear();
-      // ...and retire every generation, so a save already in flight for
-      // the old project can't write its response onto the new one's
-      // freshly loaded settings.
+      // ...retire every generation, so a save already in flight for the
+      // old project can't write its response onto the new one's freshly
+      // loaded settings (the ids are never re-issued, so retiring is
+      // permanent)...
       generations.clear();
+      // ...and stop the new project's saves queueing behind the old
+      // project's, which they have no reason to wait for.
+      inFlight.clear();
     };
   }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -87,9 +104,8 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
    * anything but a match means a newer save has taken over.
    */
   function nextGeneration(key: string): number {
-    const generations = saveGenerationRef.current;
-    const generation = (generations.get(key) ?? 0) + 1;
-    generations.set(key, generation);
+    const generation = ++nextSaveIdRef.current;
+    saveGenerationRef.current.set(key, generation);
     return generation;
   }
 
@@ -118,6 +134,30 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     setSettings((prev) => ({ ...(prev ?? {}), [key]: updated[key] }));
   }
 
+  /**
+   * Run a save for `key` only once the save already in flight for that
+   * key has finished, so two PATCHes for one key can't arrive at the
+   * endpoint in the opposite order to the one they were sent in.
+   *
+   * `body` is expected to handle its own failures; a predecessor that
+   * rejects anyway is swallowed here rather than poisoning the chain for
+   * every save queued behind it.
+   */
+  async function runSerialized(key: string, body: () => Promise<void>): Promise<void> {
+    const inFlight = inFlightRef.current;
+    const previous = inFlight.get(key);
+    const run = (async () => {
+      if (previous) await previous.catch(() => {});
+      await body();
+    })();
+    inFlight.set(key, run);
+    try {
+      await run;
+    } finally {
+      if (inFlight.get(key) === run) inFlight.delete(key);
+    }
+  }
+
   async function updateOne<K extends keyof ProjectSettings>(
     key: K,
     next: ProjectSettings[K],
@@ -131,28 +171,35 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
       didCapture = true;
       return { ...cur, [key]: next };
     });
-    const generation = nextGeneration(key as string);
-    try {
-      const { settings: updated } = await updateProjectSettings(projectId, {
-        [key]: next,
-      });
-      if (!isCurrentGeneration(key as string, generation)) return;
-      applyServerValue(key, updated);
-    } catch (err) {
-      // A superseded save's failure is not the user's problem: the value
-      // they're looking at came from a later request that is still in
-      // flight or has already succeeded.
-      if (!isCurrentGeneration(key as string, generation)) return;
-      setSettings((prev) => {
-        if (!prev) return prev;
-        // Only roll back if the user hasn't changed this key again
-        // in the meantime. didCapture is paranoia for callers we
-        // don't fully control.
-        if (!didCapture || prev[key] !== next) return prev;
-        return { ...prev, [key]: originalValue };
-      });
-      setError(err instanceof Error ? err.message : 'Failed to update setting');
-    }
+    const name = key as string;
+    const generation = nextGeneration(name);
+    await runSerialized(name, async () => {
+      // Queueing may have taken long enough for another change to this
+      // key to supersede us. Sending a value nobody is looking at any
+      // more would only overwrite the newer one.
+      if (!isCurrentGeneration(name, generation)) return;
+      try {
+        const { settings: updated } = await updateProjectSettings(projectId, {
+          [key]: next,
+        });
+        if (!isCurrentGeneration(name, generation)) return;
+        applyServerValue(key, updated);
+      } catch (err) {
+        // A superseded save's failure is not the user's problem: the
+        // value they're looking at came from a later request that is
+        // still in flight or has already succeeded.
+        if (!isCurrentGeneration(name, generation)) return;
+        setSettings((prev) => {
+          if (!prev) return prev;
+          // Only roll back if the user hasn't changed this key again
+          // in the meantime. didCapture is paranoia for callers we
+          // don't fully control.
+          if (!didCapture || prev[key] !== next) return prev;
+          return { ...prev, [key]: originalValue };
+        });
+        setError(err instanceof Error ? err.message : 'Failed to update setting');
+      }
+    });
   }
 
   function updateDebounced<K extends keyof ProjectSettings>(
@@ -190,16 +237,19 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     generation: number,
   ): Promise<void> {
     const name = key as string;
-    try {
-      const { settings: updated } = await updateProjectSettings(projectId, {
-        [key]: next,
-      });
+    await runSerialized(name, async () => {
       if (!isCurrentGeneration(name, generation)) return;
-      applyServerValue(key, updated);
-    } catch (err) {
-      if (!isCurrentGeneration(name, generation)) return;
-      setError(err instanceof Error ? err.message : 'Failed to save');
-    }
+      try {
+        const { settings: updated } = await updateProjectSettings(projectId, {
+          [key]: next,
+        });
+        if (!isCurrentGeneration(name, generation)) return;
+        applyServerValue(key, updated);
+      } catch (err) {
+        if (!isCurrentGeneration(name, generation)) return;
+        setError(err instanceof Error ? err.message : 'Failed to save');
+      }
+    });
   }
 
   return { settings, loading, error, setError, updateOne, updateDebounced, reload };

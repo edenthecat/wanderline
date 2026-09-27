@@ -132,7 +132,7 @@ describe('useProjectSettings — overlapping saves', () => {
     return resolvers;
   }
 
-  it('ignores a stale response that resolves after a newer save', async () => {
+  it('does not apply a response the user has already moved past', async () => {
     mockedFetch.mockResolvedValueOnce({ settings: { choiceAudioDelayMs: 3000 } });
     const resolvers = deferredPatches();
     vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -147,29 +147,26 @@ describe('useProjectSettings — overlapping saves', () => {
     });
     expect(resolvers).toHaveLength(1);
 
-    // The user keeps dragging while #1 is still in flight, and that
-    // second save goes out too.
+    // The user keeps dragging while #1 is still unanswered, then #1
+    // finally answers with the value they have already moved past.
     act(() => result.current.updateDebounced('choiceAudioDelayMs', 5000));
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(300);
-    });
-    expect(resolvers).toHaveLength(2);
-
-    // #2 answers first, then #1 answers late with the value the user
-    // has already moved past.
-    await act(async () => {
-      resolvers[1]({ settings: { choiceAudioDelayMs: 5000 } });
-    });
     await act(async () => {
       resolvers[0]({ settings: { choiceAudioDelayMs: 2000 } });
     });
 
-    // The control stays where the user left it instead of snapping back.
+    // The control stays where the user left it instead of snapping back
+    // for the length of the next debounce.
     expect(result.current.settings?.choiceAudioDelayMs).toBe(5000);
     vi.useRealTimers();
   });
 
-  it('does not bounce the value back while a newer save is still pending', async () => {
+  // Dropping a stale *response* keeps the editor honest but not the
+  // database. mergeSettings serialises concurrent writes with
+  // SELECT … FOR UPDATE, so whichever request arrives last wins — two
+  // same-key PATCHes in flight could leave the stored pause on the older
+  // value while the editor showed the newer one, a desync that would only
+  // surface on the next reload.
+  it('sends same-key saves one at a time so they cannot arrive out of order', async () => {
     mockedFetch.mockResolvedValueOnce({ settings: { choiceAudioDelayMs: 3000 } });
     const resolvers = deferredPatches();
     vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -181,15 +178,62 @@ describe('useProjectSettings — overlapping saves', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(300);
     });
+    expect(mockedUpdate).toHaveBeenCalledTimes(1);
 
-    // Moved again, but this time PATCH #1 answers before the new
-    // debounce has even elapsed.
+    // A second drag, and its own debounce elapses while #1 is still
+    // unanswered. It has to queue rather than race #1 to the endpoint.
     act(() => result.current.updateDebounced('choiceAudioDelayMs', 5000));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(mockedUpdate).toHaveBeenCalledTimes(1);
+
+    // Once #1 lands, the queued save goes out.
     await act(async () => {
       resolvers[0]({ settings: { choiceAudioDelayMs: 2000 } });
     });
+    expect(mockedUpdate).toHaveBeenCalledTimes(2);
+    expect(mockedUpdate).toHaveBeenLastCalledWith('p1', { choiceAudioDelayMs: 5000 });
+    vi.useRealTimers();
+  });
 
-    expect(result.current.settings?.choiceAudioDelayMs).toBe(5000);
+  // The hook lives on a route that swaps projectId without remounting, so
+  // the refs behind all of this survive a project switch. Retiring the old
+  // project's generations by clearing the per-key map was not enough on
+  // its own: counters restarting from 1 meant the new project's first save
+  // claimed the same number the old project's in-flight save was holding,
+  // and that save's response then wrote the old project's value here.
+  it('a save from the previous project cannot land on the next one', async () => {
+    mockedFetch
+      .mockResolvedValueOnce({ settings: { choiceAudioDelayMs: 1000 } })
+      .mockResolvedValueOnce({ settings: { choiceAudioDelayMs: 7000 } });
+    const resolvers = deferredPatches();
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+
+    const { result, rerender } = renderHook(({ id }) => useProjectSettings(id), {
+      initialProps: { id: 'project-a' },
+    });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // A save for project A goes out and stays unanswered.
+    act(() => result.current.updateDebounced('choiceAudioDelayMs', 1000));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(resolvers).toHaveLength(1);
+
+    rerender({ id: 'project-b' });
+    await waitFor(() => expect(result.current.settings?.choiceAudioDelayMs).toBe(7000));
+
+    // The author moves project B's slider, which claims the key again.
+    act(() => result.current.updateDebounced('choiceAudioDelayMs', 6000));
+
+    // Project A's response finally arrives.
+    await act(async () => {
+      resolvers[0]({ settings: { choiceAudioDelayMs: 1000 } });
+    });
+
+    expect(result.current.settings?.choiceAudioDelayMs).toBe(6000);
     vi.useRealTimers();
   });
 

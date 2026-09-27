@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   audioFileUrl,
   fetchAudioFiles,
@@ -79,10 +79,20 @@ function IndicatorPicker({
 // project override is set.
 const DEFAULT_CHOICE_AUDIO_DELAY_MS = 3000;
 
+// The span the slider normally covers — enough for any pacing an author
+// would reasonably pick from this control. Not a limit on the setting
+// itself: the settings contract puts a floor under choiceAudioDelayMs
+// but deliberately no ceiling, since the player just waits this long.
+const CHOICE_AUDIO_SLIDER_MAX_MS = 8000;
+
 export default function SystemSoundsTab({ projectId }: Props) {
   const { settings, loading, error, updateOne, updateDebounced } = useProjectSettings(projectId);
   const [indicatorAudio, setIndicatorAudio] = useState<AudioFile[]>([]);
   const { playingId, toggle } = useAudition();
+  // Declared up here with the other hooks because the loading branch
+  // below returns early; it's read and raised further down, once the
+  // stored pause is known.
+  const delayCeilingRef = useRef(CHOICE_AUDIO_SLIDER_MAX_MS);
 
   useEffect(() => {
     fetchAudioFiles(projectId)
@@ -113,15 +123,32 @@ export default function SystemSoundsTab({ projectId }: Props) {
   if (loading) return <div className="page-loader">Loading sounds...</div>;
 
   const noIndicators = indicatorAudio.length === 0;
-  // The settings endpoint now clamps this to >= 0 on the way in, but a
-  // project written before that guard existed can still hold a negative.
-  // `min={0}` on the slider below can't itself produce one, so clamp
-  // what's rendered too: otherwise the slider (clamped by the native
-  // control) and the text beside it (which would just print the raw
-  // negative number) disagree until something saves the key again.
-  const choiceAudioDelayMs = Math.max(
-    0,
-    settings?.choiceAudioDelayMs ?? DEFAULT_CHOICE_AUDIO_DELAY_MS,
+  // The settings endpoint now holds this to a finite number >= 0 on the
+  // way in, but a project written before that guard existed can hold
+  // whatever its JSONB column accepted — a negative, or something that
+  // isn't a number at all. The slider below can't produce either, but
+  // rendering one raw would desync the control from the readout beside
+  // it: the native input clamps a negative to 0 and rejects a NaN
+  // outright, while the readout would happily print "-0.50s" or "NaNs".
+  const storedDelayMs = settings?.choiceAudioDelayMs;
+  const choiceAudioDelayMs =
+    typeof storedDelayMs === 'number' && Number.isFinite(storedDelayMs)
+      ? Math.max(0, storedDelayMs)
+      : DEFAULT_CHOICE_AUDIO_DELAY_MS;
+  // The slider's ceiling, deliberately not derived from the live value.
+  // Setting `max` to the value itself moved the ceiling as the author
+  // dragged: a stored 12000 put the thumb on the right edge with nowhere
+  // left to go, and each drag leftward pulled the ceiling down under the
+  // pointer, ratcheting it lower with no way back up. So grow *past* an
+  // unusually long stored pause rather than up to it, and never shrink —
+  // the author can always still raise it, and a value set some other way
+  // (an API call, a future feature) is never silently clamped down the
+  // moment someone opens this tab.
+  delayCeilingRef.current = Math.max(
+    delayCeilingRef.current,
+    choiceAudioDelayMs > CHOICE_AUDIO_SLIDER_MAX_MS
+      ? choiceAudioDelayMs + CHOICE_AUDIO_SLIDER_MAX_MS
+      : CHOICE_AUDIO_SLIDER_MAX_MS,
   );
 
   return (
@@ -201,16 +228,7 @@ export default function SystemSoundsTab({ projectId }: Props) {
             <input
               type="range"
               min={0}
-              // 8000 covers any pacing an author would reasonably pick from
-              // this control. The settings contract enforces a floor of 0
-              // but deliberately no ceiling — the player just waits this
-              // long, and capping it here would be this control inventing
-              // a product limit. Widening the slider's own ceiling to the
-              // stored value means a longer pause set some other way (an
-              // API call, a future feature) never gets silently clamped
-              // down the moment someone opens this tab, with the thumb
-              // sitting at 8000 while the number beside it disagrees.
-              max={Math.max(8000, choiceAudioDelayMs)}
+              max={delayCeilingRef.current}
               step={250}
               value={choiceAudioDelayMs}
               onChange={(e) => updateDebounced('choiceAudioDelayMs', Number(e.target.value))}
