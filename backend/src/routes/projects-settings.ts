@@ -228,8 +228,9 @@ export function mountSettingsRoutes(router: Router, pool: Pool): void {
    *       indicatorVolume, choiceAudioDelayMs, language).
    *       `bluetoothControls` merges key-by-key with the stored value
    *       so partial patches don't wipe sibling keys.
-   *       `choiceAudioDelayMs` must be a finite number and is clamped
-   *       to >= 0; anything else is dropped.
+   *       `choiceAudioDelayMs` must be a finite number and is clamped to
+   *       [0, 2147483647] (the largest delay setTimeout can represent);
+   *       anything else is dropped.
    *     tags: [Settings]
    *     parameters:
    *       - in: path

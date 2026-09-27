@@ -504,4 +504,43 @@ describe('useProjectSettings — overlapping saves', () => {
     expect(result.current.settings?.choiceAudioDelayMs).toBe(5000);
     vi.useRealTimers();
   });
+
+  // A scalar key's debounced save is delayed behind its own 250ms timer
+  // before it ever touches runSerialized, so a plain updateOne call for
+  // the *same* key made in between can reach the server first even
+  // though it was claimed second. If the older, now-stale debounced
+  // save were still sent once its timer finally fires, it would arrive
+  // at the server after the newer value and silently overwrite it —
+  // invisible in the editor, since the response-side generation check
+  // already keeps the display correct regardless.
+  it('does not let a stale debounced save reach the server after a newer plain save wins', async () => {
+    mockedFetch.mockResolvedValueOnce({ settings: { voiceoverVolume: 40 } });
+    mockedUpdate
+      .mockResolvedValueOnce({ settings: { voiceoverVolume: 80 } })
+      .mockResolvedValueOnce({ settings: { voiceoverVolume: 60 } });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+
+    const { result } = renderHook(() => useProjectSettings('p1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // A debounced save is scheduled but its timer hasn't fired yet.
+    act(() => result.current.updateDebounced('voiceoverVolume', 60));
+    // Before it does, a direct call for the same key sends immediately
+    // and wins.
+    await act(async () => {
+      await result.current.updateOne('voiceoverVolume', 80);
+    });
+    expect(mockedUpdate).toHaveBeenCalledTimes(1);
+    expect(mockedUpdate).toHaveBeenCalledWith('p1', { voiceoverVolume: 80 });
+
+    // The original debounce timer fires now. Its value is older than
+    // what the server already has; it must not go out at all.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+
+    expect(mockedUpdate).toHaveBeenCalledTimes(1);
+    expect(result.current.settings?.voiceoverVolume).toBe(80);
+    vi.useRealTimers();
+  });
 });

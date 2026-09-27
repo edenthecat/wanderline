@@ -82,8 +82,19 @@ const DEFAULT_CHOICE_AUDIO_DELAY_MS = 3000;
 // The span the slider normally covers — enough for any pacing an author
 // would reasonably pick from this control. Not a limit on the setting
 // itself: the settings contract puts a floor under choiceAudioDelayMs
-// but deliberately no ceiling, since the player just waits this long.
+// but deliberately no *product* ceiling, since the player just waits
+// this long.
 const CHOICE_AUDIO_SLIDER_MAX_MS = 8000;
+
+// Mirrors MAX_SET_TIMEOUT_DELAY_MS in backend/src/routes/projects-settings.ts:
+// both the player and this control's own slider ceiling logic below would
+// otherwise happily represent a value the player's setTimeout can't. The
+// backend guard applies this to every write going forward, but a row from
+// before the guard existed — or written some other way — can still hold a
+// larger one, and displaying it raw would show a pause many times longer
+// than what the player will actually produce (setTimeout clamps a delay
+// past this to fire almost immediately).
+const MAX_SET_TIMEOUT_DELAY_MS = 2_147_483_647;
 
 export default function SystemSoundsTab({ projectId }: Props) {
   const { settings, loading, error, updateOne, updateDebounced } = useProjectSettings(projectId);
@@ -135,17 +146,20 @@ export default function SystemSoundsTab({ projectId }: Props) {
   if (loading) return <div className="page-loader">Loading sounds...</div>;
 
   const noIndicators = indicatorAudio.length === 0;
-  // The settings endpoint now holds this to a finite number >= 0 on the
-  // way in, but a project written before that guard existed can hold
-  // whatever its JSONB column accepted — a negative, or something that
-  // isn't a number at all. The slider below can't produce either, but
-  // rendering one raw would desync the control from the readout beside
-  // it: the native input clamps a negative to 0 and rejects a NaN
-  // outright, while the readout would happily print "-0.50s" or "NaNs".
+  // The settings endpoint now holds this to a finite number within
+  // [0, MAX_SET_TIMEOUT_DELAY_MS] on the way in, but a project written
+  // before that guard existed can hold whatever its JSONB column
+  // accepted — a negative, something past what setTimeout can represent,
+  // or something that isn't a number at all. The slider below can't
+  // produce any of those, but rendering one raw would desync the control
+  // from the readout beside it: the native input clamps an out-of-range
+  // value and rejects a NaN outright, while the readout would happily
+  // print "-0.50s", a pause many times longer than the player will
+  // actually produce, or "NaNs".
   const storedDelayMs = settings?.choiceAudioDelayMs;
   const choiceAudioDelayMs =
     typeof storedDelayMs === 'number' && Number.isFinite(storedDelayMs)
-      ? Math.max(0, storedDelayMs)
+      ? Math.min(Math.max(0, storedDelayMs), MAX_SET_TIMEOUT_DELAY_MS)
       : DEFAULT_CHOICE_AUDIO_DELAY_MS;
   // The slider's ceiling, deliberately not derived from the live value.
   // Setting `max` to the value itself moved the ceiling as the author

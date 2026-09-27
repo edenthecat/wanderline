@@ -215,6 +215,18 @@ describe('choice-audio pause control', () => {
     expect(screen.getByText('3.00s')).toBeInTheDocument();
   });
 
+  // A third legacy case: the backend now caps a fresh write at what
+  // setTimeout can represent, but a row from before that guard existed
+  // can still hold more. Rendering it raw would show a pause many times
+  // longer than what the player will actually produce (its own
+  // setTimeout clamps the same way and fires almost immediately), so the
+  // display has to cap it the same way the backend does now.
+  it('caps a legacy value beyond what setTimeout can represent', async () => {
+    mount({ choiceAudioDelayMs: 9_999_999_999 });
+    const slider = (await screen.findByLabelText('Pause before choices')) as HTMLInputElement;
+    await waitFor(() => expect(slider.value).toBe('2147483647'));
+  });
+
   // The other half of the same desync: min={0} on the slider can't
   // itself produce a negative value, and the endpoint now rejects one,
   // but a project written before that guard can still hold it. Without

@@ -18,6 +18,37 @@ import { fetchProjectSettings, updateProjectSettings, type ProjectSettings } fro
 // matters, since requests settle in milliseconds.
 const STUCK_SAVE_TIMEOUT_MS = 15000;
 
+// Keys whose PATCH value is a fragment, not a complete replacement —
+// mirrors NESTED_MERGE_KEYS in backend/src/routes/projects-settings.ts.
+// Read by saveNow below, which skips sending a superseded save for any
+// key *not* in this set: the newest call already carries the whole
+// intended value, so an older, still-queued one is a pure duplicate.
+//
+// This is specifically about saveNow (updateDebounced's PATCH), not
+// updateOne. A debounced save's actual request is delayed behind its
+// own 250ms timer, so a generation claimed *earlier* can still reach
+// runSerialized *later* than a generation claimed after it — a direct
+// updateOne call for the same key isn't behind a timer, so it can win
+// the race and reach the server first. Without this skip, the older,
+// now-stale debounced save would go out anyway once its timer finally
+// fired, landing after the value it was superseded by and silently
+// overwriting it server-side — invisible in the editor, since only the
+// response side is otherwise generation-gated. updateOne itself never
+// needs this: it enters the same-key queue the moment it's called, so
+// its queue position always matches its call order and it can't lose
+// this kind of race — see its own comment below.
+//
+// A key in this set can't be skipped in saveNow either, for the same
+// reason updateOne always sends: SystemSoundsTab patches one side of
+// choiceIndicatorAudio at a time, so a superseded call isn't a stale
+// duplicate, it's a *different* sub-field nothing else will ever send.
+const PARTIAL_PATCH_KEYS = new Set([
+  'bluetoothControls',
+  'theme',
+  'choiceIndicatorAudio',
+  'appIcon',
+]);
+
 export interface UseProjectSettingsResult {
   settings: ProjectSettings | null;
   loading: boolean;
@@ -195,12 +226,15 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     const generation = nextGeneration(name);
     await runSerialized(name, async () => {
       // Always send, even if queueing let a newer change to this key
-      // take over first. `next` is a complete value for a scalar key,
-      // but for a nested-merge key like choiceIndicatorAudio it's a
-      // *partial* patch — one dropdown's worth — that the newer save
-      // knows nothing about. Skipping it here would silently drop that
-      // sub-field rather than superseding it: only the response is
-      // superseded below, not the request.
+      // take over first. Unlike updateDebounced (see PARTIAL_PATCH_KEYS
+      // and saveNow below), updateOne enters the same-key queue the
+      // moment it's called, with no timer in between — so its position
+      // in that queue always matches the order it was actually called
+      // in, and sending a superseded value here can at most be a
+      // redundant round-trip, never one that lands out of order. For a
+      // partial-patch key that redundancy is required anyway: `next` is
+      // a fragment — one dropdown's worth — that the newer save knows
+      // nothing about, so skipping it here would drop it for good.
       try {
         const { settings: updated } = await updateProjectSettings(projectId, {
           [key]: next,
@@ -261,9 +295,13 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
   ): Promise<void> {
     const name = key as string;
     await runSerialized(name, async () => {
-      // Same reasoning as updateOne: always send. Only skip applying
-      // whatever comes back, once it's known whether this is still the
-      // save the user is looking at.
+      // Same reasoning as updateOne. This is the case PARTIAL_PATCH_KEYS'
+      // own comment describes: this save's actual request was delayed
+      // behind its 250ms debounce timer, so by the time it gets here a
+      // direct, un-debounced call for the same key can already have
+      // reached the server and won — sending this stale value now would
+      // silently overwrite it.
+      if (!PARTIAL_PATCH_KEYS.has(name) && !isCurrentGeneration(name, generation)) return;
       try {
         const { settings: updated } = await updateProjectSettings(projectId, {
           [key]: next,
