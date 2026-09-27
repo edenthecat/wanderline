@@ -144,12 +144,13 @@ describe('choice-audio pause control', () => {
     vi.useRealTimers();
   });
 
-  // Nothing validates this range server-side, so a value set some other
-  // way (a direct API call, a future feature) can sit above the 8s the
-  // slider was designed around. A fixed max would clamp the thumb to
-  // 8000 while the number beside it kept showing the real, higher value
-  // — and touching the slider at all would silently overwrite the
-  // stored value downward the moment it moved.
+  // The settings contract puts a floor under this value but no ceiling,
+  // so a pause set some other way (a direct API call, a future feature)
+  // can sit above the 8s the slider was designed around. A fixed max
+  // would clamp the thumb to 8000 while the number beside it kept
+  // showing the real, higher value — and touching the slider at all
+  // would silently overwrite the stored value downward the moment it
+  // moved.
   it('widens the range rather than clamping a value above the slider ceiling', async () => {
     mount({ choiceAudioDelayMs: 12000 });
     const slider = (await screen.findByLabelText('Pause before choices')) as HTMLInputElement;
@@ -159,10 +160,11 @@ describe('choice-audio pause control', () => {
   });
 
   // The other half of the same desync: min={0} on the slider can't
-  // itself produce a negative value, but a project could still have
-  // one stored some other way. Without clamping the resolved value,
-  // the native control would clamp its own display to 0 while the
-  // text beside it kept printing the raw negative number.
+  // itself produce a negative value, and the endpoint now rejects one,
+  // but a project written before that guard can still hold it. Without
+  // clamping the resolved value, the native control would clamp its own
+  // display to 0 while the text beside it kept printing the raw
+  // negative number.
   it('clamps a negative stored value instead of disagreeing with the slider', async () => {
     mount({ choiceAudioDelayMs: -500 });
     const slider = (await screen.findByLabelText('Pause before choices')) as HTMLInputElement;

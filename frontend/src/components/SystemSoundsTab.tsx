@@ -113,12 +113,12 @@ export default function SystemSoundsTab({ projectId }: Props) {
   if (loading) return <div className="page-loader">Loading sounds...</div>;
 
   const noIndicators = indicatorAudio.length === 0;
-  // The settings endpoint stores this number without a range check, so
-  // a value set some other way could be negative. `min={0}` on the
-  // slider below can't itself produce one, but clamp what's rendered
-  // so a stored negative can't desync the slider (clamped by the
-  // native control) from the text beside it (which would otherwise
-  // just print the raw negative number).
+  // The settings endpoint now clamps this to >= 0 on the way in, but a
+  // project written before that guard existed can still hold a negative.
+  // `min={0}` on the slider below can't itself produce one, so clamp
+  // what's rendered too: otherwise the slider (clamped by the native
+  // control) and the text beside it (which would just print the raw
+  // negative number) disagree until something saves the key again.
   const choiceAudioDelayMs = Math.max(
     0,
     settings?.choiceAudioDelayMs ?? DEFAULT_CHOICE_AUDIO_DELAY_MS,
@@ -202,13 +202,14 @@ export default function SystemSoundsTab({ projectId }: Props) {
               type="range"
               min={0}
               // 8000 covers any pacing an author would reasonably pick from
-              // this control, but the backend stores choiceAudioDelayMs
-              // without a range check and the player consumes it as-is.
-              // Widening the ceiling to the stored value itself means a
-              // number set some other way (an API call, a future feature)
-              // never gets silently clamped down the moment someone opens
-              // this tab and the slider's thumb sits at 8000 while the
-              // number beside it disagrees.
+              // this control. The settings contract enforces a floor of 0
+              // but deliberately no ceiling — the player just waits this
+              // long, and capping it here would be this control inventing
+              // a product limit. Widening the slider's own ceiling to the
+              // stored value means a longer pause set some other way (an
+              // API call, a future feature) never gets silently clamped
+              // down the moment someone opens this tab, with the thumb
+              // sitting at 8000 while the number beside it disagrees.
               max={Math.max(8000, choiceAudioDelayMs)}
               step={250}
               value={choiceAudioDelayMs}

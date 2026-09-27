@@ -56,9 +56,34 @@ const NESTED_MERGE_KEYS = new Set([
   'appIcon',
 ]);
 
-// Exported for tests: this function is where both halves of the
-// settings contract live (which keys survive, and which merge nested
-// rather than replacing), and both are easy to break silently.
+// Value-level guards for keys whose stored *type and range* matter to
+// more than one reader. The allow-list above only decides whether a key
+// survives; these decide whether its value is one the rest of the system
+// can actually render. Returning undefined drops the key from the patch
+// rather than storing something no consumer can use.
+//
+// The editor's own controls can't produce a bad value here, but this
+// endpoint is the contract: a script, a migration or a future feature
+// patching settings directly goes through the same door.
+const VALUE_GUARDS = new Map<string, (value: unknown) => unknown>([
+  [
+    // Milliseconds of silence before a choice option's audio starts.
+    // The player awaits this as a timer and the editor renders it on a
+    // slider with a floor of 0, so a negative is meaningless to both —
+    // and used to leave the slider (clamped by the native control) and
+    // the number printed beside it disagreeing. A non-number is worse:
+    // the player's delay would resolve immediately and the editor would
+    // print "NaNs". Enforced here so neither reader has to guess.
+    'choiceAudioDelayMs',
+    (value) =>
+      typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : undefined,
+  ],
+]);
+
+// Exported for tests: this function is where the settings contract
+// lives — which keys survive, which merge nested rather than replacing,
+// and which have their value range enforced — and every part of it is
+// easy to break silently.
 export function mergeSettingsObject(
   existing: Record<string, unknown>,
   patch: Record<string, unknown>,
@@ -66,6 +91,13 @@ export function mergeSettingsObject(
   const merged: Record<string, unknown> = { ...existing };
   for (const [key, value] of Object.entries(patch)) {
     if (!ALLOWED_TOP_LEVEL_KEYS.has(key)) continue;
+    const guard = VALUE_GUARDS.get(key);
+    if (guard) {
+      const guarded = guard(value);
+      if (guarded === undefined) continue;
+      merged[key] = guarded;
+      continue;
+    }
     if (NESTED_MERGE_KEYS.has(key) && value && typeof value === 'object' && !Array.isArray(value)) {
       const existingNested =
         existing[key] && typeof existing[key] === 'object' && !Array.isArray(existing[key])
@@ -179,6 +211,8 @@ export function mountSettingsRoutes(router: Router, pool: Pool): void {
    *       indicatorVolume, choiceAudioDelayMs, language).
    *       `bluetoothControls` merges key-by-key with the stored value
    *       so partial patches don't wipe sibling keys.
+   *       `choiceAudioDelayMs` must be a finite number and is clamped
+   *       to >= 0; anything else is dropped.
    *     tags: [Settings]
    *     parameters:
    *       - in: path
