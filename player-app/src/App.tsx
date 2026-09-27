@@ -26,6 +26,26 @@ import {
   type SaveSlot,
 } from './save-slots';
 
+// Mirrors MAX_SET_TIMEOUT_DELAY_MS in
+// backend/src/routes/projects-settings.ts. That guard clamps every fresh
+// write of choiceAudioDelayMs, but a story built from a settings row
+// written before the guard existed can still carry a larger one, and
+// this is the actual consumer it matters for: setTimeout clamps a delay
+// past this to fire almost immediately, silently erasing the pause
+// instead of lengthening it. Clamped here rather than trusted from the
+// story data, since a build is a static snapshot the guard's later fix
+// can't reach retroactively.
+const MAX_SET_TIMEOUT_DELAY_MS = 2_147_483_647;
+
+// The pause before a choice option's audio starts, once the passage's
+// own narration ends — story.settings.choiceAudioDelayMs, defaulting to
+// 3000ms to match the editor's own fallback (SystemSoundsTab.tsx).
+// Exported for tests: it's the one place both setTimeout call sites
+// below get this value, so it's the one place the clamp needs covering.
+export function choiceAudioDelayMs(settings: { choiceAudioDelayMs?: number } | undefined): number {
+  return Math.min(settings?.choiceAudioDelayMs ?? 3000, MAX_SET_TIMEOUT_DELAY_MS);
+}
+
 // Load story data from window (preview), fetch (generated app), or demo
 async function loadStoryData(): Promise<StoryData | null> {
   // 1. Check for injected story data (preview mode)
@@ -1185,7 +1205,7 @@ export default function App() {
       ) {
         autoNavigateTimeoutRef.current = setTimeout(
           () => navigateToNode(currentNode.choices[0].target),
-          story.settings?.choiceAudioDelayMs ?? 3000,
+          choiceAudioDelayMs(story.settings),
         );
         return;
       }
@@ -1222,7 +1242,7 @@ export default function App() {
         const runChoiceSequence = async () => {
           if (isStale()) return;
           // Wait before starting choice audio (default 3 seconds)
-          await delay(story.settings?.choiceAudioDelayMs ?? 3000);
+          await delay(choiceAudioDelayMs(story.settings));
           if (isStale()) return;
           // Choice 1: indicator then audio
           await playAudio(choice1IndicatorRef.current);
