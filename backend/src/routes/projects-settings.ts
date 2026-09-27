@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { Pool, PoolClient } from 'pg';
-import { MAX_SET_TIMEOUT_DELAY_MS } from '@wanderline/shared';
+import { sanitizeChoiceAudioDelayMs } from '@wanderline/shared';
 
 // Top-level settings keys the PATCH endpoint accepts. Unknown keys are
 // dropped — the editor only sends these, and an unrecognized key is
@@ -66,15 +66,6 @@ const NESTED_MERGE_KEYS = new Set([
 // The editor's own controls can't produce a bad value here, but this
 // endpoint is the contract: a script, a migration or a future feature
 // patching settings directly goes through the same door.
-// MAX_SET_TIMEOUT_DELAY_MS (imported above, from @wanderline/shared —
-// see its own doc comment) is the largest delay setTimeout can
-// represent. Both readers of choiceAudioDelayMs (player-app/src/App.tsx)
-// drive it through setTimeout, so a value past this point wouldn't
-// lengthen the pause — it would silently erase it, the opposite of what
-// a project storing such a value intends. This is the actual limit the
-// readers share, not a product opinion about pacing — see the "no
-// ceiling" note below.
-
 const VALUE_GUARDS = new Map<string, (value: unknown) => unknown>([
   [
     // Milliseconds of silence before a choice option's audio starts.
@@ -83,17 +74,21 @@ const VALUE_GUARDS = new Map<string, (value: unknown) => unknown>([
     // and used to leave the slider (clamped by the native control) and
     // the number printed beside it disagreeing. A non-number is worse:
     // the player's delay would resolve immediately and the editor would
-    // print "NaNs". Enforced here so neither reader has to guess.
+    // print "NaNs".
     //
     // No *product* ceiling on purpose — the player just waits this long,
     // so a pacing opinion belongs to the author, not this endpoint — but
-    // it is still capped at MAX_SET_TIMEOUT_DELAY_MS, since past that the
-    // readers' own timer mechanism can't represent the value at all.
+    // it is still capped at what setTimeout can represent, since both
+    // readers (player-app/src/App.tsx) drive the value through it and a
+    // delay past that clamps to fire almost immediately, silently
+    // erasing the pause instead of lengthening it.
+    //
+    // sanitizeChoiceAudioDelayMs (shared, so the editor and player apply
+    // the identical rule to a legacy value from before this guard
+    // existed) drops an invalid value with `undefined` here; the two
+    // display-side callers pass a numeric fallback instead.
     'choiceAudioDelayMs',
-    (value) =>
-      typeof value === 'number' && Number.isFinite(value)
-        ? Math.min(Math.max(0, value), MAX_SET_TIMEOUT_DELAY_MS)
-        : undefined,
+    (value) => sanitizeChoiceAudioDelayMs(value, undefined),
   ],
 ]);
 

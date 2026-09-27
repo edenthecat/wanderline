@@ -17,3 +17,24 @@
  * such a value instead of lengthening it).
  */
 export const MAX_SET_TIMEOUT_DELAY_MS = 2_147_483_647;
+
+/**
+ * Apply the choiceAudioDelayMs rule to a raw value: a finite number is
+ * held to [0, MAX_SET_TIMEOUT_DELAY_MS]; anything else (missing,
+ * non-numeric, NaN) becomes `fallback`.
+ *
+ * One function rather than three copies of the same ternary, because
+ * each of its three callers needs it for the same reason but wants a
+ * different fallback: the settings endpoint passes `undefined` to drop
+ * an invalid value from a patch entirely, while the editor and the
+ * player both pass the 3-second default they fall back to display or
+ * play. `MAX_SET_TIMEOUT_DELAY_MS` moved here first for exactly this
+ * risk — a rule with three independent copies can have one updated (as
+ * this one was, to add the floor and the non-numeric case) while the
+ * others silently keep the old behavior.
+ */
+export function sanitizeChoiceAudioDelayMs<F>(value: unknown, fallback: F): number | F {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.min(Math.max(0, value), MAX_SET_TIMEOUT_DELAY_MS)
+    : fallback;
+}

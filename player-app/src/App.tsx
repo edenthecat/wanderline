@@ -25,7 +25,7 @@ import {
   writeSlots,
   type SaveSlot,
 } from './save-slots';
-import { MAX_SET_TIMEOUT_DELAY_MS } from '@wanderline/shared';
+import { sanitizeChoiceAudioDelayMs } from '@wanderline/shared';
 
 // The pause before a choice option's audio starts, once the passage's
 // own narration ends — story.settings.choiceAudioDelayMs, defaulting to
@@ -37,17 +37,16 @@ import { MAX_SET_TIMEOUT_DELAY_MS } from '@wanderline/shared';
 // guard existed can carry a value that guard would now reject outright
 // — negative, non-numeric, or past what setTimeout can represent — and a
 // build is a static snapshot that guard's later fix can't reach
-// retroactively. Applying the same three rules here, at the point of
-// use, is what actually protects the listener: a negative or NaN would
-// otherwise fire the choice audio right away instead of waiting, and an
-// oversized value would silently erase a long pause the same way, since
-// setTimeout clamps a delay past MAX_SET_TIMEOUT_DELAY_MS to fire almost
-// immediately rather than waiting longer.
+// retroactively. sanitizeChoiceAudioDelayMs (shared, so this and the
+// backend guard can't quietly drift onto different rules) applies the
+// same three rules here, at the point of use, which is what actually
+// protects the listener: a negative or NaN would otherwise fire the
+// choice audio right away instead of waiting, and an oversized value
+// would silently erase a long pause the same way, since setTimeout
+// clamps a delay past what it can represent to fire almost immediately
+// rather than waiting longer.
 export function choiceAudioDelayMs(settings: { choiceAudioDelayMs?: number } | undefined): number {
-  const raw = settings?.choiceAudioDelayMs;
-  return typeof raw === 'number' && Number.isFinite(raw)
-    ? Math.min(Math.max(0, raw), MAX_SET_TIMEOUT_DELAY_MS)
-    : 3000;
+  return sanitizeChoiceAudioDelayMs(settings?.choiceAudioDelayMs, 3000);
 }
 
 // Load story data from window (preview), fetch (generated app), or demo
