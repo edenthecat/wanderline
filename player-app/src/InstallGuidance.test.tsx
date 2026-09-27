@@ -85,6 +85,15 @@ describe('InstallGuidance', () => {
     expect(screen.getByText(/three-dot browser menu/i)).toBeTruthy();
   });
 
+  // Desktop gets none of the reasons this guidance pushes install
+  // (screen-lock playback, a reliable offline cache), so it should
+  // never see it, native prompt or not.
+  it('stays hidden on desktop even without a native prompt', () => {
+    setUserAgent(MAC);
+    const { container } = render(<InstallGuidance hasNativePrompt={false} />);
+    expect(container.querySelector('.wl-install-guidance')).toBeNull();
+  });
+
   // When the browser gives us a real button, the manual walkthrough is
   // just noise sitting on top of it.
   it('defers to the native prompt when one is available', () => {

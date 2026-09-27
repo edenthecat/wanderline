@@ -10,6 +10,11 @@
 //   - InstallGuidance — the manual fallback for every browser that
 //     never fires that prompt (all of Safari, notably), so the
 //     install advice reaches iPhone listeners too.
+//
+//   Both install affordances are mobile-only. `beforeinstallprompt`
+//   also fires on desktop Chrome/Edge, but a desktop listener is
+//   almost never the audience installing matters for — see the
+//   rationale in InstallGuidance.tsx.
 //   - A persistent readiness figure ("48 of 60 chapters saved"). This
 //     is read back from the cache rather than from the download
 //     counter, because the counter dies with the tab: someone who
@@ -23,7 +28,7 @@
 
 import { useEffect } from 'react';
 import type { OfflineSupport } from './useOfflineSupport';
-import InstallGuidance from './InstallGuidance';
+import InstallGuidance, { detectPlatform } from './InstallGuidance';
 
 interface Props {
   support: OfflineSupport;
@@ -70,6 +75,14 @@ export default function OfflineControls({ support, audioUrls }: Props) {
   }, [swReady, urlKey, refreshCacheStatus]);
 
   const offlineCapable = swReady && audioUrls.length > 0;
+  // `beforeinstallprompt` fires on desktop Chrome/Edge too, but a
+  // desktop listener gets none of the reasons this UI pushes install
+  // (screen-lock playback, offline cache reliability) — see
+  // InstallGuidance.tsx. Gate the native button the same way that
+  // component gates its own manual-steps fallback.
+  const showInstall =
+    Boolean(installPrompt) &&
+    detectPlatform(typeof navigator === 'undefined' ? '' : navigator.userAgent) !== 'desktop';
   const downloading = precacheStatus === 'downloading';
   const failed = precacheStatus === 'error' && precacheProgress.total > 0;
   const quotaExceeded = precacheProgress.quotaExceeded;
@@ -101,7 +114,7 @@ export default function OfflineControls({ support, audioUrls }: Props) {
               : 'You\u2019re offline. The story will keep playing from anything that\u2019s already loaded.'}
         </div>
       )}
-      {(offlineCapable || installPrompt) && (
+      {(offlineCapable || showInstall) && (
         <div className="wl-offline-controls">
           {offlineCapable && !downloading && !fullySaved && !corsBlocked && (
             <button
@@ -155,7 +168,7 @@ export default function OfflineControls({ support, audioUrls }: Props) {
               you&rsquo;re connected.
             </div>
           )}
-          {installPrompt && (
+          {showInstall && (
             <button
               type="button"
               className="wl-install-btn"
