@@ -1,3 +1,4 @@
+import { StrictMode } from 'react';
 import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import SystemSoundsTab from '../SystemSoundsTab';
@@ -199,6 +200,53 @@ describe('choice-audio pause control', () => {
     expect(raisedCeiling).toBeGreaterThan(12000);
 
     rerender(<SystemSoundsTab projectId="project-b" />);
+    slider = (await screen.findByLabelText('Pause before choices')) as HTMLInputElement;
+    await waitFor(() => expect(slider.value).toBe('3000'));
+    expect(Number(slider.max)).toBeLessThan(raisedCeiling);
+  });
+
+  // The reset above has to survive StrictMode's deliberate double
+  // invocation of render bodies, which the plain `render`/`rerender`
+  // calls in the test above don't exercise. A version of this reset
+  // written as a plain ref mutation during render broke exactly here:
+  // StrictMode's second invocation would see the ref already reset by
+  // the first, decide projectId "didn't just change" after all, and
+  // re-widen the ceiling from that same render's still-stale settings —
+  // silently undoing the reset before it ever committed. Doing the
+  // reset in an effect instead sidesteps this, since effects aren't
+  // double-invoked by StrictMode on a dependency change (only on a
+  // component's very first mount, which is a harmless no-op here).
+  it('resets the ceiling across a project switch under StrictMode', async () => {
+    // Keyed by projectId, not by call order: StrictMode double-invokes
+    // effects on a component's initial mount (a deliberate mount →
+    // cleanup → remount, to surface cleanup bugs), so fetchProjectSettings
+    // fires twice for project-a's own mount before project-b is ever
+    // rendered. An ordered mockResolvedValueOnce queue would hand
+    // project-b's response to project-a's second, StrictMode-only call.
+    const settingsByProject: Record<string, { choiceAudioDelayMs: number }> = {
+      'project-a': { choiceAudioDelayMs: 12000 },
+      'project-b': { choiceAudioDelayMs: 3000 },
+    };
+    mockedFetchSettings.mockImplementation(
+      async (id: string) => ({ settings: settingsByProject[id] }) as never,
+    );
+    mockedAudio.mockResolvedValue({ audioFiles: AUDIO } as never);
+
+    const { rerender } = render(
+      <StrictMode>
+        <SystemSoundsTab projectId="project-a" />
+      </StrictMode>,
+    );
+    let slider = (await screen.findByLabelText('Pause before choices')) as HTMLInputElement;
+    await waitFor(() => expect(slider.value).toBe('12000'));
+    const raisedCeiling = Number(slider.max);
+    expect(raisedCeiling).toBeGreaterThan(12000);
+
+    rerender(
+      <StrictMode>
+        <SystemSoundsTab projectId="project-b" />
+      </StrictMode>,
+    );
     slider = (await screen.findByLabelText('Pause before choices')) as HTMLInputElement;
     await waitFor(() => expect(slider.value).toBe('3000'));
     expect(Number(slider.max)).toBeLessThan(raisedCeiling);

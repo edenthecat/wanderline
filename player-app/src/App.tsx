@@ -25,25 +25,29 @@ import {
   writeSlots,
   type SaveSlot,
 } from './save-slots';
-
-// Mirrors MAX_SET_TIMEOUT_DELAY_MS in
-// backend/src/routes/projects-settings.ts. That guard clamps every fresh
-// write of choiceAudioDelayMs, but a story built from a settings row
-// written before the guard existed can still carry a larger one, and
-// this is the actual consumer it matters for: setTimeout clamps a delay
-// past this to fire almost immediately, silently erasing the pause
-// instead of lengthening it. Clamped here rather than trusted from the
-// story data, since a build is a static snapshot the guard's later fix
-// can't reach retroactively.
-const MAX_SET_TIMEOUT_DELAY_MS = 2_147_483_647;
+import { MAX_SET_TIMEOUT_DELAY_MS } from '@wanderline/shared';
 
 // The pause before a choice option's audio starts, once the passage's
 // own narration ends — story.settings.choiceAudioDelayMs, defaulting to
 // 3000ms to match the editor's own fallback (SystemSoundsTab.tsx).
 // Exported for tests: it's the one place both setTimeout call sites
 // below get this value, so it's the one place the clamp needs covering.
+//
+// A story built from a settings row written before the backend's own
+// guard existed can carry a value that guard would now reject outright
+// — negative, non-numeric, or past what setTimeout can represent — and a
+// build is a static snapshot that guard's later fix can't reach
+// retroactively. Applying the same three rules here, at the point of
+// use, is what actually protects the listener: a negative or NaN would
+// otherwise fire the choice audio right away instead of waiting, and an
+// oversized value would silently erase a long pause the same way, since
+// setTimeout clamps a delay past MAX_SET_TIMEOUT_DELAY_MS to fire almost
+// immediately rather than waiting longer.
 export function choiceAudioDelayMs(settings: { choiceAudioDelayMs?: number } | undefined): number {
-  return Math.min(settings?.choiceAudioDelayMs ?? 3000, MAX_SET_TIMEOUT_DELAY_MS);
+  const raw = settings?.choiceAudioDelayMs;
+  return typeof raw === 'number' && Number.isFinite(raw)
+    ? Math.min(Math.max(0, raw), MAX_SET_TIMEOUT_DELAY_MS)
+    : 3000;
 }
 
 // Load story data from window (preview), fetch (generated app), or demo

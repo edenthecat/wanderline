@@ -8,6 +8,7 @@ import {
 import { useAudition } from '../hooks/useAudition';
 import AuditionButton from './AuditionButton';
 import { useProjectSettings } from '../hooks/useProjectSettings';
+import { MAX_SET_TIMEOUT_DELAY_MS } from '@wanderline/shared';
 
 interface Props {
   projectId: string;
@@ -86,16 +87,6 @@ const DEFAULT_CHOICE_AUDIO_DELAY_MS = 3000;
 // this long.
 const CHOICE_AUDIO_SLIDER_MAX_MS = 8000;
 
-// Mirrors MAX_SET_TIMEOUT_DELAY_MS in backend/src/routes/projects-settings.ts:
-// both the player and this control's own slider ceiling logic below would
-// otherwise happily represent a value the player's setTimeout can't. The
-// backend guard applies this to every write going forward, but a row from
-// before the guard existed — or written some other way — can still hold a
-// larger one, and displaying it raw would show a pause many times longer
-// than what the player will actually produce (setTimeout clamps a delay
-// past this to fire almost immediately).
-const MAX_SET_TIMEOUT_DELAY_MS = 2_147_483_647;
-
 export default function SystemSoundsTab({ projectId }: Props) {
   const { settings, loading, error, updateOne, updateDebounced } = useProjectSettings(projectId);
   const [indicatorAudio, setIndicatorAudio] = useState<AudioFile[]>([]);
@@ -108,14 +99,23 @@ export default function SystemSoundsTab({ projectId }: Props) {
   // parent route just passes a new projectId — so the ref above would
   // otherwise carry one project's raised ceiling into the next: leaving
   // project A with a 30s pause would widen project B's slider to match,
-  // even though B's own pause is nowhere near it. Reset the ceiling the
-  // moment projectId itself changes.
-  const delayCeilingProjectRef = useRef(projectId);
-  const projectJustChanged = delayCeilingProjectRef.current !== projectId;
-  if (projectJustChanged) {
-    delayCeilingProjectRef.current = projectId;
+  // even though B's own pause is nowhere near it.
+  //
+  // Reset in an effect, not during render. `loading` lags a render
+  // behind projectId (it only flips once the hook's own effect runs),
+  // so on the render where projectId first changes, `settings` is still
+  // the previous project's — a render-time reset would immediately be
+  // re-raised by that same render's widen step below, using that stale
+  // value. Worse, a render-time ref mutation like that isn't safe under
+  // StrictMode's deliberate double-invocation of render bodies either:
+  // the second invocation would see the ref already reset by the first,
+  // decide projectId "didn't just change" after all, and re-widen from
+  // the same stale settings — the exact bug this effect avoids. An
+  // effect runs once, after commit, and DOM's own render-time value
+  // stays consistent with the not-yet-reset ceiling until then.
+  useEffect(() => {
     delayCeilingRef.current = CHOICE_AUDIO_SLIDER_MAX_MS;
-  }
+  }, [projectId]);
 
   useEffect(() => {
     fetchAudioFiles(projectId)
@@ -171,19 +171,17 @@ export default function SystemSoundsTab({ projectId }: Props) {
   // (an API call, a future feature) is never silently clamped down the
   // moment someone opens this tab.
   //
-  // Skipped on the render where projectId just changed: `loading` lags
-  // a render behind the new prop (it only flips once the hook's own
-  // effect runs), so on that one render `settings` is still the
-  // previous project's — widening from it would immediately re-raise
-  // the ceiling this same render just reset.
-  if (!projectJustChanged) {
-    delayCeilingRef.current = Math.max(
-      delayCeilingRef.current,
-      choiceAudioDelayMs > CHOICE_AUDIO_SLIDER_MAX_MS
-        ? choiceAudioDelayMs + CHOICE_AUDIO_SLIDER_MAX_MS
-        : CHOICE_AUDIO_SLIDER_MAX_MS,
-    );
-  }
+  // Safe to run unconditionally, even on the transitional render right
+  // after projectId changes (where `settings` is still stale — see the
+  // reset effect above): widening from a stale value just reproduces
+  // that same stale project's own already-correct ceiling, a no-op,
+  // since the reset itself hasn't run yet at that point either.
+  delayCeilingRef.current = Math.max(
+    delayCeilingRef.current,
+    choiceAudioDelayMs > CHOICE_AUDIO_SLIDER_MAX_MS
+      ? choiceAudioDelayMs + CHOICE_AUDIO_SLIDER_MAX_MS
+      : CHOICE_AUDIO_SLIDER_MAX_MS,
+  );
 
   return (
     <div className="tab-panel">

@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { Pool, PoolClient } from 'pg';
+import { MAX_SET_TIMEOUT_DELAY_MS } from '@wanderline/shared';
 
 // Top-level settings keys the PATCH endpoint accepts. Unknown keys are
 // dropped — the editor only sends these, and an unrecognized key is
@@ -65,15 +66,14 @@ const NESTED_MERGE_KEYS = new Set([
 // The editor's own controls can't produce a bad value here, but this
 // endpoint is the contract: a script, a migration or a future feature
 // patching settings directly goes through the same door.
-// setTimeout takes a signed 32-bit millisecond count; a delay above this
-// clamps to 1ms internally in Node/browsers and effectively fires right
-// away instead of waiting longer. Both readers of choiceAudioDelayMs
-// (player-app/src/App.tsx) drive it through setTimeout, so a value past
-// this point wouldn't lengthen the pause — it would silently erase it,
-// the opposite of what a project storing such a value intends. This is
-// the actual limit the readers share, not a product opinion about pacing
-// — see the "no ceiling" note below.
-const MAX_SET_TIMEOUT_DELAY_MS = 2_147_483_647;
+// MAX_SET_TIMEOUT_DELAY_MS (imported above, from @wanderline/shared —
+// see its own doc comment) is the largest delay setTimeout can
+// represent. Both readers of choiceAudioDelayMs (player-app/src/App.tsx)
+// drive it through setTimeout, so a value past this point wouldn't
+// lengthen the pause — it would silently erase it, the opposite of what
+// a project storing such a value intends. This is the actual limit the
+// readers share, not a product opinion about pacing — see the "no
+// ceiling" note below.
 
 const VALUE_GUARDS = new Map<string, (value: unknown) => unknown>([
   [
