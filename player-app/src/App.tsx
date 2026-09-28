@@ -912,6 +912,11 @@ export default function App() {
     [story],
   );
 
+  // Bumped on every (re)entry into a passage, so effects that time
+  // something from the moment the listener arrived (the voiceover-less
+  // auto-advance below) start over even when the node is unchanged.
+  const [passageEntry, setPassageEntry] = useState(0);
+
   // Every way of (re)entering a passage starts its progress from zero.
   // The render-time reset above only fires when the node id changes;
   // restarting on the start node, the `r` shortcut, or a passage that
@@ -921,6 +926,7 @@ export default function App() {
   // into a stale callback, so it can't write the old position back.
   const resetProgress = useCallback(() => {
     playbackEpochRef.current += 1;
+    setPassageEntry((n) => n + 1);
     setAudioProgress(0);
     setAudioDuration(0);
   }, []);
@@ -1545,7 +1551,19 @@ export default function App() {
       navigateToTargetRef.current?.(target);
     }, totalDelay);
     return () => clearTimeout(t);
-  }, [story, currentNode, navigateToNode, isAuthenticated, showInstructions, autoAdvance]);
+    // passageEntry: restarting on a voiceover-less start passage keeps
+    // the same node. The countdown only started over because restart
+    // happens to hand setHistory a new array, which rebuilds
+    // navigateToNode above; this says it on purpose.
+  }, [
+    story,
+    currentNode,
+    navigateToNode,
+    isAuthenticated,
+    showInstructions,
+    autoAdvance,
+    passageEntry,
+  ]);
 
   // Debounce showing connection issues to avoid flashing for quick retries
   useEffect(() => {

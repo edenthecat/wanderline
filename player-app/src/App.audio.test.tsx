@@ -500,6 +500,56 @@ describe('jumping away cancels a pending auto-advance', () => {
   });
 });
 
+// A passage with no voiceover auto-advances from an effect timer, not
+// from audio.onended. Restarting while already on it keeps the same
+// node, so the countdown has to start over rather than carry on. Guards
+// the explicit re-arm: before it, this only held because restart gave
+// setHistory a new array and the effect happened to depend on a
+// callback that closes over history.
+describe('restarting a voiceover-less passage restarts its countdown', () => {
+  it('waits the full hold again after the r shortcut', async () => {
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = makeStory({
+      settings: { autoAdvance: true },
+      nodes: {
+        start: {
+          id: 'start',
+          type: 'knot',
+          content: [{ text: 'The beginning.' }],
+          choices: [{ text: 'On', target: 'next' }],
+          divert: null,
+          tags: [],
+        },
+        next: {
+          id: 'next',
+          type: 'knot',
+          content: [{ text: 'The end.' }],
+          choices: [],
+          divert: null,
+          tags: [],
+        },
+      },
+    });
+    render(<App />);
+    await startTheStory();
+    await screen.findByText('The beginning.');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1500);
+    });
+    fireEvent.keyDown(window, { key: 'r' });
+    // Past where the first visit's 2s hold would have fired.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(screen.getByText('The beginning.')).toBeTruthy();
+    expect(screen.queryByText('The end.')).toBeNull();
+    // The restarted hold still advances.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1500);
+    });
+    expect(screen.getByText('The end.')).toBeTruthy();
+  });
+});
+
 // The same jumps also left the rest of the passage running: a choice cue
 // already sounding played on over wherever the listener landed, and a
 // pending stall retry left its count set, so the next fresh start was
