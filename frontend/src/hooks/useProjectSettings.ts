@@ -73,11 +73,17 @@ export interface UseProjectSettingsResult {
   /**
    * PATCH a single key. Updates local state optimistically; on
    * failure rolls back JUST that key if the user hasn't changed it
-   * again in the meantime — except for a nested-merge key (see
-   * PARTIAL_PATCH_KEYS), where `next` is only a fragment and there is
-   * no complete value to roll back to; those surface the failure
-   * instead. Concurrent calls with different keys are independent, and
-   * for the same key only the newest one's result is applied.
+   * again in the meantime. For a nested-merge key (see
+   * PARTIAL_PATCH_KEYS), `next` is only a fragment, but the rollback
+   * target is still a complete value — tracked merged, one sub-field's
+   * worth at a time, never as a bare fragment — so this holds for those
+   * too; the one thing they never do is resend, since nothing ever
+   * skips sending one of their saves in the first place (see saveNow).
+   * A partial-patch key's failure always surfaces regardless of
+   * whether anything has superseded it, since a newer save for the key
+   * patches a *different* sub-field rather than superseding this one.
+   * Concurrent calls with different keys are independent, and for the
+   * same key only the newest one's result is applied.
    */
   updateOne: <K extends keyof ProjectSettings>(key: K, next: ProjectSettings[K]) => Promise<void>;
   /**
@@ -229,6 +235,48 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
   }
 
   /**
+   * Write `value` for `key` to both React state and lastValueRef
+   * together, so the two — deliberately tracked separately, see
+   * lastValueRef's own comment — can never drift apart by one call site
+   * updating one and forgetting the other.
+   */
+  function setTracked<K extends keyof ProjectSettings>(
+    key: K,
+    value: ProjectSettings[K] | undefined,
+  ) {
+    lastValueRef.current.set(key as string, value);
+    setSettings((prev) => ({ ...(prev ?? {}), [key]: value }));
+  }
+
+  /**
+   * setTracked for a partial-patch key's own write: `fragment` is one
+   * sub-field's worth, not the key's complete value, so it's merged onto
+   * whatever lastValueRef already holds for this key — which, thanks to
+   * this same merge, is itself always the best-known *complete* value,
+   * never a bare fragment — rather than replacing it outright.
+   *
+   * Without this, a single edit to one sub-field (no concurrency, no
+   * failure involved) would blank every *other* sub-field the instant
+   * it's applied optimistically, before any network round trip: found
+   * empirically, the first version of this file's partial-patch handling
+   * only guarded against a fragment showing up *after a failed
+   * rollback*, missing that a bare optimistic write has the exact same
+   * shape of bug.
+   */
+  function setTrackedFragment<K extends keyof ProjectSettings>(
+    key: K,
+    fragment: ProjectSettings[K],
+  ) {
+    const name = key as string;
+    const existing = lastValueRef.current.get(name);
+    const merged =
+      existing && typeof existing === 'object' && !Array.isArray(existing) && fragment
+        ? { ...(existing as object), ...(fragment as object) }
+        : fragment;
+    setTracked(key, merged as ProjectSettings[K]);
+  }
+
+  /**
    * Take just the patched key out of the server's response.
    *
    * The endpoint returns the whole merged settings object, but writing
@@ -245,20 +293,6 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
    * choiceIndicatorAudio comes back whole, and a guarded value like
    * choiceAudioDelayMs comes back clamped.
    */
-  /**
-   * Write `value` for `key` to both React state and lastValueRef
-   * together, so the two — deliberately tracked separately, see
-   * lastValueRef's own comment — can never drift apart by one call site
-   * updating one and forgetting the other.
-   */
-  function setTracked<K extends keyof ProjectSettings>(
-    key: K,
-    value: ProjectSettings[K] | undefined,
-  ) {
-    lastValueRef.current.set(key as string, value);
-    setSettings((prev) => ({ ...(prev ?? {}), [key]: value }));
-  }
-
   function applyServerValue<K extends keyof ProjectSettings>(key: K, updated: ProjectSettings) {
     // Every call site already checked isCurrentGeneration before calling
     // this, so this is always the newest, winning response for the key —
@@ -387,8 +421,18 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     // each call's write to it is visible to the very next call
     // immediately, with no dependency on when — or in what order
     // relative to this code — React gets around to applying anything.
+    const isPartial = PARTIAL_PATCH_KEYS.has(name);
+    // originalValue is what this call would roll back to. For a
+    // partial-patch key it's the best-known *complete* value (thanks to
+    // setTrackedFragment's merge below, and every other write to this
+    // key going through it or applyServerValue) — genuinely safe to
+    // restore, unlike a bare fragment.
     const originalValue = lastValueRef.current.get(name) as ProjectSettings[K] | undefined;
-    setTracked(key, next);
+    if (isPartial) {
+      setTrackedFragment(key, next);
+    } else {
+      setTracked(key, next);
+    }
     const generation = nextGeneration(name);
     await runSerialized(name, async (signal) => {
       // Always send, even if queueing let a newer change to this key
@@ -411,26 +455,30 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
         applyServerValue(key, updated);
       } catch (err) {
         if (isAbortError(err)) return;
-        if (PARTIAL_PATCH_KEYS.has(name)) {
-          // Always surface the failure, regardless of generation: a
-          // newer save for this key carries a *different* sub-field's
-          // fragment, not a value that supersedes this one, so this
-          // failure is the only record that `next`'s sub-field never
-          // reached the server, and nothing else is going to resend it.
-          setError(err instanceof Error ? err.message : 'Failed to update setting');
-          // No rollback, deliberately: for a partial-patch key,
-          // originalValue and `next` are both fragments — one
-          // sub-field's worth — never this key's complete value (that
-          // only exists merged, server-side). Writing a fragment into
-          // `settings[key]` as if it were the whole thing would wipe
-          // out whatever sub-field this specific call didn't touch,
-          // corrupting the *other* side's displayed value along with
-          // this one. The edit is lost either way; surfacing the error
-          // above is the most this function can safely do on its own.
+        // Surface a partial-patch key's failure regardless of
+        // generation: a newer save for this key patches a *different*
+        // sub-field, not a value that supersedes this one, so this
+        // failure is the only record that `next`'s sub-field never
+        // reached the server.
+        if (!isPartial && !isCurrentGeneration(name, generation)) return;
+        setError(err instanceof Error ? err.message : 'Failed to update setting');
+        if (isPartial) {
+          // Roll back only if nothing has claimed this key since —
+          // isCurrentGeneration (ref-based, reliable), not the
+          // lastValueRef reference-equality check below: lastValueRef
+          // holds this key's whole *merged* object for a partial-patch
+          // key, never a bare fragment, so it can't be compared by
+          // reference against `next` (a fragment) the same way.
+          if (!isCurrentGeneration(name, generation)) return;
+          setTracked(key, originalValue);
+          // No resend: saveNow never skips sending a partial-patch
+          // key's own save (see PARTIAL_PATCH_KEYS's own comment), so
+          // there's no earlier, skipped send this rollback needs to
+          // make up for — the server already independently has
+          // whatever each sub-field's own send last got past it, which
+          // is exactly what originalValue now reflects.
           return;
         }
-        if (!isCurrentGeneration(name, generation)) return;
-        setError(err instanceof Error ? err.message : 'Failed to update setting');
         // Only roll back (and resend) if nothing has claimed this key
         // as its own intended value since this call's own write.
         // lastValueRef, not React state: it's the one check in this
@@ -461,8 +509,15 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     // for this same key — e.g. a direct control changed while this
     // debounced one is still pending — reads this value as its own
     // rollback target, rather than whatever was there before this call.
-    // See updateOne's own comment on lastValueRef.
-    setTracked(key, next);
+    // See updateOne's own comment on lastValueRef. setTrackedFragment
+    // for a partial-patch key, for the same reason updateOne uses it —
+    // no current caller debounces one of these, but nothing stops a
+    // future one from doing so, and this keeps that case correct too.
+    if (PARTIAL_PATCH_KEYS.has(name)) {
+      setTrackedFragment(key, next);
+    } else {
+      setTracked(key, next);
+    }
     // Claim the generation here rather than inside the timer. The value
     // on screen has already moved, so a response still in flight for an
     // older one is stale from this moment — waiting until the timer
@@ -492,6 +547,7 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     generation: number,
   ): Promise<void> {
     const name = key as string;
+    const isPartial = PARTIAL_PATCH_KEYS.has(name);
     await runSerialized(name, async (signal) => {
       // Same reasoning as updateOne. This is the case PARTIAL_PATCH_KEYS'
       // own comment describes: this save's actual request was delayed
@@ -499,7 +555,7 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
       // direct, un-debounced call for the same key can already have
       // reached the server and won — sending this stale value now would
       // silently overwrite it.
-      if (!PARTIAL_PATCH_KEYS.has(name) && !isCurrentGeneration(name, generation)) return;
+      if (!isPartial && !isCurrentGeneration(name, generation)) return;
       try {
         const { settings: updated } = await updateProjectSettings(
           projectId,
@@ -511,7 +567,7 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
         applyServerValue(key, updated);
       } catch (err) {
         if (isAbortError(err)) return;
-        if (!PARTIAL_PATCH_KEYS.has(name) && !isCurrentGeneration(name, generation)) return;
+        if (!isPartial && !isCurrentGeneration(name, generation)) return;
         setError(err instanceof Error ? err.message : 'Failed to save');
       }
     });

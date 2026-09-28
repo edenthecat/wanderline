@@ -588,6 +588,11 @@ describe('useProjectSettings — overlapping saves', () => {
   it('surfaces a partial-patch failure even once a newer save has taken over the key', async () => {
     mockedFetch.mockResolvedValueOnce({ settings: {} });
     let rejectFirst!: (e: Error) => void;
+    // choice2's own request is left pending deliberately, so it hasn't
+    // answered yet at the point this test checks `settings` below — if
+    // it had, its own (entirely correct) response would overwrite
+    // whatever's there regardless, masking the thing being tested here.
+    let resolveSecond!: (v: { settings: { choiceIndicatorAudio: Record<string, string> } }) => void;
     mockedUpdate
       .mockImplementationOnce(
         () =>
@@ -595,9 +600,12 @@ describe('useProjectSettings — overlapping saves', () => {
             rejectFirst = rej;
           }),
       )
-      .mockResolvedValueOnce({
-        settings: { choiceIndicatorAudio: { choice2FileId: 'b' } },
-      });
+      .mockImplementationOnce(
+        () =>
+          new Promise((res) => {
+            resolveSecond = res;
+          }),
+      );
 
     const { result } = renderHook(() => useProjectSettings('p1'));
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -614,6 +622,20 @@ describe('useProjectSettings — overlapping saves', () => {
     });
 
     expect(result.current.error).toMatch(/choice 1 failed/);
+    // choice1's rollback has to stay skipped, not just its resend: it's
+    // no longer the current generation (choice2's call already claimed
+    // that), so rolling back here would restore choice1's own
+    // pre-edit — pre-*both*-edits — snapshot, clobbering choice2's
+    // still-pending optimistic edit with a stale one.
+    expect(result.current.settings?.choiceIndicatorAudio).toEqual({
+      choice1FileId: 'a',
+      choice2FileId: 'b',
+    });
+
+    // Let choice2's own request resolve too, so nothing's left hanging.
+    await act(async () => {
+      resolveSecond({ settings: { choiceIndicatorAudio: { choice2FileId: 'b' } } });
+    });
   });
 
   // A partial-patch key's rollback target is only ever a fragment — one
@@ -624,7 +646,42 @@ describe('useProjectSettings — overlapping saves', () => {
   // its response lands (so lastValueRef, at the moment choice2's call
   // captures its own "before" snapshot, holds only choice1's fragment,
   // not the full stored object); choice2's call then fails.
-  it('does not let a failed partial-patch rollback overwrite the key with a stale fragment', async () => {
+  // The common case: one edit, no concurrency at all. lastValueRef holds
+  // the complete pre-edit object (nothing has fragmented it yet), so a
+  // failure here has a genuinely safe, complete value to roll back to —
+  // an earlier version of this fix missed that distinction and treated
+  // every partial-patch failure as unrecoverable, which blanked the
+  // untouched sub-field even in this, the most ordinary case.
+  it('rolls a single failed partial-patch edit back to the complete pre-edit object', async () => {
+    mockedFetch.mockResolvedValueOnce({
+      settings: { choiceIndicatorAudio: { choice1FileId: 'x', choice2FileId: 'y' } },
+    });
+    mockedUpdate.mockRejectedValueOnce(new Error('choice 1 failed'));
+
+    const { result } = renderHook(() => useProjectSettings('p1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.updateOne('choiceIndicatorAudio', { choice1FileId: 'a' });
+    });
+
+    expect(result.current.error).toMatch(/choice 1 failed/);
+    // Not just "choice1FileId reverted" — the untouched choice2FileId
+    // must still be there too, not blanked by a bare-fragment rollback.
+    expect(result.current.settings?.choiceIndicatorAudio).toEqual({
+      choice1FileId: 'x',
+      choice2FileId: 'y',
+    });
+  });
+
+  // The concurrent case: choice1's edit succeeds but is superseded
+  // before its response lands (so it never reaches applyServerValue),
+  // and choice2's edit — which optimistically merged onto choice1's own
+  // optimistic write, not replaced it — then fails. The rollback target
+  // captured at choice2's own start is therefore already the correctly
+  // merged {choice1: 'a', choice2: 'y'}, not a bare fragment of either
+  // side.
+  it('rolls a failed partial-patch edit back to the other sub-field’s own successful, merged edit', async () => {
     mockedFetch.mockResolvedValueOnce({
       settings: { choiceIndicatorAudio: { choice1FileId: 'x', choice2FileId: 'y' } },
     });
@@ -648,11 +705,13 @@ describe('useProjectSettings — overlapping saves', () => {
     });
 
     expect(result.current.error).toMatch(/choice 2 failed/);
-    // The bug this reproduces: a rollback would have overwritten this
-    // with choice1's own stale fragment, `{ choice1FileId: 'a' }`,
-    // silently erasing choice2FileId from the displayed state.
-    expect(result.current.settings?.choiceIndicatorAudio).not.toEqual({ choice1FileId: 'a' });
-    expect(result.current.settings?.choiceIndicatorAudio).toEqual({ choice2FileId: 'b' });
+    // choice1's successful edit survives; choice2 reverts to its own
+    // pre-edit value rather than being left at the failed 'b' or wiped
+    // to nothing.
+    expect(result.current.settings?.choiceIndicatorAudio).toEqual({
+      choice1FileId: 'a',
+      choice2FileId: 'y',
+    });
   });
 
   // The scalar skip in saveNow (see PARTIAL_PATCH_KEYS) assumes the
