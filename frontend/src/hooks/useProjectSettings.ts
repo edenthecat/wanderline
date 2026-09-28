@@ -126,12 +126,30 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
   // its own outstanding work rather than leaving it to land, unordered,
   // on top of whatever the next project loads or saves.
   const projectAbortRef = useRef(new AbortController());
+  // The last value this hook itself asked the server to store for each
+  // key — from a load, a confirmed response, or a call's own optimistic
+  // write — kept outside React state specifically so it's readable
+  // *synchronously*, the instant it's written, with no dependence on
+  // when React gets around to actually applying a queued setState.
+  //
+  // updateOne's rollback-and-resend needs exactly that: "what did this
+  // key hold right before my own write", correct even when two calls
+  // for the same key land without a render in between (a bulk apply, or
+  // two controls firing in the same tick). Reading that from `settings`
+  // via closure isn't enough — it only reflects the last *committed*
+  // render, not a write queued moments before by another call in the
+  // same batch. And capturing it from inside setSettings's own updater
+  // (the obvious alternative) isn't safe to read from code that runs
+  // straight after — React doesn't invoke that updater synchronously,
+  // so the value isn't there yet.
+  const lastValueRef = useRef(new Map<string, unknown>());
 
   async function reload() {
     setLoading(true);
     const signal = projectAbortRef.current.signal;
     try {
       const { settings: data } = await fetchProjectSettings(projectId, signal);
+      lastValueRef.current = new Map(Object.entries(data));
       setSettings(data);
       setError(null);
     } catch (err) {
@@ -183,6 +201,13 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
       // ...and now that they're cancelled, drop them, so the next
       // project's saves have nothing to queue behind.
       inFlight.clear();
+      // Drop every recorded value too, so a call for the new project,
+      // made before its own reload() has finished repopulating this,
+      // can't capture a rollback target that belongs to the project just
+      // left. lastValueRef.current itself is about to be replaced
+      // wholesale by that reload() anyway (see there), but clearing here
+      // closes the window between now and then.
+      lastValueRef.current.clear();
     };
   }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -219,6 +244,13 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
    * choiceAudioDelayMs comes back clamped.
    */
   function applyServerValue<K extends keyof ProjectSettings>(key: K, updated: ProjectSettings) {
+    // Every call site already checked isCurrentGeneration before calling
+    // this, so this is always the newest, winning response for the key —
+    // exactly what lastValueRef should hold going forward. Matters for a
+    // key the endpoint normalizes (choiceAudioDelayMs's own clamp, for
+    // one): without this, a later rollback would target the raw value
+    // this call sent, not what the server actually ended up storing.
+    lastValueRef.current.set(key as string, updated[key]);
     setSettings((prev) => ({ ...(prev ?? {}), [key]: updated[key] }));
   }
 
@@ -314,24 +346,24 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     next: ProjectSettings[K],
   ): Promise<void> {
     setError(null);
-    // Read the pre-write value from `settings` directly (the hook's own
-    // closure over its current state) rather than from `prev` inside the
-    // setSettings call below. The two usually agree, but only the
-    // closure read is available *synchronously*, right here: React does
-    // not invoke a functional setState updater the moment it's called —
-    // reading `originalValue` immediately after queuing that update, as
-    // opposed to from inside a later updater for the same key (safe,
-    // since React does run same-key updaters in the order they were
-    // queued), got this wrong in an earlier version of this fix and is
-    // exactly what the failing-then-superseded scenario in this file's
-    // tests below caught. didCapture is true unconditionally — it's
-    // legacy of when this value came from inside the updater and could,
-    // in principle, never run; kept so a key that's never been set
-    // (originalValue undefined) still rolls back to "absent" correctly.
-    const originalValue = settings?.[key];
-    const didCapture = true;
-    setSettings((prev) => ({ ...(prev ?? {}), [key]: next }));
     const name = key as string;
+    // Read and immediately overwrite lastValueRef, synchronously — not
+    // `settings` via closure, and not from inside the setSettings call
+    // below. Two updateOne calls for the same key can happen without a
+    // render in between (a bulk apply, two controls firing in the same
+    // tick): reading `settings` would give BOTH calls the same stale
+    // pre-either-of-them value, and if the first succeeds and the second
+    // then fails, the second's rollback+resend would clobber the first
+    // call's already-confirmed write back down to that stale value. An
+    // earlier version of this fix did exactly that, caught by mutating
+    // this exact scenario into a test rather than by inspection.
+    // lastValueRef sidesteps it: it's a plain ref, not React state, so
+    // each call's write to it is visible to the very next call
+    // immediately, with no dependency on when — or in what order
+    // relative to this code — React gets around to applying anything.
+    const originalValue = lastValueRef.current.get(name) as ProjectSettings[K] | undefined;
+    lastValueRef.current.set(name, next);
+    setSettings((prev) => ({ ...(prev ?? {}), [key]: next }));
     const generation = nextGeneration(name);
     await runSerialized(name, async (signal) => {
       // Always send, even if queueing let a newer change to this key
@@ -363,15 +395,16 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
         // stays generation-gated as before, since the newer save there
         // really does carry the complete, superseding value.
         if (!PARTIAL_PATCH_KEYS.has(name) && !isCurrentGeneration(name, generation)) return;
-        setSettings((prev) => {
-          if (!prev) return prev;
-          // Only roll back if the user hasn't changed this key again
-          // in the meantime. didCapture is paranoia for callers we
-          // don't fully control.
-          if (!didCapture || prev[key] !== next) return prev;
-          return { ...prev, [key]: originalValue };
-        });
         setError(err instanceof Error ? err.message : 'Failed to update setting');
+        // Only roll back (and, for a scalar key, resend — see below) if
+        // nothing has claimed this key as its own intended value since
+        // this call's own write. lastValueRef, not React state: it's
+        // the one check in this function that has to be correct the
+        // instant it's read, for the same reason capturing originalValue
+        // above did.
+        if (lastValueRef.current.get(name) !== next) return;
+        lastValueRef.current.set(name, originalValue);
+        setSettings((prev) => (prev ? { ...prev, [key]: originalValue } : prev));
         // The rollback above can restore a value that was never actually
         // sent: a debounced predecessor for this same key may have had
         // its own send skipped in saveNow for being "superseded" by
@@ -385,13 +418,7 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
         // For a partial-patch key, `originalValue` is the *other* side's
         // fragment from before this call's own optimistic write — not a
         // value that ever makes sense to resend on its own.
-        //
-        // Gated on isCurrentGeneration, already checked above: that's
-        // what tells us nothing else (via updateOne/updateDebounced) has
-        // touched this key since, so the rollback we just performed is
-        // the correct value to make the server match, not a stale one
-        // clobbering something newer.
-        if (!PARTIAL_PATCH_KEYS.has(name) && didCapture && originalValue !== undefined) {
+        if (!PARTIAL_PATCH_KEYS.has(name) && originalValue !== undefined) {
           void sendOnce(key, originalValue, generation);
         }
       }
@@ -402,8 +429,14 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     key: K,
     next: ProjectSettings[K],
   ): void {
-    setSettings((prev) => ({ ...(prev ?? {}), [key]: next }));
     const name = key as string;
+    // Kept in sync with the optimistic write below so a *later*
+    // updateOne call for this same key — e.g. a direct control changed
+    // while this debounced one is still pending — reads this value as
+    // its own rollback target, rather than whatever was there before
+    // this call. See updateOne's own comment on lastValueRef.
+    lastValueRef.current.set(name, next);
+    setSettings((prev) => ({ ...(prev ?? {}), [key]: next }));
     // Claim the generation here rather than inside the timer. The value
     // on screen has already moved, so a response still in flight for an
     // older one is stale from this moment — waiting until the timer

@@ -723,4 +723,43 @@ describe('useProjectSettings — overlapping saves', () => {
     expect(projectASignal?.aborted).toBe(true);
     expect(saveASignal?.aborted).toBe(true);
   });
+
+  // Two updateOne calls for the same key, with no render between them —
+  // a bulk-apply handler, or two controls firing in the same tick — is
+  // exactly the case a `settings`-via-closure read of the rollback
+  // target gets wrong: both calls would read the same pre-either-of-them
+  // value, so if the first succeeds and the second then fails, the
+  // second's rollback (and resend) would clobber the first call's
+  // already-confirmed write back down to a value the server never
+  // actually held.
+  it('rolls back to the first call’s confirmed value, not a stale pre-both value, when two updateOne calls for one key land without a render in between', async () => {
+    mockedFetch.mockResolvedValueOnce({ settings: { voiceoverVolume: 50 } });
+    mockedUpdate
+      .mockResolvedValueOnce({ settings: { voiceoverVolume: 60 } }) // call1(60) succeeds
+      .mockRejectedValueOnce(new Error('boom')) // call2(70) fails
+      .mockResolvedValueOnce({ settings: { voiceoverVolume: 60 } }); // call2's resend
+
+    const { result } = renderHook(() => useProjectSettings('p1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let call1!: Promise<void>;
+    let call2!: Promise<void>;
+    act(() => {
+      call1 = result.current.updateOne('voiceoverVolume', 60);
+      call2 = result.current.updateOne('voiceoverVolume', 70);
+    });
+    await act(async () => {
+      await Promise.all([call1, call2]);
+    });
+
+    // Rolled back to 60 — what call1 actually got the server to store —
+    // not 50, the value from before either call.
+    expect(result.current.settings?.voiceoverVolume).toBe(60);
+    await waitFor(() => expect(mockedUpdate).toHaveBeenCalledTimes(3));
+    expect(mockedUpdate).toHaveBeenLastCalledWith(
+      'p1',
+      { voiceoverVolume: 60 },
+      expect.any(AbortSignal),
+    );
+  });
 });
