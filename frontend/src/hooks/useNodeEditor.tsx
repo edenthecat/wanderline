@@ -19,8 +19,14 @@ import * as Y from 'yjs';
 import { ReactNode } from 'react';
 import {
   addChoice,
+  assignAudio,
+  bulkReassignAudio,
   deleteChoice,
   fetchAudioAssignments,
+  fetchAudioFiles,
+  fetchProjectSettings,
+  removeAudioAssignment,
+  setSfxOffset,
   fetchCharacters,
   fetchNodeFlags,
   fetchMetadata,
@@ -32,6 +38,7 @@ import {
   updateNodeContentText,
   updateNodeMetadata,
   type AudioAssignments,
+  type AudioFile,
   type Character,
   type NodeFlag,
   type NodeMetadata,
@@ -45,6 +52,24 @@ const METADATA_SIGNAL = 'metadata';
 // the play control in another without a reload.
 const AUDIO_ASSIGNMENTS_SIGNAL = 'audio-assignments';
 const CHOICE_TEXT_SAVE_DEBOUNCE_MS = 800;
+
+export type NodeAudioSlot = 'voiceover' | 'ambience' | 'choice1' | 'choice2' | 'sfx';
+
+export interface NodeAudioActions {
+  /** Attach a file to an empty slot (or add a sound effect). */
+  assign: (nodeId: string, slot: NodeAudioSlot, fileId: string) => Promise<void>;
+  /** Swap one attached file for another, keeping a sound effect's timing. */
+  replace: (
+    nodeId: string,
+    slot: NodeAudioSlot,
+    fromFileId: string,
+    toFileId: string,
+  ) => Promise<void>;
+  /** Detach a file. */
+  clear: (nodeId: string, slot: NodeAudioSlot, fileId: string) => Promise<void>;
+  /** When a sound effect plays, in ms; null for as the passage starts. */
+  setSfxOffset: (nodeId: string, fileId: string, offsetMs: number | null) => Promise<void>;
+}
 
 interface UseNodeEditorArgs {
   projectId: string;
@@ -62,6 +87,13 @@ export interface UseNodeEditorResult {
   audioByNode: AudioAssignments;
   /** audio_file_id -> the name the author uploaded, for labelling. */
   audioNames: Record<string, string>;
+  /** The project's audio library, for choosing what to attach. */
+  audioFiles: AudioFile[];
+  /** Attach, swap, clear and time a node's clips from the node panel. */
+  audioActions: NodeAudioActions;
+  /** The project's default voiceover and ambience levels (0-100), for
+   * auditioning a passage's mix as a listener first hears it. */
+  audioLevels: { voiceover: number; ambience: number };
   /** Characters defined on this project, for the per-node picker.
    * Empty if the lookup failed — the picker then doesn't render. */
   characters: Character[];
@@ -117,6 +149,12 @@ export function useNodeEditor({
   const [audioByNode, setAudioByNode] = useState<AudioAssignments>({});
   // audio_file_id -> the name the author uploaded, for labelling.
   const [audioNames, setAudioNames] = useState<Record<string, string>>({});
+  const [audioFiles, setAudioFiles] = useState<AudioFile[]>([]);
+  // The player's own defaults until the project's load.
+  const [audioLevels, setAudioLevels] = useState({ voiceover: 100, ambience: 50 });
+  // Bumped after this tab changes an assignment, so it refetches without
+  // waiting on its own live-signal echo.
+  const [audioReloadKey, setAudioReloadKey] = useState(0);
   // Characters available to assign to a node. The column, the API and
   // the player's per-character theming have all existed since the
   // baseline migration; only the editor control was missing.
@@ -164,6 +202,7 @@ export function useNodeEditor({
     setMetadataError(null);
     setAudioByNode({});
     setAudioNames({});
+    setAudioFiles([]);
     setCharacters([]);
     setFlagsByNode({});
     setFlagsTruncated(false);
@@ -190,10 +229,72 @@ export function useNodeEditor({
       .catch(() => {
         if (!cancelled) setAudioByNode({});
       });
+    // The library, for the node panel's pickers. Silent on failure like
+    // the rest: the pickers just have nothing to offer.
+    fetchAudioFiles(projectId)
+      .then((res) => {
+        if (!cancelled) setAudioFiles(res.audioFiles ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setAudioFiles([]);
+      });
     return () => {
       cancelled = true;
     };
-  }, [projectId, audioSignal]);
+  }, [projectId, audioSignal, audioReloadKey]);
+
+  // Levels for the mix audition. Loaded ahead of time, not on click: the
+  // mix has to start inside the click for Safari to let it play. Once per
+  // project; reset first so one project's levels never carry to the next.
+  useEffect(() => {
+    let cancelled = false;
+    setAudioLevels({ voiceover: 100, ambience: 50 });
+    fetchProjectSettings(projectId)
+      .then(({ settings }) => {
+        if (cancelled) return;
+        setAudioLevels({
+          voiceover: settings.voiceoverVolume ?? 100,
+          ambience: settings.ambienceVolume ?? 50,
+        });
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
+  // Every change refetches here and tells peer tabs (the Audio tab,
+  // another author's node panel) to do the same. Errors propagate so the
+  // panel can show them next to the control that failed.
+  const audioActions = useMemo<NodeAudioActions>(() => {
+    // Refetch after a failure too: the usual cause is a peer having
+    // changed the slot, and the panel should show what's there now.
+    const run = async (op: () => Promise<unknown>) => {
+      try {
+        await op();
+        bumpLiveSignal(yDoc ?? null, AUDIO_ASSIGNMENTS_SIGNAL);
+      } finally {
+        setAudioReloadKey((k) => k + 1);
+      }
+    };
+    return {
+      // The panel only offers Attach on a slot it saw empty.
+      assign: (nodeId, slot, fileId) =>
+        run(() => assignAudio(projectId, nodeId, slot, fileId, undefined, slot !== 'sfx')),
+      // The reassign endpoint swaps atomically and keeps a sound effect's
+      // timing; assign would drop it.
+      replace: (nodeId, slot, fromFileId, toFileId) =>
+        run(() =>
+          bulkReassignAudio(projectId, [{ nodeId, audioType: slot, fromFileId, toFileId }]),
+        ),
+      // Always name the file the author saw: if a peer has swapped this
+      // slot in the meantime, clearing must not remove their new take.
+      clear: (nodeId, slot, fileId) =>
+        run(() => removeAudioAssignment(projectId, nodeId, slot, fileId)),
+      setSfxOffset: (nodeId, fileId, offsetMs) =>
+        run(() => setSfxOffset(projectId, nodeId, fileId, offsetMs)),
+    };
+  }, [projectId, yDoc]);
 
   // Character list for the per-node picker. Silent on failure for the
   // same reason as the audio lookup: the control is an affordance, not
@@ -488,6 +589,9 @@ export function useNodeEditor({
     metadataLoaded,
     audioByNode,
     audioNames,
+    audioFiles,
+    audioActions,
+    audioLevels,
     characters,
     flagsByNode,
     flagsTruncated,

@@ -76,6 +76,23 @@ const upload = multer({
   },
 });
 
+const INVALID_OFFSET = Symbol('invalid offset');
+const OFFSET_ERROR = 'offsetMs must be a whole number of milliseconds, 0 to 3600000, or null';
+
+/**
+ * A sound effect's offset from the request body. Undefined and null both
+ * mean "as the passage starts". Anything else must be a whole number of
+ * milliseconds within an hour (a passage longer than that isn't a
+ * passage), so a typo in seconds can't park an effect nowhere.
+ */
+export function parseOffsetMs(value: unknown): number | null | typeof INVALID_OFFSET {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 3_600_000) {
+    return INVALID_OFFSET;
+  }
+  return value;
+}
+
 export function createAudioRouter(pool: Pool): Router {
   const router = Router({ mergeParams: true });
 
@@ -532,6 +549,16 @@ export function createAudioRouter(pool: Pool): Router {
    *                       ambience: { type: string, format: uuid, nullable: true }
    *                       choice1: { type: string, format: uuid, nullable: true }
    *                       choice2: { type: string, format: uuid, nullable: true }
+   *                       sfx:
+   *                         type: array
+   *                         items: { type: string, format: uuid }
+   *                       sfxOffsets:
+   *                         type: object
+   *                         description: |
+   *                           Milliseconds into the passage each sound effect plays
+   *                           at, keyed by file id. Absent for one that plays as the
+   *                           passage starts.
+   *                         additionalProperties: { type: integer, minimum: 0 }
    */
   router.get('/assignments', async (req: Request, res: Response) => {
     try {
@@ -551,14 +578,25 @@ export function createAudioRouter(pool: Pool): Router {
       // Group by node_id
       const assignments: Record<
         string,
-        { voiceover?: string; ambience?: string; choice1?: string; choice2?: string; sfx: string[] }
+        {
+          voiceover?: string;
+          ambience?: string;
+          choice1?: string;
+          choice2?: string;
+          sfx: string[];
+          sfxOffsets?: Record<string, number>;
+        }
       > = {};
       for (const row of result.rows) {
         if (!assignments[row.node_id]) {
           assignments[row.node_id] = { sfx: [] };
         }
         if (row.audio_type === 'sfx') {
-          assignments[row.node_id].sfx.push(row.audio_file_id);
+          const node = assignments[row.node_id];
+          node.sfx.push(row.audio_file_id);
+          if (typeof row.offset_ms === 'number') {
+            (node.sfxOffsets ??= {})[row.audio_file_id] = row.offset_ms;
+          }
         } else {
           assignments[row.node_id][
             row.audio_type as 'voiceover' | 'ambience' | 'choice1' | 'choice2'
@@ -598,19 +636,37 @@ export function createAudioRouter(pool: Pool): Router {
    *             required: [nodeId, audioType, audioFileId]
    *             properties:
    *               nodeId: { type: string }
-   *               audioType: { type: string, enum: [voiceover, ambience, choice1, choice2] }
+   *               audioType: { type: string, enum: [voiceover, ambience, choice1, choice2, sfx] }
    *               audioFileId: { type: string, format: uuid }
+   *               offsetMs:
+   *                 type: integer
+   *                 minimum: 0
+   *                 nullable: true
+   *                 description: sfx only. When to play it; omit or null for as the passage starts.
+   *               expectEmpty:
+   *                 type: boolean
+   *                 description: Refuse with 409 instead of replacing if the slot is already filled.
    *     responses:
    *       200: { description: Assigned. }
    *       400: { description: Missing / invalid fields. }
+   *       409: { description: expectEmpty was set and the slot is already filled. }
    */
   router.post('/assignments', async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
-      const { nodeId, audioType, audioFileId } = req.body;
+      const { nodeId, audioType, audioFileId, offsetMs, expectEmpty } = req.body;
 
       if (!nodeId || !audioType || !audioFileId) {
         res.status(400).json({ error: 'nodeId, audioType, and audioFileId are required' });
+        return;
+      }
+      const offset = parseOffsetMs(offsetMs);
+      if (offset === INVALID_OFFSET) {
+        res.status(400).json({ error: OFFSET_ERROR });
+        return;
+      }
+      if (offset !== null && audioType !== 'sfx') {
+        res.status(400).json({ error: 'offsetMs only applies to sfx' });
         return;
       }
 
@@ -619,6 +675,20 @@ export function createAudioRouter(pool: Pool): Router {
           .status(400)
           .json({ error: 'audioType must be voiceover, ambience, sfx, choice1, or choice2' });
         return;
+      }
+
+      // An editor attaching to what it saw as an empty slot asks for this,
+      // so a take a peer attached in the meantime isn't silently replaced.
+      if (expectEmpty === true && audioType !== 'sfx') {
+        const existing = await pool.query(
+          `SELECT 1 FROM node_audio_assignments
+           WHERE project_id = $1 AND node_id = $2 AND audio_type = $3`,
+          [id, nodeId, audioType],
+        );
+        if (existing.rows.length > 0) {
+          res.status(409).json({ error: `${nodeId} already has ${audioType} audio attached` });
+          return;
+        }
       }
 
       // For voiceover, ambience, choice1, choice2 - replace existing assignment (sfx can have multiple)
@@ -632,14 +702,18 @@ export function createAudioRouter(pool: Pool): Router {
         );
       }
 
+      // Re-posting an sfx that's already attached with an explicit
+      // offset moves it; without one, the existing timing is kept.
       const result = await pool.query(
         `
-        INSERT INTO node_audio_assignments (project_id, node_id, audio_type, audio_file_id)
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT (project_id, node_id, audio_type, audio_file_id) DO NOTHING
+        INSERT INTO node_audio_assignments (project_id, node_id, audio_type, audio_file_id, offset_ms)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (project_id, node_id, audio_type, audio_file_id)
+        DO UPDATE SET offset_ms = COALESCE(EXCLUDED.offset_ms, node_audio_assignments.offset_ms),
+                      updated_at = CURRENT_TIMESTAMP
         RETURNING *
       `,
-        [id, nodeId, audioType, audioFileId],
+        [id, nodeId, audioType, audioFileId, offset],
       );
 
       // Update project timestamp
@@ -649,6 +723,78 @@ export function createAudioRouter(pool: Pool): Router {
     } catch (error) {
       req.log.error({ err: error }, 'Failed to assign audio');
       res.status(500).json({ error: 'Failed to assign audio' });
+    }
+  });
+
+  // Set or clear when one sound effect plays.
+  /**
+   * @openapi
+   * /projects/{id}/audio/assignments/{nodeId}/sfx/{audioFileId}:
+   *   patch:
+   *     summary: Set when one of a node's sound effects plays.
+   *     description: |
+   *       Milliseconds into the narration (or after arriving, on a passage
+   *       with no narration). Null plays it as the passage starts.
+   *     tags: [Audio]
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema: { type: string, format: uuid }
+   *       - in: path
+   *         name: nodeId
+   *         required: true
+   *         schema: { type: string }
+   *       - in: path
+   *         name: audioFileId
+   *         required: true
+   *         schema: { type: string, format: uuid }
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: object
+   *             required: [offsetMs]
+   *             properties:
+   *               offsetMs: { type: integer, minimum: 0, maximum: 3600000, nullable: true }
+   *     responses:
+   *       200: { description: Updated. }
+   *       400: { description: Invalid offset. }
+   *       404: { description: That sound effect isn't attached to this node. }
+   */
+  router.patch('/assignments/:nodeId/sfx/:audioFileId', async (req: Request, res: Response) => {
+    try {
+      const { id, nodeId, audioFileId } = req.params;
+      if (!UUID_RE.test(audioFileId)) {
+        res.status(400).json({ error: 'audioFileId must be a UUID' });
+        return;
+      }
+      if (!('offsetMs' in (req.body ?? {}))) {
+        res.status(400).json({ error: 'offsetMs is required (null to play at the start)' });
+        return;
+      }
+      const offset = parseOffsetMs(req.body.offsetMs);
+      if (offset === INVALID_OFFSET) {
+        res.status(400).json({ error: OFFSET_ERROR });
+        return;
+      }
+      const result = await pool.query(
+        `UPDATE node_audio_assignments
+           SET offset_ms = $4, updated_at = CURRENT_TIMESTAMP
+           WHERE project_id = $1 AND node_id = $2 AND audio_type = 'sfx' AND audio_file_id = $3
+           RETURNING *`,
+        [id, nodeId, audioFileId, offset],
+      );
+      if (result.rows.length === 0) {
+        res.status(404).json({ error: 'Sound effect not attached to this node' });
+        return;
+      }
+      await pool.query('UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1', [id]);
+      res.json({ assignment: result.rows[0] });
+    } catch (error) {
+      req.log.error({ err: error }, 'Failed to set sound effect offset');
+      res.status(500).json({ error: 'Failed to set sound effect offset' });
     }
   });
 
@@ -838,7 +984,7 @@ export function createAudioRouter(pool: Pool): Router {
         const del = await client.query(
           `DELETE FROM node_audio_assignments
            WHERE project_id = $1 AND node_id = $2 AND audio_type = $3 AND audio_file_id = $4
-           RETURNING id`,
+           RETURNING id, offset_ms`,
           [id, op.nodeId, op.audioType, op.fromFileId],
         );
         if (del.rows.length === 0) {
@@ -851,11 +997,13 @@ export function createAudioRouter(pool: Pool): Router {
           });
           return;
         }
+        // Swapping in a new take keeps the effect's timing: the author
+        // placed it against the words, not against the file.
         await client.query(
-          `INSERT INTO node_audio_assignments (project_id, node_id, audio_type, audio_file_id)
-           VALUES ($1, $2, $3, $4)
+          `INSERT INTO node_audio_assignments (project_id, node_id, audio_type, audio_file_id, offset_ms)
+           VALUES ($1, $2, $3, $4, $5)
            ON CONFLICT (project_id, node_id, audio_type, audio_file_id) DO NOTHING`,
-          [id, op.nodeId, op.audioType, op.toFileId],
+          [id, op.nodeId, op.audioType, op.toFileId, del.rows[0].offset_ms ?? null],
         );
         swapped += 1;
       }

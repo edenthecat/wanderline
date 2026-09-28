@@ -429,6 +429,9 @@ export interface AudioAssignments {
     choice1?: string;
     choice2?: string;
     sfx: string[];
+    /** When each sound effect plays, in ms, keyed by file id. Absent for
+     * one that plays as the passage starts. */
+    sfxOffsets?: Record<string, number>;
   };
 }
 
@@ -443,11 +446,29 @@ export function assignAudio(
   nodeId: string,
   audioType: string,
   audioFileId: string,
+  offsetMs?: number | null,
+  /** Refuse (409) rather than replace if the slot has been filled since
+   * the caller last looked. */
+  expectEmpty?: boolean,
 ): Promise<{ assignment: AudioAssignmentRaw }> {
   return request(`/projects/${projectId}/audio/assignments`, {
     method: 'POST',
-    body: JSON.stringify({ nodeId, audioType, audioFileId }),
+    body: JSON.stringify({ nodeId, audioType, audioFileId, offsetMs, expectEmpty }),
   });
+}
+
+/** Set when one of a node's sound effects plays: ms into the narration
+ * (or after arriving, with no narration). Null plays it at the start. */
+export function setSfxOffset(
+  projectId: string,
+  nodeId: string,
+  audioFileId: string,
+  offsetMs: number | null,
+): Promise<{ assignment: AudioAssignmentRaw }> {
+  return request(
+    `/projects/${projectId}/audio/assignments/${encodeURIComponent(nodeId)}/sfx/${audioFileId}`,
+    { method: 'PATCH', body: JSON.stringify({ offsetMs }) },
+  );
 }
 
 export function removeAudioAssignment(
@@ -457,9 +478,12 @@ export function removeAudioAssignment(
   audioFileId?: string,
 ): Promise<{ success: boolean }> {
   const params = audioFileId ? `?audioFileId=${encodeURIComponent(audioFileId)}` : '';
-  return request(`/projects/${projectId}/audio/assignments/${nodeId}/${audioType}${params}`, {
-    method: 'DELETE',
-  });
+  // Node ids are free text (a Twee passage can be "Left/Right" or "What
+  // now?"), so they have to be encoded to land on the right route.
+  return request(
+    `/projects/${projectId}/audio/assignments/${encodeURIComponent(nodeId)}/${encodeURIComponent(audioType)}${params}`,
+    { method: 'DELETE' },
+  );
 }
 
 export interface BulkReassignOp {
