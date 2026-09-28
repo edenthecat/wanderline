@@ -41,6 +41,22 @@ RUN npm run build --workspace=@wanderline/backend
 # Prune devDependencies from builder to reuse in production stage
 RUN npm prune --omit=dev --workspace=@wanderline/backend --workspace=@wanderline/shared
 
+# npm workspaces hoists most packages to the root node_modules, but not
+# always: when a package's own resolved tree conflicts with something
+# else in the lockfile, npm nests it under the workspace that needs it
+# instead (backend/node_modules/<pkg>) rather than root. Found the hard
+# way when multer's 2.0.2 -> 2.4.0 bump (DEV-196) moved it from
+# hoisted-at-root to nested-under-backend in package-lock.json, and the
+# stage-2 image below only ever copied the root node_modules — so the
+# production image built clean, passed the release smoke test (which
+# only runs `npm run migrate`, never boots the actual server), and then
+# crash-looped on startup with `ERR_MODULE_NOT_FOUND: multer`. Folding
+# any nested workspace node_modules into the root tree here, before
+# stage 2's single COPY, makes that copy correct regardless of which
+# way a future dependency bump happens to hoist.
+RUN if [ -d backend/node_modules ]; then cp -a backend/node_modules/. node_modules/; fi
+RUN if [ -d shared/node_modules ]; then cp -a shared/node_modules/. node_modules/; fi
+
 # Stage 2: Production image
 FROM node:20-alpine
 
