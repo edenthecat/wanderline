@@ -588,6 +588,45 @@ describe('jumping away stops the rest of the passage', () => {
     expect(cue.paused).toBe(true);
   });
 
+  // Choosing an ending never stopped the cue loop, so it kept offering
+  // choices under "The End".
+  it('silences the choice cues when a choice leads to the end', async () => {
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = makeStory({
+      indicatorAudio: { choice1: 'c1.mp3', choice2: 'c2.mp3' },
+      nodes: {
+        start: {
+          id: 'start',
+          type: 'knot',
+          content: [{ text: 'The beginning.' }],
+          choices: [
+            { text: 'Leave', target: 'END' },
+            { text: 'Stay', target: 'start' },
+          ],
+          divert: null,
+          tags: [],
+          audio: { voiceover: 'start.mp3', choice1: 'n1.mp3', choice2: 'n2.mp3' },
+        },
+      },
+    });
+    render(<App />);
+    await startTheStory();
+    await screen.findByLabelText('Pause narration');
+    act(() => voiceoverFor('start.mp3')!.onended?.());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3500);
+    });
+    const cue = voiceoverFor('c1.mp3')!;
+    expect(cue.paused).toBe(false);
+
+    fireEvent.click(await screen.findByLabelText(/^Choice 1/));
+    expect(cue.paused).toBe(true);
+    // And the loop doesn't start it again.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(audioInstances.filter((a) => a.src.includes('c1.mp3') && !a.paused)).toHaveLength(0);
+  });
+
   // goBack used to clear the timers but not the cue clips themselves.
   it('silences a playing choice cue when going back', async () => {
     (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = makeStory({

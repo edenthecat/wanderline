@@ -88,6 +88,16 @@ export function evictAudioCacheIfFull(cache: Map<string, AudioCacheEntry>): void
   for (const key of cache.keys()) {
     if (PINNED_CACHE_KEYS.has(key)) continue;
     const entry = cache.get(key);
+    // Never tear down something that's sounding. Oldest-first used to
+    // mean the longest-running element got cut first: an ambience bed
+    // carried across a run of passages, or the narration itself, went
+    // silent mid-play once enough preloads queued up behind it, and the
+    // bed never came back because its file hadn't changed.
+    if (entry?.audio && !entry.audio.paused && !entry.audio.ended) continue;
+    // Ambience beds are few and long-lived, and one can be paused between
+    // retries of a refused start; tearing it down then leaves it dead for
+    // every passage that shares the file.
+    if (key.startsWith('amb_')) continue;
     if (entry?.audio) {
       try {
         entry.audio.pause();

@@ -120,7 +120,15 @@ describe('orderAudioUrlsForDownload', () => {
         a: {
           choices: [],
           divert: null,
-          audio: { voiceover: 'v.mp3', choice1: 'c1.mp3', choice2: 'c2.mp3', ambience: 'am.mp3' },
+          audio: {
+            voiceover: 'v.mp3',
+            choice1: 'c1.mp3',
+            choice2: 'c2.mp3',
+            ambience: 'am.mp3',
+            // Sound effects play offline too, so they're downloaded with
+            // the rest of the passage.
+            sfx: [{ file: 'fx.mp3' }],
+          },
         },
       },
     });
@@ -129,6 +137,7 @@ describe('orderAudioUrlsForDownload', () => {
       './audio/c1.mp3',
       './audio/c2.mp3',
       './audio/am.mp3',
+      './audio/fx.mp3',
     ]);
   });
 

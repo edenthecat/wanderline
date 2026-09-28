@@ -1,4 +1,4 @@
-import { collectUsedAudioFilenames } from '../audio-processor.js';
+import { collectUsedAudioFilenames, updateStoryDataFilenames } from '../audio-processor.js';
 import type { StoryData } from '../story-data-builder.js';
 
 function makeStoryData(overrides: Partial<StoryData> = {}): StoryData {
@@ -132,5 +132,48 @@ describe('collectUsedAudioFilenames', () => {
     const result = collectUsedAudioFilenames(storyData, {}, {}, ['shared.mp3']);
     expect(result.size).toBe(1);
     expect(result.has('shared.mp3')).toBe(true);
+  });
+});
+
+describe('sound effects in a build', () => {
+  function storyWithSfx(sfx: { file: string; offsetMs?: number }[]) {
+    return makeStoryData({
+      nodes: {
+        start: {
+          id: 'start',
+          type: 'knot',
+          content: [],
+          choices: [],
+          divert: null,
+          tags: [],
+          audio: { sfx },
+        },
+      },
+    });
+  }
+
+  it('counts sound effects as used so they are copied into the build', () => {
+    const result = collectUsedAudioFilenames(
+      storyWithSfx([{ file: 'door.wav', offsetMs: 800 }]),
+      {},
+      {},
+      [],
+    );
+    expect(result).toEqual(new Set(['door.wav']));
+  });
+
+  it('follows a WAV-to-MP3 rename and keeps the offset', () => {
+    const story = storyWithSfx([{ file: 'door.wav', offsetMs: 800 }]);
+    updateStoryDataFilenames(story, { 'door.wav': 'door.mp3' }, new Set(['door.mp3']));
+    expect(story.nodes.start.audio!.sfx).toEqual([{ file: 'door.mp3', offsetMs: 800 }]);
+  });
+
+  it('drops a sound effect whose file is missing from the build', () => {
+    const story = storyWithSfx([{ file: 'gone.mp3' }, { file: 'bell.mp3' }]);
+    updateStoryDataFilenames(story, {}, new Set(['bell.mp3']));
+    expect(story.nodes.start.audio!.sfx).toEqual([{ file: 'bell.mp3' }]);
+
+    updateStoryDataFilenames(story, {}, new Set());
+    expect(story.nodes.start.audio!.sfx).toBeUndefined();
   });
 });

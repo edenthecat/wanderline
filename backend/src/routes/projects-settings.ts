@@ -11,6 +11,9 @@ const ALLOWED_TOP_LEVEL_KEYS = new Set([
   'voiceoverVolume',
   'backgroundMusicEnabled',
   'backgroundMusicVolume',
+  // Per-node ambience loops and sound effects. The player never played
+  // either before, so there was no level to set.
+  'ambienceVolume',
   'indicatorVolume',
   'defaultIndicatorAudioId',
   // Per-choice indicator sounds. story-data-builder has read
@@ -219,7 +222,7 @@ export function mountSettingsRoutes(router: Router, pool: Pool): void {
    *     description: |
    *       Whitelists top-level keys (password, captionsDefault,
    *       showProgressBar, showChoiceList, bluetoothControls,
-   *       backgroundMusicEnabled, backgroundMusicVolume,
+   *       backgroundMusicEnabled, backgroundMusicVolume, ambienceVolume,
    *       indicatorVolume, choiceAudioDelayMs, language).
    *       `bluetoothControls` merges key-by-key with the stored value
    *       so partial patches don't wipe sibling keys.

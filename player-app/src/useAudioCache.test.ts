@@ -92,6 +92,34 @@ describe('evictAudioCacheIfFull', () => {
     expect(cache.has('ind_c1')).toBe(true);
     expect(cache.has('ind_c2')).toBe(true);
   });
+
+  // Oldest-first used to cut whatever had been playing longest: an
+  // ambience bed carried across passages, or the narration itself.
+  it('never tears down an element that is still sounding', () => {
+    const cache = new Map<string, AudioCacheEntry>();
+    const playing = { paused: false, ended: false, src: 'bed.mp3', pause: vi.fn() };
+    cache.set('amb_bed', {
+      status: 'loaded',
+      audio: playing as unknown as HTMLAudioElement,
+      retryCount: 0,
+    });
+    for (let i = 0; i < 80; i++) cache.set(`voice_${i}`, entry());
+    evictAudioCacheIfFull(cache);
+    expect(cache.has('amb_bed')).toBe(true);
+    expect(playing.pause).not.toHaveBeenCalled();
+    expect(playing.src).toBe('bed.mp3');
+    expect(cache.size).toBeLessThan(81);
+  });
+
+  // A bed can be paused between retries of a refused start; evicting it
+  // then would leave it dead for every passage sharing the file.
+  it('keeps ambience beds even while paused', () => {
+    const cache = new Map<string, AudioCacheEntry>();
+    cache.set('amb_./audio/rain.mp3', entry());
+    for (let i = 0; i < 80; i++) cache.set(`voice_${i}`, entry());
+    evictAudioCacheIfFull(cache);
+    expect(cache.has('amb_./audio/rain.mp3')).toBe(true);
+  });
 });
 
 describe('useAudioCache — preloadAudio', () => {

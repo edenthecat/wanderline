@@ -9,7 +9,7 @@ interface Props {
 // reflects the same number the listener experiences before any
 // override.
 function defaultVolume(
-  key: 'voiceoverVolume' | 'backgroundMusicVolume' | 'indicatorVolume',
+  key: 'voiceoverVolume' | 'backgroundMusicVolume' | 'ambienceVolume' | 'indicatorVolume',
 ): number {
   if (key === 'voiceoverVolume') return 100;
   if (key === 'backgroundMusicVolume') return 30;
@@ -25,7 +25,12 @@ const ROWS = [
   {
     key: 'backgroundMusicVolume' as const,
     label: 'Background music',
-    hint: 'Looped ambient tracks (no-op if no music is uploaded).',
+    hint: 'Story-wide music playlist from the Music tab (no-op if none is uploaded).',
+  },
+  {
+    key: 'ambienceVolume' as const,
+    label: 'Ambience & sound effects',
+    hint: 'Per-passage ambience loops and sound effects from the Audio tab.',
   },
   {
     key: 'indicatorVolume' as const,

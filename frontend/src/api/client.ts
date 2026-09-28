@@ -1082,6 +1082,8 @@ export interface ProjectSettings {
   // settings panel; these are the starting points.
   voiceoverVolume?: number;
   backgroundMusicVolume?: number;
+  // Per-passage ambience beds and sound effects share one level.
+  ambienceVolume?: number;
   indicatorVolume?: number;
   // Default UI sound: id of an indicator-category audio file that
   // the generated app plays for choice/transition cues. Null/unset

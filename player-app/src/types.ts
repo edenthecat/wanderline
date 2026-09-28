@@ -25,7 +25,8 @@ export interface Choice {
 export interface AudioAssignment {
   voiceover?: string;
   ambience?: string;
-  sfx?: string[];
+  /** `offsetMs` absent: as the passage starts. See passage-sfx.ts. */
+  sfx?: Array<{ file: string; offsetMs?: number }>;
 }
 
 export interface NodeMetadata {
