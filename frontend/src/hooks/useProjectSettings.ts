@@ -74,16 +74,19 @@ export interface UseProjectSettingsResult {
    * PATCH a single key. Updates local state optimistically; on
    * failure rolls back JUST that key if the user hasn't changed it
    * again in the meantime. For a nested-merge key (see
-   * PARTIAL_PATCH_KEYS), `next` is only a fragment, but the rollback
-   * target is still a complete value — tracked merged, one sub-field's
-   * worth at a time, never as a bare fragment — so this holds for those
-   * too; the one thing they never do is resend, since nothing ever
-   * skips sending one of their saves in the first place (see saveNow).
-   * A partial-patch key's failure always surfaces regardless of
-   * whether anything has superseded it, since a newer save for the key
-   * patches a *different* sub-field rather than superseding this one.
-   * Concurrent calls with different keys are independent, and for the
-   * same key only the newest one's result is applied.
+   * PARTIAL_PATCH_KEYS), `next` is only a fragment, so the failure
+   * instead reverts only the sub-fields that fragment itself introduced
+   * (see revertTrackedFragment) — never the whole key to an earlier
+   * snapshot, since that snapshot can itself be an unconfirmed
+   * optimistic merge from a sibling sub-field's own, possibly also
+   * failed, edit. Neither ever resends: a partial-patch key's failure
+   * always surfaces regardless of whether anything has superseded it
+   * (a newer save for the key patches a *different* sub-field rather
+   * than superseding this one), but nothing ever skips sending one of
+   * its saves in the first place (see saveNow), so there's nothing a
+   * resend would need to make up for. Concurrent calls with different
+   * keys are independent, and for the same key only the newest one's
+   * result is applied.
    */
   updateOne: <K extends keyof ProjectSettings>(key: K, next: ProjectSettings[K]) => Promise<void>;
   /**
@@ -277,6 +280,46 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
   }
 
   /**
+   * Undo a failed partial-patch save — but only the specific sub-fields
+   * `failedFragment` itself introduced, reset to what `originalValue`
+   * (captured before that call's own write) held for those same
+   * sub-fields, leaving every *other* sub-field exactly as it currently
+   * stands.
+   *
+   * This is deliberately not "restore the whole key to some earlier
+   * snapshot": lastValueRef's current value for a partial-patch key can
+   * itself be an unconfirmed optimistic merge from a sibling call that's
+   * still in flight — or that has, by the time THIS call's own failure
+   * is handled, also failed — so restoring "the complete value from
+   * before this call" can resurrect a sibling's own failed, never-
+   * persisted edit right along with reverting this one. Touching only
+   * the keys this call actually owns can't do that: it never reads or
+   * writes anything about a sub-field it didn't itself send, so it's
+   * safe to apply unconditionally, regardless of generation — unlike a
+   * whole-key rollback, which needed the generation check specifically
+   * to avoid stomping on a sibling's contribution.
+   */
+  function revertTrackedFragment<K extends keyof ProjectSettings>(
+    key: K,
+    failedFragment: ProjectSettings[K],
+    originalValue: ProjectSettings[K] | undefined,
+  ) {
+    const name = key as string;
+    const current = lastValueRef.current.get(name);
+    const base: Record<string, unknown> =
+      current && typeof current === 'object' && !Array.isArray(current)
+        ? { ...(current as Record<string, unknown>) }
+        : {};
+    if (failedFragment && typeof failedFragment === 'object' && !Array.isArray(failedFragment)) {
+      const original = originalValue as Record<string, unknown> | undefined;
+      for (const k of Object.keys(failedFragment as Record<string, unknown>)) {
+        base[k] = original?.[k];
+      }
+    }
+    setTracked(key, base as ProjectSettings[K]);
+  }
+
+  /**
    * Take just the patched key out of the server's response.
    *
    * The endpoint returns the whole merged settings object, but writing
@@ -463,20 +506,23 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
         if (!isPartial && !isCurrentGeneration(name, generation)) return;
         setError(err instanceof Error ? err.message : 'Failed to update setting');
         if (isPartial) {
-          // Roll back only if nothing has claimed this key since —
-          // isCurrentGeneration (ref-based, reliable), not the
-          // lastValueRef reference-equality check below: lastValueRef
-          // holds this key's whole *merged* object for a partial-patch
-          // key, never a bare fragment, so it can't be compared by
-          // reference against `next` (a fragment) the same way.
-          if (!isCurrentGeneration(name, generation)) return;
-          setTracked(key, originalValue);
+          // Unconditional, unlike the scalar path below: this only
+          // touches the sub-fields `next` itself introduced (see
+          // revertTrackedFragment), so it can't stomp on a sibling
+          // sub-field's own contribution — successful, still pending,
+          // or since separately reverted by its own failure — the way
+          // restoring this key's whole last-known value could. That
+          // matters here specifically: lastValueRef's current value for
+          // this key can itself be an unconfirmed optimistic merge from
+          // a sibling call, including one that later also fails: this
+          // call being "still current" would say nothing about whether
+          // that sibling's own edit actually reached the server.
+          revertTrackedFragment(key, next, originalValue);
           // No resend: saveNow never skips sending a partial-patch
           // key's own save (see PARTIAL_PATCH_KEYS's own comment), so
-          // there's no earlier, skipped send this rollback needs to
-          // make up for — the server already independently has
-          // whatever each sub-field's own send last got past it, which
-          // is exactly what originalValue now reflects.
+          // there's no earlier, skipped send this revert needs to make
+          // up for — the server already independently has whatever
+          // each sub-field's own send last got past it.
           return;
         }
         // Only roll back (and resend) if nothing has claimed this key
@@ -505,6 +551,12 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     next: ProjectSettings[K],
   ): void {
     const name = key as string;
+    const isPartial = PARTIAL_PATCH_KEYS.has(name);
+    // Captured before the optimistic write below, same as updateOne's
+    // own originalValue — needed so a failed debounced save for a
+    // partial-patch key can revert just its own sub-fields (see
+    // saveNow's catch and revertTrackedFragment).
+    const originalValue = lastValueRef.current.get(name) as ProjectSettings[K] | undefined;
     // setTracked (not a bare setSettings) so a *later* updateOne call
     // for this same key — e.g. a direct control changed while this
     // debounced one is still pending — reads this value as its own
@@ -513,7 +565,7 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     // for a partial-patch key, for the same reason updateOne uses it —
     // no current caller debounces one of these, but nothing stops a
     // future one from doing so, and this keeps that case correct too.
-    if (PARTIAL_PATCH_KEYS.has(name)) {
+    if (isPartial) {
       setTrackedFragment(key, next);
     } else {
       setTracked(key, next);
@@ -535,7 +587,7 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
       // would find nothing to cancel and a second debounced PATCH would
       // run alongside the one still pending.
       if (timers.get(name) === t) timers.delete(name);
-      void saveNow(key, next, generation);
+      void saveNow(key, next, generation, originalValue);
     }, 250);
     timers.set(name, t);
   }
@@ -545,6 +597,7 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     key: K,
     next: ProjectSettings[K],
     generation: number,
+    originalValue: ProjectSettings[K] | undefined,
   ): Promise<void> {
     const name = key as string;
     const isPartial = PARTIAL_PATCH_KEYS.has(name);
@@ -567,7 +620,21 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
         applyServerValue(key, updated);
       } catch (err) {
         if (isAbortError(err)) return;
-        if (!isPartial && !isCurrentGeneration(name, generation)) return;
+        if (isPartial) {
+          // Always surface and always revert, regardless of
+          // generation — see updateOne's own comment on
+          // revertTrackedFragment for why the revert specifically is
+          // safe unconditionally.
+          setError(err instanceof Error ? err.message : 'Failed to save');
+          revertTrackedFragment(key, next, originalValue);
+          return;
+        }
+        // A superseded scalar save's failure is not the user's
+        // problem: the value they're looking at came from a later
+        // request that is still in flight or has already succeeded.
+        // saveNow, unlike updateOne, has never rolled back its own
+        // failure at all beyond this — only the error below.
+        if (!isCurrentGeneration(name, generation)) return;
         setError(err instanceof Error ? err.message : 'Failed to save');
       }
     });

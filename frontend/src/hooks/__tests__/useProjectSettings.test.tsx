@@ -586,7 +586,9 @@ describe('useProjectSettings — overlapping saves', () => {
   // that fragment. Swallowing the failure the way a scalar key's is
   // swallowed would silently lose the edit with no error shown.
   it('surfaces a partial-patch failure even once a newer save has taken over the key', async () => {
-    mockedFetch.mockResolvedValueOnce({ settings: {} });
+    mockedFetch.mockResolvedValueOnce({
+      settings: { choiceIndicatorAudio: { choice1FileId: 'x', choice2FileId: 'y' } },
+    });
     let rejectFirst!: (e: Error) => void;
     // choice2's own request is left pending deliberately, so it hasn't
     // answered yet at the point this test checks `settings` below — if
@@ -622,13 +624,13 @@ describe('useProjectSettings — overlapping saves', () => {
     });
 
     expect(result.current.error).toMatch(/choice 1 failed/);
-    // choice1's rollback has to stay skipped, not just its resend: it's
-    // no longer the current generation (choice2's call already claimed
-    // that), so rolling back here would restore choice1's own
-    // pre-edit — pre-*both*-edits — snapshot, clobbering choice2's
-    // still-pending optimistic edit with a stale one.
+    // choice1 reverts to its own true pre-edit value ('x') regardless of
+    // no longer being the current generation (choice2's call already
+    // claimed that) — safe specifically because the revert only ever
+    // touches the sub-field *this* call introduced, so it can't disturb
+    // choice2's own still-pending optimistic 'b'.
     expect(result.current.settings?.choiceIndicatorAudio).toEqual({
-      choice1FileId: 'a',
+      choice1FileId: 'x',
       choice2FileId: 'b',
     });
 
@@ -712,6 +714,70 @@ describe('useProjectSettings — overlapping saves', () => {
       choice1FileId: 'a',
       choice2FileId: 'y',
     });
+  });
+
+  // Neither edit ever reaches the server this time — unlike the test
+  // above, where choice1's edit succeeds. originalValue for choice2's
+  // own call is captured *after* choice1's optimistic merge, so it's
+  // {choice1FileId:'a', choice2FileId:'y'} — itself an unconfirmed
+  // guess, since choice1's call hasn't failed (or succeeded) yet at
+  // that point. If choice2's rollback ever restored that whole snapshot
+  // wholesale, it would resurrect choice1's own about-to-fail edit as
+  // if it had been saved. The targeted revert never does: each call
+  // only ever touches the sub-field it owns, so the two failures
+  // combined correctly land back on the true, fully-unedited object.
+  it('never shows either sub-field’s edit as saved when both fail', async () => {
+    mockedFetch.mockResolvedValueOnce({
+      settings: { choiceIndicatorAudio: { choice1FileId: 'x', choice2FileId: 'y' } },
+    });
+    mockedUpdate
+      .mockRejectedValueOnce(new Error('choice 1 failed'))
+      .mockRejectedValueOnce(new Error('choice 2 failed'));
+
+    const { result } = renderHook(() => useProjectSettings('p1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let call1!: Promise<void>;
+    let call2!: Promise<void>;
+    act(() => {
+      call1 = result.current.updateOne('choiceIndicatorAudio', { choice1FileId: 'a' });
+      call2 = result.current.updateOne('choiceIndicatorAudio', { choice2FileId: 'b' });
+    });
+    await act(async () => {
+      await Promise.all([call1, call2]);
+    });
+
+    expect(result.current.error).toMatch(/choice 2 failed/);
+    expect(result.current.settings?.choiceIndicatorAudio).toEqual({
+      choice1FileId: 'x',
+      choice2FileId: 'y',
+    });
+  });
+
+  // No current caller debounces a partial-patch key, but saveNow's own
+  // failure handling has to be correct anyway — same revert as
+  // updateOne's, for the same reason.
+  it('reverts just its own sub-field when a debounced partial-patch save fails', async () => {
+    mockedFetch.mockResolvedValueOnce({
+      settings: { choiceIndicatorAudio: { choice1FileId: 'x', choice2FileId: 'y' } },
+    });
+    mockedUpdate.mockRejectedValueOnce(new Error('choice 1 failed'));
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+
+    const { result } = renderHook(() => useProjectSettings('p1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => result.current.updateDebounced('choiceIndicatorAudio', { choice1FileId: 'a' }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+
+    expect(result.current.error).toMatch(/choice 1 failed/);
+    expect(result.current.settings?.choiceIndicatorAudio).toEqual({
+      choice1FileId: 'x',
+      choice2FileId: 'y',
+    });
+    vi.useRealTimers();
   });
 
   // The scalar skip in saveNow (see PARTIAL_PATCH_KEYS) assumes the
