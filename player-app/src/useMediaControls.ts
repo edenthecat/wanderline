@@ -520,12 +520,13 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
     const ms = navigator.mediaSession;
     if (!ms || typeof ms.setPositionState !== 'function') return;
     if (!Number.isFinite(audioDuration) || audioDuration <= 0) {
-      // App resets audioDuration to 0 on every navigation, including
-      // onto a voiceover-less node where it's never set again. Without
-      // this, the OS goes on reporting the PREVIOUS node's duration
-      // and position — a MediaSession is page-level, not per-node, so
-      // nothing else here would ever overwrite it. Calling with no
-      // arguments is the spec's own way to clear position state.
+      // App resets audioDuration to 0 whenever the node changes,
+      // including onto a voiceover-less node where it's never set
+      // again. Without this, the OS goes on reporting the PREVIOUS
+      // node's duration and position — a MediaSession is page-level,
+      // not per-node, so nothing else here would ever overwrite it.
+      // Calling with no arguments is the spec's own way to clear
+      // position state.
       try {
         ms.setPositionState();
       } catch {
@@ -537,13 +538,11 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
     try {
       ms.setPositionState({ duration: audioDuration, playbackRate: 1, position });
     } catch {
-      // A stale duration/position pair can still slip through a race
-      // between a node change and this effect's re-run (e.g. the new
-      // node's audio hasn't reported its own duration yet, so a leftover
-      // `position` from the previous node exceeds it for one tick).
-      // The OS keeping the last-known position for a moment is a far
-      // better failure mode than an uncaught exception unmounting the
-      // player.
+      // App resets progress on every node change, so the values above
+      // should always be valid by the time they get here; the clamp and
+      // this catch are defensive. The OS keeping the last-known position
+      // for a moment is a far better failure mode than an uncaught
+      // exception unmounting the player.
     }
   }, [audioProgress, audioDuration]);
 

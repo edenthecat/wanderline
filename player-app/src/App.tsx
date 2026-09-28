@@ -309,6 +309,19 @@ export default function App() {
   const [playerState, setPlayerState] = useState<PlayerState>('loading');
   const [audioProgress, setAudioProgress] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
+  // Progress belongs to the passage it was measured on. goBack, restart,
+  // loadSlot and the `r` shortcut all change the node without going
+  // through navigateToNode's reset, so without this the progress bar and
+  // the MediaSession position state carried the previous passage's
+  // numbers onto the next one (indefinitely, on a passage with no
+  // voiceover to overwrite them). Resetting during render, rather than
+  // in an effect, means no frame ever pairs a new node with old progress.
+  const [progressNodeId, setProgressNodeId] = useState(currentNodeId);
+  if (progressNodeId !== currentNodeId) {
+    setProgressNodeId(currentNodeId);
+    setAudioProgress(0);
+    setAudioDuration(0);
+  }
   const [history, setHistory] = useState<string[]>([]);
   const [captionsEnabled, setCaptionsEnabled] = useState(true);
   // Whether keyboard focus is inside the choice list. Drives two
@@ -864,6 +877,66 @@ export default function App() {
     [story],
   );
 
+  // Every way of (re)entering a passage starts its progress from zero.
+  // The render-time reset above only fires when the node id changes;
+  // restarting on the start node, the `r` shortcut, or a passage that
+  // diverts to itself keep the same id, and would otherwise leave the
+  // previous playthrough's position on the lock screen. Bumping the
+  // epoch also turns any timeupdate the paused element still has queued
+  // into a stale callback, so it can't write the old position back.
+  const resetProgress = useCallback(() => {
+    playbackEpochRef.current += 1;
+    setAudioProgress(0);
+    setAudioDuration(0);
+  }, []);
+
+  // Everything a passage leaves running besides its voiceover: choice
+  // cue clips, the choice-repeat / auto-advance / retry / pre-roll /
+  // connection-issue timers, and the retry bookkeeping. Every way of
+  // leaving or re-entering a passage goes through here, so none of them
+  // can drift from the others. Before this, only navigateToNode did all
+  // of it; restart, loadSlot and the `r` shortcut left a pending
+  // auto-advance to carry the listener off to the old passage's target,
+  // left a choice cue playing over wherever they landed, and left the
+  // retry count set so the next fresh start resumed at the old position.
+  const stopPassagePlayback = useCallback(() => {
+    // Pause the indicator + choice refs, not just the voiceover.
+    // Earlier getCachedAudio cloned per visit, so an orphaned
+    // playback was an unreachable temporary <audio>. Now those refs
+    // point at the cache singletons — leaving them playing means the
+    // previous node's prompt bleeds into the next node's voiceover.
+    // We pause AND null the local ref: the cached <audio> singleton
+    // stays in audioCacheRef so the next visit can reuse it (the
+    // paused+rewound state is what getCachedAudio expects).
+    for (const ref of [
+      choice1IndicatorRef,
+      choice2IndicatorRef,
+      choice1AudioRef,
+      choice2AudioRef,
+    ]) {
+      if (ref.current) {
+        ref.current.pause();
+        ref.current = null;
+      }
+    }
+    for (const ref of [
+      choiceRepeatIntervalRef,
+      autoNavigateTimeoutRef,
+      audioRetryTimeoutRef,
+      prerollTimeoutRef,
+      connectionIssueTimeoutRef,
+    ]) {
+      if (ref.current) {
+        clearTimeout(ref.current);
+        ref.current = null;
+      }
+    }
+    audioRetryCountRef.current = 0;
+    setAudioStalled(false);
+    setRetryingAudio(false);
+    setShowConnectionIssue(false);
+  }, []);
+
   const navigateToNode = useCallback(
     (nodeId: string, autoplay = true) => {
       if (!story?.nodes[nodeId]) return;
@@ -875,55 +948,12 @@ export default function App() {
         audioRef.current.pause();
         audioRef.current = null;
       }
-      // follow-up: pause the indicator + choice refs too.
-      // Earlier getCachedAudio cloned per visit, so an orphaned
-      // playback was an unreachable temporary <audio>. Now those refs
-      // point at the cache singletons — leaving them playing means the
-      // previous node's prompt bleeds into the next node's voiceover.
-      // We pause AND null the local ref: the cached <audio> singleton
-      // stays in audioCacheRef so the next visit can reuse it (the
-      // paused+rewound state is what getCachedAudio expects).
-      for (const ref of [
-        choice1IndicatorRef,
-        choice2IndicatorRef,
-        choice1AudioRef,
-        choice2AudioRef,
-      ]) {
-        if (ref.current) {
-          ref.current.pause();
-          ref.current = null;
-        }
-      }
-      if (choiceRepeatIntervalRef.current) {
-        clearTimeout(choiceRepeatIntervalRef.current);
-        choiceRepeatIntervalRef.current = null;
-      }
-      if (autoNavigateTimeoutRef.current) {
-        clearTimeout(autoNavigateTimeoutRef.current);
-        autoNavigateTimeoutRef.current = null;
-      }
-      if (audioRetryTimeoutRef.current) {
-        clearTimeout(audioRetryTimeoutRef.current);
-        audioRetryTimeoutRef.current = null;
-      }
-      if (prerollTimeoutRef.current) {
-        clearTimeout(prerollTimeoutRef.current);
-        prerollTimeoutRef.current = null;
-      }
-      if (connectionIssueTimeoutRef.current) {
-        clearTimeout(connectionIssueTimeoutRef.current);
-        connectionIssueTimeoutRef.current = null;
-      }
-      audioRetryCountRef.current = 0;
+      stopPassagePlayback();
       setAudioError(null);
       setAudioSkipped(false);
-      setAudioStalled(false);
-      setRetryingAudio(false);
-      setShowConnectionIssue(false);
       setCurrentNodeId(nodeId);
       setSelectedChoice(0);
-      setAudioProgress(0);
-      setAudioDuration(0);
+      resetProgress();
       setPlayerState('ready');
       saveProgress(nodeId, newHistory);
       // Store nodeId for autoplay - the effect will pick this up
@@ -955,7 +985,16 @@ export default function App() {
         }
       }
     },
-    [story, currentNodeId, history, saveProgress, getReachableNodes, preloadAudio],
+    [
+      story,
+      currentNodeId,
+      history,
+      saveProgress,
+      getReachableNodes,
+      preloadAudio,
+      resetProgress,
+      stopPassagePlayback,
+    ],
   );
 
   const goBack = useCallback(() => {
@@ -967,29 +1006,15 @@ export default function App() {
       audioRef.current.pause();
       audioRef.current = null;
     }
-    if (choiceRepeatIntervalRef.current) {
-      clearTimeout(choiceRepeatIntervalRef.current);
-      choiceRepeatIntervalRef.current = null;
-    }
-    if (autoNavigateTimeoutRef.current) {
-      clearTimeout(autoNavigateTimeoutRef.current);
-      autoNavigateTimeoutRef.current = null;
-    }
-    if (audioRetryTimeoutRef.current) {
-      clearTimeout(audioRetryTimeoutRef.current);
-      audioRetryTimeoutRef.current = null;
-    }
-    if (prerollTimeoutRef.current) {
-      clearTimeout(prerollTimeoutRef.current);
-      prerollTimeoutRef.current = null;
-    }
+    stopPassagePlayback();
     setHistory((h) => h.slice(0, -1));
     setCurrentNodeId(prev);
     setSelectedChoice(0);
+    resetProgress();
     setAudioError(null);
     setAudioSkipped(false);
     setPlayerState('ready');
-  }, [history]);
+  }, [history, resetProgress, stopPassagePlayback]);
 
   // Navigate to a target, handling END/DONE as terminal.
   // If the target doesn't exactly match a node id, try resolving as
@@ -1287,6 +1312,10 @@ export default function App() {
       }
     };
     audio.ontimeupdate = () => {
+      // A timeupdate already queued on the element we just left can land
+      // after the node changed and repopulate progress for the wrong
+      // passage.
+      if (isStale()) return;
       setAudioProgress(audio.currentTime);
       setAudioDuration(audio.duration || 0);
       // Remember how far the narration actually got. A retry rebuilds
@@ -1522,13 +1551,15 @@ export default function App() {
         audioRef.current.pause();
         audioRef.current = null;
       }
+      resetProgress();
+      stopPassagePlayback();
       setAudioError(null);
       setAudioSkipped(false);
       setReachedEnding(false);
       setPlayerState('ready');
       pendingAutoplayNodeIdRef.current = null;
     }
-  }, [story, saveSlots]);
+  }, [story, saveSlots, resetProgress, stopPassagePlayback]);
 
   // — save slot management. These operate against the slot
   // array in state, then persist via writeSlots(). They're stable
@@ -1549,13 +1580,19 @@ export default function App() {
       pendingAutoplayNodeIdRef.current = null;
       setHistory(slot.history);
       setCurrentNodeId(slot.nodeId);
+      resetProgress();
+      stopPassagePlayback();
+      // The element was just dropped, and its onpause is now stale, so
+      // nothing else would move playerState off 'playing'/'paused' and
+      // togglePlayback would keep acting on an audioRef that's gone.
+      setPlayerState('ready');
       setReachedEnding(false);
       setAudioError(null);
       setAudioSkipped(false);
       setShowSettings(false);
       setShowInstructions(false);
     },
-    [story, saveSlots],
+    [story, saveSlots, resetProgress, stopPassagePlayback],
   );
 
   const saveCurrentToNewSlot = useCallback(
@@ -1817,7 +1854,14 @@ export default function App() {
           // audio first so nothing keeps playing from the prior position.
           if (story?.startNode) {
             e.preventDefault();
+            // Drop the element as well as pausing it, the way restart()
+            // does: resetProgress() makes its handlers stale, so resuming
+            // it afterwards would play with nothing tracking its state.
             audioRef.current?.pause();
+            audioRef.current = null;
+            resetProgress();
+            stopPassagePlayback();
+            setPlayerState('ready');
             setAudioError(null);
             setHistory([]);
             setSelectedChoice(0);
@@ -1857,6 +1901,8 @@ export default function App() {
     goBack,
     showInstructions,
     isAuthenticated,
+    resetProgress,
+    stopPassagePlayback,
   ]);
 
   // MediaSession + keydown fallback + metadata /

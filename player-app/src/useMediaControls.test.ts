@@ -101,6 +101,9 @@ beforeEach(() => {
   mediaSessionHandlers.clear();
   setActionHandlerCalls.clear();
   setPositionStateSpy.mockClear();
+  // One test deletes the method to simulate a browser without it; put
+  // it back so the order tests run in can't matter.
+  fakeMediaSession.setPositionState = setPositionStateSpy;
   fakeMediaSession.metadata = null;
   fakeMediaSession.playbackState = 'none';
   Object.defineProperty(navigator, 'mediaSession', {
