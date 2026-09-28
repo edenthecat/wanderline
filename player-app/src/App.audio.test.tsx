@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react';
 import App from './App';
 
 // Playback-control coverage for four audio faults reported against a
@@ -449,5 +449,154 @@ describe('choice audio and auto-advance', () => {
     await vi.advanceTimersByTimeAsync(20_000);
     expect(screen.getByText('The beginning.')).toBeTruthy();
     expect(screen.queryByText('The middle.')).toBeNull();
+  });
+});
+
+// The auto-advance hold after a passage ends is a plain timer that
+// navigates without checking whether the listener has since gone
+// somewhere else. Restart, the `r` shortcut and loading a save all jump
+// without going through navigateToNode, which was the only thing that
+// cancelled it, so the story would carry on to the old passage's target
+// a couple of seconds after the listener restarted.
+describe('jumping away cancels a pending auto-advance', () => {
+  async function endStartPassage() {
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = makeStory({
+      settings: { autoAdvance: true },
+    });
+    render(<App />);
+    await startTheStory();
+    await screen.findByLabelText('Pause narration');
+    const vo = voiceoverFor('start.mp3')!;
+    act(() => vo.onended?.());
+  }
+
+  it('advances on its own when left alone', async () => {
+    await endStartPassage();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(screen.getByText('The end.')).toBeTruthy();
+  });
+
+  it('stays on the start passage after the r shortcut', async () => {
+    await endStartPassage();
+    fireEvent.keyDown(window, { key: 'r' });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(screen.getByText('Welcome to the story.')).toBeTruthy();
+    expect(screen.queryByText('The end.')).toBeNull();
+  });
+
+  it('stays on the start passage after restarting', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    await endStartPassage();
+    fireEvent.click(screen.getByLabelText('Restart story from beginning'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(screen.getByText('Welcome to the story.')).toBeTruthy();
+    expect(screen.queryByText('The end.')).toBeNull();
+  });
+});
+
+// The same jumps also left the rest of the passage running: a choice cue
+// already sounding played on over wherever the listener landed, and a
+// pending stall retry left its count set, so the next fresh start was
+// treated as a retry and resumed at the old passage's position.
+describe('jumping away stops the rest of the passage', () => {
+  it('silences a choice cue that is already playing', async () => {
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = makeStory({
+      indicatorAudio: { choice1: 'c1.mp3', choice2: 'c2.mp3' },
+      nodes: {
+        start: {
+          id: 'start',
+          type: 'knot',
+          content: [{ text: 'The beginning.' }],
+          choices: [
+            { text: 'A', target: 'start' },
+            { text: 'B', target: 'start' },
+          ],
+          divert: null,
+          tags: [],
+          audio: { voiceover: 'start.mp3', choice1: 'n1.mp3', choice2: 'n2.mp3' },
+        },
+      },
+    });
+    render(<App />);
+    await startTheStory();
+    await screen.findByLabelText('Pause narration');
+    act(() => voiceoverFor('start.mp3')!.onended?.());
+    // Past the default 3s wait before the cues start.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3500);
+    });
+    const cue = voiceoverFor('c1.mp3')!;
+    expect(cue.paused).toBe(false);
+
+    fireEvent.keyDown(window, { key: 'r' });
+    expect(cue.paused).toBe(true);
+  });
+
+  // goBack used to clear the timers but not the cue clips themselves.
+  it('silences a playing choice cue when going back', async () => {
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = makeStory({
+      indicatorAudio: { choice1: 'c1.mp3', choice2: 'c2.mp3' },
+      nodes: {
+        start: {
+          id: 'start',
+          type: 'knot',
+          content: [{ text: 'The beginning.' }],
+          choices: [{ text: 'On', target: 'second' }],
+          divert: null,
+          tags: [],
+        },
+        second: {
+          id: 'second',
+          type: 'knot',
+          content: [{ text: 'The middle.' }],
+          choices: [
+            { text: 'A', target: 'start' },
+            { text: 'B', target: 'start' },
+          ],
+          divert: null,
+          tags: [],
+          audio: { voiceover: 'second.mp3', choice1: 'n1.mp3', choice2: 'n2.mp3' },
+        },
+      },
+    });
+    render(<App />);
+    await startTheStory();
+    fireEvent.click(await screen.findByLabelText(/^Choice 1/));
+    await screen.findByLabelText('Pause narration');
+    act(() => voiceoverFor('second.mp3')!.onended?.());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3500);
+    });
+    const cue = voiceoverFor('c1.mp3')!;
+    expect(cue.paused).toBe(false);
+
+    fireEvent.keyDown(window, { key: 'Backspace' });
+    await screen.findByText('The beginning.');
+    expect(cue.paused).toBe(true);
+  });
+
+  it('starts from the top after restarting mid-retry', async () => {
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = makeStory();
+    render(<App />);
+    await startTheStory();
+    await screen.findByLabelText('Pause narration');
+    const vo = voiceoverFor('start.mp3')!;
+    vo.currentTime = 12;
+    act(() => vo.ontimeupdate?.());
+    // A stall part way through schedules a retry that would resume at 12s.
+    act(() => vo.onerror?.());
+
+    fireEvent.keyDown(window, { key: 'r' });
+    fireEvent.click(await screen.findByLabelText('Play narration'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    expect(voiceoverFor('start.mp3')!.currentTime).toBe(0);
   });
 });
