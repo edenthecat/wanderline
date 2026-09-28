@@ -616,6 +616,45 @@ describe('useProjectSettings — overlapping saves', () => {
     expect(result.current.error).toMatch(/choice 1 failed/);
   });
 
+  // A partial-patch key's rollback target is only ever a fragment — one
+  // sub-field's worth — never the key's complete value, so writing it
+  // back into `settings[key]` as if it were complete would wipe out
+  // whatever sub-field the failing call didn't touch. Reproduces the
+  // exact interleaving: choice1's call succeeds but is superseded before
+  // its response lands (so lastValueRef, at the moment choice2's call
+  // captures its own "before" snapshot, holds only choice1's fragment,
+  // not the full stored object); choice2's call then fails.
+  it('does not let a failed partial-patch rollback overwrite the key with a stale fragment', async () => {
+    mockedFetch.mockResolvedValueOnce({
+      settings: { choiceIndicatorAudio: { choice1FileId: 'x', choice2FileId: 'y' } },
+    });
+    mockedUpdate
+      .mockResolvedValueOnce({
+        settings: { choiceIndicatorAudio: { choice1FileId: 'a', choice2FileId: 'y' } },
+      })
+      .mockRejectedValueOnce(new Error('choice 2 failed'));
+
+    const { result } = renderHook(() => useProjectSettings('p1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let call1!: Promise<void>;
+    let call2!: Promise<void>;
+    act(() => {
+      call1 = result.current.updateOne('choiceIndicatorAudio', { choice1FileId: 'a' });
+      call2 = result.current.updateOne('choiceIndicatorAudio', { choice2FileId: 'b' });
+    });
+    await act(async () => {
+      await Promise.all([call1, call2]);
+    });
+
+    expect(result.current.error).toMatch(/choice 2 failed/);
+    // The bug this reproduces: a rollback would have overwritten this
+    // with choice1's own stale fragment, `{ choice1FileId: 'a' }`,
+    // silently erasing choice2FileId from the displayed state.
+    expect(result.current.settings?.choiceIndicatorAudio).not.toEqual({ choice1FileId: 'a' });
+    expect(result.current.settings?.choiceIndicatorAudio).toEqual({ choice2FileId: 'b' });
+  });
+
   // The scalar skip in saveNow (see PARTIAL_PATCH_KEYS) assumes the
   // newer call it superseded will succeed. If that newer call fails and
   // rolls back to the debounced value instead, the debounced save's own

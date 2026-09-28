@@ -73,9 +73,11 @@ export interface UseProjectSettingsResult {
   /**
    * PATCH a single key. Updates local state optimistically; on
    * failure rolls back JUST that key if the user hasn't changed it
-   * again in the meantime. Concurrent calls with different keys are
-   * independent, and for the same key only the newest one's result is
-   * applied.
+   * again in the meantime — except for a nested-merge key (see
+   * PARTIAL_PATCH_KEYS), where `next` is only a fragment and there is
+   * no complete value to roll back to; those surface the failure
+   * instead. Concurrent calls with different keys are independent, and
+   * for the same key only the newest one's result is applied.
    */
   updateOne: <K extends keyof ProjectSettings>(key: K, next: ProjectSettings[K]) => Promise<void>;
   /**
@@ -243,6 +245,20 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
    * choiceIndicatorAudio comes back whole, and a guarded value like
    * choiceAudioDelayMs comes back clamped.
    */
+  /**
+   * Write `value` for `key` to both React state and lastValueRef
+   * together, so the two — deliberately tracked separately, see
+   * lastValueRef's own comment — can never drift apart by one call site
+   * updating one and forgetting the other.
+   */
+  function setTracked<K extends keyof ProjectSettings>(
+    key: K,
+    value: ProjectSettings[K] | undefined,
+  ) {
+    lastValueRef.current.set(key as string, value);
+    setSettings((prev) => ({ ...(prev ?? {}), [key]: value }));
+  }
+
   function applyServerValue<K extends keyof ProjectSettings>(key: K, updated: ProjectSettings) {
     // Every call site already checked isCurrentGeneration before calling
     // this, so this is always the newest, winning response for the key —
@@ -250,8 +266,18 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     // key the endpoint normalizes (choiceAudioDelayMs's own clamp, for
     // one): without this, a later rollback would target the raw value
     // this call sent, not what the server actually ended up storing.
-    lastValueRef.current.set(key as string, updated[key]);
-    setSettings((prev) => ({ ...(prev ?? {}), [key]: updated[key] }));
+    //
+    // Narrow residual gap: a response that's *superseded* by the time it
+    // arrives never reaches here at all (the generation check at each
+    // call site returns first), so its normalized value never reaches
+    // lastValueRef either. If updateOne(A) is still in flight when
+    // updateOne(B) starts, and A's later, superseded response would have
+    // normalized to some A', a subsequent failure of B rolls back to the
+    // raw A rather than A'. Self-correcting once the resend that
+    // rollback triggers gets its own response (which does reach here,
+    // being the new current generation), so the wrong value is transient
+    // rather than sticking — but the window exists.
+    setTracked(key, updated[key]);
   }
 
   /**
@@ -362,8 +388,7 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     // immediately, with no dependency on when — or in what order
     // relative to this code — React gets around to applying anything.
     const originalValue = lastValueRef.current.get(name) as ProjectSettings[K] | undefined;
-    lastValueRef.current.set(name, next);
-    setSettings((prev) => ({ ...(prev ?? {}), [key]: next }));
+    setTracked(key, next);
     const generation = nextGeneration(name);
     await runSerialized(name, async (signal) => {
       // Always send, even if queueing let a newer change to this key
@@ -386,25 +411,33 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
         applyServerValue(key, updated);
       } catch (err) {
         if (isAbortError(err)) return;
-        // choiceIndicatorAudio's patches are fragments, not complete
-        // values (see PARTIAL_PATCH_KEYS): if a newer save for this key
-        // has taken over, THIS failure is still the only record that
-        // `next`'s sub-field never reached the server, and nothing else
-        // is going to resend it. Surface it regardless of generation
-        // rather than silently losing that edit. A scalar key's failure
-        // stays generation-gated as before, since the newer save there
-        // really does carry the complete, superseding value.
-        if (!PARTIAL_PATCH_KEYS.has(name) && !isCurrentGeneration(name, generation)) return;
+        if (PARTIAL_PATCH_KEYS.has(name)) {
+          // Always surface the failure, regardless of generation: a
+          // newer save for this key carries a *different* sub-field's
+          // fragment, not a value that supersedes this one, so this
+          // failure is the only record that `next`'s sub-field never
+          // reached the server, and nothing else is going to resend it.
+          setError(err instanceof Error ? err.message : 'Failed to update setting');
+          // No rollback, deliberately: for a partial-patch key,
+          // originalValue and `next` are both fragments — one
+          // sub-field's worth — never this key's complete value (that
+          // only exists merged, server-side). Writing a fragment into
+          // `settings[key]` as if it were the whole thing would wipe
+          // out whatever sub-field this specific call didn't touch,
+          // corrupting the *other* side's displayed value along with
+          // this one. The edit is lost either way; surfacing the error
+          // above is the most this function can safely do on its own.
+          return;
+        }
+        if (!isCurrentGeneration(name, generation)) return;
         setError(err instanceof Error ? err.message : 'Failed to update setting');
-        // Only roll back (and, for a scalar key, resend — see below) if
-        // nothing has claimed this key as its own intended value since
-        // this call's own write. lastValueRef, not React state: it's
-        // the one check in this function that has to be correct the
-        // instant it's read, for the same reason capturing originalValue
-        // above did.
+        // Only roll back (and resend) if nothing has claimed this key
+        // as its own intended value since this call's own write.
+        // lastValueRef, not React state: it's the one check in this
+        // function that has to be correct the instant it's read, for
+        // the same reason capturing originalValue above did.
         if (lastValueRef.current.get(name) !== next) return;
-        lastValueRef.current.set(name, originalValue);
-        setSettings((prev) => (prev ? { ...prev, [key]: originalValue } : prev));
+        setTracked(key, originalValue);
         // The rollback above can restore a value that was never actually
         // sent: a debounced predecessor for this same key may have had
         // its own send skipped in saveNow for being "superseded" by
@@ -412,13 +445,7 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
         // debounced one — would become the one the server ends up with.
         // Since this call just failed, that assumption didn't hold, so
         // resend the value we're rolling back to ourselves.
-        //
-        // Only for a scalar key: this is a *complete* replacement value,
-        // exactly what the rollback above is restoring the display to.
-        // For a partial-patch key, `originalValue` is the *other* side's
-        // fragment from before this call's own optimistic write — not a
-        // value that ever makes sense to resend on its own.
-        if (!PARTIAL_PATCH_KEYS.has(name) && originalValue !== undefined) {
+        if (originalValue !== undefined) {
           void sendOnce(key, originalValue, generation);
         }
       }
@@ -430,13 +457,12 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     next: ProjectSettings[K],
   ): void {
     const name = key as string;
-    // Kept in sync with the optimistic write below so a *later*
-    // updateOne call for this same key — e.g. a direct control changed
-    // while this debounced one is still pending — reads this value as
-    // its own rollback target, rather than whatever was there before
-    // this call. See updateOne's own comment on lastValueRef.
-    lastValueRef.current.set(name, next);
-    setSettings((prev) => ({ ...(prev ?? {}), [key]: next }));
+    // setTracked (not a bare setSettings) so a *later* updateOne call
+    // for this same key — e.g. a direct control changed while this
+    // debounced one is still pending — reads this value as its own
+    // rollback target, rather than whatever was there before this call.
+    // See updateOne's own comment on lastValueRef.
+    setTracked(key, next);
     // Claim the generation here rather than inside the timer. The value
     // on screen has already moved, so a response still in flight for an
     // older one is stale from this moment — waiting until the timer
