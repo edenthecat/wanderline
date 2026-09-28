@@ -65,6 +65,15 @@ function isAbortError(err: unknown): boolean {
   return err instanceof DOMException && err.name === 'AbortError';
 }
 
+// A partial-patch key's value is a fragment to merge, not a scalar to
+// replace — but only once it's actually an object to merge fields onto;
+// used everywhere a partial-patch helper below needs to tell "an object
+// with sub-fields" apart from a scalar, undefined, or (since arrays pass
+// `typeof === 'object'` too) an array.
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 export interface UseProjectSettingsResult {
   settings: ProjectSettings | null;
   loading: boolean;
@@ -221,6 +230,8 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     const timers = debounceTimersRef.current;
     const generations = saveGenerationRef.current;
     const inFlight = inFlightRef.current;
+    const valueGenerations = valueGenerationRef.current;
+    const failedAttempts = failedAttemptsRef.current;
     return () => {
       // Cancel the load and every in-flight save for the project we're
       // leaving. This is what actually stops one of them from landing —
@@ -254,6 +265,12 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
       // window between now and then.
       lastValueRef.current.clear();
       confirmedValueRef.current.clear();
+      valueGenerations.clear();
+      // failedAttempts otherwise grows for the whole life of the hook —
+      // nothing else ever removes an entry from it. A project switch is
+      // a natural point to drop it: every generation recorded so far
+      // belongs to a key this hook no longer tracks state for.
+      failedAttempts.clear();
     };
   }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -308,9 +325,7 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     const name = key as string;
     const existing = lastValueRef.current.get(name);
     const merged =
-      existing && typeof existing === 'object' && !Array.isArray(existing) && fragment
-        ? { ...(existing as object), ...(fragment as object) }
-        : fragment;
+      isPlainObject(existing) && isPlainObject(fragment) ? { ...existing, ...fragment } : fragment;
     setTracked(key, merged as ProjectSettings[K]);
   }
 
@@ -350,14 +365,12 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
   ) {
     const name = key as string;
     const current = lastValueRef.current.get(name);
-    const base: Record<string, unknown> =
-      current && typeof current === 'object' && !Array.isArray(current)
-        ? { ...(current as Record<string, unknown>) }
-        : {};
-    if (failedFragment && typeof failedFragment === 'object' && !Array.isArray(failedFragment)) {
-      const confirmed = confirmedValueRef.current.get(name) as Record<string, unknown> | undefined;
-      for (const k of Object.keys(failedFragment as Record<string, unknown>)) {
-        base[k] = confirmed?.[k];
+    const base: Record<string, unknown> = isPlainObject(current) ? { ...current } : {};
+    if (isPlainObject(failedFragment)) {
+      const confirmed = confirmedValueRef.current.get(name);
+      const confirmedFields = isPlainObject(confirmed) ? confirmed : undefined;
+      for (const k of Object.keys(failedFragment)) {
+        base[k] = confirmedFields?.[k];
       }
     }
     setTracked(key, base as ProjectSettings[K]);
@@ -413,24 +426,11 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
       confirmedValueRef.current.set(name, responseValue);
       return;
     }
-    if (
-      !sent ||
-      typeof sent !== 'object' ||
-      Array.isArray(sent) ||
-      !responseValue ||
-      typeof responseValue !== 'object' ||
-      Array.isArray(responseValue)
-    ) {
-      return;
-    }
+    if (!isPlainObject(sent) || !isPlainObject(responseValue)) return;
     const existing = confirmedValueRef.current.get(name);
-    const base: Record<string, unknown> =
-      existing && typeof existing === 'object' && !Array.isArray(existing)
-        ? { ...(existing as Record<string, unknown>) }
-        : {};
-    const response = responseValue as Record<string, unknown>;
-    for (const k of Object.keys(sent as Record<string, unknown>)) {
-      base[k] = response[k];
+    const base: Record<string, unknown> = isPlainObject(existing) ? { ...existing } : {};
+    for (const k of Object.keys(sent)) {
+      base[k] = responseValue[k];
     }
     confirmedValueRef.current.set(name, base);
   }
@@ -598,7 +598,11 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
       setTracked(key, next);
     }
     const generation = nextGeneration(name);
-    valueGenerationRef.current.set(name, generation);
+    // Only scalar rollback reads this (see originalGeneration above and
+    // its use further down) — a partial-patch key's revert target is
+    // always confirmedValueRef, never this. Tagging it here anyway for
+    // a partial-patch key would just be a write nothing ever reads.
+    if (!isPartial) valueGenerationRef.current.set(name, generation);
     await runSerialized(name, async (signal) => {
       // Always send, even if queueing let a newer change to this key
       // take over first. Unlike updateDebounced (see PARTIAL_PATCH_KEYS
@@ -683,6 +687,23 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
           ? (confirmedValueRef.current.get(name) as ProjectSettings[K] | undefined)
           : originalValue;
         setTracked(key, rollbackValue);
+        // Re-tag valueGenerationRef to match what's actually now on
+        // screen, rather than leaving it on this call's own (failed)
+        // generation. Left untouched, a *second* same-key failure right
+        // after this one would read this call's generation back out as
+        // rollbackValue's provenance — wrongly finding it in
+        // failedAttemptsRef (since this call just added itself there)
+        // even when rollbackValue is the legitimate pending edit this
+        // call fell back to, not a failed attempt at all. Restoring
+        // originalGeneration (or clearing the tag when the fallback was
+        // confirmedValueRef, which isn't tied to any pending generation)
+        // keeps the next call's own check reading this value's true
+        // provenance instead of this call's.
+        if (originalWasFailedAttempt || originalGeneration === undefined) {
+          valueGenerationRef.current.delete(name);
+        } else {
+          valueGenerationRef.current.set(name, originalGeneration);
+        }
         // The rollback above can restore a value that was never actually
         // sent: a debounced predecessor for this same key may have had
         // its own send skipped in saveNow for being "superseded" by
@@ -724,8 +745,9 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     const generation = nextGeneration(name);
     // Tag this optimistic write with its own generation — see
     // valueGenerationRef's own comment and updateOne's rollback, which
-    // is what actually reads this.
-    valueGenerationRef.current.set(name, generation);
+    // is what actually reads this. Scalar keys only, same as there: a
+    // partial-patch key's revert target is always confirmedValueRef.
+    if (!isPartial) valueGenerationRef.current.set(name, generation);
     const timers = debounceTimersRef.current;
     const existing = timers.get(name);
     if (existing) clearTimeout(existing);

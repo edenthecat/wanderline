@@ -1083,4 +1083,53 @@ describe('useProjectSettings — overlapping saves', () => {
       choice2FileId: 'y',
     });
   });
+
+  // A scalar rollback's fallback value has to be re-tagged with its own
+  // provenance once it's actually restored — left tagged with the call
+  // that just failed and fell back to it, a *second* same-key failure
+  // right after would misread that restored value as itself a failed
+  // attempt (since the call that produced today's tag is now in
+  // failedAttemptsRef) and skip past it to confirmedValueRef, even
+  // though it's still the legitimate pending edit.
+  it('does not mistake a just-restored pending value for a failed attempt on a second same-key failure', async () => {
+    mockedFetch.mockResolvedValueOnce({ settings: { voiceoverVolume: 50 } });
+    mockedUpdate
+      .mockRejectedValueOnce(new Error('call1 failed')) // updateOne(60) fails, rolls back to pending 55
+      // call1's resend of 55 ALSO fails — deliberately, so confirmedValueRef
+      // stays at 50 and can't accidentally mask the bug this test targets:
+      // if the resend instead succeeded, it would independently correct
+      // confirmedValueRef to 55 on its own, and the second call's fallback
+      // would land on the right value even without the fix below.
+      .mockRejectedValueOnce(new Error('call1 resend failed'))
+      .mockRejectedValueOnce(new Error('call2 failed')) // updateOne(70) fails
+      .mockResolvedValueOnce({ settings: { voiceoverVolume: 55 } }); // call2's resend of 55
+
+    const { result } = renderHook(() => useProjectSettings('p1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // A debounced edit to 55 is pending — its own save hasn't been sent.
+    act(() => result.current.updateDebounced('voiceoverVolume', 55));
+
+    // A direct call jumps ahead of it and fails, rolling back to the
+    // still-pending 55 and resending it.
+    await act(async () => {
+      await result.current.updateOne('voiceoverVolume', 60);
+    });
+    await waitFor(() => expect(mockedUpdate).toHaveBeenCalledTimes(2));
+    expect(result.current.settings?.voiceoverVolume).toBe(55);
+
+    // A second direct call also fails. It must roll back to 55 — still
+    // the legitimate pending value — not skip past it to
+    // confirmedValueRef's stale 50.
+    await act(async () => {
+      await result.current.updateOne('voiceoverVolume', 70);
+    });
+    expect(result.current.settings?.voiceoverVolume).toBe(55);
+    await waitFor(() => expect(mockedUpdate).toHaveBeenCalledTimes(4));
+    expect(mockedUpdate).toHaveBeenLastCalledWith(
+      'p1',
+      { voiceoverVolume: 55 },
+      expect.any(AbortSignal),
+    );
+  });
 });
