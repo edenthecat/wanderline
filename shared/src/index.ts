@@ -4,3 +4,4 @@ export * from './theme-components.js';
 export * from './theme-fonts.js';
 export * from './contrast.js';
 export * from './theme-contrast.js';
+export * from './settings-limits.js';

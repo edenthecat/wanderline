@@ -17,11 +17,26 @@ export default function HeadphoneControlsTab({ projectId }: Props) {
   const nextAction: BluetoothNextAction = settings?.bluetoothControls?.nextTrack ?? 'choice1';
   const prevAction: BluetoothPrevAction = settings?.bluetoothControls?.previousTrack ?? 'choice2';
 
+  /**
+   * Patch one side of bluetoothControls.
+   *
+   * Sends only the changed key, the same way SystemSoundsTab patches
+   * choiceIndicatorAudio: the settings endpoint merges this object
+   * key-by-key (see NESTED_MERGE_KEYS), so a minimal patch is all this
+   * ever needs to send, and useProjectSettings relies on that — a
+   * failed save reverts only the sub-field its own patch introduced,
+   * which only holds if the patch really is just that one field. This
+   * used to spread the whole bluetoothControls object and override one
+   * key, which sent a correct value but the wrong *shape*: on failure,
+   * a concurrent edit to the OTHER key — still in flight, having done
+   * nothing wrong of its own — got silently reverted along with the
+   * key that actually failed.
+   */
   function update(key: 'nextTrack' | 'previousTrack', value: string) {
-    const next: BluetoothControls = { ...(settings?.bluetoothControls ?? {}) };
-    if (key === 'nextTrack') next.nextTrack = value as BluetoothNextAction;
-    else next.previousTrack = value as BluetoothPrevAction;
-    void updateOne('bluetoothControls', next);
+    const patch: BluetoothControls = {};
+    if (key === 'nextTrack') patch.nextTrack = value as BluetoothNextAction;
+    else patch.previousTrack = value as BluetoothPrevAction;
+    void updateOne('bluetoothControls', patch);
   }
 
   return (

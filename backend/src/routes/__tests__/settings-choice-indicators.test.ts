@@ -107,3 +107,65 @@ describe('mergeSettingsObject — nested merge for choiceIndicatorAudio', () => 
     expect(bt.bluetoothControls).toEqual({ nextTrack: 'confirm', previousTrack: 'choice2' });
   });
 });
+
+// The allow-list decides which keys survive; these cover the separate
+// question of whether a surviving key's *value* is one the rest of the
+// system can render. choiceAudioDelayMs has two readers with different
+// assumptions — the player awaits it as a timer, the editor renders it
+// on a slider with a floor of 0 — and nothing used to hold it to either.
+describe('mergeSettingsObject — choiceAudioDelayMs range', () => {
+  it('stores a sane value unchanged', () => {
+    const merged = mergeSettingsObject({}, { choiceAudioDelayMs: 1500 });
+    expect(merged.choiceAudioDelayMs).toBe(1500);
+  });
+
+  it('keeps zero rather than treating it as absent', () => {
+    const merged = mergeSettingsObject({ choiceAudioDelayMs: 3000 }, { choiceAudioDelayMs: 0 });
+    expect(merged.choiceAudioDelayMs).toBe(0);
+  });
+
+  // A negative pause means nothing to either reader, and it used to
+  // leave the editor's slider (clamped to 0 by the native control) and
+  // the number printed beside it showing different values.
+  it('clamps a negative pause to zero', () => {
+    const merged = mergeSettingsObject({}, { choiceAudioDelayMs: -500 });
+    expect(merged.choiceAudioDelayMs).toBe(0);
+  });
+
+  // No *product* ceiling on purpose: the player simply waits this long,
+  // so a cap here would be the settings contract inventing a pacing
+  // opinion that belongs to the author.
+  it('leaves a long pause alone', () => {
+    const merged = mergeSettingsObject({}, { choiceAudioDelayMs: 30000 });
+    expect(merged.choiceAudioDelayMs).toBe(30000);
+  });
+
+  // ...but there is still a *technical* ceiling: both readers drive this
+  // through setTimeout, which takes a signed 32-bit millisecond count and
+  // clamps anything past it to fire almost immediately. A value beyond
+  // that wouldn't lengthen the pause, it would erase it — the opposite of
+  // what storing such a value intends — so it's held to what the timer
+  // can actually represent.
+  it('caps a pause beyond what setTimeout can represent', () => {
+    const merged = mergeSettingsObject({}, { choiceAudioDelayMs: 9_999_999_999 });
+    expect(merged.choiceAudioDelayMs).toBe(2_147_483_647);
+  });
+
+  // The player's `await delay(...)` would resolve immediately on a
+  // non-number and the editor would print "NaNs". Drop it and keep
+  // whatever was already stored.
+  it('drops a non-numeric pause instead of storing it', () => {
+    for (const bad of ['2000', null, NaN, Infinity, {}, []]) {
+      const merged = mergeSettingsObject(
+        { choiceAudioDelayMs: 3000 },
+        { choiceAudioDelayMs: bad as unknown as number },
+      );
+      expect(merged.choiceAudioDelayMs).toBe(3000);
+    }
+  });
+
+  it('does not invent the key when a bad value is the only patch', () => {
+    const merged = mergeSettingsObject({}, { choiceAudioDelayMs: 'soon' as unknown as number });
+    expect('choiceAudioDelayMs' in merged).toBe(false);
+  });
+});

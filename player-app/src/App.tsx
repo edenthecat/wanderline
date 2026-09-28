@@ -25,6 +25,29 @@ import {
   writeSlots,
   type SaveSlot,
 } from './save-slots';
+import { sanitizeChoiceAudioDelayMs } from '@wanderline/shared';
+
+// The pause before a choice option's audio starts, once the passage's
+// own narration ends — story.settings.choiceAudioDelayMs, defaulting to
+// 3000ms to match the editor's own fallback (SystemSoundsTab.tsx).
+// Exported for tests: it's the one place both setTimeout call sites
+// below get this value, so it's the one place the clamp needs covering.
+//
+// A story built from a settings row written before the backend's own
+// guard existed can carry a value that guard would now reject outright
+// — negative, non-numeric, or past what setTimeout can represent — and a
+// build is a static snapshot that guard's later fix can't reach
+// retroactively. sanitizeChoiceAudioDelayMs (shared, so this and the
+// backend guard can't quietly drift onto different rules) applies the
+// same three rules here, at the point of use, which is what actually
+// protects the listener: a negative or NaN would otherwise fire the
+// choice audio right away instead of waiting, and an oversized value
+// would silently erase a long pause the same way, since setTimeout
+// clamps a delay past what it can represent to fire almost immediately
+// rather than waiting longer.
+export function choiceAudioDelayMs(settings: { choiceAudioDelayMs?: number } | undefined): number {
+  return sanitizeChoiceAudioDelayMs(settings?.choiceAudioDelayMs, 3000);
+}
 
 // Load story data from window (preview), fetch (generated app), or demo
 async function loadStoryData(): Promise<StoryData | null> {
@@ -1251,7 +1274,7 @@ export default function App() {
       ) {
         autoNavigateTimeoutRef.current = setTimeout(
           () => navigateToNode(currentNode.choices[0].target),
-          story.settings?.choiceAudioDelayMs ?? 3000,
+          choiceAudioDelayMs(story.settings),
         );
         return;
       }
@@ -1288,7 +1311,7 @@ export default function App() {
         const runChoiceSequence = async () => {
           if (isStale()) return;
           // Wait before starting choice audio (default 3 seconds)
-          await delay(story.settings?.choiceAudioDelayMs ?? 3000);
+          await delay(choiceAudioDelayMs(story.settings));
           if (isStale()) return;
           // Choice 1: indicator then audio
           await playAudio(choice1IndicatorRef.current);

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   audioFileUrl,
   fetchAudioFiles,
@@ -8,6 +8,7 @@ import {
 import { useAudition } from '../hooks/useAudition';
 import AuditionButton from './AuditionButton';
 import { useProjectSettings } from '../hooks/useProjectSettings';
+import { sanitizeChoiceAudioDelayMs, MAX_SET_TIMEOUT_DELAY_MS } from '@wanderline/shared';
 
 interface Props {
   projectId: string;
@@ -74,10 +75,47 @@ function IndicatorPicker({
   );
 }
 
+// Matches the player's own fallback (player-app/src/App.tsx) so the
+// control reflects the same silence a listener hears before any
+// project override is set.
+const DEFAULT_CHOICE_AUDIO_DELAY_MS = 3000;
+
+// The span the slider normally covers — enough for any pacing an author
+// would reasonably pick from this control. Not a limit on the setting
+// itself: the settings contract puts a floor under choiceAudioDelayMs
+// but deliberately no *product* ceiling, since the player just waits
+// this long.
+const CHOICE_AUDIO_SLIDER_MAX_MS = 8000;
+
 export default function SystemSoundsTab({ projectId }: Props) {
-  const { settings, loading, error, updateOne } = useProjectSettings(projectId);
+  const { settings, loading, error, updateOne, updateDebounced } = useProjectSettings(projectId);
   const [indicatorAudio, setIndicatorAudio] = useState<AudioFile[]>([]);
   const { playingId, toggle } = useAudition();
+  // Declared up here with the other hooks because the loading branch
+  // below returns early; it's read and raised further down, once the
+  // stored pause is known.
+  const delayCeilingRef = useRef(CHOICE_AUDIO_SLIDER_MAX_MS);
+  // The tab isn't remounted when the author switches projects — the
+  // parent route just passes a new projectId — so the ref above would
+  // otherwise carry one project's raised ceiling into the next: leaving
+  // project A with a 30s pause would widen project B's slider to match,
+  // even though B's own pause is nowhere near it.
+  //
+  // Reset in an effect, not during render. `loading` lags a render
+  // behind projectId (it only flips once the hook's own effect runs),
+  // so on the render where projectId first changes, `settings` is still
+  // the previous project's — a render-time reset would immediately be
+  // re-raised by that same render's widen step below, using that stale
+  // value. Worse, a render-time ref mutation like that isn't safe under
+  // StrictMode's deliberate double-invocation of render bodies either:
+  // the second invocation would see the ref already reset by the first,
+  // decide projectId "didn't just change" after all, and re-widen from
+  // the same stale settings — the exact bug this effect avoids. An
+  // effect runs once, after commit, and DOM's own render-time value
+  // stays consistent with the not-yet-reset ceiling until then.
+  useEffect(() => {
+    delayCeilingRef.current = CHOICE_AUDIO_SLIDER_MAX_MS;
+  }, [projectId]);
 
   useEffect(() => {
     fetchAudioFiles(projectId)
@@ -108,6 +146,51 @@ export default function SystemSoundsTab({ projectId }: Props) {
   if (loading) return <div className="page-loader">Loading sounds...</div>;
 
   const noIndicators = indicatorAudio.length === 0;
+  // The settings endpoint now applies this same rule (sanitizeChoiceAudioDelayMs,
+  // shared so this display and the backend guard can't drift apart) to
+  // every write, but a project written before the guard existed can hold
+  // whatever its JSONB column accepted — a negative, something past what
+  // setTimeout can represent, or something that isn't a number at all.
+  // The slider below can't produce any of those, but rendering one raw
+  // would desync the control from the readout beside it: the native
+  // input clamps an out-of-range value and rejects a NaN outright, while
+  // the readout would happily print "-0.50s", a pause many times longer
+  // than the player will actually produce, or "NaNs".
+  const choiceAudioDelayMs = sanitizeChoiceAudioDelayMs(
+    settings?.choiceAudioDelayMs,
+    DEFAULT_CHOICE_AUDIO_DELAY_MS,
+  );
+  // The slider's ceiling, deliberately not derived from the live value.
+  // Setting `max` to the value itself moved the ceiling as the author
+  // dragged: a stored 12000 put the thumb on the right edge with nowhere
+  // left to go, and each drag leftward pulled the ceiling down under the
+  // pointer, ratcheting it lower with no way back up. So grow *past* an
+  // unusually long stored pause rather than up to it, and never shrink —
+  // the author can always still raise it, and a value set some other way
+  // (an API call, a future feature) is never silently clamped down the
+  // moment someone opens this tab.
+  //
+  // Safe to run unconditionally, even on the transitional render right
+  // after projectId changes (where `settings` is still stale — see the
+  // reset effect above): widening from a stale value just reproduces
+  // that same stale project's own already-correct ceiling, a no-op,
+  // since the reset itself hasn't run yet at that point either.
+  //
+  // Capped at MAX_SET_TIMEOUT_DELAY_MS: for a legacy value already at
+  // that technical maximum, adding CHOICE_AUDIO_SLIDER_MAX_MS on top
+  // would push the ceiling past it, letting the slider emit a value the
+  // backend would clamp back down and the player couldn't represent —
+  // the exact slider/stored-value disagreement this whole ceiling
+  // scheme exists to avoid.
+  delayCeilingRef.current = Math.min(
+    Math.max(
+      delayCeilingRef.current,
+      choiceAudioDelayMs > CHOICE_AUDIO_SLIDER_MAX_MS
+        ? choiceAudioDelayMs + CHOICE_AUDIO_SLIDER_MAX_MS
+        : CHOICE_AUDIO_SLIDER_MAX_MS,
+    ),
+    MAX_SET_TIMEOUT_DELAY_MS,
+  );
 
   return (
     <div className="tab-panel">
@@ -170,6 +253,34 @@ export default function SystemSoundsTab({ projectId }: Props) {
             Upload audio in the <code>indicator</code> category to use these.
           </span>
         )}
+      </section>
+
+      <section className="settings-section">
+        <h2>Choice timing</h2>
+        <p className="text-muted">
+          Silence before a choice option&apos;s audio starts, once the passage&apos;s own narration
+          finishes. Gives listeners a beat to think before the options begin reading themselves out.
+        </p>
+        <div className="ui-option settings-volume-row">
+          <div className="settings-volume-meta">
+            <strong>Pause before choices</strong>
+          </div>
+          <div className="settings-volume-control">
+            <input
+              type="range"
+              min={0}
+              max={delayCeilingRef.current}
+              step={250}
+              value={choiceAudioDelayMs}
+              onChange={(e) => updateDebounced('choiceAudioDelayMs', Number(e.target.value))}
+              aria-label="Pause before choices"
+              aria-valuetext={`${(choiceAudioDelayMs / 1000).toFixed(2)} seconds`}
+            />
+            <span className="settings-volume-value" aria-hidden="true">
+              {(choiceAudioDelayMs / 1000).toFixed(2)}s
+            </span>
+          </div>
+        </div>
       </section>
     </div>
   );
