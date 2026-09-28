@@ -154,6 +154,19 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
   // straight after — React doesn't invoke that updater synchronously,
   // so the value isn't there yet.
   const lastValueRef = useRef(new Map<string, unknown>());
+  // Like lastValueRef, but updated *only* by a load or a genuinely
+  // confirmed response (see applyServerValue) — never by an optimistic
+  // write. lastValueRef itself can hold a value nobody has confirmed
+  // yet, which is fine for most of what it's used for, but wrong as a
+  // revert target for a partial-patch key: if the same sub-field is
+  // edited twice in a row and both attempts fail, the second attempt's
+  // own "before" snapshot is the *first* attempt's optimistic value —
+  // itself never confirmed — so reverting to it would display a value
+  // that was never actually saved, just one attempt further back than
+  // the one that just failed. Reverting to whatever this map holds
+  // instead always lands on the last value the server is actually known
+  // to hold, however many failed attempts happened in between.
+  const confirmedValueRef = useRef(new Map<string, unknown>());
 
   async function reload() {
     setLoading(true);
@@ -161,6 +174,7 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     try {
       const { settings: data } = await fetchProjectSettings(projectId, signal);
       lastValueRef.current = new Map(Object.entries(data));
+      confirmedValueRef.current = new Map(Object.entries(data));
       setSettings(data);
       setError(null);
     } catch (err) {
@@ -215,10 +229,11 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
       // Drop every recorded value too, so a call for the new project,
       // made before its own reload() has finished repopulating this,
       // can't capture a rollback target that belongs to the project just
-      // left. lastValueRef.current itself is about to be replaced
-      // wholesale by that reload() anyway (see there), but clearing here
-      // closes the window between now and then.
+      // left. Both maps are about to be replaced wholesale by that
+      // reload() anyway (see there), but clearing here closes the
+      // window between now and then.
       lastValueRef.current.clear();
+      confirmedValueRef.current.clear();
     };
   }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -281,28 +296,37 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
 
   /**
    * Undo a failed partial-patch save — but only the specific sub-fields
-   * `failedFragment` itself introduced, reset to what `originalValue`
-   * (captured before that call's own write) held for those same
-   * sub-fields, leaving every *other* sub-field exactly as it currently
-   * stands.
+   * `failedFragment` itself introduced, reset to what confirmedValueRef
+   * holds *right now* for those same sub-fields, leaving every *other*
+   * sub-field exactly as it currently stands.
    *
    * This is deliberately not "restore the whole key to some earlier
-   * snapshot": lastValueRef's current value for a partial-patch key can
-   * itself be an unconfirmed optimistic merge from a sibling call that's
-   * still in flight — or that has, by the time THIS call's own failure
-   * is handled, also failed — so restoring "the complete value from
-   * before this call" can resurrect a sibling's own failed, never-
-   * persisted edit right along with reverting this one. Touching only
-   * the keys this call actually owns can't do that: it never reads or
-   * writes anything about a sub-field it didn't itself send, so it's
-   * safe to apply unconditionally, regardless of generation — unlike a
-   * whole-key rollback, which needed the generation check specifically
-   * to avoid stomping on a sibling's contribution.
+   * snapshot", and deliberately not "restore to what this call's own
+   * `originalValue` was at the time it started" either — both of those
+   * can be an unconfirmed optimistic value: a sibling call's own edit to
+   * a *different* sub-field, still in flight or since failed itself
+   * (restoring their snapshot resurrects that sibling's own failed edit
+   * right along with reverting this one); or, for the *same* sub-field
+   * edited twice in a row with both attempts failing, the second
+   * attempt's own "before" snapshot is just the first attempt's
+   * optimistic value — also never confirmed, so reverting to it lands
+   * one failed attempt short of the true original instead of on it.
+   * Reading confirmedValueRef at the moment of the revert, rather than a
+   * value captured earlier, sidesteps both: it only ever changes when a
+   * save has actually succeeded, so however many failed attempts came in
+   * between, this is always the last value the server is actually known
+   * to hold.
+   *
+   * Touching only the keys this call actually owns is also what makes
+   * this safe to apply unconditionally, regardless of generation: it
+   * never reads or writes anything about a sub-field it didn't itself
+   * send, so it can't stomp on a sibling's contribution to a different
+   * one — unlike a whole-key rollback, which needed the generation check
+   * specifically to avoid doing that.
    */
   function revertTrackedFragment<K extends keyof ProjectSettings>(
     key: K,
     failedFragment: ProjectSettings[K],
-    originalValue: ProjectSettings[K] | undefined,
   ) {
     const name = key as string;
     const current = lastValueRef.current.get(name);
@@ -311,9 +335,9 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
         ? { ...(current as Record<string, unknown>) }
         : {};
     if (failedFragment && typeof failedFragment === 'object' && !Array.isArray(failedFragment)) {
-      const original = originalValue as Record<string, unknown> | undefined;
+      const confirmed = confirmedValueRef.current.get(name) as Record<string, unknown> | undefined;
       for (const k of Object.keys(failedFragment as Record<string, unknown>)) {
-        base[k] = original?.[k];
+        base[k] = confirmed?.[k];
       }
     }
     setTracked(key, base as ProjectSettings[K]);
@@ -355,6 +379,12 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     // being the new current generation), so the wrong value is transient
     // rather than sticking — but the window exists.
     setTracked(key, updated[key]);
+    // confirmedValueRef too: this response is, by definition (every call
+    // site checks isCurrentGeneration first), something the server
+    // genuinely has — exactly what a partial-patch key's own revert
+    // needs (see revertTrackedFragment and confirmedValueRef's own
+    // comment).
+    confirmedValueRef.current.set(key as string, updated[key]);
   }
 
   /**
@@ -517,7 +547,7 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
           // a sibling call, including one that later also fails: this
           // call being "still current" would say nothing about whether
           // that sibling's own edit actually reached the server.
-          revertTrackedFragment(key, next, originalValue);
+          revertTrackedFragment(key, next);
           // No resend: saveNow never skips sending a partial-patch
           // key's own save (see PARTIAL_PATCH_KEYS's own comment), so
           // there's no earlier, skipped send this revert needs to make
@@ -552,11 +582,6 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
   ): void {
     const name = key as string;
     const isPartial = PARTIAL_PATCH_KEYS.has(name);
-    // Captured before the optimistic write below, same as updateOne's
-    // own originalValue — needed so a failed debounced save for a
-    // partial-patch key can revert just its own sub-fields (see
-    // saveNow's catch and revertTrackedFragment).
-    const originalValue = lastValueRef.current.get(name) as ProjectSettings[K] | undefined;
     // setTracked (not a bare setSettings) so a *later* updateOne call
     // for this same key — e.g. a direct control changed while this
     // debounced one is still pending — reads this value as its own
@@ -587,7 +612,7 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
       // would find nothing to cancel and a second debounced PATCH would
       // run alongside the one still pending.
       if (timers.get(name) === t) timers.delete(name);
-      void saveNow(key, next, generation, originalValue);
+      void saveNow(key, next, generation);
     }, 250);
     timers.set(name, t);
   }
@@ -597,7 +622,6 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     key: K,
     next: ProjectSettings[K],
     generation: number,
-    originalValue: ProjectSettings[K] | undefined,
   ): Promise<void> {
     const name = key as string;
     const isPartial = PARTIAL_PATCH_KEYS.has(name);
@@ -626,7 +650,7 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
           // revertTrackedFragment for why the revert specifically is
           // safe unconditionally.
           setError(err instanceof Error ? err.message : 'Failed to save');
-          revertTrackedFragment(key, next, originalValue);
+          revertTrackedFragment(key, next);
           return;
         }
         // A superseded scalar save's failure is not the user's

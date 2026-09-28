@@ -754,6 +754,43 @@ describe('useProjectSettings — overlapping saves', () => {
     });
   });
 
+  // The *same* sub-field edited twice in a row, both attempts failing.
+  // The second attempt's own "before" snapshot is the first attempt's
+  // optimistic value — itself never confirmed — so a revert that
+  // trusted that snapshot would land one failed attempt short of the
+  // true original, not on it: displaying choice1FileId as 'a' (the
+  // first, also-failed attempt) instead of 'x' (what the server has
+  // actually always held). Reverting to confirmedValueRef instead of a
+  // captured-at-call-start snapshot is what keeps this correct
+  // regardless of how many failed attempts a field has been through.
+  it('reverts a repeatedly-failed sub-field to the true original, not the previous failed attempt', async () => {
+    mockedFetch.mockResolvedValueOnce({
+      settings: { choiceIndicatorAudio: { choice1FileId: 'x', choice2FileId: 'y' } },
+    });
+    mockedUpdate
+      .mockRejectedValueOnce(new Error('first choice1 attempt failed'))
+      .mockRejectedValueOnce(new Error('second choice1 attempt failed'));
+
+    const { result } = renderHook(() => useProjectSettings('p1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let call1!: Promise<void>;
+    let call2!: Promise<void>;
+    act(() => {
+      call1 = result.current.updateOne('choiceIndicatorAudio', { choice1FileId: 'a' });
+      call2 = result.current.updateOne('choiceIndicatorAudio', { choice1FileId: 'b' });
+    });
+    await act(async () => {
+      await Promise.all([call1, call2]);
+    });
+
+    expect(result.current.error).toMatch(/second choice1 attempt failed/);
+    expect(result.current.settings?.choiceIndicatorAudio).toEqual({
+      choice1FileId: 'x',
+      choice2FileId: 'y',
+    });
+  });
+
   // No current caller debounces a partial-patch key, but saveNow's own
   // failure handling has to be correct anyway — same revert as
   // updateOne's, for the same reason.
