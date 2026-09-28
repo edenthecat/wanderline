@@ -167,6 +167,26 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
   // instead always lands on the last value the server is actually known
   // to hold, however many failed attempts happened in between.
   const confirmedValueRef = useRef(new Map<string, unknown>());
+  // Which save generation (see nextGeneration) produced the value
+  // currently sitting in lastValueRef, per key. Only meaningful for a
+  // scalar key's rollback: a partial-patch key's revert already has a
+  // safe target in confirmedValueRef itself (see revertTrackedFragment),
+  // but a scalar key's rollback needs to fall back to a value that was
+  // never actually a failed attempt in the first place — a pending
+  // debounced edit whose own save hasn't even been sent yet is a
+  // legitimate rollback target, not a stale one, even though it isn't
+  // server-confirmed either. Tagging each optimistic write with the
+  // generation that produced it, and checking that generation against
+  // failedAttemptsRef at revert time (see updateOne), is what tells
+  // those two cases apart.
+  const valueGenerationRef = useRef(new Map<string, number>());
+  // Every save generation (see nextGeneration) that is known to have
+  // failed — added to in updateOne and saveNow's catch blocks,
+  // unconditionally, even when the failure itself is otherwise silently
+  // dropped for being superseded. Generation ids are globally unique and
+  // never reused (see nextSaveIdRef), so this needs no key-scoping and
+  // is safe to leave growing for the life of the hook.
+  const failedAttemptsRef = useRef(new Set<number>());
 
   async function reload() {
     setLoading(true);
@@ -344,6 +364,78 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
   }
 
   /**
+   * Record, in confirmedValueRef, that the server now genuinely holds
+   * whatever `sent` contributed to `updated[key]` — regardless of
+   * whether this call's generation is still current for the key.
+   *
+   * applyServerValue's generation check is right for the *display*
+   * write: an older, superseded response must not stomp a newer
+   * optimistic value the user is currently looking at. confirmedValueRef
+   * is a different promise — "what has the server actually confirmed
+   * for this field" — and gating it the same way loses real information:
+   * this response is still the only record that `sent` genuinely reached
+   * the server, however this call's generation claim later fared against
+   * a sibling's. Two ways that shows up:
+   *
+   * - A scalar key: two rapid same-key calls (50 → 60, then 60 → 70)
+   *   share one generation counter, so the first's success can already
+   *   be superseded by the second's claim before its response arrives.
+   *   If the second then fails, its revert needs confirmedValueRef to
+   *   hold 60 (what the first call actually got the server to store),
+   *   not 50 (stale) or 60-as-a-guess (the second call's own
+   *   never-confirmed snapshot) — gating this the same as the display
+   *   write would leave it on 50.
+   * - A partial-patch key: sibling sub-fields of the same key also
+   *   share that one counter even though each is independently owned.
+   *   A later call to a *different* sub-field claims the generation out
+   *   from under this one; without this being unconditional, this
+   *   sub-field's confirmedValueRef entry would stay on whatever it was
+   *   before this call, and a later, unrelated failure of some other
+   *   call to the *same* sub-field would revert past this call's own
+   *   genuinely-confirmed write, back to a value the server no longer
+   *   holds.
+   *
+   * For a partial-patch key, only `sent`'s own sub-fields are merged in
+   * — restricting it that way is what makes the unconditional part safe:
+   * it can never record anything about a sub-field this call didn't
+   * itself send, so it can't stomp on a sibling's own confirmed value
+   * with something stale. A scalar key has no sub-fields to restrict to,
+   * so the whole response value is what's recorded.
+   */
+  function confirmResponse<K extends keyof ProjectSettings>(
+    key: K,
+    sent: ProjectSettings[K],
+    updated: ProjectSettings,
+  ) {
+    const name = key as string;
+    const responseValue = updated[key];
+    if (!PARTIAL_PATCH_KEYS.has(name)) {
+      confirmedValueRef.current.set(name, responseValue);
+      return;
+    }
+    if (
+      !sent ||
+      typeof sent !== 'object' ||
+      Array.isArray(sent) ||
+      !responseValue ||
+      typeof responseValue !== 'object' ||
+      Array.isArray(responseValue)
+    ) {
+      return;
+    }
+    const existing = confirmedValueRef.current.get(name);
+    const base: Record<string, unknown> =
+      existing && typeof existing === 'object' && !Array.isArray(existing)
+        ? { ...(existing as Record<string, unknown>) }
+        : {};
+    const response = responseValue as Record<string, unknown>;
+    for (const k of Object.keys(sent as Record<string, unknown>)) {
+      base[k] = response[k];
+    }
+    confirmedValueRef.current.set(name, base);
+  }
+
+  /**
    * Take just the patched key out of the server's response.
    *
    * The endpoint returns the whole merged settings object, but writing
@@ -379,12 +471,10 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     // being the new current generation), so the wrong value is transient
     // rather than sticking — but the window exists.
     setTracked(key, updated[key]);
-    // confirmedValueRef too: this response is, by definition (every call
-    // site checks isCurrentGeneration first), something the server
-    // genuinely has — exactly what a partial-patch key's own revert
-    // needs (see revertTrackedFragment and confirmedValueRef's own
-    // comment).
-    confirmedValueRef.current.set(key as string, updated[key]);
+    // confirmedValueRef is updated separately, by confirmResponse at
+    // each call site — unconditionally, ahead of the generation check
+    // that gates this function itself. See confirmResponse's own
+    // comment for why that has to be unconditional where this doesn't.
   }
 
   /**
@@ -460,6 +550,8 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
           { [key]: value },
           signal,
         );
+        // Unconditional — see confirmResponse's own comment.
+        confirmResponse(key, value, updated);
         if (!isCurrentGeneration(name, generation)) return;
         // This retry exists to recover from the failure that triggered
         // it — succeeding means that failure is resolved, so the error
@@ -495,18 +587,18 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     // immediately, with no dependency on when — or in what order
     // relative to this code — React gets around to applying anything.
     const isPartial = PARTIAL_PATCH_KEYS.has(name);
-    // originalValue is what this call would roll back to. For a
-    // partial-patch key it's the best-known *complete* value (thanks to
-    // setTrackedFragment's merge below, and every other write to this
-    // key going through it or applyServerValue) — genuinely safe to
-    // restore, unlike a bare fragment.
+    // What a scalar key's own rollback below would fall back to, and
+    // which generation produced it — see valueGenerationRef's own
+    // comment for why the generation matters too, not just the value.
     const originalValue = lastValueRef.current.get(name) as ProjectSettings[K] | undefined;
+    const originalGeneration = valueGenerationRef.current.get(name);
     if (isPartial) {
       setTrackedFragment(key, next);
     } else {
       setTracked(key, next);
     }
     const generation = nextGeneration(name);
+    valueGenerationRef.current.set(name, generation);
     await runSerialized(name, async (signal) => {
       // Always send, even if queueing let a newer change to this key
       // take over first. Unlike updateDebounced (see PARTIAL_PATCH_KEYS
@@ -524,10 +616,21 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
           { [key]: next },
           signal,
         );
+        // Unconditional, unlike the applyServerValue call below — see
+        // confirmResponse's own comment.
+        confirmResponse(key, next, updated);
         if (!isCurrentGeneration(name, generation)) return;
         applyServerValue(key, updated);
       } catch (err) {
         if (isAbortError(err)) return;
+        // Unconditional, even when the rest of this failure is about to
+        // be silently dropped below for being superseded: a sibling
+        // call for this key may already have captured this generation's
+        // own optimistic value as *its* rollback target (see
+        // originalGeneration above), and needs to know, when it gets
+        // here itself, that this generation's value was never actually
+        // confirmed.
+        failedAttemptsRef.current.add(generation);
         // Surface a partial-patch key's failure regardless of
         // generation: a newer save for this key patches a *different*
         // sub-field, not a value that supersedes this one, so this
@@ -558,10 +661,28 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
         // Only roll back (and resend) if nothing has claimed this key
         // as its own intended value since this call's own write.
         // lastValueRef, not React state: it's the one check in this
-        // function that has to be correct the instant it's read, for
-        // the same reason capturing originalValue above did.
+        // function that has to be correct the instant it's read.
         if (lastValueRef.current.get(name) !== next) return;
-        setTracked(key, originalValue);
+        // Roll back to originalValue — what this call would have
+        // overwritten — *unless* that value is itself a failed attempt:
+        // for two rapid same-key calls that both fail (e.g. 50 → 60,
+        // then 60 → 70), originalValue for the second call is the
+        // *first* call's own optimistic write, 60 — and if that first
+        // call has itself since failed (recorded in failedAttemptsRef,
+        // above, however it fared against this call's own generation),
+        // 60 was never confirmed by the server either. Falling back to
+        // confirmedValueRef in that case is what keeps this call from
+        // displaying, and resending, a value the server never actually
+        // held. A merely-*pending* originalValue — a debounced edit
+        // whose own save hasn't even been sent yet — was never marked
+        // failed, so it isn't affected: that's still the right rollback
+        // target, and confirmedValueRef could be several edits stale.
+        const originalWasFailedAttempt =
+          originalGeneration !== undefined && failedAttemptsRef.current.has(originalGeneration);
+        const rollbackValue = originalWasFailedAttempt
+          ? (confirmedValueRef.current.get(name) as ProjectSettings[K] | undefined)
+          : originalValue;
+        setTracked(key, rollbackValue);
         // The rollback above can restore a value that was never actually
         // sent: a debounced predecessor for this same key may have had
         // its own send skipped in saveNow for being "superseded" by
@@ -569,8 +690,8 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
         // debounced one — would become the one the server ends up with.
         // Since this call just failed, that assumption didn't hold, so
         // resend the value we're rolling back to ourselves.
-        if (originalValue !== undefined) {
-          void sendOnce(key, originalValue, generation);
+        if (rollbackValue !== undefined) {
+          void sendOnce(key, rollbackValue, generation);
         }
       }
     });
@@ -601,6 +722,10 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     // fires would let it land first and bounce the control back to the
     // old value for the length of the debounce.
     const generation = nextGeneration(name);
+    // Tag this optimistic write with its own generation — see
+    // valueGenerationRef's own comment and updateOne's rollback, which
+    // is what actually reads this.
+    valueGenerationRef.current.set(name, generation);
     const timers = debounceTimersRef.current;
     const existing = timers.get(name);
     if (existing) clearTimeout(existing);
@@ -639,11 +764,17 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
           { [key]: next },
           signal,
         );
+        // Unconditional — see confirmResponse's own comment.
+        confirmResponse(key, next, updated);
         if (!isCurrentGeneration(name, generation)) return;
         setError(null);
         applyServerValue(key, updated);
       } catch (err) {
         if (isAbortError(err)) return;
+        // Unconditional — see updateOne's matching call for why: a
+        // sibling call for this key may have captured this generation's
+        // own optimistic value as its own rollback target.
+        failedAttemptsRef.current.add(generation);
         if (isPartial) {
           // Always surface and always revert, regardless of
           // generation — see updateOne's own comment on

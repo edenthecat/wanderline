@@ -963,4 +963,124 @@ describe('useProjectSettings — overlapping saves', () => {
       expect.any(AbortSignal),
     );
   });
+
+  // Same shape as above, but call1 itself FAILS instead of succeeding.
+  // call1's failure is silently dropped (its generation is already
+  // superseded by call2's), but call1's own optimistic value, 60, was
+  // never confirmed by the server either. A rollback that trusted it
+  // anyway would land one failed attempt short of the true original —
+  // the same class of bug a partial-patch key's revert already guards
+  // against, just as real for a scalar key sharing one generation
+  // counter across two rapid same-key calls.
+  it('rolls back to the true confirmed value, not a failed predecessor’s optimistic guess, when two updateOne calls for one key both fail', async () => {
+    mockedFetch.mockResolvedValueOnce({ settings: { voiceoverVolume: 50 } });
+    mockedUpdate
+      .mockRejectedValueOnce(new Error('call1 failed')) // call1(60) fails, silently dropped
+      .mockRejectedValueOnce(new Error('call2 failed')) // call2(70) fails
+      .mockResolvedValueOnce({ settings: { voiceoverVolume: 50 } }); // call2's resend
+
+    const { result } = renderHook(() => useProjectSettings('p1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let call1!: Promise<void>;
+    let call2!: Promise<void>;
+    act(() => {
+      call1 = result.current.updateOne('voiceoverVolume', 60);
+      call2 = result.current.updateOne('voiceoverVolume', 70);
+    });
+    await act(async () => {
+      await Promise.all([call1, call2]);
+    });
+
+    // Rolled back to 50 — the true confirmed original — not 60, call1's
+    // own failed, never-confirmed guess. (The resend's own success
+    // clears the error, same as the analogous "first call succeeds"
+    // case above, so this doesn't assert on `error`.)
+    expect(result.current.settings?.voiceoverVolume).toBe(50);
+    await waitFor(() => expect(mockedUpdate).toHaveBeenCalledTimes(3));
+    expect(mockedUpdate).toHaveBeenLastCalledWith(
+      'p1',
+      { voiceoverVolume: 50 },
+      expect.any(AbortSignal),
+    );
+  });
+
+  // A rollback fallback has to stay narrow, though: a value that is
+  // merely *pending* — a debounced edit whose own save hasn't even been
+  // sent yet — was never marked failed, so a same-key updateOne that
+  // fails right after it must still roll back to that pending value,
+  // not skip past it to a possibly much older confirmedValueRef.
+  it('still rolls back to a pending (not yet sent) debounced value, not confirmedValueRef, when a later updateOne fails', async () => {
+    mockedFetch.mockResolvedValueOnce({ settings: { voiceoverVolume: 40 } });
+    mockedUpdate
+      .mockRejectedValueOnce(new Error('network blip'))
+      .mockResolvedValueOnce({ settings: { voiceoverVolume: 60 } });
+
+    const { result } = renderHook(() => useProjectSettings('p1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => result.current.updateDebounced('voiceoverVolume', 60));
+    await act(async () => {
+      await result.current.updateOne('voiceoverVolume', 90);
+    });
+
+    expect(result.current.settings?.voiceoverVolume).toBe(60);
+    await waitFor(() => expect(mockedUpdate).toHaveBeenCalledTimes(2));
+    expect(mockedUpdate).toHaveBeenLastCalledWith(
+      'p1',
+      { voiceoverVolume: 60 },
+      expect.any(AbortSignal),
+    );
+  });
+
+  // Sibling sub-fields of a partial-patch key share one *key-level*
+  // generation counter (see PARTIAL_PATCH_KEYS), even though each is
+  // independently owned and sent. If call A (choice1FileId) succeeds
+  // but call B (choice2FileId), issued right after, has since claimed
+  // the generation, A's response arrives "superseded" from the display's
+  // point of view — but it's still a genuine confirmation of
+  // choice1FileId specifically. A later, unrelated failure of a third
+  // call to choice1FileId needs that confirmation as its revert target,
+  // not the stale pre-A value.
+  it('confirms a partial-patch sub-field even when a sibling sub-field’s later call has since claimed the generation', async () => {
+    mockedFetch.mockResolvedValueOnce({
+      settings: { choiceIndicatorAudio: { choice1FileId: 'x', choice2FileId: 'y' } },
+    });
+    mockedUpdate
+      .mockResolvedValueOnce({
+        settings: { choiceIndicatorAudio: { choice1FileId: 'a', choice2FileId: 'y' } },
+      }) // call A (choice1FileId: 'a') succeeds, but generation-superseded by call B
+      .mockRejectedValueOnce(new Error('choice2 failed')) // call B (choice2FileId) fails
+      .mockRejectedValueOnce(new Error('choice1 retry failed')); // call C (choice1FileId again) fails
+
+    const { result } = renderHook(() => useProjectSettings('p1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let callA!: Promise<void>;
+    let callB!: Promise<void>;
+    act(() => {
+      callA = result.current.updateOne('choiceIndicatorAudio', { choice1FileId: 'a' });
+      callB = result.current.updateOne('choiceIndicatorAudio', { choice2FileId: 'z' });
+    });
+    await act(async () => {
+      await Promise.all([callA, callB]);
+    });
+
+    expect(result.current.settings?.choiceIndicatorAudio).toEqual({
+      choice1FileId: 'a',
+      choice2FileId: 'y',
+    });
+
+    await act(async () => {
+      await result.current.updateOne('choiceIndicatorAudio', { choice1FileId: 'c' });
+    });
+
+    // Reverts to 'a' — what call A actually got the server to store —
+    // not 'x', the value from before call A ever ran.
+    expect(result.current.error).toMatch(/choice1 retry failed/);
+    expect(result.current.settings?.choiceIndicatorAudio).toEqual({
+      choice1FileId: 'a',
+      choice2FileId: 'y',
+    });
+  });
 });
