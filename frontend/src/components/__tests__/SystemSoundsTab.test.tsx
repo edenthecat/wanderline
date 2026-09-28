@@ -141,7 +141,11 @@ describe('choice-audio pause control', () => {
     fireEvent.change(slider, { target: { value: '2000' } });
 
     await vi.advanceTimersByTimeAsync(300);
-    expect(mockedUpdate).toHaveBeenCalledWith('p1', { choiceAudioDelayMs: 2000 });
+    expect(mockedUpdate).toHaveBeenCalledWith(
+      'p1',
+      { choiceAudioDelayMs: 2000 },
+      expect.any(AbortSignal),
+    );
     vi.useRealTimers();
   });
 
@@ -273,6 +277,19 @@ describe('choice-audio pause control', () => {
     mount({ choiceAudioDelayMs: 9_999_999_999 });
     const slider = (await screen.findByLabelText('Pause before choices')) as HTMLInputElement;
     await waitFor(() => expect(slider.value).toBe('2147483647'));
+  });
+
+  // The ceiling grows past a long stored value by adding
+  // CHOICE_AUDIO_SLIDER_MAX_MS on top of it — for a value already at the
+  // technical maximum, that would push the ceiling *past* what setTimeout
+  // can represent, letting the slider emit a number the backend would
+  // clamp back down and the player couldn't honour: the exact
+  // slider/stored-value disagreement this ceiling scheme exists to avoid.
+  it('does not let the ceiling itself exceed what setTimeout can represent', async () => {
+    mount({ choiceAudioDelayMs: 2_147_483_647 });
+    const slider = (await screen.findByLabelText('Pause before choices')) as HTMLInputElement;
+    await waitFor(() => expect(slider.value).toBe('2147483647'));
+    expect(Number(slider.max)).toBe(2_147_483_647);
   });
 
   // The other half of the same desync: min={0} on the slider can't

@@ -8,7 +8,7 @@ import {
 import { useAudition } from '../hooks/useAudition';
 import AuditionButton from './AuditionButton';
 import { useProjectSettings } from '../hooks/useProjectSettings';
-import { sanitizeChoiceAudioDelayMs } from '@wanderline/shared';
+import { sanitizeChoiceAudioDelayMs, MAX_SET_TIMEOUT_DELAY_MS } from '@wanderline/shared';
 
 interface Props {
   projectId: string;
@@ -175,11 +175,21 @@ export default function SystemSoundsTab({ projectId }: Props) {
   // reset effect above): widening from a stale value just reproduces
   // that same stale project's own already-correct ceiling, a no-op,
   // since the reset itself hasn't run yet at that point either.
-  delayCeilingRef.current = Math.max(
-    delayCeilingRef.current,
-    choiceAudioDelayMs > CHOICE_AUDIO_SLIDER_MAX_MS
-      ? choiceAudioDelayMs + CHOICE_AUDIO_SLIDER_MAX_MS
-      : CHOICE_AUDIO_SLIDER_MAX_MS,
+  //
+  // Capped at MAX_SET_TIMEOUT_DELAY_MS: for a legacy value already at
+  // that technical maximum, adding CHOICE_AUDIO_SLIDER_MAX_MS on top
+  // would push the ceiling past it, letting the slider emit a value the
+  // backend would clamp back down and the player couldn't represent —
+  // the exact slider/stored-value disagreement this whole ceiling
+  // scheme exists to avoid.
+  delayCeilingRef.current = Math.min(
+    Math.max(
+      delayCeilingRef.current,
+      choiceAudioDelayMs > CHOICE_AUDIO_SLIDER_MAX_MS
+        ? choiceAudioDelayMs + CHOICE_AUDIO_SLIDER_MAX_MS
+        : CHOICE_AUDIO_SLIDER_MAX_MS,
+    ),
+    MAX_SET_TIMEOUT_DELAY_MS,
   );
 
   return (

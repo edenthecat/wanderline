@@ -1126,17 +1126,26 @@ export interface ProjectSettings {
   [key: string]: unknown;
 }
 
-export function fetchProjectSettings(projectId: string): Promise<{ settings: ProjectSettings }> {
-  return request(`/projects/${projectId}/settings`);
+// `signal` lets a caller cancel the request — useProjectSettings uses
+// this to abort a project's outstanding settings calls when the author
+// navigates away, rather than letting a slow one land after the next
+// project's own load/save has already completed.
+export function fetchProjectSettings(
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<{ settings: ProjectSettings }> {
+  return request(`/projects/${projectId}/settings`, { signal });
 }
 
 export function updateProjectSettings(
   projectId: string,
   settings: Partial<ProjectSettings>,
+  signal?: AbortSignal,
 ): Promise<{ settings: ProjectSettings }> {
   return request(`/projects/${projectId}/settings`, {
     method: 'PATCH',
     body: JSON.stringify({ settings }),
+    signal,
   });
 }
 

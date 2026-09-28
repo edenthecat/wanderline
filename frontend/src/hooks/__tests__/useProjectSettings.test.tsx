@@ -33,7 +33,7 @@ describe('useProjectSettings', () => {
     expect(result.current.loading).toBe(true);
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.settings).toEqual({ voiceoverVolume: 60 });
-    expect(mockedFetch).toHaveBeenCalledWith('p1');
+    expect(mockedFetch).toHaveBeenCalledWith('p1', expect.any(AbortSignal));
   });
 
   it('updateOne is optimistic — the local value flips before the round-trip resolves', async () => {
@@ -68,7 +68,13 @@ describe('useProjectSettings', () => {
 
   it('rolls back updateOne when the PATCH fails', async () => {
     mockedFetch.mockResolvedValueOnce({ settings: { voiceoverVolume: 40 } });
-    mockedUpdate.mockRejectedValueOnce(new Error('boom'));
+    // The rollback below also resends the value it rolls back to (see
+    // the "resends the value…" test), so a second PATCH follows the
+    // first — mocked here to succeed, so this test can also cover that
+    // the resend clears the error the original failure left up.
+    mockedUpdate
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce({ settings: { voiceoverVolume: 40 } });
     const { result } = renderHook(() => useProjectSettings('p1'));
     await waitFor(() => expect(result.current.loading).toBe(false));
 
@@ -77,7 +83,11 @@ describe('useProjectSettings', () => {
     });
 
     expect(result.current.settings?.voiceoverVolume).toBe(40);
-    expect(result.current.error).toMatch(/boom/);
+    // The automatic resend below tends to have already succeeded by
+    // this point (rather than leaving 'boom' up to observe), resolving
+    // the failure that triggered it.
+    await waitFor(() => expect(mockedUpdate).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.error).toBeNull());
   });
 
   it('reload() re-fetches when called manually', async () => {
@@ -193,7 +203,11 @@ describe('useProjectSettings — overlapping saves', () => {
       resolvers[0]({ settings: { choiceAudioDelayMs: 2000 } });
     });
     expect(mockedUpdate).toHaveBeenCalledTimes(2);
-    expect(mockedUpdate).toHaveBeenLastCalledWith('p1', { choiceAudioDelayMs: 5000 });
+    expect(mockedUpdate).toHaveBeenLastCalledWith(
+      'p1',
+      { choiceAudioDelayMs: 5000 },
+      expect.any(AbortSignal),
+    );
     vi.useRealTimers();
   });
 
@@ -280,7 +294,11 @@ describe('useProjectSettings — overlapping saves', () => {
     // One further PATCH, not two, and it carries the value the drag
     // ended on.
     expect(mockedUpdate).toHaveBeenCalledTimes(2);
-    expect(mockedUpdate).toHaveBeenLastCalledWith('p1', { choiceAudioDelayMs: 5000 });
+    expect(mockedUpdate).toHaveBeenLastCalledWith(
+      'p1',
+      { choiceAudioDelayMs: 5000 },
+      expect.any(AbortSignal),
+    );
     expect(result.current.settings?.choiceAudioDelayMs).toBe(5000);
     vi.useRealTimers();
   });
@@ -322,7 +340,11 @@ describe('useProjectSettings — overlapping saves', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(300);
     });
-    expect(mockedUpdate).toHaveBeenLastCalledWith('p1', { choiceAudioDelayMs: 5000 });
+    expect(mockedUpdate).toHaveBeenLastCalledWith(
+      'p1',
+      { choiceAudioDelayMs: 5000 },
+      expect.any(AbortSignal),
+    );
     expect(result.current.error).toBeNull();
     vi.useRealTimers();
   });
@@ -408,9 +430,12 @@ describe('useProjectSettings — overlapping saves', () => {
     // The choice-2 patch is not skipped just because a third call for
     // choice 1 had already superseded it by the time its turn came.
     await waitFor(() => expect(mockedUpdate).toHaveBeenCalledTimes(2));
-    expect(mockedUpdate).toHaveBeenNthCalledWith(2, 'p1', {
-      choiceIndicatorAudio: { choice2FileId: 'b' },
-    });
+    expect(mockedUpdate).toHaveBeenNthCalledWith(
+      2,
+      'p1',
+      { choiceIndicatorAudio: { choice2FileId: 'b' } },
+      expect.any(AbortSignal),
+    );
 
     act(() =>
       resolvers[1]({
@@ -418,9 +443,12 @@ describe('useProjectSettings — overlapping saves', () => {
       }),
     );
     await waitFor(() => expect(mockedUpdate).toHaveBeenCalledTimes(3));
-    expect(mockedUpdate).toHaveBeenNthCalledWith(3, 'p1', {
-      choiceIndicatorAudio: { choice1FileId: 'c' },
-    });
+    expect(mockedUpdate).toHaveBeenNthCalledWith(
+      3,
+      'p1',
+      { choiceIndicatorAudio: { choice1FileId: 'c' } },
+      expect.any(AbortSignal),
+    );
 
     // The server processed the patches in the order they were sent, so
     // by the time the last (current) one answers, its response reflects
@@ -500,7 +528,11 @@ describe('useProjectSettings — overlapping saves', () => {
       await vi.advanceTimersByTimeAsync(15000);
     });
     expect(mockedUpdate).toHaveBeenCalledTimes(2);
-    expect(mockedUpdate).toHaveBeenLastCalledWith('p1', { choiceAudioDelayMs: 5000 });
+    expect(mockedUpdate).toHaveBeenLastCalledWith(
+      'p1',
+      { choiceAudioDelayMs: 5000 },
+      expect.any(AbortSignal),
+    );
     expect(result.current.settings?.choiceAudioDelayMs).toBe(5000);
     vi.useRealTimers();
   });
@@ -531,7 +563,11 @@ describe('useProjectSettings — overlapping saves', () => {
       await result.current.updateOne('voiceoverVolume', 80);
     });
     expect(mockedUpdate).toHaveBeenCalledTimes(1);
-    expect(mockedUpdate).toHaveBeenCalledWith('p1', { voiceoverVolume: 80 });
+    expect(mockedUpdate).toHaveBeenCalledWith(
+      'p1',
+      { voiceoverVolume: 80 },
+      expect.any(AbortSignal),
+    );
 
     // The original debounce timer fires now. Its value is older than
     // what the server already has; it must not go out at all.
@@ -542,5 +578,149 @@ describe('useProjectSettings — overlapping saves', () => {
     expect(mockedUpdate).toHaveBeenCalledTimes(1);
     expect(result.current.settings?.voiceoverVolume).toBe(80);
     vi.useRealTimers();
+  });
+
+  // choiceIndicatorAudio's patches are fragments (see PARTIAL_PATCH_KEYS),
+  // so a superseded call's *failure* isn't a stale duplicate the way a
+  // superseded call's success is — nothing else is ever going to resend
+  // that fragment. Swallowing the failure the way a scalar key's is
+  // swallowed would silently lose the edit with no error shown.
+  it('surfaces a partial-patch failure even once a newer save has taken over the key', async () => {
+    mockedFetch.mockResolvedValueOnce({ settings: {} });
+    let rejectFirst!: (e: Error) => void;
+    mockedUpdate
+      .mockImplementationOnce(
+        () =>
+          new Promise((_res, rej) => {
+            rejectFirst = rej;
+          }),
+      )
+      .mockResolvedValueOnce({
+        settings: { choiceIndicatorAudio: { choice2FileId: 'b' } },
+      });
+
+    const { result } = renderHook(() => useProjectSettings('p1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => {
+      void result.current.updateOne('choiceIndicatorAudio', { choice1FileId: 'a' });
+    });
+    act(() => {
+      void result.current.updateOne('choiceIndicatorAudio', { choice2FileId: 'b' });
+    });
+
+    await act(async () => {
+      rejectFirst(new Error('choice 1 failed'));
+    });
+
+    expect(result.current.error).toMatch(/choice 1 failed/);
+  });
+
+  // The scalar skip in saveNow (see PARTIAL_PATCH_KEYS) assumes the
+  // newer call it superseded will succeed. If that newer call fails and
+  // rolls back to the debounced value instead, the debounced save's own
+  // send was already skipped for being "superseded" — without a resend,
+  // the server ends up with neither value: not the one that failed, and
+  // not the one the editor rolled back to display.
+  it('resends the value a superseded debounced save was skipped for, once a failing updateOne rolls back to it', async () => {
+    mockedFetch.mockResolvedValueOnce({ settings: { voiceoverVolume: 40 } });
+    mockedUpdate
+      .mockRejectedValueOnce(new Error('network blip'))
+      .mockResolvedValueOnce({ settings: { voiceoverVolume: 60 } });
+
+    const { result } = renderHook(() => useProjectSettings('p1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // A debounced save (60) is scheduled but hasn't fired yet.
+    act(() => result.current.updateDebounced('voiceoverVolume', 60));
+    // A direct call (90) sends immediately, ahead of it, and fails.
+    await act(async () => {
+      await result.current.updateOne('voiceoverVolume', 90);
+    });
+    // The failure rolls the display back to 60 — the debounced value —
+    // and a second request should carry it to the server.
+    expect(result.current.settings?.voiceoverVolume).toBe(60);
+    await waitFor(() => expect(mockedUpdate).toHaveBeenCalledTimes(2));
+    expect(mockedUpdate).toHaveBeenLastCalledWith(
+      'p1',
+      { voiceoverVolume: 60 },
+      expect.any(AbortSignal),
+    );
+  });
+
+  // Giving up on a stuck predecessor (STUCK_SAVE_TIMEOUT_MS) has to
+  // actually cancel its request, not just stop waiting for it — the
+  // whole point is a request that never reached the server in the first
+  // place (a dropped connection), and only cancelling it closes that
+  // case rather than leaving two requests in flight at once.
+  it('aborts a stuck predecessor once its timeout is reached', async () => {
+    mockedFetch.mockResolvedValueOnce({ settings: { choiceAudioDelayMs: 3000 } });
+    let firstSignal: AbortSignal | undefined;
+    mockedUpdate.mockImplementationOnce((...args) => {
+      firstSignal = args[2] as AbortSignal;
+      return new Promise(() => {});
+    });
+    mockedUpdate.mockResolvedValueOnce({ settings: { choiceAudioDelayMs: 5000 } });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+
+    const { result } = renderHook(() => useProjectSettings('p1'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => result.current.updateDebounced('choiceAudioDelayMs', 2000));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(firstSignal).toBeDefined();
+    expect(firstSignal?.aborted).toBe(false);
+
+    act(() => result.current.updateDebounced('choiceAudioDelayMs', 5000));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    // Still queued behind the stuck predecessor.
+    expect(mockedUpdate).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15000);
+    });
+    expect(firstSignal?.aborted).toBe(true);
+    expect(mockedUpdate).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
+  // Clearing the per-key maps on a project switch stops a stale
+  // *response* from being displayed, but it doesn't by itself stop the
+  // *request* underneath it from still being in flight — this is what
+  // actually cancels it, so it can't land at the server after the next
+  // project's own load or save already has.
+  it('aborts an outstanding reload and save when the project switches away', async () => {
+    let projectASignal: AbortSignal | undefined;
+    let saveASignal: AbortSignal | undefined;
+    mockedFetch.mockImplementation((id: unknown, signal?: unknown) => {
+      if (id === 'project-a') {
+        projectASignal = signal as AbortSignal;
+        return new Promise(() => {});
+      }
+      return Promise.resolve({ settings: { choiceAudioDelayMs: 3000 } }) as never;
+    });
+    mockedUpdate.mockImplementation((..._args: unknown[]) => {
+      saveASignal = _args[2] as AbortSignal;
+      return new Promise(() => {});
+    });
+
+    const { result, rerender } = renderHook(({ id }) => useProjectSettings(id), {
+      initialProps: { id: 'project-a' },
+    });
+    act(() => {
+      void result.current.updateOne('choiceAudioDelayMs', 1000);
+    });
+
+    expect(projectASignal?.aborted).toBe(false);
+    expect(saveASignal?.aborted).toBe(false);
+
+    rerender({ id: 'project-b' });
+
+    expect(projectASignal?.aborted).toBe(true);
+    expect(saveASignal?.aborted).toBe(true);
   });
 });

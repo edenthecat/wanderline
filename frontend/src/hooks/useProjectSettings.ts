@@ -16,6 +16,18 @@ import { fetchProjectSettings, updateProjectSettings, type ProjectSettings } fro
 // silently: nothing rejects, so no error surfaces and the control just
 // stops saving. This bounds that wait; on a normal request it never
 // matters, since requests settle in milliseconds.
+//
+// Giving up also aborts the predecessor's own request (see runSerialized),
+// which is a full fix when it's genuinely dead — a dropped connection, a
+// request that never reached the server at all. It is not a full fix when
+// the predecessor is merely slow and the server is still working through
+// it: mergeSettings serialises concurrent writes with `SELECT … FOR
+// UPDATE`, so a request already queued for that lock keeps running
+// server-side regardless of what the client does with its own connection,
+// and could still commit after this save's does. Closing that residual
+// window needs the server to reject a write that's older than one it has
+// already applied (a revision/sequence check), which is a bigger change
+// than this hook can make on its own.
 const STUCK_SAVE_TIMEOUT_MS = 15000;
 
 // Keys whose PATCH value is a fragment, not a complete replacement —
@@ -48,6 +60,10 @@ const PARTIAL_PATCH_KEYS = new Set([
   'choiceIndicatorAudio',
   'appIcon',
 ]);
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException && err.name === 'AbortError';
+}
 
 export interface UseProjectSettingsResult {
   settings: ProjectSettings | null;
@@ -97,24 +113,42 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
   // writes, but whichever request *arrives* last wins — two in flight
   // for one key could leave the database holding the older value while
   // the editor showed the newer one, a desync that would only surface
-  // on the next reload.
-  const inFlightRef = useRef<Map<string, Promise<void>>>(new Map());
+  // on the next reload. Each entry also carries the AbortController for
+  // that save's own request, so a successor giving up on a stuck
+  // predecessor (see runSerialized) can cancel it outright rather than
+  // merely stop waiting for it.
+  const inFlightRef = useRef<Map<string, { promise: Promise<void>; controller: AbortController }>>(
+    new Map(),
+  );
+  // Aborts every request — the load and any in-flight save — that
+  // belongs to the project this hook is currently pointed at. Recreated
+  // per projectId (see the effect below) so leaving a project cancels
+  // its own outstanding work rather than leaving it to land, unordered,
+  // on top of whatever the next project loads or saves.
+  const projectAbortRef = useRef(new AbortController());
 
   async function reload() {
     setLoading(true);
+    const signal = projectAbortRef.current.signal;
     try {
-      const { settings: data } = await fetchProjectSettings(projectId);
+      const { settings: data } = await fetchProjectSettings(projectId, signal);
       setSettings(data);
       setError(null);
     } catch (err) {
+      // An aborted load means the author already navigated away from
+      // this project — nothing to show here belongs to the project
+      // this hook now points at, so there's nothing to correct either.
+      if (isAbortError(err)) return;
       setSettings({});
       setError(err instanceof Error ? err.message : 'Failed to load settings');
     } finally {
-      setLoading(false);
+      if (!signal.aborted) setLoading(false);
     }
   }
 
   useEffect(() => {
+    const controller = new AbortController();
+    projectAbortRef.current = controller;
     setError(null);
     setLoading(true);
     reload();
@@ -125,6 +159,13 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     const generations = saveGenerationRef.current;
     const inFlight = inFlightRef.current;
     return () => {
+      // Cancel the load and every in-flight save for the project we're
+      // leaving. This is what actually stops one of them from landing —
+      // successfully, from the server's point of view — after the next
+      // project's own load or save has already completed; the map
+      // clears below only stop a stale *response* from being displayed,
+      // they can't reach back and undo a request already in flight.
+      controller.abort();
       // Cancel any pending debounced saves when the project switches...
       timers.forEach((t) => clearTimeout(t));
       timers.clear();
@@ -133,8 +174,14 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
       // loaded settings (the ids are never re-issued, so retiring is
       // permanent)...
       generations.clear();
-      // ...and stop the new project's saves queueing behind the old
-      // project's, which they have no reason to wait for.
+      // ...abort every in-flight save's own request too — clearing the
+      // map on its own only stops the *next* project's saves queueing
+      // behind these, it doesn't touch the requests already sent, which
+      // would otherwise keep running and could still land after this
+      // project has been left behind...
+      inFlight.forEach((entry) => entry.controller.abort());
+      // ...and now that they're cancelled, drop them, so the next
+      // project's saves have nothing to queue behind.
       inFlight.clear();
     };
   }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -178,35 +225,88 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
   /**
    * Run a save for `key` only once the save already in flight for that
    * key has finished, so two PATCHes for one key can't arrive at the
-   * endpoint in the opposite order to the one they were sent in — unless
-   * the one ahead of it is stuck, past STUCK_SAVE_TIMEOUT_MS, in which
-   * case this one stops waiting and goes anyway.
+   * endpoint in the opposite order to the one they were sent in —
+   * unless the one ahead of it is stuck, past STUCK_SAVE_TIMEOUT_MS, in
+   * which case this one stops waiting, cancels it, and goes anyway (see
+   * STUCK_SAVE_TIMEOUT_MS for what that does and doesn't guarantee).
    *
    * `body` is expected to handle its own failures; a predecessor that
    * rejects anyway is swallowed here rather than poisoning the chain for
-   * every save queued behind it.
+   * every save queued behind it. It receives this save's own
+   * AbortSignal, tied to both the project switch above and the
+   * stuck-predecessor timeout below, so it can pass it on to the actual
+   * request.
    */
-  async function runSerialized(key: string, body: () => Promise<void>): Promise<void> {
+  async function runSerialized(
+    key: string,
+    body: (signal: AbortSignal) => Promise<void>,
+  ): Promise<void> {
     const inFlight = inFlightRef.current;
     const previous = inFlight.get(key);
+    const controller = new AbortController();
     const run = (async () => {
       if (previous) {
         // Race rather than a bare await: a predecessor stuck past the
         // timeout is given up on, and this save proceeds without it
         // rather than waiting forever. See STUCK_SAVE_TIMEOUT_MS.
         await Promise.race([
-          previous.catch(() => {}),
+          previous.promise.catch(() => {}),
           new Promise<void>((resolve) => setTimeout(resolve, STUCK_SAVE_TIMEOUT_MS)),
         ]);
+        // Cancel the predecessor's own request outright rather than
+        // just moving on without it. If it already settled, this is a
+        // no-op; if it was genuinely stuck (a dropped connection, a
+        // stalled proxy — never reached the server at all), this is
+        // what stops it from ever arriving after ours does.
+        previous.controller.abort();
       }
-      await body();
+      await body(controller.signal);
     })();
-    inFlight.set(key, run);
+    inFlight.set(key, { promise: run, controller });
     try {
       await run;
     } finally {
-      if (inFlight.get(key) === run) inFlight.delete(key);
+      if (inFlight.get(key)?.promise === run) inFlight.delete(key);
     }
+  }
+
+  /**
+   * Send `value` for `key` once more, applying the normal
+   * generation-gated response handling but without a rollback of its
+   * own on failure. Used only by updateOne's catch block, to make sure
+   * a value it rolls back to actually reaches the server rather than
+   * relying on some earlier save (already skipped for being
+   * "superseded" — see PARTIAL_PATCH_KEYS / saveNow) to have sent it.
+   * Not rolling back on its own failure bounds this to a single retry
+   * rather than bouncing the value back and forth against a
+   * consistently failing network.
+   */
+  async function sendOnce<K extends keyof ProjectSettings>(
+    key: K,
+    value: ProjectSettings[K],
+    generation: number,
+  ): Promise<void> {
+    const name = key as string;
+    await runSerialized(name, async (signal) => {
+      if (!isCurrentGeneration(name, generation)) return;
+      try {
+        const { settings: updated } = await updateProjectSettings(
+          projectId,
+          { [key]: value },
+          signal,
+        );
+        if (!isCurrentGeneration(name, generation)) return;
+        // This retry exists to recover from the failure that triggered
+        // it — succeeding means that failure is resolved, so the error
+        // it left up should clear rather than linger describing a
+        // problem that's already fixed.
+        setError(null);
+        applyServerValue(key, updated);
+      } catch (err) {
+        if (isAbortError(err) || !isCurrentGeneration(name, generation)) return;
+        setError(err instanceof Error ? err.message : 'Failed to update setting');
+      }
+    });
   }
 
   async function updateOne<K extends keyof ProjectSettings>(
@@ -214,17 +314,26 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     next: ProjectSettings[K],
   ): Promise<void> {
     setError(null);
-    let originalValue: ProjectSettings[K] | undefined;
-    let didCapture = false;
-    setSettings((prev) => {
-      const cur = prev ?? {};
-      originalValue = cur[key];
-      didCapture = true;
-      return { ...cur, [key]: next };
-    });
+    // Read the pre-write value from `settings` directly (the hook's own
+    // closure over its current state) rather than from `prev` inside the
+    // setSettings call below. The two usually agree, but only the
+    // closure read is available *synchronously*, right here: React does
+    // not invoke a functional setState updater the moment it's called —
+    // reading `originalValue` immediately after queuing that update, as
+    // opposed to from inside a later updater for the same key (safe,
+    // since React does run same-key updaters in the order they were
+    // queued), got this wrong in an earlier version of this fix and is
+    // exactly what the failing-then-superseded scenario in this file's
+    // tests below caught. didCapture is true unconditionally — it's
+    // legacy of when this value came from inside the updater and could,
+    // in principle, never run; kept so a key that's never been set
+    // (originalValue undefined) still rolls back to "absent" correctly.
+    const originalValue = settings?.[key];
+    const didCapture = true;
+    setSettings((prev) => ({ ...(prev ?? {}), [key]: next }));
     const name = key as string;
     const generation = nextGeneration(name);
-    await runSerialized(name, async () => {
+    await runSerialized(name, async (signal) => {
       // Always send, even if queueing let a newer change to this key
       // take over first. Unlike updateDebounced (see PARTIAL_PATCH_KEYS
       // and saveNow below), updateOne enters the same-key queue the
@@ -236,16 +345,24 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
       // a fragment — one dropdown's worth — that the newer save knows
       // nothing about, so skipping it here would drop it for good.
       try {
-        const { settings: updated } = await updateProjectSettings(projectId, {
-          [key]: next,
-        });
+        const { settings: updated } = await updateProjectSettings(
+          projectId,
+          { [key]: next },
+          signal,
+        );
         if (!isCurrentGeneration(name, generation)) return;
         applyServerValue(key, updated);
       } catch (err) {
-        // A superseded save's failure is not the user's problem: the
-        // value they're looking at came from a later request that is
-        // still in flight or has already succeeded.
-        if (!isCurrentGeneration(name, generation)) return;
+        if (isAbortError(err)) return;
+        // choiceIndicatorAudio's patches are fragments, not complete
+        // values (see PARTIAL_PATCH_KEYS): if a newer save for this key
+        // has taken over, THIS failure is still the only record that
+        // `next`'s sub-field never reached the server, and nothing else
+        // is going to resend it. Surface it regardless of generation
+        // rather than silently losing that edit. A scalar key's failure
+        // stays generation-gated as before, since the newer save there
+        // really does carry the complete, superseding value.
+        if (!PARTIAL_PATCH_KEYS.has(name) && !isCurrentGeneration(name, generation)) return;
         setSettings((prev) => {
           if (!prev) return prev;
           // Only roll back if the user hasn't changed this key again
@@ -255,6 +372,28 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
           return { ...prev, [key]: originalValue };
         });
         setError(err instanceof Error ? err.message : 'Failed to update setting');
+        // The rollback above can restore a value that was never actually
+        // sent: a debounced predecessor for this same key may have had
+        // its own send skipped in saveNow for being "superseded" by
+        // this call, on the assumption that this call's value — not the
+        // debounced one — would become the one the server ends up with.
+        // Since this call just failed, that assumption didn't hold, so
+        // resend the value we're rolling back to ourselves.
+        //
+        // Only for a scalar key: this is a *complete* replacement value,
+        // exactly what the rollback above is restoring the display to.
+        // For a partial-patch key, `originalValue` is the *other* side's
+        // fragment from before this call's own optimistic write — not a
+        // value that ever makes sense to resend on its own.
+        //
+        // Gated on isCurrentGeneration, already checked above: that's
+        // what tells us nothing else (via updateOne/updateDebounced) has
+        // touched this key since, so the rollback we just performed is
+        // the correct value to make the server match, not a stale one
+        // clobbering something newer.
+        if (!PARTIAL_PATCH_KEYS.has(name) && didCapture && originalValue !== undefined) {
+          void sendOnce(key, originalValue, generation);
+        }
       }
     });
   }
@@ -294,7 +433,7 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
     generation: number,
   ): Promise<void> {
     const name = key as string;
-    await runSerialized(name, async () => {
+    await runSerialized(name, async (signal) => {
       // Same reasoning as updateOne. This is the case PARTIAL_PATCH_KEYS'
       // own comment describes: this save's actual request was delayed
       // behind its 250ms debounce timer, so by the time it gets here a
@@ -303,14 +442,17 @@ export function useProjectSettings(projectId: string): UseProjectSettingsResult 
       // silently overwrite it.
       if (!PARTIAL_PATCH_KEYS.has(name) && !isCurrentGeneration(name, generation)) return;
       try {
-        const { settings: updated } = await updateProjectSettings(projectId, {
-          [key]: next,
-        });
+        const { settings: updated } = await updateProjectSettings(
+          projectId,
+          { [key]: next },
+          signal,
+        );
         if (!isCurrentGeneration(name, generation)) return;
         setError(null);
         applyServerValue(key, updated);
       } catch (err) {
-        if (!isCurrentGeneration(name, generation)) return;
+        if (isAbortError(err)) return;
+        if (!PARTIAL_PATCH_KEYS.has(name) && !isCurrentGeneration(name, generation)) return;
         setError(err instanceof Error ? err.message : 'Failed to save');
       }
     });
