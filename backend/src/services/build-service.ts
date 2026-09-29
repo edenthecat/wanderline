@@ -1,5 +1,5 @@
 import { Pool } from 'pg';
-import archiver from 'archiver';
+import { ZipArchive } from 'archiver';
 import { logger } from '../logger.js';
 import {
   createReadStream,
@@ -605,7 +605,7 @@ export async function executeBuild(pool: Pool, projectId: string, buildId: strin
     );
 
     // Zip only the dist/ folder (ready-to-deploy artifact)
-    const archive = archiver('zip', { zlib: { level: 9 } });
+    const archive = new ZipArchive({ zlib: { level: 9 } });
     const output = createWriteStream(outputPath);
 
     await new Promise<void>((resolve, reject) => {
