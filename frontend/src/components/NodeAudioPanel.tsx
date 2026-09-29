@@ -22,6 +22,10 @@ import AuditionButton from './AuditionButton';
 
 type SingleSlot = Exclude<NodeAudioSlot, 'sfx'>;
 
+/** What the server takes for a new take; `audio/*` would offer .m4a,
+ * .flac and friends only for them to be refused. */
+export const TAKE_FORMATS = '.mp3,.wav,.ogg,.webm,audio/mpeg,audio/wav,audio/ogg,audio/webm';
+
 const SLOTS: { key: SingleSlot; label: string; category: string }[] = [
   { key: 'voiceover', label: 'Voiceover', category: 'voiceover' },
   { key: 'ambience', label: 'Ambience', category: 'ambience' },
@@ -89,10 +93,40 @@ export default function NodeAudioPanel({
 
   // Nothing attached and nothing to attach from: stay out of the way, as
   // the read-only preview always did.
+  const takeInputRef = useRef<HTMLInputElement>(null);
+  const takeForRef = useRef<string | null>(null);
+
   if (!hasAnything && !canEdit) return null;
 
   const name = (fileId: string) =>
     audioNames?.[fileId] ?? audioFiles.find((f) => f.id === fileId)?.original_name ?? fileId;
+  // Versioned by the stored filename, which changes with each new take.
+  const src = (fileId: string) =>
+    audioFileUrl(projectId, fileId, audioFiles.find((f) => f.id === fileId)?.filename);
+
+  // One hidden file input serves every row's "New take…" (refs above the
+  // early return with the other hooks).
+  const pickNewTake = (fileId: string) => {
+    if (busy || !takeInputRef.current) return;
+    takeForRef.current = fileId;
+    takeInputRef.current.value = '';
+    takeInputRef.current.click();
+  };
+  const onTakeChosen = (file: File | undefined) => {
+    const fileId = takeForRef.current;
+    takeForRef.current = null;
+    if (!file || !fileId || !actions) return;
+    // Destructive and project-wide: the old take is deleted, and every
+    // passage using this file changes.
+    if (
+      !window.confirm(
+        `Replace "${name(fileId)}" with "${file.name}"? Every passage using it will play the new take, and the old take is deleted.`,
+      )
+    ) {
+      return;
+    }
+    void run(() => actions.newTake(fileId, file));
+  };
 
   const run = async (op: () => Promise<void>) => {
     if (busy) return;
@@ -133,17 +167,27 @@ export default function NodeAudioPanel({
     clip.stop();
     // Synchronously, inside the click: see useMixAudition.
     mix.play({
-      voiceUrl: nodeAudio?.voiceover ? audioFileUrl(projectId, nodeAudio.voiceover) : undefined,
-      ambienceUrl: nodeAudio?.ambience ? audioFileUrl(projectId, nodeAudio.ambience) : undefined,
-      sfx: sfx.map((id) => ({ url: audioFileUrl(projectId, id), offsetMs: offsets[id] })),
+      voiceUrl: nodeAudio?.voiceover ? src(nodeAudio.voiceover) : undefined,
+      ambienceUrl: nodeAudio?.ambience ? src(nodeAudio.ambience) : undefined,
+      sfx: sfx.map((id) => ({ url: src(id), offsetMs: offsets[id] })),
       voiceVolume: levels.voiceover / 100,
       ambienceVolume: levels.ambience / 100,
     });
   };
 
-  const rowActions = (key: string, label: string, onClear: () => void) =>
+  const rowActions = (key: string, label: string, fileId: string, onClear: () => void) =>
     actions && (
       <>
+        <button
+          type="button"
+          className="btn btn-sm btn-ghost"
+          aria-disabled={busy}
+          onClick={() => pickNewTake(fileId)}
+          aria-label={`Upload a new take of ${label} for ${nodeId}`}
+          title="Upload a new take of this file, everywhere it's used"
+        >
+          New take…
+        </button>
         {canEdit && (
           <button
             type="button"
@@ -199,7 +243,7 @@ export default function NodeAudioPanel({
             <li key={slot.key} className="node-audio-row">
               <AuditionButton
                 id={`${slot.key}:${fileId}`}
-                url={audioFileUrl(projectId, fileId)}
+                url={src(fileId)}
                 label={slot.label}
                 playingId={clip.playingId}
                 toggle={playClip}
@@ -210,6 +254,7 @@ export default function NodeAudioPanel({
                 {rowActions(
                   slot.key,
                   slot.label.toLowerCase(),
+                  fileId,
                   () => void run(() => actions!.clear(nodeId, slot.key, fileId)),
                 )}
               </span>
@@ -234,7 +279,7 @@ export default function NodeAudioPanel({
             <li key={key} className="node-audio-row">
               <AuditionButton
                 id={key}
-                url={audioFileUrl(projectId, fileId)}
+                url={src(fileId)}
                 label={`SFX ${i + 1}`}
                 playingId={clip.playingId}
                 toggle={playClip}
@@ -258,6 +303,7 @@ export default function NodeAudioPanel({
                 {rowActions(
                   key,
                   `SFX ${i + 1}`,
+                  fileId,
                   () => void run(() => actions!.clear(nodeId, 'sfx', fileId)),
                 )}
               </span>
@@ -309,6 +355,17 @@ export default function NodeAudioPanel({
           </li>
         )}
       </ul>
+      {actions && (
+        <input
+          ref={takeInputRef}
+          type="file"
+          accept={TAKE_FORMATS}
+          hidden
+          aria-hidden="true"
+          tabIndex={-1}
+          onChange={(e) => onTakeChosen(e.target.files?.[0])}
+        />
+      )}
       {canEdit && (
         <button
           type="button"

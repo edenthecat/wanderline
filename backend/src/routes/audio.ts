@@ -93,6 +93,63 @@ export function parseOffsetMs(value: unknown): number | null | typeof INVALID_OF
   return value;
 }
 
+/**
+ * Convert an uploaded file if it needs it (WAV becomes MP3) and persist
+ * it to durable storage. Shared by a fresh upload and by uploading a new
+ * take over an existing file. Returns null if storage failed, having
+ * cleaned up the local copy: a row pointing at a missing object would
+ * 404 forever on download.
+ */
+async function storeUploadedAudio(
+  req: Request,
+  projectId: string,
+  file: Express.Multer.File,
+): Promise<{ filename: string; mimeType: string; size: number } | null> {
+  let finalFilename = file.filename;
+  let finalMimeType = file.mimetype;
+  let finalSize = file.size;
+
+  // Convert WAV to MP3
+  if (
+    file.mimetype === 'audio/wav' ||
+    file.mimetype === 'audio/x-wav' ||
+    file.originalname.toLowerCase().endsWith('.wav')
+  ) {
+    const inputPath = join(UPLOAD_DIR, projectId, file.filename);
+    const mp3Filename = file.filename.replace(/\.[^.]+$/, '.mp3');
+    const outputPath = join(UPLOAD_DIR, projectId, mp3Filename);
+
+    try {
+      await convertWavToMp3(inputPath, outputPath);
+      finalFilename = mp3Filename;
+      finalMimeType = 'audio/mpeg';
+      const stats = await stat(outputPath);
+      finalSize = stats.size;
+      req.log.info(
+        { originalName: file.originalname, originalSize: file.size, finalSize },
+        'Converted WAV to MP3',
+      );
+    } catch (err) {
+      req.log.error({ err }, 'Failed to convert WAV to MP3');
+      // Continue with original file if conversion fails
+    }
+  }
+
+  const localPath = join(UPLOAD_DIR, projectId, finalFilename);
+  try {
+    await getStorage().uploadFile(audioKey(projectId, finalFilename), localPath, finalMimeType);
+  } catch (err) {
+    req.log.error({ err }, 'Failed to persist audio to storage');
+    try {
+      await unlink(localPath);
+    } catch {
+      /* may not exist */
+    }
+    return null;
+  }
+  return { filename: finalFilename, mimeType: finalMimeType, size: finalSize };
+}
+
 export function createAudioRouter(pool: Pool): Router {
   const router = Router({ mergeParams: true });
 
@@ -233,54 +290,12 @@ export function createAudioRouter(pool: Pool): Router {
         }
       }
 
-      let finalFilename = file.filename;
-      let finalMimeType = file.mimetype;
-      let finalSize = file.size;
-
-      // Convert WAV to MP3
-      if (
-        file.mimetype === 'audio/wav' ||
-        file.mimetype === 'audio/x-wav' ||
-        file.originalname.toLowerCase().endsWith('.wav')
-      ) {
-        const inputPath = join(UPLOAD_DIR, id, file.filename);
-        const mp3Filename = file.filename.replace(/\.[^.]+$/, '.mp3');
-        const outputPath = join(UPLOAD_DIR, id, mp3Filename);
-
-        try {
-          await convertWavToMp3(inputPath, outputPath);
-          finalFilename = mp3Filename;
-          finalMimeType = 'audio/mpeg';
-          const stats = await stat(outputPath);
-          finalSize = stats.size;
-          req.log.info(
-            { originalName: file.originalname, originalSize: file.size, finalSize },
-            'Converted WAV to MP3',
-          );
-        } catch (err) {
-          req.log.error({ err }, 'Failed to convert WAV to MP3');
-          // Continue with original file if conversion fails
-        }
-      }
-
-      // Persist to durable storage (GCS in prod, local FS in dev). Fail the
-      // request if storage is misconfigured/unavailable rather than insert a
-      // DB row that points at a missing object — that would 404 forever on
-      // download.
-      const localPath = join(UPLOAD_DIR, id, finalFilename);
-      try {
-        await getStorage().uploadFile(audioKey(id, finalFilename), localPath, finalMimeType);
-      } catch (err) {
-        req.log.error({ err }, 'Failed to persist audio to storage');
-        // Clean up the local copy so we don't leak files
-        try {
-          await unlink(localPath);
-        } catch {
-          /* may not exist */
-        }
+      const stored = await storeUploadedAudio(req, id, file);
+      if (!stored) {
         res.status(503).json({ error: 'Failed to persist audio to durable storage' });
         return;
       }
+      const { filename: finalFilename, mimeType: finalMimeType, size: finalSize } = stored;
 
       const result = await pool.query(
         `
@@ -385,6 +400,206 @@ export function createAudioRouter(pool: Pool): Router {
       res.status(500).json({ error: 'Failed to delete all audio files' });
     }
   });
+
+  // Upload a new take over an existing file.
+  /**
+   * @openapi
+   * /projects/{id}/audio/{audioId}/replace:
+   *   post:
+   *     summary: Upload a new take in place of an existing audio file.
+   *     description: |
+   *       The file keeps its id, so every node it's attached to (and each
+   *       sound effect's timing) picks up the new take with no reassigning.
+   *       It's stored under a new name, so previews, builds and offline
+   *       caches fetch the new audio rather than serving the old one.
+   *     tags: [Audio]
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema: { type: string, format: uuid }
+   *       - in: path
+   *         name: audioId
+   *         required: true
+   *         schema: { type: string, format: uuid }
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         multipart/form-data:
+   *           schema:
+   *             type: object
+   *             required: [audio]
+   *             properties:
+   *               audio: { type: string, format: binary }
+   *     responses:
+   *       200: { description: Replaced. Returns the updated audio file. }
+   *       400: { description: 'No file, or a malformed id.' }
+   *       404: { description: No such audio file in this project. }
+   *       503: { description: Durable storage unavailable; nothing changed. }
+   */
+  router.post(
+    '/:audioId/replace',
+    // Reject a bad id before multer writes anything to disk.
+    (req: Request, res: Response, next) => {
+      if (!UUID_RE.test(req.params.audioId)) {
+        res.status(400).json({ error: 'Invalid audio id' });
+        return;
+      }
+      next();
+    },
+    // Multer's own errors (a format it won't take, a file over the limit)
+    // otherwise fall through to Express's default HTML 500, which the
+    // editor can't turn into a message. Anything else (the disk, say) is
+    // a server fault: a 500 without the raw message, which can carry a
+    // server path.
+    (req: Request, res: Response, next) => {
+      upload.single('audio')(req, res, (err: unknown) => {
+        if (!err) return next();
+        const error = err as Error & { code?: string };
+        if (error.message === 'Only audio files are allowed') {
+          return res
+            .status(400)
+            .json({ error: 'Only audio files (mp3, wav, ogg, webm) are allowed' });
+        }
+        if (err instanceof multer.MulterError) {
+          return res.status(400).json({
+            error:
+              err.code === 'LIMIT_FILE_SIZE' ? 'That file is over the 50 MB limit' : err.message,
+          });
+        }
+        req.log.error({ err }, 'Upload failed before the replace route ran');
+        return res.status(500).json({ error: 'Failed to receive the upload' });
+      });
+    },
+    async (req: Request, res: Response) => {
+      const { id, audioId } = req.params;
+      const file = req.file;
+      const unlinkLocal = async (filename: string) => {
+        try {
+          await unlink(join(UPLOAD_DIR, id, filename));
+        } catch {
+          /* may not exist */
+        }
+      };
+      let stored: Awaited<ReturnType<typeof storeUploadedAudio>> = null;
+      // Until the row points at the new take, it's ours to clean up.
+      const discardNewTake = async () => {
+        if (file) await unlinkLocal(file.filename);
+        if (!stored) return;
+        await unlinkLocal(stored.filename);
+        try {
+          await getStorage().delete(audioKey(id, stored.filename));
+        } catch (err) {
+          req.log.warn({ err }, 'Failed to delete orphaned replacement audio');
+        }
+      };
+
+      let oldFilename: string | null = null;
+      let audioFile: Record<string, unknown> | null = null;
+      try {
+        if (!file) {
+          res.status(400).json({ error: 'No audio file provided' });
+          return;
+        }
+        const existing = await pool.query(
+          'SELECT 1 FROM audio_files WHERE id = $1 AND project_id = $2',
+          [audioId, id],
+        );
+        if (existing.rows.length === 0) {
+          await discardNewTake();
+          res.status(404).json({ error: 'Audio file not found' });
+          return;
+        }
+
+        stored = await storeUploadedAudio(req, id, file);
+        if (!stored) {
+          await discardNewTake();
+          res.status(503).json({ error: 'Failed to persist audio to durable storage' });
+          return;
+        }
+
+        // Same row, new object. Duration is the old take's, so it's
+        // cleared rather than left wrong. The old filename is read under a
+        // row lock in the same transaction as the update, so two replaces
+        // (or a replace and a delete) racing can't each think they own the
+        // same old take and strand the other's new one.
+        const client = await pool.connect();
+        let failure: Error | undefined;
+        try {
+          await client.query('BEGIN');
+          const locked = await client.query(
+            'SELECT filename FROM audio_files WHERE id = $1 AND project_id = $2 FOR UPDATE',
+            [audioId, id],
+          );
+          if (locked.rows.length > 0) {
+            oldFilename = locked.rows[0].filename;
+            const updated = await client.query(
+              `UPDATE audio_files
+               SET filename = $3, original_name = $4, mime_type = $5, size_bytes = $6,
+                   duration_ms = NULL, updated_at = CURRENT_TIMESTAMP
+               WHERE id = $1 AND project_id = $2
+               RETURNING *`,
+              [audioId, id, stored.filename, file.originalname, stored.mimeType, stored.size],
+            );
+            audioFile = updated.rows[0] ?? null;
+          }
+          await client.query('COMMIT');
+        } catch (err) {
+          failure = err as Error;
+          await client.query('ROLLBACK').catch(() => undefined);
+          throw err;
+        } finally {
+          // A connection that errored goes back broken; let the pool drop it.
+          client.release(failure);
+        }
+      } catch (error) {
+        await discardNewTake();
+        req.log.error({ err: error }, 'Failed to replace audio file');
+        res.status(500).json({ error: 'Failed to replace audio file' });
+        return;
+      }
+
+      if (!audioFile) {
+        // Deleted while we were uploading.
+        await discardNewTake();
+        res.status(404).json({ error: 'Audio file not found' });
+        return;
+      }
+
+      // Committed: the new take is live, so from here nothing may report
+      // failure or touch it. What's left is tidying up after the old one.
+      try {
+        // The old take is no longer referenced by the story; drop it the
+        // way deleting a file does. Unless a build is running: it copies
+        // audio by the filenames it has already assembled, and pulling the
+        // object from under it would ship a build missing this clip.
+        // Keeping one old object is the cheaper mistake.
+        const activeBuild = await pool.query(
+          `SELECT 1 FROM project_builds
+           WHERE project_id = $1 AND status IN ('pending', 'processing') AND deleted_at IS NULL
+           LIMIT 1`,
+          [id],
+        );
+        if (activeBuild.rows.length > 0) {
+          req.log.info(
+            { oldFilename },
+            'Kept replaced audio in storage: a build for this project is in progress',
+          );
+        } else if (oldFilename && oldFilename !== stored?.filename) {
+          try {
+            await getStorage().delete(audioKey(id, oldFilename));
+          } catch (err) {
+            req.log.warn({ err }, 'Failed to delete replaced audio from storage');
+          }
+          await unlinkLocal(oldFilename);
+        }
+        await pool.query('UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1', [id]);
+      } catch (err) {
+        req.log.warn({ err }, 'Replaced audio, but tidying up after the old take failed');
+      }
+      res.json({ audioFile });
+    },
+  );
 
   // Update audio file category and/or character
   router.patch('/:audioId', async (req: Request, res: Response) => {
@@ -497,11 +712,20 @@ export function createAudioRouter(pool: Pool): Router {
         return;
       }
 
-      // Delete from database (cascades to assignments)
-      await pool.query('DELETE FROM audio_files WHERE id = $1', [audioId]);
+      // Delete from database (cascades to assignments). The filename comes
+      // back from the delete itself: a new take uploaded between the read
+      // above and here would otherwise be the object left behind.
+      const deleted = await pool.query(
+        'DELETE FROM audio_files WHERE id = $1 AND project_id = $2 RETURNING filename',
+        [audioId, id],
+      );
+      if (deleted.rows.length === 0) {
+        res.status(404).json({ error: 'Audio file not found' });
+        return;
+      }
 
       // Delete from durable storage and any local copy
-      const filename = fileResult.rows[0].filename;
+      const filename = deleted.rows[0].filename;
       try {
         await getStorage().delete(audioKey(id, filename));
       } catch (err) {
@@ -1727,6 +1951,9 @@ export function createAudioRouter(pool: Pool): Router {
         .slice(0, 200);
       const utf8Safe = encodeURIComponent(original_name);
       res.setHeader('Content-Type', mime_type);
+      // A file's id outlives any one take (see /:audioId/replace), so the
+      // browser must revalidate rather than play a cached old take.
+      res.setHeader('Cache-Control', 'private, no-cache');
       res.setHeader(
         'Content-Disposition',
         `inline; filename="${asciiSafe}"; filename*=UTF-8''${utf8Safe}`,

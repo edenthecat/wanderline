@@ -26,6 +26,7 @@ import {
   fetchAudioFiles,
   fetchProjectSettings,
   removeAudioAssignment,
+  replaceAudioTake,
   setSfxOffset,
   fetchCharacters,
   fetchNodeFlags,
@@ -69,6 +70,8 @@ export interface NodeAudioActions {
   clear: (nodeId: string, slot: NodeAudioSlot, fileId: string) => Promise<void>;
   /** When a sound effect plays, in ms; null for as the passage starts. */
   setSfxOffset: (nodeId: string, fileId: string, offsetMs: number | null) => Promise<void>;
+  /** Upload a new take over a file, everywhere it's used. */
+  newTake: (fileId: string, file: File) => Promise<void>;
 }
 
 interface UseNodeEditorArgs {
@@ -293,6 +296,7 @@ export function useNodeEditor({
         run(() => removeAudioAssignment(projectId, nodeId, slot, fileId)),
       setSfxOffset: (nodeId, fileId, offsetMs) =>
         run(() => setSfxOffset(projectId, nodeId, fileId, offsetMs)),
+      newTake: (fileId, file) => run(() => replaceAudioTake(projectId, fileId, file)),
     };
   }, [projectId, yDoc]);
 

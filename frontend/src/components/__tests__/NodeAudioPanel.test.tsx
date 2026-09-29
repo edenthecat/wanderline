@@ -9,7 +9,8 @@ import type { NodeAudioActions } from '../../hooks/useNodeEditor';
 // couldn't be heard together anywhere.
 
 vi.mock('../../api/client', () => ({
-  audioFileUrl: (projectId: string, id: string) => `/api/${projectId}/audio/${id}`,
+  audioFileUrl: (projectId: string, id: string, version?: string) =>
+    `/api/${projectId}/audio/${id}${version ? `?v=${version}` : ''}`,
 }));
 
 class FakeAudio {
@@ -59,6 +60,7 @@ function actions(): NodeAudioActions & { [k: string]: ReturnType<typeof vi.fn> }
     replace: vi.fn().mockResolvedValue(undefined),
     clear: vi.fn().mockResolvedValue(undefined),
     setSfxOffset: vi.fn().mockResolvedValue(undefined),
+    newTake: vi.fn().mockResolvedValue(undefined),
   } as never;
 }
 
@@ -344,6 +346,49 @@ describe('NodeAudioPanel', () => {
     mount({ ambience: 'rain', sfx: [] }, a);
     fireEvent.click(screen.getByLabelText('Remove ambience from hall'));
     expect((await screen.findByRole('alert')).textContent).toBe('Assignment not found');
+  });
+
+  describe('new take', () => {
+    const upload = (label: string) => {
+      fireEvent.click(screen.getByLabelText(label));
+      const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+      const file = new File(['x'], 'take-2.mp3', { type: 'audio/mpeg' });
+      fireEvent.change(input, { target: { files: [file] } });
+      return file;
+    };
+
+    afterEach(() => vi.restoreAllMocks());
+
+    it('uploads over the file once the author confirms', async () => {
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      const a = mount({ voiceover: 'vo1', sfx: [] });
+      const file = upload('Upload a new take of voiceover for hall');
+      // The prompt names what's being replaced and warns it's everywhere.
+      expect(confirm.mock.calls[0][0]).toMatch(/vo1\.mp3.*take-2\.mp3.*Every passage/);
+      await waitFor(() => expect(a.newTake).toHaveBeenCalledWith('vo1', file));
+    });
+
+    it('does nothing if the author backs out', () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(false);
+      const a = mount({ sfx: ['door'] });
+      upload('Upload a new take of SFX 1 for hall');
+      expect(a.newTake).not.toHaveBeenCalled();
+    });
+  });
+
+  // A new take keeps the file's id, so the audition URL has to change
+  // with it or a loaded player replays the old take.
+  it('versions audition URLs by the stored file', () => {
+    render(
+      <NodeAudioPanel
+        projectId="p1"
+        nodeId="hall"
+        nodeAudio={{ ambience: 'rain', sfx: [] }}
+        audioFiles={[{ ...file('rain', 'ambience'), filename: 'abc.mp3' } as AudioFile]}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Play with ambience/ }));
+    expect(FakeAudio.made[0].src).toBe('/api/p1/audio/rain?v=abc.mp3');
   });
 
   it('is play-only without actions', () => {

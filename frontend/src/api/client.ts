@@ -375,8 +375,12 @@ export function fetchAudioFiles(projectId: string): Promise<{ audioFiles: AudioF
  * through the JSON request helper. Centralized here so a base-path
  * change (e.g. an nginx prefix) only touches one place.
  */
-export function audioFileUrl(projectId: string, audioId: string): string {
-  return `${API_BASE}/projects/${projectId}/audio/file/${audioId}`;
+export function audioFileUrl(projectId: string, audioId: string, version?: string): string {
+  // `version` (the stored filename) changes when a new take is uploaded
+  // over the file, so an audition element that already loaded the old
+  // take can't replay it from its buffer. The server ignores it.
+  const v = version ? `?v=${encodeURIComponent(version)}` : '';
+  return `${API_BASE}/projects/${projectId}/audio/file/${audioId}${v}`;
 }
 
 export async function uploadAudioFile(
@@ -401,6 +405,29 @@ export async function uploadAudioFile(
     throw new ApiError(res.status, body.error || res.statusText);
   }
 
+  return res.json();
+}
+
+/** Upload a new take over an existing file. The file keeps its id, so
+ * every passage using it (and each effect's timing) plays the new take;
+ * the old take is deleted. */
+export async function replaceAudioTake(
+  projectId: string,
+  audioId: string,
+  file: File,
+): Promise<{ audioFile: AudioFile }> {
+  const formData = new FormData();
+  formData.append('audio', file);
+  const res = await fetch(`${API_BASE}/projects/${projectId}/audio/${audioId}/replace`, {
+    method: 'POST',
+    credentials: 'include',
+    body: formData,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    // statusText is empty over HTTP/2; never hand the UI a blank message.
+    throw new ApiError(res.status, body.error || res.statusText || `Upload failed (${res.status})`);
+  }
   return res.json();
 }
 

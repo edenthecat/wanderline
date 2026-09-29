@@ -27,6 +27,7 @@ vi.mock('../../api/client', () => {
     bulkReassignAudio: vi.fn().mockResolvedValue({ success: true, swapped: 1 }),
     removeAudioAssignment: ok(),
     setSfxOffset: ok(),
+    replaceAudioTake: ok(),
   };
 });
 
@@ -100,6 +101,15 @@ describe('useNodeEditor audio actions', () => {
         'nope',
       );
     });
+    await waitFor(() => expect(client.fetchAudioAssignments).toHaveBeenCalledTimes(2));
+  });
+
+  it('uploads a new take and refetches', async () => {
+    const { result } = mount();
+    await waitFor(() => expect(client.fetchAudioAssignments).toHaveBeenCalledTimes(1));
+    const file = new File(['x'], 'take.mp3');
+    await act(() => result.current.audioActions.newTake('vo1', file));
+    expect(client.replaceAudioTake).toHaveBeenCalledWith('p1', 'vo1', file);
     await waitFor(() => expect(client.fetchAudioAssignments).toHaveBeenCalledTimes(2));
   });
 

@@ -3,6 +3,7 @@ import {
   fetchAudioFiles,
   uploadAudioFile,
   deleteAudioFile,
+  replaceAudioTake,
   fetchAudioAssignments,
   assignAudio,
   removeAudioAssignment,
@@ -23,6 +24,7 @@ import AssignmentAuditPanel from './AssignmentAuditPanel';
 import { useYjs } from '../hooks/useYjs';
 import { bumpLiveSignal, useLiveSignal } from '../hooks/useLiveSignal';
 import { useAudition } from '../hooks/useAudition';
+import { TAKE_FORMATS } from './NodeAudioPanel';
 
 const AUDIO_ASSIGNMENTS_SIGNAL = 'audio-assignments';
 
@@ -233,6 +235,48 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
       setError(err instanceof Error ? err.message : 'Re-match failed');
     } finally {
       setRematching(false);
+    }
+  }
+
+  // Upload a new take over a file, keeping every assignment (and each
+  // effect's timing) pointed at it. One hidden input serves every row.
+  const takeInputRef = useRef<HTMLInputElement>(null);
+  const takeForRef = useRef<AudioFile | null>(null);
+  // The file whose new take is uploading, for its row's progress text.
+  // One at a time: a second replace of the same file would race the first.
+  const [replacingId, setReplacingId] = useState<string | null>(null);
+  function pickNewTake(f: AudioFile) {
+    if (replacingId || !takeInputRef.current) return;
+    takeForRef.current = f;
+    takeInputRef.current.value = '';
+    takeInputRef.current.click();
+  }
+  async function handleNewTake(file: File | undefined) {
+    const target = takeForRef.current;
+    takeForRef.current = null;
+    if (!file || !target) return;
+    if (
+      !confirm(
+        `Replace "${target.original_name}" with "${file.name}"? Every passage using it will play the new take, and the old take is deleted.`,
+      )
+    ) {
+      return;
+    }
+    if (playingId === target.id) stopAudition();
+    setError(null);
+    setSuccessMessage(null);
+    setReplacingId(target.id);
+    try {
+      await replaceAudioTake(projectId, target.id, file);
+      setSuccessMessage(`Uploaded a new take of ${target.original_name}.`);
+      // Other collaborators' node panels play the file by id; tell them
+      // it changed.
+      bumpLiveSignal(yDoc, AUDIO_ASSIGNMENTS_SIGNAL);
+      await loadAll();
+    } catch (err) {
+      setError(err instanceof Error && err.message ? err.message : 'Uploading the new take failed');
+    } finally {
+      setReplacingId(null);
     }
   }
 
@@ -475,6 +519,16 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
       {/* Upload Section */}
       <div className="section-header">
         <h2>Audio files</h2>
+        <input
+          ref={takeInputRef}
+          type="file"
+          accept={TAKE_FORMATS}
+          hidden
+          aria-hidden="true"
+          tabIndex={-1}
+          data-testid="new-take-input"
+          onChange={(e) => void handleNewTake(e.target.files?.[0])}
+        />
         <div className="section-actions">
           <select
             value={category}
@@ -836,7 +890,7 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
                                   type="button"
                                   className="btn btn-ghost btn-sm"
                                   onClick={() =>
-                                    toggleAudition(f.id, audioFileUrl(projectId, f.id))
+                                    toggleAudition(f.id, audioFileUrl(projectId, f.id, f.filename))
                                   }
                                   aria-label={
                                     isPlaying
@@ -847,6 +901,16 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
                                   data-testid="audio-preview-btn"
                                 >
                                   {isPlaying ? '■ Stop' : '▶ Play'}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-ghost btn-sm"
+                                  onClick={() => pickNewTake(f)}
+                                  disabled={replacingId !== null}
+                                  aria-label={`Upload a new take of ${f.original_name}`}
+                                  title="Replace this file's audio everywhere it's used"
+                                >
+                                  {replacingId === f.id ? 'Uploading…' : 'New take…'}
                                 </button>
                                 <button
                                   type="button"
