@@ -163,3 +163,39 @@ jobs:
             echo "::error::No migrations recorded — release image is broken."
             exit 1
           fi
+
+      - name: Boot the backend and check /health
+        # The migration check above only ever ran `npm run migrate` —
+        # it never started the actual server, so a broken `CMD` (the
+        # 1.9.0 release shipped one: npm workspaces nested multer under
+        # backend/node_modules instead of hoisting it to root, and
+        # Dockerfile.prod only copied root node_modules, so the server
+        # crash-looped on `ERR_MODULE_NOT_FOUND: multer` in every
+        # environment) sailed through this job green. Actually booting
+        # the container and hitting /health is the only thing that
+        # would have caught it.
+        run: |
+          docker run -d --name backend --network wanderline-smoke \
+            -e NODE_ENV=production \
+            -e DATABASE_URL='postgres://wanderline:wanderline@pg:5432/wanderline' \
+            -e SESSION_SECRET='smoke-test-secret-at-least-32-chars' \
+            -e STORAGE_BACKEND=local \
+            -e UPLOAD_DIR=/tmp/uploads \
+            -e BUILDS_DIR=/tmp/exports \
+            -p 3001:3001 \
+            ghcr.io/${{ github.repository_owner }}/wanderline-backend:${{ steps.version.outputs.version }}
+          # Wait for readiness (up to ~30s), then fail loudly with logs
+          # on either a timeout or a non-200 status.
+          READY=false
+          for i in $(seq 1 15); do
+            if curl -sf -o /dev/null http://localhost:3001/health; then READY=true; break; fi
+            sleep 2
+          done
+          if [ "$READY" != "true" ]; then
+            echo "::error::Backend never became healthy — see logs below."
+            docker logs backend
+            exit 1
+          fi
+          curl -sS http://localhost:3001/health
+          echo
+          docker logs backend
