@@ -2,7 +2,7 @@ import { jest } from '@jest/globals';
 import { mkdtempSync, rmSync, existsSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import archiver from 'archiver';
+import { ZipArchive } from 'archiver';
 import { createWriteStream } from 'fs';
 import type { Pool } from 'pg';
 import {
@@ -23,7 +23,7 @@ async function makeZip(audioFiles: Array<{ name: string; content: string }>): Pr
   const zipPath = join(tmpRoot, `${Date.now()}-${Math.random().toString(36).slice(2, 6)}.zip`);
   await new Promise<void>((resolve, reject) => {
     const out = createWriteStream(zipPath);
-    const archive = archiver('zip', { zlib: { level: 9 } });
+    const archive = new ZipArchive({ zlib: { level: 9 } });
     out.on('close', () => resolve());
     out.on('error', reject);
     archive.on('error', reject);
