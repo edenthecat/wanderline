@@ -355,6 +355,36 @@ describe('sound effects', () => {
     expect(sounding('door.mp3')).toHaveLength(1);
   });
 
+  // Coming back online recovers the same visit: the narration resumes
+  // where it stalled, and effects already heard don't play again.
+  it('aren’t replayed when playback recovers from a dropped connection', async () => {
+    load({
+      start: node(
+        'start',
+        'The beginning.',
+        { voiceover: 'start.mp3', sfx: [{ file: 'door.mp3' }] },
+        ON,
+      ),
+      later,
+    });
+    await start();
+    await screen.findByLabelText('Pause narration');
+    expect(elementsFor('door.mp3').filter((a) => !a.paused)).toHaveLength(1);
+    const played = elementsFor('door.mp3').length;
+
+    const vo = newest('start.mp3')!;
+    vo.currentTime = 12;
+    act(() => vo.ontimeupdate?.());
+    act(() => vo.onwaiting?.());
+    act(() => {
+      window.dispatchEvent(new Event('online'));
+    });
+    await wait(500);
+    // Resumed, not restarted, and the door didn't slam twice.
+    expect(newest('start.mp3')!.currentTime).toBe(12);
+    expect(elementsFor('door.mp3')).toHaveLength(played);
+  });
+
   it('play one timed past the end of the narration when it ends', async () => {
     load({
       start: node(

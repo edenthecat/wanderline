@@ -535,6 +535,10 @@ export default function App() {
   // Last position reported by ontimeupdate, so a retry after a stall can
   // pick up where the narration actually stopped instead of restarting.
   const lastPositionRef = useRef(0);
+  // Set by the recovery paths (coming back online, the Retry button) so
+  // the playVoiceover they call resumes this visit rather than starting
+  // it over. Consumed by that call.
+  const resumingRef = useRef(false);
   const choice1AudioRef = useRef<HTMLAudioElement | null>(null);
   const choice2AudioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -1073,6 +1077,8 @@ export default function App() {
       }
     }
     audioRetryCountRef.current = 0;
+    // A recovery is only ever for the passage it was requested on.
+    resumingRef.current = false;
     // Sound effects belong to the passage they were cued in, same as the
     // choice cues above.
     for (const t of sfxTimersRef.current) clearTimeout(t);
@@ -1279,10 +1285,15 @@ export default function App() {
     const isStale = () =>
       playbackEpochRef.current !== epoch || currentNodeIdRef.current !== currentNodeId;
 
-    // A fresh start on this node begins at the beginning; only a retry
-    // resumes. Without this reset, arriving at a new node would seek to
-    // wherever the previous node happened to stall.
-    if (audioRetryCountRef.current === 0) {
+    // A fresh start on this node begins at the beginning; a retry, or
+    // recovering from a dropped connection, resumes. Without this reset,
+    // arriving at a new node would seek to wherever the previous node
+    // happened to stall. Recovery used to count as a fresh start (it
+    // resets the retry budget), which replayed the passage from the top
+    // along with every effect the listener had already heard.
+    const resuming = audioRetryCountRef.current > 0 || resumingRef.current;
+    resumingRef.current = false;
+    if (!resuming) {
       lastPositionRef.current = 0;
       // Same for sound effects: a fresh start plays them again, a retry
       // resuming part way through doesn't repeat the ones already heard.
@@ -1584,7 +1595,7 @@ export default function App() {
       // the passage from the top: buffer part way through a long
       // passage and you hear the opening seconds again. Only on a
       // retry; a fresh visit to a node should start at the beginning.
-      if (audioRetryCountRef.current > 0 && lastPositionRef.current > 0) {
+      if (resuming && lastPositionRef.current > 0) {
         try {
           audio.currentTime = lastPositionRef.current;
         } catch {
@@ -1622,8 +1633,7 @@ export default function App() {
     // dedicated ref (prerollTimeoutRef) so a concurrent retry timer
     // can't clobber it.
     const delayBeforeMs = currentNode.metadata?.delayBeforeMs ?? 0;
-    const isRetry = audioRetryCountRef.current > 0;
-    if (delayBeforeMs > 0 && !isRetry) {
+    if (delayBeforeMs > 0 && !resuming) {
       setPlayerState('loading');
       prerollTimeoutRef.current = setTimeout(startPlayback, delayBeforeMs);
     } else {
@@ -1658,6 +1668,7 @@ export default function App() {
       // If we have an error or are stalled, retry playback
       if ((audioError || audioStalled) && currentNode?.audio?.voiceover) {
         audioRetryCountRef.current = 0; // Reset retry count
+        resumingRef.current = true;
         setAudioError(null);
         setAudioStalled(false);
         playVoiceover();
@@ -2565,7 +2576,7 @@ export default function App() {
               </div>
               <div style={styles.volumePreviewRow}>
                 <label htmlFor="intro-ambience-volume" style={styles.volumePreviewLabel}>
-                  Ambience
+                  Ambience & effects
                 </label>
                 <input
                   type="range"
@@ -2879,7 +2890,7 @@ export default function App() {
           </div>
           <div style={styles.settingsRow}>
             <label htmlFor="ambience-volume" style={styles.settingsLabel}>
-              Ambience
+              Ambience & effects
             </label>
             <input
               type="range"
@@ -3240,6 +3251,7 @@ export default function App() {
                 onClick={(e) => {
                   e.stopPropagation();
                   audioRetryCountRef.current = 0;
+                  resumingRef.current = true;
                   setShowConnectionIssue(false);
                   if (currentNodeId && currentNode?.audio?.voiceover) {
                     retryFailedAudio(
