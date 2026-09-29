@@ -36,8 +36,10 @@ describe('VolumesTab ambience default', () => {
     const slider = await screen.findByLabelText('Ambience & sound effects default volume');
     expect((slider as HTMLInputElement).value).toBe('40');
     fireEvent.change(slider, { target: { value: '70' } });
-    await waitFor(() => expect(mockedUpdate).toHaveBeenCalledWith('p1', { ambienceVolume: 70 }), {
-      timeout: 3000,
-    });
+    // The hook passes an abort signal as a third argument.
+    await waitFor(
+      () => expect(mockedUpdate.mock.calls[0]?.slice(0, 2)).toEqual(['p1', { ambienceVolume: 70 }]),
+      { timeout: 3000 },
+    );
   });
 });
