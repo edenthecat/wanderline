@@ -110,7 +110,8 @@ jobs:
           # majors and lands with the dep-sweep ticket.
           GHSA-rgw5-rvv9-x895
 
-          # ip-address advisories (three of them). Reaches us
+          # ip-address advisories (five of them, three plus two more
+          # that appeared later — same story each time). Reaches us
           # transitively via express-rate-limit, which uses
           # ip-address ONLY to normalise IPv6 clients for
           # rate-limit key bucketing. It does not take user-
@@ -121,9 +122,23 @@ jobs:
           # - GHSA-22jq-vg5j-6vgg: NAT64 misclassification (10.2.1)
           # - GHSA-4xrf-jv44-h6hh: CIDR suffix bypass (10.2.2)
           # - GHSA-mwp4-54f8-5fhr: octal-vs-decimal leading zeros (10.3.1)
+          # - GHSA-rpw4-54j3-4h4q: link-local range too narrow (fe80::/64
+          #   vs. the correct fe80::/10)
+          # - GHSA-2vr4-cq9g-pvrc: NAT64 local-use range 64:ff9b:1::/48
+          #   unrecognised (distinct from GHSA-22jq's 64:ff9b::/96 case)
+          #
+          # Both of the newer two audit as "moderate" on their own, but
+          # this script's severity filter operates on npm audit's
+          # per-*package* severity (the worst of all of a package's
+          # advisories), not each advisory's own — so any moderate
+          # advisory under a package that also has a high one (ip-address
+          # does, via GHSA-mwp4) still has to be allowlisted explicitly or
+          # it blocks the PR the same as a real high/critical would.
           GHSA-22jq-vg5j-6vgg
           GHSA-4xrf-jv44-h6hh
           GHSA-mwp4-54f8-5fhr
+          GHSA-rpw4-54j3-4h4q
+          GHSA-2vr4-cq9g-pvrc
           ALLOW
           )
           # Filter comments (leading whitespace + `#`) and blank
