@@ -271,4 +271,47 @@ describe('POST /assignments/bulk-reassign', () => {
     expect(merge?.[1]).toEqual([PROJECT, 'a', 'sfx', FILE_B, 1750]);
     expect(calls.map(([sql]) => sql)).toContain('COMMIT');
   });
+
+  // Same lock POST /assignments takes, so a concurrent attach can't put a
+  // second file in a single slot mid-swap; taken in lock-id order so
+  // swaps can't deadlock.
+  it('locks every single-value slot it touches, in lock-id order, before changing any', async () => {
+    const calls: [string, unknown[]][] = [];
+    const { app } = makeApp(
+      async () => ({ rows: [] }),
+      async (sql, params = []) => {
+        calls.push([sql, params]);
+        if (sql.includes('SELECT id FROM audio_files')) return { rows: [{ id: FILE_B }] };
+        if (sql.includes('hashtext(k)')) return { rows: [{ lock_id: -5 }, { lock_id: 42 }] };
+        if (sql.includes('DELETE FROM node_audio_assignments')) {
+          return { rows: [{ id: 'row', offset_ms: null }] };
+        }
+        if (sql.includes('INSERT INTO node_audio_assignments')) return { rows: [{ id: 'new' }] };
+        return { rows: [] };
+      },
+    );
+    const res = await request(app)
+      .post(`/api/projects/${PROJECT}/audio/assignments/bulk-reassign`)
+      .send({
+        ops: [
+          { nodeId: 'z', audioType: 'voiceover', fromFileId: FILE_A, toFileId: FILE_B },
+          { nodeId: 'a', audioType: 'ambience', fromFileId: FILE_A, toFileId: FILE_B },
+          { nodeId: 'a', audioType: 'sfx', fromFileId: FILE_A, toFileId: FILE_B },
+        ],
+      });
+    expect(res.status).toBe(200);
+    // Only the single-value slots, as keys for the database to hash.
+    const hashed = calls.find(([sql]) => sql.includes('hashtext(k)'))!;
+    expect([...(hashed[1][0] as string[])].sort()).toEqual([
+      `${PROJECT}:a:ambience`,
+      `${PROJECT}:z:voiceover`,
+    ]);
+    // Locked in the order the database sorted the ids.
+    const locks = calls.filter(([sql]) => sql.includes('pg_advisory_xact_lock'));
+    expect(locks.map(([, p]) => p[0])).toEqual([-5, 42]);
+    const firstDelete = calls.findIndex(([sql]) =>
+      sql.includes('DELETE FROM node_audio_assignments'),
+    );
+    expect(calls.indexOf(locks[1])).toBeLessThan(firstDelete);
+  });
 });

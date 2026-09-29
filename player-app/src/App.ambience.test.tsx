@@ -108,6 +108,30 @@ afterEach(() => {
   delete (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__;
 });
 
+describe('preloading', () => {
+  // The first passage is chosen during story load, not through
+  // navigateToNode, so its bed and effects have to be in the startup
+  // preload or they start late against already-loaded narration.
+  it('fetches the first passage’s bed and effects before the story starts', async () => {
+    load({
+      start: node(
+        'start',
+        'The beginning.',
+        {
+          ambience: 'rain.mp3',
+          sfx: [{ file: 'door.mp3' }],
+        },
+        ON,
+      ),
+      later,
+    });
+    await screen.findByLabelText('Start the story');
+    await wait(50);
+    expect(elementsFor('rain.mp3').length).toBeGreaterThan(0);
+    expect(elementsFor('door.mp3').length).toBeGreaterThan(0);
+  });
+});
+
 describe('ambience', () => {
   it('stays quiet on the instructions screen and starts with the story', async () => {
     load({ start: node('start', 'The beginning.', { ambience: 'rain.mp3' }, ON), later });

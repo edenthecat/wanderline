@@ -245,6 +245,27 @@ describe('POST /:audioId/replace', () => {
     expect(storage.delete).not.toHaveBeenCalledWith(newKey);
   });
 
+  // Nothing points at the old take any more, so a failed delete must be
+  // retried later rather than leaving it in storage forever.
+  it('defers the old take’s deletion if deleting it fails', async () => {
+    const storage = makeStorage({
+      delete: jest.fn(async (key: string) => {
+        if (key.endsWith('old-take.mp3')) throw new Error('gcs blip');
+      }) as never,
+    });
+    _setStorageForTests(storage as unknown as ObjectStorage);
+    const answer = script();
+    const calls: [string, unknown[]][] = [];
+    const { app } = makeApp(async (sql, params = []) => {
+      calls.push([sql, params]);
+      return answer(sql);
+    });
+    const res = await request(app).post(url).attach('audio', take(), 'take-2.mp3');
+    expect(res.status).toBe(200);
+    const deferred = calls.find(([sql]) => sql.includes('INSERT INTO deferred_audio_deletions'));
+    expect(deferred?.[1]).toEqual([PROJECT, 'old-take.mp3']);
+  });
+
   it('400s without a file', async () => {
     _setStorageForTests(makeStorage() as unknown as ObjectStorage);
     const { app } = makeApp(async () => ({ rows: [] }));

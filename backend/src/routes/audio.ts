@@ -596,10 +596,13 @@ export function createAudioRouter(pool: Pool): Router {
         } else if (oldFilename && oldFilename !== stored?.filename) {
           try {
             await getStorage().delete(audioKey(id, oldFilename));
+            await unlinkLocal(oldFilename);
           } catch (err) {
-            req.log.warn({ err }, 'Failed to delete replaced audio from storage');
+            // Nothing points at it any more; leave it for the deferred
+            // flush to retry rather than orphaning it.
+            req.log.warn({ err }, 'Failed to delete replaced audio; deferring');
+            await deferAudioDeletion(pool, id, oldFilename);
           }
-          await unlinkLocal(oldFilename);
         }
         await pool.query('UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1', [id]);
       } catch (err) {
@@ -1228,6 +1231,29 @@ export function createAudioRouter(pool: Pool): Router {
           error: "one or more toFileIds aren't in this project's audio library",
         });
         return;
+      }
+
+      // Take the same per-slot lock POST /assignments does for every
+      // single-value slot touched, so a concurrent attach can't slip a
+      // second file into one of them mid-swap. Taken in order of the lock
+      // ids themselves (not the key strings, whose order a hash collision
+      // could invert), so two swaps over the same slots can't deadlock on
+      // these locks.
+      const slotKeys = [
+        ...new Set(
+          ops
+            .filter((op) => op.audioType !== 'sfx')
+            .map((op) => `${id}:${op.nodeId}:${op.audioType}`),
+        ),
+      ];
+      if (slotKeys.length > 0) {
+        const lockIds = await client.query(
+          'SELECT DISTINCT hashtext(k) AS lock_id FROM unnest($1::text[]) AS k ORDER BY lock_id',
+          [slotKeys],
+        );
+        for (const { lock_id } of lockIds.rows as { lock_id: number }[]) {
+          await client.query('SELECT pg_advisory_xact_lock($1::int)', [lock_id]);
+        }
       }
 
       let swapped = 0;

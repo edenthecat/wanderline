@@ -368,6 +368,28 @@ function resetClickState(state: ClickDetectionState): ClickDetectionState {
   return createInitialClickState();
 }
 
+/**
+ * A passage's ambience bed and sound effects as cache entries. Keyed by
+ * URL, not node: the same bed or effect is usually shared by several
+ * passages, and one cached copy serves them all. The keys match what
+ * useAmbience's getElement and playDueSfx ask the cache for.
+ */
+function passageExtras(
+  node: StoryNode | undefined,
+  audioBaseUrl: string,
+): Array<{ key: string; url: string }> {
+  const extras: Array<{ key: string; url: string }> = [];
+  if (node?.audio?.ambience) {
+    const url = audioBaseUrl + node.audio.ambience;
+    extras.push({ key: 'amb_' + url, url });
+  }
+  for (const fx of node?.audio?.sfx ?? []) {
+    const url = audioBaseUrl + fx.file;
+    extras.push({ key: 'sfx_' + url, url });
+  }
+  return extras;
+}
+
 export default function App() {
   const offline = useOfflineSupport();
   const [story, setStory] = useState<StoryData | null>(null);
@@ -683,8 +705,16 @@ export default function App() {
       criticalFiles.push({ key: 'ind_c2', url: story.audioBaseUrl + story.indicatorAudio.choice2 });
     }
 
-    // Priority 2: First few reachable nodes (depth 2 = start node + 2 levels of choices)
-    const nearbyNodeIds = getReachableNodes(story.startNode, story.nodes, 2);
+    // Priority 2: First few reachable nodes (depth 2 = start node + 2 levels of choices),
+    // from wherever the listener is starting: a resumed autosave starts
+    // elsewhere, and navigateToNode's own preload never ran for it.
+    const firstNodeId = currentNodeIdRef.current ?? story.startNode;
+    const nearbyNodeIds = [
+      ...new Set([
+        ...getReachableNodes(story.startNode, story.nodes, 2),
+        ...getReachableNodes(firstNodeId, story.nodes, 2),
+      ]),
+    ];
     for (const nodeId of nearbyNodeIds) {
       const node = story.nodes[nodeId];
       if (node?.audio?.voiceover) {
@@ -696,11 +726,18 @@ export default function App() {
       if (node?.audio?.choice2) {
         criticalFiles.push({ key: 'c2_' + nodeId, url: story.audioBaseUrl + node.audio.choice2 });
       }
+      // The bed and effects start with the passage, alongside its
+      // narration, so they're wanted as early.
+      criticalFiles.push(...passageExtras(node, story.audioBaseUrl));
     }
 
     // Remaining files (loaded in background after start)
     const backgroundFiles: Array<{ key: string; url: string }> = [];
     const criticalKeys = new Set(criticalFiles.map((f) => f.key));
+    // A bed shared by several nearby passages is listed once.
+    const uniqueCritical = [...new Map(criticalFiles.map((f) => [f.key, f])).values()];
+    criticalFiles.length = 0;
+    criticalFiles.push(...uniqueCritical);
 
     // Remaining background music tracks
     if (story.backgroundMusic && story.backgroundMusic.length > 1) {
@@ -725,6 +762,12 @@ export default function App() {
       }
       if (node.audio?.choice2 && !criticalKeys.has('c2_' + nodeId)) {
         backgroundFiles.push({ key: 'c2_' + nodeId, url: story.audioBaseUrl + node.audio.choice2 });
+      }
+      for (const extra of passageExtras(node, story.audioBaseUrl)) {
+        if (!criticalKeys.has(extra.key)) {
+          criticalKeys.add(extra.key);
+          backgroundFiles.push(extra);
+        }
       }
     }
 
@@ -1092,15 +1135,8 @@ export default function App() {
             preloadAudio(story.audioBaseUrl + node.audio.choice2, key);
           }
         }
-        // Keyed by URL, not node: the same bed or effect is usually
-        // shared by several passages, and one cached copy serves them all.
-        const extras = [
-          ...(node?.audio?.ambience ? [['amb_', node.audio.ambience]] : []),
-          ...(node?.audio?.sfx ?? []).map((fx) => ['sfx_', fx.file]),
-        ];
-        for (const [prefix, file] of extras) {
-          const url = story.audioBaseUrl + file;
-          if (!isCached(prefix + url)) preloadAudio(url, prefix + url);
+        for (const { key, url } of passageExtras(node, story.audioBaseUrl)) {
+          if (!isCached(key)) preloadAudio(url, key);
         }
       }
     },
@@ -1680,14 +1716,20 @@ export default function App() {
     volume: userAmbienceVolume / 100,
     getElement: getAmbienceElement,
   });
-  // The current bed can sit paused between retries of a refused start;
-  // keep the cache from evicting it then. (A bed fading out is playing,
-  // which eviction already skips.) Only the current one: pinning every
-  // bed ever heard would let a story with many defeat the cache bound.
+  // Everything the current passage uses can sit paused while still in
+  // use: narration the listener paused (resume plays the same element),
+  // choice cues prepared while the narration runs, a bed between retries
+  // of a refused start. Eviction only skips what's sounding, so pin these
+  // for as long as the passage is current. Only the current passage's:
+  // pinning everything ever heard would let a long story defeat the
+  // cache bound. (A bed fading out is playing, so it's safe anyway.)
   useEffect(() => {
-    if (!ambienceUrl) return;
-    return retainAudio('amb_' + ambienceUrl);
-  }, [ambienceUrl, retainAudio]);
+    if (!story || !currentNode) return;
+    const keys = ['vo_', 'c1_', 'c2_'].map((prefix) => prefix + currentNode.id);
+    for (const { key } of passageExtras(currentNode, story.audioBaseUrl)) keys.push(key);
+    const releases = keys.map((key) => retainAudio(key));
+    return () => releases.forEach((release) => release());
+  }, [story, currentNode, retainAudio]);
 
   // Sound effects on a passage with no narration. There's no voiceover
   // clock to follow, so each one's offset counts from arriving. With
