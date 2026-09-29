@@ -72,6 +72,8 @@ afterAll(() => rmSync(uploadDir, { recursive: true, force: true }));
 function script(opts: { exists?: boolean; vanished?: boolean; buildRunning?: boolean } = {}) {
   const { exists = true, vanished = false, buildRunning = false } = opts;
   return async (sql: string) => {
+    // The deferred-deletion flush: nothing due while the build runs.
+    if (sql.includes('FROM deferred_audio_deletions d')) return { rows: [] };
     if (sql.includes('SELECT 1 FROM audio_files')) return { rows: exists ? [{}] : [] };
     if (sql.includes('FOR UPDATE')) {
       return { rows: vanished ? [] : [{ filename: 'old-take.mp3' }] };
@@ -162,13 +164,20 @@ describe('POST /:audioId/replace', () => {
 
   // A running build copies audio by the filenames it already assembled;
   // deleting the old take under it would ship a build missing the clip.
-  it('keeps the old take while a build is running', async () => {
+  it('keeps the old take while a build is running, and records it for later', async () => {
     const storage = makeStorage();
     _setStorageForTests(storage as unknown as ObjectStorage);
-    const { app } = makeApp(script({ buildRunning: true }));
+    const answer = script({ buildRunning: true });
+    const calls: [string, unknown[]][] = [];
+    const { app } = makeApp(async (sql, params = []) => {
+      calls.push([sql, params]);
+      return answer(sql);
+    });
     const res = await request(app).post(url).attach('audio', take(), 'take-2.mp3');
     expect(res.status).toBe(200);
     expect(storage.delete).not.toHaveBeenCalled();
+    const deferred = calls.find(([sql]) => sql.includes('INSERT INTO deferred_audio_deletions'));
+    expect(deferred?.[1]).toEqual([PROJECT, 'old-take.mp3']);
   });
 
   it('turns a format it won’t take into a message, not a bare 500', async () => {

@@ -83,10 +83,13 @@ const FETCH_WARM_TIMEOUT_MS = 20_000;
  * hot across the whole session and dropping them re-triggers the
  * reconnect pattern.
  */
-export function evictAudioCacheIfFull(cache: Map<string, AudioCacheEntry>): void {
+export function evictAudioCacheIfFull(
+  cache: Map<string, AudioCacheEntry>,
+  retained: ReadonlySet<string> = new Set(),
+): void {
   if (cache.size < AUDIO_CACHE_MAX_ENTRIES) return;
   for (const key of cache.keys()) {
-    if (PINNED_CACHE_KEYS.has(key)) continue;
+    if (PINNED_CACHE_KEYS.has(key) || retained.has(key)) continue;
     const entry = cache.get(key);
     // Never tear down something that's sounding. Oldest-first used to
     // mean the longest-running element got cut first: an ambience bed
@@ -94,10 +97,6 @@ export function evictAudioCacheIfFull(cache: Map<string, AudioCacheEntry>): void
     // silent mid-play once enough preloads queued up behind it, and the
     // bed never came back because its file hadn't changed.
     if (entry?.audio && !entry.audio.paused && !entry.audio.ended) continue;
-    // Ambience beds are few and long-lived, and one can be paused between
-    // retries of a refused start; tearing it down then leaves it dead for
-    // every passage that shares the file.
-    if (key.startsWith('amb_')) continue;
     if (entry?.audio) {
       try {
         entry.audio.pause();
@@ -207,10 +206,34 @@ export interface UseAudioCacheResult {
    * poke at individual entries (e.g. `entry.audio.pause()` on tab-
    * hide). Prefer the wrapper methods above where possible. */
   cacheRef: React.MutableRefObject<Map<string, AudioCacheEntry>>;
+  /** Keep an entry out of eviction while it's in use but may be paused,
+   * e.g. the current ambience bed between retries of a refused start.
+   * Playing entries are never evicted anyway. Returns the release. */
+  retainAudio: (key: string) => () => void;
 }
 
 export function useAudioCache(): UseAudioCacheResult {
   const audioCacheRef = useRef<Map<string, AudioCacheEntry>>(new Map());
+  // Counted, so two holders of the same key don't release each other.
+  const retainedRef = useRef(new Map<string, number>());
+  const retainedKeys = useRef(new Set<string>());
+  const retainAudio = useCallback((key: string) => {
+    const counts = retainedRef.current;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+    retainedKeys.current.add(key);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const n = (counts.get(key) ?? 1) - 1;
+      if (n > 0) {
+        counts.set(key, n);
+      } else {
+        counts.delete(key);
+        retainedKeys.current.delete(key);
+      }
+    };
+  }, []);
   // Preload progress is exposed for a spinner / retry UI. Kept in
   // React state (not a ref) so components that render off it can
   // re-render when a preload completes.
@@ -228,7 +251,7 @@ export function useAudioCache(): UseAudioCacheResult {
         resolve();
         return;
       }
-      evictAudioCacheIfFull(cache);
+      evictAudioCacheIfFull(cache, retainedKeys.current);
 
       const entry: AudioCacheEntry = {
         status: 'loading',
@@ -442,5 +465,6 @@ export function useAudioCache(): UseAudioCacheResult {
     preloadProgress,
     resetPreloadProgress,
     cacheRef: audioCacheRef,
+    retainAudio,
   };
 }

@@ -88,7 +88,44 @@ describe('POST /assignments', () => {
       .send({ nodeId: 'a', audioType: 'sfx', audioFileId: FILE_A, offsetMs: 1500 });
     expect(res.status).toBe(201);
     const insert = calls.find(([sql]) => String(sql).includes('INSERT'))!;
-    expect(insert[1]).toEqual([PROJECT, 'a', 'sfx', FILE_A, 1500]);
+    expect(insert[1]).toEqual([PROJECT, 'a', 'sfx', FILE_A, 1500, true]);
+  });
+
+  // Re-posting an attached effect: an explicit null means "at the start",
+  // leaving offsetMs out means "leave the timing alone".
+  it('tells an explicit null apart from a missing offset', async () => {
+    const inserts: unknown[][] = [];
+    const { app } = makeApp(async (sql, params) => {
+      if (sql.includes('INSERT')) inserts.push(params ?? []);
+      return { rows: sql.includes('INSERT') ? [{}] : [] };
+    });
+    await request(app)
+      .post(`/api/projects/${PROJECT}/audio/assignments`)
+      .send({ nodeId: 'a', audioType: 'sfx', audioFileId: FILE_A, offsetMs: null });
+    await request(app)
+      .post(`/api/projects/${PROJECT}/audio/assignments`)
+      .send({ nodeId: 'a', audioType: 'sfx', audioFileId: FILE_A });
+    expect(inserts[0].slice(4)).toEqual([null, true]);
+    expect(inserts[1].slice(4)).toEqual([null, false]);
+  });
+
+  // Two attaches to one slot must not both see it empty: the check, clear
+  // and fill run in one transaction under a lock on that slot.
+  it('serializes a single-slot attach under a per-slot lock', async () => {
+    const sqls: string[] = [];
+    const { app } = makeApp(async (sql) => {
+      sqls.push(sql);
+      return { rows: sql.includes('INSERT') ? [{}] : [] };
+    });
+    const res = await request(app)
+      .post(`/api/projects/${PROJECT}/audio/assignments`)
+      .send({ nodeId: 'a', audioType: 'voiceover', audioFileId: FILE_A, expectEmpty: true });
+    expect(res.status).toBe(201);
+    const at = (needle: string) => sqls.findIndex((q) => q.includes(needle));
+    expect(at('BEGIN')).toBeLessThan(at('pg_advisory_xact_lock'));
+    expect(at('pg_advisory_xact_lock')).toBeLessThan(at('SELECT 1 FROM node_audio_assignments'));
+    expect(at('SELECT 1 FROM node_audio_assignments')).toBeLessThan(at('DELETE'));
+    expect(at('INSERT')).toBeLessThan(at('COMMIT'));
   });
 
   it('rejects an offset on a slot that has no timing', async () => {
@@ -195,6 +232,7 @@ describe('POST /assignments/bulk-reassign', () => {
         if (sql.includes('DELETE FROM node_audio_assignments')) {
           return { rows: [{ id: 'row', offset_ms: 1750 }] };
         }
+        if (sql.includes('INSERT INTO node_audio_assignments')) return { rows: [{ id: 'new' }] };
         return { rows: [] };
       },
     );
@@ -206,5 +244,31 @@ describe('POST /assignments/bulk-reassign', () => {
       String(sql).includes('INSERT INTO node_audio_assignments'),
     )!;
     expect(insert[1]).toEqual([PROJECT, 'a', 'sfx', FILE_B, 1750]);
+  });
+
+  // The node already has the target (it had both files, or a peer just
+  // attached it). "Swap everywhere" must still succeed there: the target
+  // keeps its own timing if it has one, otherwise takes the source's.
+  it('merges into a target that’s already attached, keeping a timing', async () => {
+    const calls: [string, unknown[]][] = [];
+    const { app } = makeApp(
+      async () => ({ rows: [] }),
+      async (sql, params = []) => {
+        calls.push([sql, params]);
+        if (sql.includes('SELECT id FROM audio_files')) return { rows: [{ id: FILE_B }] };
+        if (sql.includes('DELETE FROM node_audio_assignments')) {
+          return { rows: [{ id: 'row', offset_ms: 1750 }] };
+        }
+        return { rows: [] };
+      },
+    );
+    const res = await request(app)
+      .post(`/api/projects/${PROJECT}/audio/assignments/bulk-reassign`)
+      .send({ ops: [{ nodeId: 'a', audioType: 'sfx', fromFileId: FILE_A, toFileId: FILE_B }] });
+    expect(res.status).toBe(200);
+    expect(res.body.swapped).toBe(1);
+    const merge = calls.find(([sql]) => sql.includes('COALESCE(offset_ms, $5)'));
+    expect(merge?.[1]).toEqual([PROJECT, 'a', 'sfx', FILE_B, 1750]);
+    expect(calls.map(([sql]) => sql)).toContain('COMMIT');
   });
 });

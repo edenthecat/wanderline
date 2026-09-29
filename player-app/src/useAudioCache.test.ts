@@ -113,12 +113,22 @@ describe('evictAudioCacheIfFull', () => {
 
   // A bed can be paused between retries of a refused start; evicting it
   // then would leave it dead for every passage sharing the file.
-  it('keeps ambience beds even while paused', () => {
+  it('keeps a retained entry even while paused', () => {
     const cache = new Map<string, AudioCacheEntry>();
     cache.set('amb_./audio/rain.mp3', entry());
     for (let i = 0; i < 80; i++) cache.set(`voice_${i}`, entry());
-    evictAudioCacheIfFull(cache);
+    evictAudioCacheIfFull(cache, new Set(['amb_./audio/rain.mp3']));
     expect(cache.has('amb_./audio/rain.mp3')).toBe(true);
+  });
+
+  // Only the bed in use is protected: every bed ever heard staying
+  // pinned would let a story with many of them defeat the bound.
+  it('evicts ambience beds that aren’t in use', () => {
+    const cache = new Map<string, AudioCacheEntry>();
+    cache.set('amb_./audio/old-bed.mp3', entry());
+    for (let i = 0; i < 80; i++) cache.set(`voice_${i}`, entry());
+    evictAudioCacheIfFull(cache);
+    expect(cache.has('amb_./audio/old-bed.mp3')).toBe(false);
   });
 });
 
@@ -493,5 +503,29 @@ describe('useAudioCache — transfer economy', () => {
     });
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(audioStubs[audioStubs.length - 1].loadCalls).toBe(1);
+  });
+});
+
+describe('useAudioCache — retainAudio', () => {
+  it('counts holders, so one release doesn’t drop another’s hold', () => {
+    const { result } = renderHook(() => useAudioCache());
+    const cache = result.current.cacheRef.current;
+    const releaseA = result.current.retainAudio('amb_x');
+    const releaseB = result.current.retainAudio('amb_x');
+    releaseA();
+    releaseA(); // idempotent
+    cache.set('amb_x', { status: 'loaded', audio: new Audio() as HTMLAudioElement, retryCount: 0 });
+    for (let i = 0; i < 80; i++) {
+      cache.set(`v${i}`, {
+        status: 'loaded',
+        audio: new Audio() as HTMLAudioElement,
+        retryCount: 0,
+      });
+    }
+    act(() => {
+      void result.current.preloadAudio('http://example.com/new.mp3', 'new');
+    });
+    expect(cache.has('amb_x')).toBe(true);
+    releaseB();
   });
 });

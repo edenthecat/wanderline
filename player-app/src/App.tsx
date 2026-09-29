@@ -464,8 +464,14 @@ export default function App() {
   // retryFailedAudio, isCached, preloadProgress). Owns audioCacheRef
   // internally; the hook also exposes `cacheRef` for the follow-up
   // playback extraction that will pull voiceover/bgm/indicators out.
-  const { preloadAudio, getCachedAudio, retryFailedAudio, isCached, resetPreloadProgress } =
-    useAudioCache();
+  const {
+    preloadAudio,
+    getCachedAudio,
+    retryFailedAudio,
+    isCached,
+    resetPreloadProgress,
+    retainAudio,
+  } = useAudioCache();
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const currentNodeIdRef = useRef<string | null>(null);
@@ -1668,11 +1674,20 @@ export default function App() {
     (url: string) => getCachedAudio('amb_' + url, url),
     [getCachedAudio],
   );
+  const ambienceUrl = story && ambienceFile ? story.audioBaseUrl + ambienceFile : null;
   useAmbience({
-    url: story && ambienceFile ? story.audioBaseUrl + ambienceFile : null,
+    url: ambienceUrl,
     volume: userAmbienceVolume / 100,
     getElement: getAmbienceElement,
   });
+  // The current bed can sit paused between retries of a refused start;
+  // keep the cache from evicting it then. (A bed fading out is playing,
+  // which eviction already skips.) Only the current one: pinning every
+  // bed ever heard would let a story with many defeat the cache bound.
+  useEffect(() => {
+    if (!ambienceUrl) return;
+    return retainAudio('amb_' + ambienceUrl);
+  }, [ambienceUrl, retainAudio]);
 
   // Sound effects on a passage with no narration. There's no voiceover
   // clock to follow, so each one's offset counts from arriving. With

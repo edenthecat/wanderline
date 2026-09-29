@@ -10,6 +10,11 @@ import { promisify } from 'util';
 import { getStorage, audioKey } from '../services/storage.js';
 import { buildMatchTables, matchAudioFile } from '../services/audio-matcher.js';
 import { UPLOAD_DIR } from '../config.js';
+import { uploadPath } from '../services/upload-path.js';
+import {
+  deferAudioDeletion,
+  flushDeferredAudioDeletions,
+} from '../services/deferred-audio-deletions.js';
 
 const execAsync = promisify(exec);
 
@@ -115,9 +120,9 @@ async function storeUploadedAudio(
     file.mimetype === 'audio/x-wav' ||
     file.originalname.toLowerCase().endsWith('.wav')
   ) {
-    const inputPath = join(UPLOAD_DIR, projectId, file.filename);
+    const inputPath = uploadPath(projectId, file.filename);
     const mp3Filename = file.filename.replace(/\.[^.]+$/, '.mp3');
-    const outputPath = join(UPLOAD_DIR, projectId, mp3Filename);
+    const outputPath = uploadPath(projectId, mp3Filename);
 
     try {
       await convertWavToMp3(inputPath, outputPath);
@@ -135,7 +140,7 @@ async function storeUploadedAudio(
     }
   }
 
-  const localPath = join(UPLOAD_DIR, projectId, finalFilename);
+  const localPath = uploadPath(projectId, finalFilename);
   try {
     await getStorage().uploadFile(audioKey(projectId, finalFilename), localPath, finalMimeType);
   } catch (err) {
@@ -476,7 +481,7 @@ export function createAudioRouter(pool: Pool): Router {
       const file = req.file;
       const unlinkLocal = async (filename: string) => {
         try {
-          await unlink(join(UPLOAD_DIR, id, filename));
+          await unlink(uploadPath(id, filename));
         } catch {
           /* may not exist */
         }
@@ -581,10 +586,13 @@ export function createAudioRouter(pool: Pool): Router {
           [id],
         );
         if (activeBuild.rows.length > 0) {
-          req.log.info(
-            { oldFilename },
-            'Kept replaced audio in storage: a build for this project is in progress',
-          );
+          // Deleted once the project's builds are done. Flush straight
+          // after: if the build finished between the check above and this
+          // insert, its own flush has already run and missed this row.
+          if (oldFilename) {
+            await deferAudioDeletion(pool, id, oldFilename);
+            void flushDeferredAudioDeletions(pool, id);
+          }
         } else if (oldFilename && oldFilename !== stored?.filename) {
           try {
             await getStorage().delete(audioKey(id, oldFilename));
@@ -901,44 +909,63 @@ export function createAudioRouter(pool: Pool): Router {
         return;
       }
 
-      // An editor attaching to what it saw as an empty slot asks for this,
-      // so a take a peer attached in the meantime isn't silently replaced.
-      if (expectEmpty === true && audioType !== 'sfx') {
-        const existing = await pool.query(
-          `SELECT 1 FROM node_audio_assignments
-           WHERE project_id = $1 AND node_id = $2 AND audio_type = $3`,
-          [id, nodeId, audioType],
-        );
-        if (existing.rows.length > 0) {
-          res.status(409).json({ error: `${nodeId} already has ${audioType} audio attached` });
-          return;
+      // A sound effect's timing: an explicit null resets it to the start,
+      // while leaving offsetMs out keeps whatever it was (so re-posting an
+      // attached effect from the Audio tab doesn't lose its timing).
+      const offsetGiven = offsetMs !== undefined;
+
+      // A single slot's check, clear and fill run in one transaction under
+      // a lock on that slot, so two attaches can't both see it empty (and
+      // expectEmpty can't be sidestepped by a peer's concurrent attach).
+      const client = await pool.connect();
+      let failure: Error | undefined;
+      let result: { rows: unknown[] };
+      try {
+        await client.query('BEGIN');
+        if (audioType !== 'sfx') {
+          await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+            `${id}:${nodeId}:${audioType}`,
+          ]);
+          // An editor attaching to what it saw as an empty slot asks for
+          // this, so a take a peer attached in the meantime isn't
+          // silently replaced.
+          if (expectEmpty === true) {
+            const existing = await client.query(
+              `SELECT 1 FROM node_audio_assignments
+               WHERE project_id = $1 AND node_id = $2 AND audio_type = $3`,
+              [id, nodeId, audioType],
+            );
+            if (existing.rows.length > 0) {
+              await client.query('ROLLBACK');
+              res.status(409).json({ error: `${nodeId} already has ${audioType} audio attached` });
+              return;
+            }
+          }
+          // For voiceover, ambience, choice1, choice2 - replace existing assignment (sfx can have multiple)
+          await client.query(
+            `DELETE FROM node_audio_assignments
+             WHERE project_id = $1 AND node_id = $2 AND audio_type = $3`,
+            [id, nodeId, audioType],
+          );
         }
-      }
-
-      // For voiceover, ambience, choice1, choice2 - replace existing assignment (sfx can have multiple)
-      if (audioType !== 'sfx') {
-        await pool.query(
-          `
-          DELETE FROM node_audio_assignments
-          WHERE project_id = $1 AND node_id = $2 AND audio_type = $3
-        `,
-          [id, nodeId, audioType],
+        result = await client.query(
+          `INSERT INTO node_audio_assignments (project_id, node_id, audio_type, audio_file_id, offset_ms)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (project_id, node_id, audio_type, audio_file_id)
+           DO UPDATE SET offset_ms = CASE WHEN $6 THEN EXCLUDED.offset_ms
+                                          ELSE node_audio_assignments.offset_ms END,
+                         updated_at = CURRENT_TIMESTAMP
+           RETURNING *`,
+          [id, nodeId, audioType, audioFileId, offset, offsetGiven],
         );
+        await client.query('COMMIT');
+      } catch (err) {
+        failure = err as Error;
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw err;
+      } finally {
+        client.release(failure);
       }
-
-      // Re-posting an sfx that's already attached with an explicit
-      // offset moves it; without one, the existing timing is kept.
-      const result = await pool.query(
-        `
-        INSERT INTO node_audio_assignments (project_id, node_id, audio_type, audio_file_id, offset_ms)
-        VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT (project_id, node_id, audio_type, audio_file_id)
-        DO UPDATE SET offset_ms = COALESCE(EXCLUDED.offset_ms, node_audio_assignments.offset_ms),
-                      updated_at = CURRENT_TIMESTAMP
-        RETURNING *
-      `,
-        [id, nodeId, audioType, audioFileId, offset],
-      );
 
       // Update project timestamp
       await pool.query('UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1', [id]);
@@ -1223,12 +1250,26 @@ export function createAudioRouter(pool: Pool): Router {
         }
         // Swapping in a new take keeps the effect's timing: the author
         // placed it against the words, not against the file.
-        await client.query(
+        const inserted = await client.query(
           `INSERT INTO node_audio_assignments (project_id, node_id, audio_type, audio_file_id, offset_ms)
            VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT (project_id, node_id, audio_type, audio_file_id) DO NOTHING`,
+           ON CONFLICT (project_id, node_id, audio_type, audio_file_id) DO NOTHING
+           RETURNING id`,
           [id, op.nodeId, op.audioType, op.toFileId, del.rows[0].offset_ms ?? null],
         );
+        if (inserted.rows.length === 0) {
+          // The target is already attached to this node (the node had both
+          // files, or a peer attached it meanwhile). Merge rather than
+          // fail: "swap everywhere" would otherwise never succeed on such a
+          // node. The target keeps its own timing if it has one, and
+          // otherwise takes the source's, so the effect isn't moved.
+          await client.query(
+            `UPDATE node_audio_assignments
+             SET offset_ms = COALESCE(offset_ms, $5), updated_at = CURRENT_TIMESTAMP
+             WHERE project_id = $1 AND node_id = $2 AND audio_type = $3 AND audio_file_id = $4`,
+            [id, op.nodeId, op.audioType, op.toFileId, del.rows[0].offset_ms ?? null],
+          );
+        }
         swapped += 1;
       }
 

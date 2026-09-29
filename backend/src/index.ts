@@ -49,6 +49,7 @@ import {
   parseIntEnv,
   reconcileSoftDeletedBuilds,
 } from './services/build-service.js';
+import { flushDeferredAudioDeletions } from './services/deferred-audio-deletions.js';
 import { attachCollabServer } from './services/collab-server.js';
 import { getPlayerDist, mountPublicPreviewRoutes } from './routes/projects-preview.js';
 import { logger } from './logger.js';
@@ -607,6 +608,9 @@ Sentry.setupExpressErrorHandler(app);
 initializeDatabase(pool)
   .then(async () => {
     await cleanupStaleBuilds(pool);
+    // Old takes whose deletion waited on a build: any build that was
+    // running has just been marked failed, so carry them out now.
+    void flushDeferredAudioDeletions(pool);
     // hard-delete soft-deleted builds past their grace window.
     // Fire-and-forget — reconcileSoftDeletedBuilds catches every failure
     // internally and never rejects, so an outer .catch() would be
