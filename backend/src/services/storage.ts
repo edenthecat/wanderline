@@ -141,9 +141,15 @@ class LocalStorage implements ObjectStorage {
     // that's checkable at this one call site regardless of what
     // validateKey does or doesn't catch, and regardless of how it
     // might change later.
+    //
+    // A single startsWith check on the resolved path, with nothing else in
+    // the condition, is the form CodeQL recognises as a containment guard;
+    // an extra clause in front of it (an equality check against the root
+    // itself) hid it. The root itself is never a valid object anyway, so
+    // a key that resolves to it (".") is refused too.
     const resolvedRoot = resolve(this.root);
     const dest = resolve(resolvedRoot, key);
-    if (dest !== resolvedRoot && !dest.startsWith(resolvedRoot + sep)) {
+    if (!dest.startsWith(resolvedRoot + sep)) {
       throw new Error(`Invalid storage key (escapes storage root): ${key}`);
     }
     return dest;
