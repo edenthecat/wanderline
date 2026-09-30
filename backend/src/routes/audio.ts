@@ -5,7 +5,7 @@ import { randomUUID } from 'crypto';
 import { mkdir, unlink, stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { getStorage, audioKey } from '../services/storage.js';
 import { buildMatchTables, matchAudioFile } from '../services/audio-matcher.js';
@@ -16,12 +16,28 @@ import {
   flushDeferredAudioDeletions,
 } from '../services/deferred-audio-deletions.js';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
-// Convert WAV to MP3 using ffmpeg
+// Convert WAV to MP3 using ffmpeg. execFile (argument array), not exec
+// (shell string): inputPath/outputPath are built from a server-generated
+// UUID plus a regex-sanitized extension, so no shell metacharacter should
+// ever reach here today — but that safety lives entirely in that one
+// sanitizer, and a shell string means any future caller of this function
+// (or a future loosening of that regex) is one shell-metacharacter
+// filename away from command injection. execFile never spawns a shell,
+// so each argument reaches ffmpeg literally regardless of its content.
 async function convertWavToMp3(inputPath: string, outputPath: string): Promise<void> {
   // Use high quality MP3 encoding: -q:a 2 is roughly equivalent to 192kbps VBR
-  await execAsync(`ffmpeg -i "${inputPath}" -codec:a libmp3lame -q:a 2 "${outputPath}" -y`);
+  await execFileAsync('ffmpeg', [
+    '-i',
+    inputPath,
+    '-codec:a',
+    'libmp3lame',
+    '-q:a',
+    '2',
+    outputPath,
+    '-y',
+  ]);
   // Remove the original WAV file
   await unlink(inputPath);
 }
