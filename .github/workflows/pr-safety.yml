@@ -172,12 +172,26 @@ jobs:
           # Collect every HIGH+CRITICAL advisory URL from the audit
           # report. Matches the semantics of `npm audit
           # --audit-level=high` (which is inclusive of critical).
+          #
+          # Filters on each advisory's OWN severity (via[].severity),
+          # not `.vulnerabilities[].severity` — npm audit sets that to
+          # the *worst* severity among a package's advisories, so
+          # filtering on it first (as this used to) swept every
+          # moderate sibling of a real high/critical into BLOCKING too,
+          # each needing its own allowlist entry to explain why a
+          # moderate advisory isn't actually a problem. Checking each
+          # advisory's own severity means only genuinely high/critical
+          # ones ever reach here — matches this step's own name and the
+          # comment above the allowlist, and it's strictly narrower:
+          # `.vulnerabilities[].severity` is defined as the max of
+          # exactly these per-advisory severities, so nothing that
+          # would have blocked before stops blocking now.
           npm audit --json --omit=dev > audit.json || true
           BLOCKING=$(jq -r '
             [.vulnerabilities[]?
-              | select(.severity == "high" or .severity == "critical")
               | .via[]?
               | select(type == "object")
+              | select(.severity == "high" or .severity == "critical")
               | .url]
             | unique
             | .[]
