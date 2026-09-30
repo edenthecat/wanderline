@@ -65,7 +65,7 @@ function IndicatorPicker({
       {value && (
         <AuditionButton
           id={`${label}:${value}`}
-          url={audioFileUrl(projectId, value)}
+          url={audioFileUrl(projectId, value, options.find((f) => f.id === value)?.filename)}
           label={label}
           playingId={playingId}
           toggle={toggle}

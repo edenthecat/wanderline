@@ -1,4 +1,4 @@
-import { StoryDataError, resolveStoryTitle } from '../story-data-builder.js';
+import { StoryDataError, resolveStoryTitle, collectNodeAudio } from '../story-data-builder.js';
 
 describe('StoryDataError', () => {
   it('should create error with message and status code', () => {
@@ -65,5 +65,65 @@ describe('resolveStoryTitle', () => {
     expect(resolveStoryTitle(null, 'Backup')).toBe('Backup');
     expect(resolveStoryTitle(undefined, 'Backup')).toBe('Backup');
     expect(resolveStoryTitle(42, 'Backup')).toBe('Backup');
+  });
+});
+
+describe('collectNodeAudio', () => {
+  const fileMap = { f1: 'vo.mp3', f2: 'rain.mp3', f3: 'door.mp3', f4: 'bell.mp3', f5: 'wind.mp3' };
+
+  it('resolves the single slots to filenames', () => {
+    const audio = collectNodeAudio(
+      [
+        { node_id: 'a', audio_type: 'voiceover', audio_file_id: 'f1' },
+        { node_id: 'a', audio_type: 'ambience', audio_file_id: 'f2' },
+      ],
+      fileMap,
+    );
+    expect(audio).toEqual({ a: { voiceover: 'vo.mp3', ambience: 'rain.mp3' } });
+  });
+
+  // SFX were assignable in the editor but never made it past this point,
+  // so no preview or build ever played one.
+  it('includes sound effects, with an offset only when one was set', () => {
+    const audio = collectNodeAudio(
+      [
+        { node_id: 'a', audio_type: 'sfx', audio_file_id: 'f3', offset_ms: 1200 },
+        { node_id: 'a', audio_type: 'sfx', audio_file_id: 'f4', offset_ms: null },
+      ],
+      fileMap,
+    );
+    expect(audio.a.sfx).toEqual([{ file: 'bell.mp3' }, { file: 'door.mp3', offsetMs: 1200 }]);
+  });
+
+  it('orders sound effects stably: unset first, then by offset, then by filename', () => {
+    const audio = collectNodeAudio(
+      [
+        { node_id: 'a', audio_type: 'sfx', audio_file_id: 'f5', offset_ms: 500 },
+        { node_id: 'a', audio_type: 'sfx', audio_file_id: 'f3', offset_ms: 500 },
+        { node_id: 'a', audio_type: 'sfx', audio_file_id: 'f4' },
+      ],
+      fileMap,
+    );
+    expect(audio.a.sfx!.map((fx) => fx.file)).toEqual(['bell.mp3', 'door.mp3', 'wind.mp3']);
+  });
+
+  it('leaves out assignments whose file no longer exists', () => {
+    const audio = collectNodeAudio(
+      [
+        { node_id: 'a', audio_type: 'voiceover', audio_file_id: 'gone' },
+        { node_id: 'a', audio_type: 'sfx', audio_file_id: 'gone' },
+        { node_id: 'b', audio_type: 'ambience', audio_file_id: 'f2' },
+      ],
+      fileMap,
+    );
+    expect(audio).toEqual({ b: { ambience: 'rain.mp3' } });
+  });
+
+  it('ignores a negative or non-finite offset rather than emitting it', () => {
+    const audio = collectNodeAudio(
+      [{ node_id: 'a', audio_type: 'sfx', audio_file_id: 'f3', offset_ms: -5 }],
+      fileMap,
+    );
+    expect(audio.a.sfx).toEqual([{ file: 'door.mp3' }]);
   });
 });

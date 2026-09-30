@@ -1,6 +1,7 @@
 import { Pool } from 'pg';
 import { ZipArchive } from 'archiver';
 import { logger } from '../logger.js';
+import { flushDeferredAudioDeletions } from './deferred-audio-deletions.js';
 import {
   createReadStream,
   createWriteStream,
@@ -773,6 +774,10 @@ export async function executeBuild(pool: Pool, projectId: string, buildId: strin
       .catch(() => {});
 
     logger.error({ event: 'build.failed', buildId, err: error }, 'Build failed');
+  } finally {
+    // Old takes replaced while this build ran were kept for it; the
+    // project may have no build in progress now.
+    void flushDeferredAudioDeletions(pool, projectId);
   }
 }
 

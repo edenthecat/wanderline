@@ -10,16 +10,16 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import * as Y from 'yjs';
 import {
-  audioFileUrl,
   type AudioAssignments,
+  type AudioFile,
   resolveNodeFlag,
   type Character,
   type NodeFlag,
   type NodeMetadata,
 } from '../api/client';
-import { useAudition } from '../hooks/useAudition';
 import { FLAG_REASON_LABELS } from './flagLabels';
-import AuditionButton from './AuditionButton';
+import NodeAudioPanel from './NodeAudioPanel';
+import type { NodeAudioActions } from '../hooks/useNodeEditor';
 import CollabChoiceTextInput from './CollabChoiceTextInput';
 import CollabContentTextarea from './CollabContentTextarea';
 import { getChoiceText, getContentText } from '../hooks/useStoryYDoc';
@@ -112,6 +112,12 @@ export interface NodeDetailProps {
   nodeAudio?: AudioAssignments[string];
   /** audio_file_id -> uploaded name, for labelling the play rows. */
   audioNames?: Record<string, string>;
+  /** The project's audio library, for attaching and swapping clips. */
+  audioFiles?: AudioFile[];
+  /** Attach / swap / clear / time this node's clips. Absent: read-only. */
+  audioActions?: NodeAudioActions;
+  /** Default levels (0-100) for auditioning the passage's mix. */
+  audioLevels?: { voiceover: number; ambience: number };
   /** Click a "Reachable from" entry to jump the canvas / list to it. */
   onJumpToNode?: (nodeId: string) => void;
   /**: shared Y.Doc for this project (null until connected).
@@ -148,6 +154,9 @@ export default function NodeDetail({
   onFlagsChanged,
   nodeAudio,
   audioNames,
+  audioFiles,
+  audioActions,
+  audioLevels,
   reachableFrom,
   onJumpToNode,
   yDoc,
@@ -590,7 +599,15 @@ export default function NodeDetail({
           </select>
         </div>
       )}
-      <NodeAudioPreview projectId={projectId} nodeAudio={nodeAudio} audioNames={audioNames} />
+      <NodeAudioPanel
+        projectId={projectId}
+        nodeId={nodeId}
+        nodeAudio={nodeAudio}
+        audioNames={audioNames}
+        audioFiles={audioFiles}
+        actions={audioActions}
+        levels={audioLevels}
+      />
       {reachableFrom && reachableFrom.length > 0 && (
         <div className="node-reachable-from">
           <h4 className="node-reachable-from-title">Reachable from</h4>
@@ -697,63 +714,6 @@ function AddChoiceRow({ defaultTarget, nodeIdOptions, onSubmit }: AddChoiceRowPr
       </button>
       {err && <span className="text-sm text-danger">{err}</span>}
     </form>
-  );
-}
-
-// The clips attached to this node, with a play control for each.
-//
-// Authors were previously assigning audio in the Audio tab and then had
-// no way to confirm they'd attached the RIGHT take without running a
-// preview build of the whole story. Reuses useAudition, so only one
-// clip plays at a time and switching rows stops the previous one.
-const AUDIO_SLOTS: { key: 'voiceover' | 'ambience' | 'choice1' | 'choice2'; label: string }[] = [
-  { key: 'voiceover', label: 'Voiceover' },
-  { key: 'ambience', label: 'Ambience' },
-  { key: 'choice1', label: 'Choice 1 cue' },
-  { key: 'choice2', label: 'Choice 2 cue' },
-];
-
-function NodeAudioPreview({
-  projectId,
-  nodeAudio,
-  audioNames,
-}: {
-  projectId: string;
-  nodeAudio?: AudioAssignments[string];
-  audioNames?: Record<string, string>;
-}) {
-  const { playingId, toggle } = useAudition();
-
-  if (!nodeAudio) return null;
-  const rows = AUDIO_SLOTS.map((slot) => ({ ...slot, fileId: nodeAudio[slot.key] })).filter(
-    (r): r is { key: (typeof AUDIO_SLOTS)[number]['key']; label: string; fileId: string } =>
-      !!r.fileId,
-  );
-  const sfx = nodeAudio.sfx ?? [];
-  if (rows.length === 0 && sfx.length === 0) return null;
-
-  const renderRow = (id: string, fileId: string, label: string) => (
-    <li key={id} className="node-audio-row">
-      <AuditionButton
-        id={id}
-        url={audioFileUrl(projectId, fileId)}
-        label={label}
-        playingId={playingId}
-        toggle={toggle}
-      />
-      <span className="node-audio-label">{label}</span>
-      <span className="node-audio-file text-muted">{audioNames?.[fileId] ?? fileId}</span>
-    </li>
-  );
-
-  return (
-    <div className="node-audio-preview">
-      <h4 className="node-audio-title">Attached audio</h4>
-      <ul className="node-audio-list">
-        {rows.map((r) => renderRow(`${r.key}:${r.fileId}`, r.fileId, r.label))}
-        {sfx.map((fileId, i) => renderRow(`sfx-${i}:${fileId}`, fileId, `SFX ${i + 1}`))}
-      </ul>
-    </div>
   );
 }
 

@@ -1304,6 +1304,9 @@ function GraphTabInner({
               projectId={projectId}
               nodeAudio={editor.audioByNode[selectedNodeId]}
               audioNames={editor.audioNames}
+              audioFiles={editor.audioFiles}
+              audioActions={editor.audioActions}
+              audioLevels={editor.audioLevels}
               flags={editor.flagsByNode[selectedNodeId]}
               onFlagsChanged={editor.refreshFlags}
               characters={editor.characters}

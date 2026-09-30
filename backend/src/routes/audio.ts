@@ -5,18 +5,36 @@ import { randomUUID } from 'crypto';
 import { mkdir, unlink, stat } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { getStorage, audioKey } from '../services/storage.js';
 import { buildMatchTables, matchAudioFile } from '../services/audio-matcher.js';
 import { UPLOAD_DIR } from '../config.js';
+import { uploadPath } from '../services/upload-path.js';
+import { flushDeferredAudioDeletions } from '../services/deferred-audio-deletions.js';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
-// Convert WAV to MP3 using ffmpeg
+// Convert WAV to MP3 using ffmpeg. execFile (argument array), not exec
+// (shell string): inputPath/outputPath are built from a server-generated
+// UUID plus a regex-sanitized extension, so no shell metacharacter should
+// ever reach here today — but that safety lives entirely in that one
+// sanitizer, and a shell string means any future caller of this function
+// (or a future loosening of that regex) is one shell-metacharacter
+// filename away from command injection. execFile never spawns a shell,
+// so each argument reaches ffmpeg literally regardless of its content.
 async function convertWavToMp3(inputPath: string, outputPath: string): Promise<void> {
   // Use high quality MP3 encoding: -q:a 2 is roughly equivalent to 192kbps VBR
-  await execAsync(`ffmpeg -i "${inputPath}" -codec:a libmp3lame -q:a 2 "${outputPath}" -y`);
+  await execFileAsync('ffmpeg', [
+    '-i',
+    inputPath,
+    '-codec:a',
+    'libmp3lame',
+    '-q:a',
+    '2',
+    outputPath,
+    '-y',
+  ]);
   // Remove the original WAV file
   await unlink(inputPath);
 }
@@ -75,6 +93,80 @@ const upload = multer({
     }
   },
 });
+
+const INVALID_OFFSET = Symbol('invalid offset');
+const OFFSET_ERROR = 'offsetMs must be a whole number of milliseconds, 0 to 3600000, or null';
+
+/**
+ * A sound effect's offset from the request body. Undefined and null both
+ * mean "as the passage starts". Anything else must be a whole number of
+ * milliseconds within an hour (a passage longer than that isn't a
+ * passage), so a typo in seconds can't park an effect nowhere.
+ */
+export function parseOffsetMs(value: unknown): number | null | typeof INVALID_OFFSET {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 3_600_000) {
+    return INVALID_OFFSET;
+  }
+  return value;
+}
+
+/**
+ * Convert an uploaded file if it needs it (WAV becomes MP3) and persist
+ * it to durable storage. Shared by a fresh upload and by uploading a new
+ * take over an existing file. Returns null if storage failed, having
+ * cleaned up the local copy: a row pointing at a missing object would
+ * 404 forever on download.
+ */
+async function storeUploadedAudio(
+  req: Request,
+  projectId: string,
+  file: Express.Multer.File,
+): Promise<{ filename: string; mimeType: string; size: number } | null> {
+  let finalFilename = file.filename;
+  let finalMimeType = file.mimetype;
+  let finalSize = file.size;
+
+  // Convert WAV to MP3
+  if (
+    file.mimetype === 'audio/wav' ||
+    file.mimetype === 'audio/x-wav' ||
+    file.originalname.toLowerCase().endsWith('.wav')
+  ) {
+    const inputPath = uploadPath(projectId, file.filename);
+    const mp3Filename = file.filename.replace(/\.[^.]+$/, '.mp3');
+    const outputPath = uploadPath(projectId, mp3Filename);
+
+    try {
+      await convertWavToMp3(inputPath, outputPath);
+      finalFilename = mp3Filename;
+      finalMimeType = 'audio/mpeg';
+      const stats = await stat(outputPath);
+      finalSize = stats.size;
+      req.log.info(
+        { originalName: file.originalname, originalSize: file.size, finalSize },
+        'Converted WAV to MP3',
+      );
+    } catch (err) {
+      req.log.error({ err }, 'Failed to convert WAV to MP3');
+      // Continue with original file if conversion fails
+    }
+  }
+
+  const localPath = uploadPath(projectId, finalFilename);
+  try {
+    await getStorage().uploadFile(audioKey(projectId, finalFilename), localPath, finalMimeType);
+  } catch (err) {
+    req.log.error({ err }, 'Failed to persist audio to storage');
+    try {
+      await unlink(localPath);
+    } catch {
+      /* may not exist */
+    }
+    return null;
+  }
+  return { filename: finalFilename, mimeType: finalMimeType, size: finalSize };
+}
 
 export function createAudioRouter(pool: Pool): Router {
   const router = Router({ mergeParams: true });
@@ -216,54 +308,12 @@ export function createAudioRouter(pool: Pool): Router {
         }
       }
 
-      let finalFilename = file.filename;
-      let finalMimeType = file.mimetype;
-      let finalSize = file.size;
-
-      // Convert WAV to MP3
-      if (
-        file.mimetype === 'audio/wav' ||
-        file.mimetype === 'audio/x-wav' ||
-        file.originalname.toLowerCase().endsWith('.wav')
-      ) {
-        const inputPath = join(UPLOAD_DIR, id, file.filename);
-        const mp3Filename = file.filename.replace(/\.[^.]+$/, '.mp3');
-        const outputPath = join(UPLOAD_DIR, id, mp3Filename);
-
-        try {
-          await convertWavToMp3(inputPath, outputPath);
-          finalFilename = mp3Filename;
-          finalMimeType = 'audio/mpeg';
-          const stats = await stat(outputPath);
-          finalSize = stats.size;
-          req.log.info(
-            { originalName: file.originalname, originalSize: file.size, finalSize },
-            'Converted WAV to MP3',
-          );
-        } catch (err) {
-          req.log.error({ err }, 'Failed to convert WAV to MP3');
-          // Continue with original file if conversion fails
-        }
-      }
-
-      // Persist to durable storage (GCS in prod, local FS in dev). Fail the
-      // request if storage is misconfigured/unavailable rather than insert a
-      // DB row that points at a missing object — that would 404 forever on
-      // download.
-      const localPath = join(UPLOAD_DIR, id, finalFilename);
-      try {
-        await getStorage().uploadFile(audioKey(id, finalFilename), localPath, finalMimeType);
-      } catch (err) {
-        req.log.error({ err }, 'Failed to persist audio to storage');
-        // Clean up the local copy so we don't leak files
-        try {
-          await unlink(localPath);
-        } catch {
-          /* may not exist */
-        }
+      const stored = await storeUploadedAudio(req, id, file);
+      if (!stored) {
         res.status(503).json({ error: 'Failed to persist audio to durable storage' });
         return;
       }
+      const { filename: finalFilename, mimeType: finalMimeType, size: finalSize } = stored;
 
       const result = await pool.query(
         `
@@ -368,6 +418,198 @@ export function createAudioRouter(pool: Pool): Router {
       res.status(500).json({ error: 'Failed to delete all audio files' });
     }
   });
+
+  // Upload a new take over an existing file.
+  /**
+   * @openapi
+   * /projects/{id}/audio/{audioId}/replace:
+   *   post:
+   *     summary: Upload a new take in place of an existing audio file.
+   *     description: |
+   *       The file keeps its id, so every node it's attached to (and each
+   *       sound effect's timing) picks up the new take with no reassigning.
+   *       It's stored under a new name, so previews, builds and offline
+   *       caches fetch the new audio rather than serving the old one.
+   *     tags: [Audio]
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema: { type: string, format: uuid }
+   *       - in: path
+   *         name: audioId
+   *         required: true
+   *         schema: { type: string, format: uuid }
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         multipart/form-data:
+   *           schema:
+   *             type: object
+   *             required: [audio]
+   *             properties:
+   *               audio: { type: string, format: binary }
+   *     responses:
+   *       200: { description: Replaced. Returns the updated audio file. }
+   *       400: { description: 'No file, or a malformed id.' }
+   *       404: { description: No such audio file in this project. }
+   *       503: { description: Durable storage unavailable; nothing changed. }
+   */
+  router.post(
+    '/:audioId/replace',
+    // Reject a bad id before multer writes anything to disk.
+    (req: Request, res: Response, next) => {
+      if (!UUID_RE.test(req.params.audioId)) {
+        res.status(400).json({ error: 'Invalid audio id' });
+        return;
+      }
+      next();
+    },
+    // Multer's own errors (a format it won't take, a file over the limit)
+    // otherwise fall through to Express's default HTML 500, which the
+    // editor can't turn into a message. Anything else (the disk, say) is
+    // a server fault: a 500 without the raw message, which can carry a
+    // server path.
+    (req: Request, res: Response, next) => {
+      upload.single('audio')(req, res, (err: unknown) => {
+        if (!err) return next();
+        const error = err as Error & { code?: string };
+        if (error.message === 'Only audio files are allowed') {
+          return res
+            .status(400)
+            .json({ error: 'Only audio files (mp3, wav, ogg, webm) are allowed' });
+        }
+        if (err instanceof multer.MulterError) {
+          return res.status(400).json({
+            error:
+              err.code === 'LIMIT_FILE_SIZE' ? 'That file is over the 50 MB limit' : err.message,
+          });
+        }
+        req.log.error({ err }, 'Upload failed before the replace route ran');
+        return res.status(500).json({ error: 'Failed to receive the upload' });
+      });
+    },
+    async (req: Request, res: Response) => {
+      const { id, audioId } = req.params;
+      const file = req.file;
+      const unlinkLocal = async (filename: string) => {
+        try {
+          await unlink(uploadPath(id, filename));
+        } catch {
+          /* may not exist */
+        }
+      };
+      let stored: Awaited<ReturnType<typeof storeUploadedAudio>> = null;
+      // Until the row points at the new take, it's ours to clean up.
+      const discardNewTake = async () => {
+        if (file) await unlinkLocal(file.filename);
+        if (!stored) return;
+        await unlinkLocal(stored.filename);
+        try {
+          await getStorage().delete(audioKey(id, stored.filename));
+        } catch (err) {
+          req.log.warn({ err }, 'Failed to delete orphaned replacement audio');
+        }
+      };
+
+      let oldFilename: string | null = null;
+      let audioFile: Record<string, unknown> | null = null;
+      try {
+        if (!file) {
+          res.status(400).json({ error: 'No audio file provided' });
+          return;
+        }
+        const existing = await pool.query(
+          'SELECT 1 FROM audio_files WHERE id = $1 AND project_id = $2',
+          [audioId, id],
+        );
+        if (existing.rows.length === 0) {
+          await discardNewTake();
+          res.status(404).json({ error: 'Audio file not found' });
+          return;
+        }
+
+        stored = await storeUploadedAudio(req, id, file);
+        if (!stored) {
+          await discardNewTake();
+          res.status(503).json({ error: 'Failed to persist audio to durable storage' });
+          return;
+        }
+
+        // Same row, new object. Duration is the old take's, so it's
+        // cleared rather than left wrong. The old filename is read under a
+        // row lock in the same transaction as the update, so two replaces
+        // (or a replace and a delete) racing can't each think they own the
+        // same old take and strand the other's new one.
+        const client = await pool.connect();
+        let failure: Error | undefined;
+        try {
+          await client.query('BEGIN');
+          const locked = await client.query(
+            'SELECT filename FROM audio_files WHERE id = $1 AND project_id = $2 FOR UPDATE',
+            [audioId, id],
+          );
+          if (locked.rows.length > 0) {
+            oldFilename = locked.rows[0].filename;
+            const updated = await client.query(
+              `UPDATE audio_files
+               SET filename = $3, original_name = $4, mime_type = $5, size_bytes = $6,
+                   duration_ms = NULL, updated_at = CURRENT_TIMESTAMP
+               WHERE id = $1 AND project_id = $2
+               RETURNING *`,
+              [audioId, id, stored.filename, file.originalname, stored.mimeType, stored.size],
+            );
+            audioFile = updated.rows[0] ?? null;
+            // The old take is now referenced by nothing. Record that in
+            // the same transaction as the swap, so it can't be orphaned by
+            // anything failing after the commit; the deferred flush below
+            // (or the next one) deletes it once no build still needs it.
+            if (oldFilename && oldFilename !== stored.filename) {
+              await client.query(
+                `INSERT INTO deferred_audio_deletions (project_id, filename) VALUES ($1, $2)
+                 ON CONFLICT DO NOTHING`,
+                [id, oldFilename],
+              );
+            }
+          }
+          await client.query('COMMIT');
+        } catch (err) {
+          failure = err as Error;
+          await client.query('ROLLBACK').catch(() => undefined);
+          throw err;
+        } finally {
+          // A connection that errored goes back broken; let the pool drop it.
+          client.release(failure);
+        }
+      } catch (error) {
+        await discardNewTake();
+        req.log.error({ err: error }, 'Failed to replace audio file');
+        res.status(500).json({ error: 'Failed to replace audio file' });
+        return;
+      }
+
+      if (!audioFile) {
+        // Deleted while we were uploading.
+        await discardNewTake();
+        res.status(404).json({ error: 'Audio file not found' });
+        return;
+      }
+
+      // Committed: the new take is live, so from here nothing may report
+      // failure or touch it. The old take was recorded for deletion in the
+      // transaction; the flush deletes it now unless a build is running (a
+      // build copies audio by the filenames it has already assembled), in
+      // which case the build's own flush, or startup's, gets it later.
+      // Never throws.
+      await flushDeferredAudioDeletions(pool, id);
+      try {
+        await pool.query('UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1', [id]);
+      } catch (err) {
+        req.log.warn({ err }, 'Replaced audio, but bumping the project timestamp failed');
+      }
+      res.json({ audioFile });
+    },
+  );
 
   // Update audio file category and/or character
   router.patch('/:audioId', async (req: Request, res: Response) => {
@@ -480,11 +722,20 @@ export function createAudioRouter(pool: Pool): Router {
         return;
       }
 
-      // Delete from database (cascades to assignments)
-      await pool.query('DELETE FROM audio_files WHERE id = $1', [audioId]);
+      // Delete from database (cascades to assignments). The filename comes
+      // back from the delete itself: a new take uploaded between the read
+      // above and here would otherwise be the object left behind.
+      const deleted = await pool.query(
+        'DELETE FROM audio_files WHERE id = $1 AND project_id = $2 RETURNING filename',
+        [audioId, id],
+      );
+      if (deleted.rows.length === 0) {
+        res.status(404).json({ error: 'Audio file not found' });
+        return;
+      }
 
       // Delete from durable storage and any local copy
-      const filename = fileResult.rows[0].filename;
+      const filename = deleted.rows[0].filename;
       try {
         await getStorage().delete(audioKey(id, filename));
       } catch (err) {
@@ -532,6 +783,16 @@ export function createAudioRouter(pool: Pool): Router {
    *                       ambience: { type: string, format: uuid, nullable: true }
    *                       choice1: { type: string, format: uuid, nullable: true }
    *                       choice2: { type: string, format: uuid, nullable: true }
+   *                       sfx:
+   *                         type: array
+   *                         items: { type: string, format: uuid }
+   *                       sfxOffsets:
+   *                         type: object
+   *                         description: |
+   *                           Milliseconds into the passage each sound effect plays
+   *                           at, keyed by file id. Absent for one that plays as the
+   *                           passage starts.
+   *                         additionalProperties: { type: integer, minimum: 0 }
    */
   router.get('/assignments', async (req: Request, res: Response) => {
     try {
@@ -551,14 +812,25 @@ export function createAudioRouter(pool: Pool): Router {
       // Group by node_id
       const assignments: Record<
         string,
-        { voiceover?: string; ambience?: string; choice1?: string; choice2?: string; sfx: string[] }
+        {
+          voiceover?: string;
+          ambience?: string;
+          choice1?: string;
+          choice2?: string;
+          sfx: string[];
+          sfxOffsets?: Record<string, number>;
+        }
       > = {};
       for (const row of result.rows) {
         if (!assignments[row.node_id]) {
           assignments[row.node_id] = { sfx: [] };
         }
         if (row.audio_type === 'sfx') {
-          assignments[row.node_id].sfx.push(row.audio_file_id);
+          const node = assignments[row.node_id];
+          node.sfx.push(row.audio_file_id);
+          if (typeof row.offset_ms === 'number') {
+            (node.sfxOffsets ??= {})[row.audio_file_id] = row.offset_ms;
+          }
         } else {
           assignments[row.node_id][
             row.audio_type as 'voiceover' | 'ambience' | 'choice1' | 'choice2'
@@ -598,19 +870,37 @@ export function createAudioRouter(pool: Pool): Router {
    *             required: [nodeId, audioType, audioFileId]
    *             properties:
    *               nodeId: { type: string }
-   *               audioType: { type: string, enum: [voiceover, ambience, choice1, choice2] }
+   *               audioType: { type: string, enum: [voiceover, ambience, choice1, choice2, sfx] }
    *               audioFileId: { type: string, format: uuid }
+   *               offsetMs:
+   *                 type: integer
+   *                 minimum: 0
+   *                 nullable: true
+   *                 description: sfx only. When to play it; omit or null for as the passage starts.
+   *               expectEmpty:
+   *                 type: boolean
+   *                 description: Refuse with 409 instead of replacing if the slot is already filled.
    *     responses:
    *       200: { description: Assigned. }
    *       400: { description: Missing / invalid fields. }
+   *       409: { description: expectEmpty was set and the slot is already filled. }
    */
   router.post('/assignments', async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
-      const { nodeId, audioType, audioFileId } = req.body;
+      const { nodeId, audioType, audioFileId, offsetMs, expectEmpty } = req.body;
 
       if (!nodeId || !audioType || !audioFileId) {
         res.status(400).json({ error: 'nodeId, audioType, and audioFileId are required' });
+        return;
+      }
+      const offset = parseOffsetMs(offsetMs);
+      if (offset === INVALID_OFFSET) {
+        res.status(400).json({ error: OFFSET_ERROR });
+        return;
+      }
+      if (offset !== null && audioType !== 'sfx') {
+        res.status(400).json({ error: 'offsetMs only applies to sfx' });
         return;
       }
 
@@ -621,26 +911,63 @@ export function createAudioRouter(pool: Pool): Router {
         return;
       }
 
-      // For voiceover, ambience, choice1, choice2 - replace existing assignment (sfx can have multiple)
-      if (audioType !== 'sfx') {
-        await pool.query(
-          `
-          DELETE FROM node_audio_assignments
-          WHERE project_id = $1 AND node_id = $2 AND audio_type = $3
-        `,
-          [id, nodeId, audioType],
-        );
-      }
+      // A sound effect's timing: an explicit null resets it to the start,
+      // while leaving offsetMs out keeps whatever it was (so re-posting an
+      // attached effect from the Audio tab doesn't lose its timing).
+      const offsetGiven = offsetMs !== undefined;
 
-      const result = await pool.query(
-        `
-        INSERT INTO node_audio_assignments (project_id, node_id, audio_type, audio_file_id)
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT (project_id, node_id, audio_type, audio_file_id) DO NOTHING
-        RETURNING *
-      `,
-        [id, nodeId, audioType, audioFileId],
-      );
+      // A single slot's check, clear and fill run in one transaction under
+      // a lock on that slot, so two attaches can't both see it empty (and
+      // expectEmpty can't be sidestepped by a peer's concurrent attach).
+      const client = await pool.connect();
+      let failure: Error | undefined;
+      let result: { rows: unknown[] };
+      try {
+        await client.query('BEGIN');
+        if (audioType !== 'sfx') {
+          await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+            `${id}:${nodeId}:${audioType}`,
+          ]);
+          // An editor attaching to what it saw as an empty slot asks for
+          // this, so a take a peer attached in the meantime isn't
+          // silently replaced.
+          if (expectEmpty === true) {
+            const existing = await client.query(
+              `SELECT 1 FROM node_audio_assignments
+               WHERE project_id = $1 AND node_id = $2 AND audio_type = $3`,
+              [id, nodeId, audioType],
+            );
+            if (existing.rows.length > 0) {
+              await client.query('ROLLBACK');
+              res.status(409).json({ error: `${nodeId} already has ${audioType} audio attached` });
+              return;
+            }
+          }
+          // For voiceover, ambience, choice1, choice2 - replace existing assignment (sfx can have multiple)
+          await client.query(
+            `DELETE FROM node_audio_assignments
+             WHERE project_id = $1 AND node_id = $2 AND audio_type = $3`,
+            [id, nodeId, audioType],
+          );
+        }
+        result = await client.query(
+          `INSERT INTO node_audio_assignments (project_id, node_id, audio_type, audio_file_id, offset_ms)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (project_id, node_id, audio_type, audio_file_id)
+           DO UPDATE SET offset_ms = CASE WHEN $6 THEN EXCLUDED.offset_ms
+                                          ELSE node_audio_assignments.offset_ms END,
+                         updated_at = CURRENT_TIMESTAMP
+           RETURNING *`,
+          [id, nodeId, audioType, audioFileId, offset, offsetGiven],
+        );
+        await client.query('COMMIT');
+      } catch (err) {
+        failure = err as Error;
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw err;
+      } finally {
+        client.release(failure);
+      }
 
       // Update project timestamp
       await pool.query('UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1', [id]);
@@ -649,6 +976,78 @@ export function createAudioRouter(pool: Pool): Router {
     } catch (error) {
       req.log.error({ err: error }, 'Failed to assign audio');
       res.status(500).json({ error: 'Failed to assign audio' });
+    }
+  });
+
+  // Set or clear when one sound effect plays.
+  /**
+   * @openapi
+   * /projects/{id}/audio/assignments/{nodeId}/sfx/{audioFileId}:
+   *   patch:
+   *     summary: Set when one of a node's sound effects plays.
+   *     description: |
+   *       Milliseconds into the narration (or after arriving, on a passage
+   *       with no narration). Null plays it as the passage starts.
+   *     tags: [Audio]
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema: { type: string, format: uuid }
+   *       - in: path
+   *         name: nodeId
+   *         required: true
+   *         schema: { type: string }
+   *       - in: path
+   *         name: audioFileId
+   *         required: true
+   *         schema: { type: string, format: uuid }
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: object
+   *             required: [offsetMs]
+   *             properties:
+   *               offsetMs: { type: integer, minimum: 0, maximum: 3600000, nullable: true }
+   *     responses:
+   *       200: { description: Updated. }
+   *       400: { description: Invalid offset. }
+   *       404: { description: That sound effect isn't attached to this node. }
+   */
+  router.patch('/assignments/:nodeId/sfx/:audioFileId', async (req: Request, res: Response) => {
+    try {
+      const { id, nodeId, audioFileId } = req.params;
+      if (!UUID_RE.test(audioFileId)) {
+        res.status(400).json({ error: 'audioFileId must be a UUID' });
+        return;
+      }
+      if (!('offsetMs' in (req.body ?? {}))) {
+        res.status(400).json({ error: 'offsetMs is required (null to play at the start)' });
+        return;
+      }
+      const offset = parseOffsetMs(req.body.offsetMs);
+      if (offset === INVALID_OFFSET) {
+        res.status(400).json({ error: OFFSET_ERROR });
+        return;
+      }
+      const result = await pool.query(
+        `UPDATE node_audio_assignments
+           SET offset_ms = $4, updated_at = CURRENT_TIMESTAMP
+           WHERE project_id = $1 AND node_id = $2 AND audio_type = 'sfx' AND audio_file_id = $3
+           RETURNING *`,
+        [id, nodeId, audioFileId, offset],
+      );
+      if (result.rows.length === 0) {
+        res.status(404).json({ error: 'Sound effect not attached to this node' });
+        return;
+      }
+      await pool.query('UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1', [id]);
+      res.json({ assignment: result.rows[0] });
+    } catch (error) {
+      req.log.error({ err: error }, 'Failed to set sound effect offset');
+      res.status(500).json({ error: 'Failed to set sound effect offset' });
     }
   });
 
@@ -833,12 +1232,35 @@ export function createAudioRouter(pool: Pool): Router {
         return;
       }
 
+      // Take the same per-slot lock POST /assignments does for every
+      // single-value slot touched, so a concurrent attach can't slip a
+      // second file into one of them mid-swap. Taken in order of the lock
+      // ids themselves (not the key strings, whose order a hash collision
+      // could invert), so two swaps over the same slots can't deadlock on
+      // these locks.
+      const slotKeys = [
+        ...new Set(
+          ops
+            .filter((op) => op.audioType !== 'sfx')
+            .map((op) => `${id}:${op.nodeId}:${op.audioType}`),
+        ),
+      ];
+      if (slotKeys.length > 0) {
+        const lockIds = await client.query(
+          'SELECT DISTINCT hashtext(k) AS lock_id FROM unnest($1::text[]) AS k ORDER BY lock_id',
+          [slotKeys],
+        );
+        for (const { lock_id } of lockIds.rows as { lock_id: number }[]) {
+          await client.query('SELECT pg_advisory_xact_lock($1::int)', [lock_id]);
+        }
+      }
+
       let swapped = 0;
       for (const op of ops) {
         const del = await client.query(
           `DELETE FROM node_audio_assignments
            WHERE project_id = $1 AND node_id = $2 AND audio_type = $3 AND audio_file_id = $4
-           RETURNING id`,
+           RETURNING id, offset_ms`,
           [id, op.nodeId, op.audioType, op.fromFileId],
         );
         if (del.rows.length === 0) {
@@ -851,12 +1273,28 @@ export function createAudioRouter(pool: Pool): Router {
           });
           return;
         }
-        await client.query(
-          `INSERT INTO node_audio_assignments (project_id, node_id, audio_type, audio_file_id)
-           VALUES ($1, $2, $3, $4)
-           ON CONFLICT (project_id, node_id, audio_type, audio_file_id) DO NOTHING`,
-          [id, op.nodeId, op.audioType, op.toFileId],
+        // Swapping in a new take keeps the effect's timing: the author
+        // placed it against the words, not against the file.
+        const inserted = await client.query(
+          `INSERT INTO node_audio_assignments (project_id, node_id, audio_type, audio_file_id, offset_ms)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (project_id, node_id, audio_type, audio_file_id) DO NOTHING
+           RETURNING id`,
+          [id, op.nodeId, op.audioType, op.toFileId, del.rows[0].offset_ms ?? null],
         );
+        if (inserted.rows.length === 0) {
+          // The target is already attached to this node (the node had both
+          // files, or a peer attached it meanwhile). Merge rather than
+          // fail: "swap everywhere" would otherwise never succeed on such a
+          // node. The target keeps its own timing if it has one, and
+          // otherwise takes the source's, so the effect isn't moved.
+          await client.query(
+            `UPDATE node_audio_assignments
+             SET offset_ms = COALESCE(offset_ms, $5), updated_at = CURRENT_TIMESTAMP
+             WHERE project_id = $1 AND node_id = $2 AND audio_type = $3 AND audio_file_id = $4`,
+            [id, op.nodeId, op.audioType, op.toFileId, del.rows[0].offset_ms ?? null],
+          );
+        }
         swapped += 1;
       }
 
@@ -906,6 +1344,7 @@ export function createAudioRouter(pool: Pool): Router {
    *                     properties:
    *                       id: { type: string, format: uuid }
    *                       name: { type: string }
+   *                       filename: { type: string }
    *                       sizeBytes: { type: integer }
    *                       mimeType: { type: string }
    *                       createdAt: { type: string, format: date-time }
@@ -948,7 +1387,7 @@ export function createAudioRouter(pool: Pool): Router {
       // Get all audio files — pulled with the metadata the orphans UI
       // needs to surface: size + upload date + mime type.
       const audioFilesResult = await pool.query(
-        `SELECT id, original_name, size_bytes, mime_type, created_at
+        `SELECT id, filename, original_name, size_bytes, mime_type, created_at
          FROM audio_files WHERE project_id = $1`,
         [id],
       );
@@ -966,6 +1405,9 @@ export function createAudioRouter(pool: Pool): Router {
         .map((f) => ({
           id: f.id,
           name: f.original_name,
+          // The stored name, which changes with each new take: the editor
+          // versions audition URLs by it.
+          filename: f.filename,
           sizeBytes: f.size_bytes,
           mimeType: f.mime_type,
           createdAt: f.created_at,
@@ -1579,6 +2021,9 @@ export function createAudioRouter(pool: Pool): Router {
         .slice(0, 200);
       const utf8Safe = encodeURIComponent(original_name);
       res.setHeader('Content-Type', mime_type);
+      // A file's id outlives any one take (see /:audioId/replace), so the
+      // browser must revalidate rather than play a cached old take.
+      res.setHeader('Cache-Control', 'private, no-cache');
       res.setHeader(
         'Content-Disposition',
         `inline; filename="${asciiSafe}"; filename*=UTF-8''${utf8Safe}`,

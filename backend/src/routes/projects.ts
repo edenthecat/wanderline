@@ -381,8 +381,12 @@ export function createProjectsRouter(
         'SELECT id, artifact_path FROM project_builds WHERE project_id = $1',
         [id],
       );
+      // Including old takes still waiting on a build to finish before
+      // they're deleted; the cascade drops their rows too.
       const audioResult = await pool.query(
-        'SELECT filename FROM audio_files WHERE project_id = $1',
+        `SELECT filename FROM audio_files WHERE project_id = $1
+         UNION
+         SELECT filename FROM deferred_audio_deletions WHERE project_id = $1`,
         [id],
       );
 

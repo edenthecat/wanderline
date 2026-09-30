@@ -32,6 +32,76 @@ export class StoryDataError extends Error {
   }
 }
 
+/** One sound effect on a node. `offsetMs` absent means "as the passage
+ * starts"; present, it's a point on the narration's timeline (or time
+ * since arriving, on a passage with no narration). */
+export interface StoryDataSfx {
+  file: string;
+  offsetMs?: number;
+}
+
+export interface StoryDataNodeAudio {
+  voiceover?: string;
+  ambience?: string;
+  choice1?: string;
+  choice2?: string;
+  sfx?: StoryDataSfx[];
+}
+
+export interface AssignmentRow {
+  node_id: string;
+  audio_type: string;
+  audio_file_id: string;
+  offset_ms?: number | null;
+}
+
+/**
+ * Turn node_audio_assignments rows into the per-node audio block the
+ * player reads, resolving file ids to filenames.
+ *
+ * SFX used to be dropped here outright: the editor could assign them and
+ * the node panel could audition them, but they never reached a preview
+ * or a build. They're emitted in a stable order (by offset, unset
+ * first, then filename) so two builds of the same project produce the
+ * same payload. An assignment whose file no longer resolves is left out
+ * rather than emitted as undefined.
+ */
+export function collectNodeAudio(
+  rows: AssignmentRow[],
+  fileMap: Record<string, string>,
+): Record<string, StoryDataNodeAudio> {
+  const byNode: Record<string, StoryDataNodeAudio> = {};
+  for (const row of rows) {
+    const file = fileMap[row.audio_file_id];
+    if (!file) continue;
+    const audio = (byNode[row.node_id] ??= {});
+    switch (row.audio_type) {
+      case 'voiceover':
+      case 'ambience':
+      case 'choice1':
+      case 'choice2':
+        audio[row.audio_type] = file;
+        break;
+      case 'sfx': {
+        const offset = row.offset_ms;
+        (audio.sfx ??= []).push(
+          typeof offset === 'number' && Number.isFinite(offset) && offset >= 0
+            ? { file, offsetMs: offset }
+            : { file },
+        );
+        break;
+      }
+    }
+  }
+  for (const audio of Object.values(byNode)) {
+    audio.sfx?.sort(
+      (a, b) =>
+        (a.offsetMs ?? -1) - (b.offsetMs ?? -1) || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0),
+    );
+  }
+  return byNode;
+}
+
 export interface StoryDataNode {
   id: string;
   type: string;
@@ -39,7 +109,7 @@ export interface StoryDataNode {
   choices: { text: string; target: string }[];
   divert: string | null;
   tags: string[];
-  audio?: { voiceover?: string; ambience?: string; choice1?: string; choice2?: string };
+  audio?: StoryDataNodeAudio;
   metadata?: {
     // Nullable in Postgres — story-data-builder forwards row.transcript
     // directly so this can be null when no override is stored.
@@ -65,6 +135,8 @@ export interface StoryData {
     password?: string;
     voiceoverVolume?: number;
     backgroundMusicVolume?: number;
+    /** Per-node ambience loops and sound effects. */
+    ambienceVolume?: number;
     indicatorVolume?: number;
     /**
      * URL of the default indicator sound. Resolved server-side from
@@ -201,26 +273,6 @@ export async function buildStoryData(
     characterThemes[char.id] = char.theme || 'purple';
   }
 
-  // Build audio assignments map
-  const audioAssignments: Record<
-    string,
-    { voiceover?: string; ambience?: string; choice1?: string; choice2?: string }
-  > = {};
-  for (const row of assignmentsResult.rows) {
-    if (!audioAssignments[row.node_id]) {
-      audioAssignments[row.node_id] = {};
-    }
-    const audioType = row.audio_type as string;
-    if (
-      audioType === 'voiceover' ||
-      audioType === 'ambience' ||
-      audioType === 'choice1' ||
-      audioType === 'choice2'
-    ) {
-      audioAssignments[row.node_id][audioType] = row.audio_file_id;
-    }
-  }
-
   // Build metadata map
   const nodeMetadata: Record<string, StoryDataNode['metadata']> = {};
   for (const row of metadataResult.rows) {
@@ -292,6 +344,7 @@ export async function buildStoryData(
       password: options.passwordExposure === 'omit' ? undefined : settings.password,
       voiceoverVolume: settings.voiceoverVolume,
       backgroundMusicVolume: settings.backgroundMusicVolume,
+      ambienceVolume: settings.ambienceVolume,
       indicatorVolume: settings.indicatorVolume,
       defaultIndicatorAudioUrl,
       choiceAudioDelayMs: settings.choiceAudioDelayMs,
@@ -309,24 +362,18 @@ export async function buildStoryData(
     backgroundMusic: backgroundMusicFiles.length > 0 ? backgroundMusicFiles : undefined,
   };
 
+  const nodeAudio = collectNodeAudio(assignmentsResult.rows as AssignmentRow[], fileMap);
+
   // Process nodes, adding audio and metadata
   for (const [nodeId, node] of Object.entries(
     project.story_graph.nodes as Record<string, unknown>,
   )) {
     const nodeData = node as Record<string, unknown>;
-    const assignment = audioAssignments[nodeId];
     const metadata = nodeMetadata[nodeId];
 
     storyData.nodes[nodeId] = {
       ...nodeData,
-      audio: assignment
-        ? {
-            voiceover: assignment.voiceover ? fileMap[assignment.voiceover] : undefined,
-            ambience: assignment.ambience ? fileMap[assignment.ambience] : undefined,
-            choice1: assignment.choice1 ? fileMap[assignment.choice1] : undefined,
-            choice2: assignment.choice2 ? fileMap[assignment.choice2] : undefined,
-          }
-        : undefined,
+      audio: nodeAudio[nodeId],
       metadata: metadata || undefined,
     } as StoryDataNode;
   }

@@ -30,6 +30,23 @@ describe('mergeSettingsObject — allow-list', () => {
     expect(merged.language).toBe('pt-BR');
   });
 
+  // The player's ambience + sound-effect level. Same failure mode: the
+  // Volumes tab slider would save nothing without it on the list.
+  it('keeps the ambience volume', () => {
+    const merged = mergeSettingsObject({}, { ambienceVolume: 40 });
+    expect(merged.ambienceVolume).toBe(40);
+  });
+
+  // It's a percentage everywhere it's shown.
+  it('holds the ambience volume to 0-100 and drops a non-number', () => {
+    expect(mergeSettingsObject({}, { ambienceVolume: 1000 }).ambienceVolume).toBe(100);
+    expect(mergeSettingsObject({}, { ambienceVolume: -5 }).ambienceVolume).toBe(0);
+    expect(
+      mergeSettingsObject({ ambienceVolume: 30 }, { ambienceVolume: 'loud' }).ambienceVolume,
+    ).toBe(30);
+    expect(mergeSettingsObject({}, { ambienceVolume: Number.NaN }).ambienceVolume).toBeUndefined();
+  });
+
   it('leaves the other known keys alone', () => {
     const merged = mergeSettingsObject(
       { voiceoverVolume: 80 },

@@ -11,6 +11,9 @@ const ALLOWED_TOP_LEVEL_KEYS = new Set([
   'voiceoverVolume',
   'backgroundMusicEnabled',
   'backgroundMusicVolume',
+  // Per-node ambience loops and sound effects. The player never played
+  // either before, so there was no level to set.
+  'ambienceVolume',
   'indicatorVolume',
   'defaultIndicatorAudioId',
   // Per-choice indicator sounds. story-data-builder has read
@@ -89,6 +92,16 @@ const VALUE_GUARDS = new Map<string, (value: unknown) => unknown>([
     // display-side callers pass a numeric fallback instead.
     'choiceAudioDelayMs',
     (value) => sanitizeChoiceAudioDelayMs(value, undefined),
+  ],
+  [
+    // The ambience + sound-effect level, a percentage. The player and the
+    // editor both show it as one (a stored 1000 would read "1000%" while
+    // playing at 100%), so hold it to 0-100; a non-number is dropped.
+    'ambienceVolume',
+    (value) =>
+      typeof value === 'number' && Number.isFinite(value)
+        ? Math.min(100, Math.max(0, value))
+        : undefined,
   ],
 ]);
 
@@ -219,13 +232,14 @@ export function mountSettingsRoutes(router: Router, pool: Pool): void {
    *     description: |
    *       Whitelists top-level keys (password, captionsDefault,
    *       showProgressBar, showChoiceList, bluetoothControls,
-   *       backgroundMusicEnabled, backgroundMusicVolume,
+   *       backgroundMusicEnabled, backgroundMusicVolume, ambienceVolume,
    *       indicatorVolume, choiceAudioDelayMs, language).
    *       `bluetoothControls` merges key-by-key with the stored value
    *       so partial patches don't wipe sibling keys.
    *       `choiceAudioDelayMs` must be a finite number and is clamped to
    *       [0, 2147483647] (the largest delay setTimeout can represent);
-   *       anything else is dropped.
+   *       anything else is dropped. `ambienceVolume` is a percentage,
+   *       clamped to [0, 100]; a non-number is dropped.
    *     tags: [Settings]
    *     parameters:
    *       - in: path

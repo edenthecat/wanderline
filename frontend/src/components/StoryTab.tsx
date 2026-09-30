@@ -225,6 +225,9 @@ export default function StoryTab({
     metadataLoaded,
     audioByNode,
     audioNames,
+    audioFiles,
+    audioActions,
+    audioLevels,
     characters,
     flagsByNode,
     flagsTruncated,
@@ -757,6 +760,9 @@ export default function StoryTab({
                     flags={flagsByNode[node.id]}
                     onFlagsChanged={refreshFlags}
                     audioNames={audioNames}
+                    audioFiles={audioFiles}
+                    audioActions={audioActions}
+                    audioLevels={audioLevels}
                     characters={characters}
                     metadataLoaded={metadataLoaded}
                     nodeIdSet={nodeIdSet}
@@ -882,6 +888,9 @@ export default function StoryTab({
                           flags={flagsByNode[knot.id]}
                           onFlagsChanged={refreshFlags}
                           audioNames={audioNames}
+                          audioFiles={audioFiles}
+                          audioActions={audioActions}
+                          audioLevels={audioLevels}
                           characters={characters}
                           metadataLoaded={metadataLoaded}
                           nodeIdSet={nodeIdSet}
@@ -942,6 +951,9 @@ export default function StoryTab({
                               flags={flagsByNode[child.id]}
                               onFlagsChanged={refreshFlags}
                               audioNames={audioNames}
+                              audioFiles={audioFiles}
+                              audioActions={audioActions}
+                              audioLevels={audioLevels}
                               characters={characters}
                               metadataLoaded={metadataLoaded}
                               nodeIdSet={nodeIdSet}

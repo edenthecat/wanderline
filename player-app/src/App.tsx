@@ -3,6 +3,8 @@ import { useOfflineSupport } from './useOfflineSupport';
 import { useMediaControls } from './useMediaControls';
 import { useAudioCache } from './useAudioCache';
 import { orderAudioUrlsForDownload } from './audio-download-order';
+import { useAmbience } from './useAmbience';
+import { isUntimed, takeDueSfx, takeUntimedSfx, sfxOffset, type PassageSfx } from './passage-sfx';
 import OfflineControls from './OfflineControls';
 import { styles } from './styles';
 import {
@@ -80,7 +82,13 @@ interface StoryNode {
   choices: { text: string; target: string }[];
   divert: string | null;
   tags: string[];
-  audio?: { voiceover?: string; ambience?: string; choice1?: string; choice2?: string };
+  audio?: {
+    voiceover?: string;
+    ambience?: string;
+    choice1?: string;
+    choice2?: string;
+    sfx?: PassageSfx[];
+  };
   metadata?: {
     // Postgres column is nullable; story-data-builder forwards
     // `row.transcript` which can be null. `string | null` matches
@@ -107,6 +115,7 @@ interface StoryData {
   settings?: {
     password?: string;
     backgroundMusicVolume?: number;
+    ambienceVolume?: number;
     indicatorVolume?: number;
     choiceAudioDelayMs?: number;
     // UI options — all default to "on" when unset. Set via the editor's
@@ -359,6 +368,33 @@ function resetClickState(state: ClickDetectionState): ClickDetectionState {
   return createInitialClickState();
 }
 
+/** A 0-100 level as an HTMLMediaElement volume; out-of-range values throw there. */
+function clampVolume(level: number): number {
+  return Number.isFinite(level) ? Math.min(1, Math.max(0, level / 100)) : 0;
+}
+
+/**
+ * A passage's ambience bed and sound effects as cache entries. Keyed by
+ * URL, not node: the same bed or effect is usually shared by several
+ * passages, and one cached copy serves them all. The keys match what
+ * useAmbience's getElement and playDueSfx ask the cache for.
+ */
+function passageExtras(
+  node: StoryNode | undefined,
+  audioBaseUrl: string,
+): Array<{ key: string; url: string }> {
+  const extras: Array<{ key: string; url: string }> = [];
+  if (node?.audio?.ambience) {
+    const url = audioBaseUrl + node.audio.ambience;
+    extras.push({ key: 'amb_' + url, url });
+  }
+  for (const fx of node?.audio?.sfx ?? []) {
+    const url = audioBaseUrl + fx.file;
+    extras.push({ key: 'sfx_' + url, url });
+  }
+  return extras;
+}
+
 export default function App() {
   const offline = useOfflineSupport();
   const [story, setStory] = useState<StoryData | null>(null);
@@ -422,6 +458,13 @@ export default function App() {
   // 30 / 50. This one said 100, and only looked right because the
   // apply sites were multiplying by the project setting a second time.
   const [userBgMusicVolume, setUserBgMusicVolume] = useState(30);
+  // Per-passage ambience beds and sound effects share one level. Must
+  // match the editor's default (frontend VolumesTab).
+  const [userAmbienceVolume, setUserAmbienceVolume] = useState(50);
+  // Read by sound effects fired from inside playVoiceover, which can't
+  // take the volume as a dependency without rebuilding (and restarting)
+  // the narration whenever the slider moves.
+  const ambienceVolumeRef = useRef(50);
   // False until the story's volume settings and any per-device override
   // have been resolved. Guards the persist effect above.
   const volumesHydratedRef = useRef(false);
@@ -448,8 +491,14 @@ export default function App() {
   // retryFailedAudio, isCached, preloadProgress). Owns audioCacheRef
   // internally; the hook also exposes `cacheRef` for the follow-up
   // playback extraction that will pull voiceover/bgm/indicators out.
-  const { preloadAudio, getCachedAudio, retryFailedAudio, isCached, resetPreloadProgress } =
-    useAudioCache();
+  const {
+    preloadAudio,
+    getCachedAudio,
+    retryFailedAudio,
+    isCached,
+    resetPreloadProgress,
+    retainAudio,
+  } = useAudioCache();
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const currentNodeIdRef = useRef<string | null>(null);
@@ -475,6 +524,15 @@ export default function App() {
   const bgMusicIndexRef = useRef(0);
   const bgmRetryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const playedIndicatorsRef = useRef({ choice1: false, choice2: false });
+  // The current passage's sound effects: which have fired this visit,
+  // the elements still sounding, and (on a passage with no narration)
+  // the timers waiting to fire the rest. See passage-sfx.ts.
+  const sfxPlayedRef = useRef(new Set<number>());
+  const sfxElementsRef = useRef<HTMLAudioElement[]>([]);
+  // Which of the passage's effects each sounding element is, so a
+  // narration restart can stop just the timed ones.
+  const sfxIndexOfRef = useRef(new WeakMap<HTMLAudioElement, number>());
+  const sfxTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const choiceRepeatIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoNavigateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Bumped by every playVoiceover call so async work started by an
@@ -485,6 +543,14 @@ export default function App() {
   // Last position reported by ontimeupdate, so a retry after a stall can
   // pick up where the narration actually stopped instead of restarting.
   const lastPositionRef = useRef(0);
+  // Set by the recovery paths (coming back online, the Retry button) so
+  // the playVoiceover they call resumes this visit rather than starting
+  // it over. Consumed by that call.
+  const resumingRef = useRef(false);
+  // passageEntry for code that must not take it as a dependency (see
+  // playVoiceover), and the visit whose untimed effects were last started.
+  const passageEntryRef = useRef(0);
+  const voicedSfxVisitRef = useRef<string | null>(null);
   const choice1AudioRef = useRef<HTMLAudioElement | null>(null);
   const choice2AudioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -560,6 +626,7 @@ export default function App() {
         const s = (data.settings ?? {}) as {
           voiceoverVolume?: number;
           backgroundMusicVolume?: number;
+          ambienceVolume?: number;
           indicatorVolume?: number;
           autoAdvance?: boolean;
         };
@@ -567,6 +634,7 @@ export default function App() {
         if (typeof s.indicatorVolume === 'number') setUserIndicatorVolume(s.indicatorVolume);
         if (typeof s.backgroundMusicVolume === 'number')
           setUserBgMusicVolume(s.backgroundMusicVolume);
+        if (typeof s.ambienceVolume === 'number') setUserAmbienceVolume(s.ambienceVolume);
         // Auto-advance resolves the same way, but per story rather than
         // per device: it is a fact about how this story reads, and a
         // standalone build is its own origin anyway.
@@ -586,6 +654,7 @@ export default function App() {
             if (volumes.voiceover !== undefined) setVoiceoverVolume(volumes.voiceover);
             if (volumes.indicator !== undefined) setUserIndicatorVolume(volumes.indicator);
             if (volumes.bgMusic !== undefined) setUserBgMusicVolume(volumes.bgMusic);
+            if (volumes.ambience !== undefined) setUserAmbienceVolume(volumes.ambience);
           } catch {}
         }
         // Resolution is complete; the listener's own changes from here
@@ -652,8 +721,16 @@ export default function App() {
       criticalFiles.push({ key: 'ind_c2', url: story.audioBaseUrl + story.indicatorAudio.choice2 });
     }
 
-    // Priority 2: First few reachable nodes (depth 2 = start node + 2 levels of choices)
-    const nearbyNodeIds = getReachableNodes(story.startNode, story.nodes, 2);
+    // Priority 2: First few reachable nodes (depth 2 = start node + 2 levels of choices),
+    // from wherever the listener is starting: a resumed autosave starts
+    // elsewhere, and navigateToNode's own preload never ran for it.
+    const firstNodeId = currentNodeIdRef.current ?? story.startNode;
+    const nearbyNodeIds = [
+      ...new Set([
+        ...getReachableNodes(story.startNode, story.nodes, 2),
+        ...getReachableNodes(firstNodeId, story.nodes, 2),
+      ]),
+    ];
     for (const nodeId of nearbyNodeIds) {
       const node = story.nodes[nodeId];
       if (node?.audio?.voiceover) {
@@ -665,11 +742,18 @@ export default function App() {
       if (node?.audio?.choice2) {
         criticalFiles.push({ key: 'c2_' + nodeId, url: story.audioBaseUrl + node.audio.choice2 });
       }
+      // The bed and effects start with the passage, alongside its
+      // narration, so they're wanted as early.
+      criticalFiles.push(...passageExtras(node, story.audioBaseUrl));
     }
 
     // Remaining files (loaded in background after start)
     const backgroundFiles: Array<{ key: string; url: string }> = [];
     const criticalKeys = new Set(criticalFiles.map((f) => f.key));
+    // A bed shared by several nearby passages is listed once.
+    const uniqueCritical = [...new Map(criticalFiles.map((f) => [f.key, f])).values()];
+    criticalFiles.length = 0;
+    criticalFiles.push(...uniqueCritical);
 
     // Remaining background music tracks
     if (story.backgroundMusic && story.backgroundMusic.length > 1) {
@@ -694,6 +778,12 @@ export default function App() {
       }
       if (node.audio?.choice2 && !criticalKeys.has('c2_' + nodeId)) {
         backgroundFiles.push({ key: 'c2_' + nodeId, url: story.audioBaseUrl + node.audio.choice2 });
+      }
+      for (const extra of passageExtras(node, story.audioBaseUrl)) {
+        if (!criticalKeys.has(extra.key)) {
+          criticalKeys.add(extra.key);
+          backgroundFiles.push(extra);
+        }
       }
     }
 
@@ -856,6 +946,7 @@ export default function App() {
           voiceover: voiceoverVolume,
           indicator: userIndicatorVolume,
           bgMusic: userBgMusicVolume,
+          ambience: userAmbienceVolume,
         }),
       );
     }
@@ -864,7 +955,9 @@ export default function App() {
     if (choice1IndicatorRef.current) choice1IndicatorRef.current.volume = userIndicatorVolume / 100;
     if (choice2IndicatorRef.current) choice2IndicatorRef.current.volume = userIndicatorVolume / 100;
     if (bgMusicRef.current) bgMusicRef.current.volume = userBgMusicVolume / 100;
-  }, [voiceoverVolume, userIndicatorVolume, userBgMusicVolume]);
+    ambienceVolumeRef.current = userAmbienceVolume;
+    for (const el of sfxElementsRef.current) el.volume = clampVolume(userAmbienceVolume);
+  }, [voiceoverVolume, userIndicatorVolume, userBgMusicVolume, userAmbienceVolume]);
 
   const currentNode = story && currentNodeId ? story.nodes[currentNodeId] : null;
 
@@ -949,6 +1042,7 @@ export default function App() {
   // into a stale callback, so it can't write the old position back.
   const resetProgress = useCallback(() => {
     playbackEpochRef.current += 1;
+    passageEntryRef.current += 1;
     setPassageEntry((n) => n + 1);
     setAudioProgress(0);
     setAudioDuration(0);
@@ -996,6 +1090,19 @@ export default function App() {
       }
     }
     audioRetryCountRef.current = 0;
+    // A recovery is only ever for the passage it was requested on.
+    resumingRef.current = false;
+    // Sound effects belong to the passage they were cued in, same as the
+    // choice cues above.
+    for (const t of sfxTimersRef.current) clearTimeout(t);
+    sfxTimersRef.current = [];
+    for (const el of sfxElementsRef.current) el.pause();
+    sfxElementsRef.current = [];
+    // Every way into a passage leaves the ending behind. navigateToNode
+    // and the `r` shortcut didn't clear it: picking a different choice
+    // after one that led to END, or pressing `r` on the end screen, left
+    // every later passage showing "The End" with its ambience off.
+    setReachedEnding(false);
     setAudioStalled(false);
     setRetryingAudio(false);
     setShowConnectionIssue(false);
@@ -1047,6 +1154,9 @@ export default function App() {
             preloadAudio(story.audioBaseUrl + node.audio.choice2, key);
           }
         }
+        for (const { key, url } of passageExtras(node, story.audioBaseUrl)) {
+          if (!isCached(key)) preloadAudio(url, key);
+        }
       }
     },
     [
@@ -1075,6 +1185,9 @@ export default function App() {
     setCurrentNodeId(prev);
     setSelectedChoice(0);
     resetProgress();
+    // Stepping back out of the ending returns to a story in progress;
+    // left set, the passage showed as the end and its ambience stayed off.
+    setReachedEnding(false);
     setAudioError(null);
     setAudioSkipped(false);
     setPlayerState('ready');
@@ -1093,6 +1206,10 @@ export default function App() {
   const navigateToTarget = useCallback(
     (target: string) => {
       if (target === 'END' || target === 'DONE') {
+        // Stop the rest of the passage first: picking an ending while the
+        // choice cues were cycling left them repeating under "The End".
+        // Before setReachedEnding, which this clears.
+        stopPassagePlayback();
         setReachedEnding(true);
         if (audioRef.current) {
           audioRef.current.pause();
@@ -1139,11 +1256,53 @@ export default function App() {
         knownNodes: Object.keys(story.nodes).length,
       });
     },
-    [story, navigateToNode],
+    [story, navigateToNode, stopPassagePlayback],
+  );
+
+  // Start the given sound effects of this passage, at the ambience level
+  // (clamped: the setting isn't range-checked, and an out-of-range volume
+  // throws, which would lose the effect for the visit).
+  const startSfx = useCallback(
+    (sfx: PassageSfx[], indices: number[]) => {
+      if (!story) return;
+      for (const i of indices) {
+        const url = story.audioBaseUrl + sfx[i].file;
+        const el = getCachedAudio('sfx_' + url, url);
+        el.loop = false;
+        el.volume = clampVolume(ambienceVolumeRef.current);
+        sfxElementsRef.current.push(el);
+        sfxIndexOfRef.current.set(el, i);
+        el.play().catch(() => {});
+      }
+    },
+    [story, getCachedAudio],
+  );
+
+  // Fire whichever of this passage's sound effects are due at
+  // `elapsedMs` and haven't played yet this visit.
+  const playDueSfx = useCallback(
+    (sfx: PassageSfx[] | undefined, elapsedMs: number) => {
+      if (!sfx?.length) return;
+      startSfx(sfx, takeDueSfx(sfx, elapsedMs, sfxPlayedRef.current));
+    },
+    [startSfx],
+  );
+
+  // Untimed effects go as the passage starts, not when (or if) its
+  // narration does.
+  const playUntimedSfx = useCallback(
+    (sfx: PassageSfx[] | undefined) => {
+      if (!sfx?.length) return;
+      startSfx(sfx, takeUntimedSfx(sfx, sfxPlayedRef.current));
+    },
+    [startSfx],
   );
 
   const playVoiceover = useCallback(() => {
     if (!story || !currentNode?.audio?.voiceover || !currentNodeId) return;
+    // A call held from an earlier passage (startStory's delayed start, say)
+    // must not start that passage's audio or effects on this one.
+    if (currentNodeIdRef.current !== currentNodeId) return;
     setAudioError(null);
     setAudioSkipped(false);
     setAudioStalled(false);
@@ -1164,10 +1323,48 @@ export default function App() {
     const isStale = () =>
       playbackEpochRef.current !== epoch || currentNodeIdRef.current !== currentNodeId;
 
-    // A fresh start on this node begins at the beginning; only a retry
-    // resumes. Without this reset, arriving at a new node would seek to
-    // wherever the previous node happened to stall.
-    if (audioRetryCountRef.current === 0) lastPositionRef.current = 0;
+    // A fresh start on this node begins at the beginning; a retry, or
+    // recovering from a dropped connection, resumes. Without this reset,
+    // arriving at a new node would seek to wherever the previous node
+    // happened to stall. Recovery used to count as a fresh start (it
+    // resets the retry budget), which replayed the passage from the top
+    // along with every effect the listener had already heard.
+    const resuming = audioRetryCountRef.current > 0 || resumingRef.current;
+    resumingRef.current = false;
+    if (!resuming) {
+      lastPositionRef.current = 0;
+      // Same for sound effects: a fresh start plays them again, a retry
+      // resuming part way through doesn't repeat the ones already heard.
+      // Stop any still sounding from the last time through so a replay
+      // doesn't layer over them.
+      // Once per visit, though, or again on a deliberate replay after the
+      // end: pressing play while the pre-roll runs also lands here, and
+      // shouldn't restart an effect already sounding.
+      const visit = currentNodeId + '#' + passageEntryRef.current;
+      if (voicedSfxVisitRef.current !== visit || playerStateRef.current === 'ended') {
+        voicedSfxVisitRef.current = visit;
+        sfxPlayedRef.current = new Set();
+        for (const el of sfxElementsRef.current) el.pause();
+        sfxElementsRef.current = [];
+        playUntimedSfx(currentNode.audio?.sfx);
+      } else {
+        // Same visit, narration starting over (returning from Help, play
+        // pressed during a pre-roll): effects timed against the words
+        // play again when the words come round again, so they stay in
+        // step. Untimed ones went with the passage's start and don't.
+        const sfx = currentNode.audio?.sfx ?? [];
+        const keepsGoing = (i: number | undefined) =>
+          i !== undefined && !!sfx[i] && isUntimed(sfx[i]);
+        sfxPlayedRef.current = new Set([...sfxPlayedRef.current].filter(keepsGoing));
+        // A timed effect still ringing from before would otherwise sound
+        // twice when the words come round again.
+        sfxElementsRef.current = sfxElementsRef.current.filter((el) => {
+          if (keepsGoing(sfxIndexOfRef.current.get(el))) return true;
+          el.pause();
+          return false;
+        });
+      }
+    }
 
     // Clear any pending retry or pre-roll timeout from a prior call to
     // playVoiceover so they can't race with the new audio element.
@@ -1256,7 +1453,11 @@ export default function App() {
       }
     };
     audio.onplay = () => {
-      if (!isStale()) setPlayerState('playing');
+      if (isStale()) return;
+      setPlayerState('playing');
+      // Effects timed at (or before) where the narration is now go with
+      // its first sound, not up to a timeupdate later.
+      playDueSfx(currentNode.audio?.sfx, audio.currentTime * 1000);
     };
     audio.onpause = () => {
       if (!isStale()) setPlayerState('paused');
@@ -1265,6 +1466,9 @@ export default function App() {
       // Check if we're still on the same node - if not, ignore this callback
       if (isStale()) return;
       setPlayerState('ended');
+      // An effect timed past the end of the narration would otherwise
+      // never fire; play it now rather than lose it.
+      playDueSfx(currentNode.audio?.sfx, Number.POSITIVE_INFINITY);
 
       // Auto-continue: if only one choice and autoContinue enabled, navigate automatically
       if (
@@ -1390,6 +1594,7 @@ export default function App() {
 
       // Play choice indicator audio at specified timestamps
       const currentTimeMs = audio.currentTime * 1000;
+      playDueSfx(currentNode.audio?.sfx, currentTimeMs);
       const choice1Time = currentNode.metadata?.choice1TimestampMs;
       const choice2Time = currentNode.metadata?.choice2TimestampMs;
 
@@ -1452,7 +1657,7 @@ export default function App() {
       // the passage from the top: buffer part way through a long
       // passage and you hear the opening seconds again. Only on a
       // retry; a fresh visit to a node should start at the beginning.
-      if (audioRetryCountRef.current > 0 && lastPositionRef.current > 0) {
+      if (resuming && lastPositionRef.current > 0) {
         try {
           audio.currentTime = lastPositionRef.current;
         } catch {
@@ -1490,8 +1695,7 @@ export default function App() {
     // dedicated ref (prerollTimeoutRef) so a concurrent retry timer
     // can't clobber it.
     const delayBeforeMs = currentNode.metadata?.delayBeforeMs ?? 0;
-    const isRetry = audioRetryCountRef.current > 0;
-    if (delayBeforeMs > 0 && !isRetry) {
+    if (delayBeforeMs > 0 && !resuming) {
       setPlayerState('loading');
       prerollTimeoutRef.current = setTimeout(startPlayback, delayBeforeMs);
     } else {
@@ -1507,6 +1711,8 @@ export default function App() {
     getCachedAudio,
     voiceoverVolume,
     userIndicatorVolume,
+    playDueSfx,
+    playUntimedSfx,
   ]);
 
   const skipAudio = useCallback(() => {
@@ -1525,6 +1731,7 @@ export default function App() {
       // If we have an error or are stalled, retry playback
       if ((audioError || audioStalled) && currentNode?.audio?.voiceover) {
         audioRetryCountRef.current = 0; // Reset retry count
+        resumingRef.current = true;
         setAudioError(null);
         setAudioStalled(false);
         playVoiceover();
@@ -1545,6 +1752,117 @@ export default function App() {
   // component paused on hide to "unify desktop and mobile" — that
   // change is what caused the bug where BGM stopped on lock and
   // voice-over stopped when the tab wasn't focused.
+  // A passage the story ends on: tagged as an ending, diverting to
+  // END/DONE, or with nowhere left to go (Ink's implicit continuation
+  // counts as somewhere). The render below shows "The End" for these.
+  const onEndingPassage =
+    !!story &&
+    !!currentNode &&
+    (currentNode.tags.includes('ending') ||
+      currentNode.divert === 'END' ||
+      currentNode.divert === 'DONE' ||
+      (currentNode.choices.length === 0 &&
+        !currentNode.divert &&
+        !fallThroughTarget(currentNode.id, currentNode, story.nodes)));
+
+  // The current passage's ambience bed, carried across passages that
+  // share it. Quiet on the instructions screen, and once the story has
+  // ended: either a choice led to END, or the final passage's narration
+  // has finished (or it has none). Only the first of those sets
+  // reachedEnding, and with auto-advance off, the default, nothing
+  // moves on from an ending passage, so gating on it alone left the bed
+  // looping under "The End" indefinitely.
+  const storyOver =
+    reachedEnding ||
+    (onEndingPassage &&
+      (!currentNode?.audio?.voiceover || playerState === 'ended' || !!audioError));
+  const ambienceFile =
+    story && isAuthenticated && !showInstructions && !storyOver
+      ? currentNode?.audio?.ambience
+      : undefined;
+  const getAmbienceElement = useCallback(
+    (url: string) => getCachedAudio('amb_' + url, url),
+    [getCachedAudio],
+  );
+  const ambienceUrl = story && ambienceFile ? story.audioBaseUrl + ambienceFile : null;
+  useAmbience({
+    url: ambienceUrl,
+    volume: userAmbienceVolume / 100,
+    getElement: getAmbienceElement,
+  });
+  // Everything the current passage uses can sit paused while still in
+  // use: narration the listener paused (resume plays the same element),
+  // choice cues prepared while the narration runs, a bed between retries
+  // of a refused start. Eviction only skips what's sounding, so pin these
+  // for as long as the passage is current. Only the current passage's:
+  // pinning everything ever heard would let a long story defeat the
+  // cache bound. (A bed fading out is playing, so it's safe anyway.)
+  useEffect(() => {
+    if (!story || !currentNode) return;
+    const keys = ['vo_', 'c1_', 'c2_'].map((prefix) => prefix + currentNode.id);
+    for (const { key } of passageExtras(currentNode, story.audioBaseUrl)) keys.push(key);
+    const releases = keys.map((key) => retainAudio(key));
+    return () => releases.forEach((release) => release());
+  }, [story, currentNode, retainAudio]);
+
+  // Untimed effects on a narrated passage play as the passage starts,
+  // not when (or whether) its narration does: going back, loading a save
+  // or restarting leave the narration waiting for play, and the effects
+  // shouldn't wait with it. Once per visit (playVoiceover checks the same
+  // visit, so its own start doesn't fire them again); closing Help re-runs
+  // this without replaying them.
+  useEffect(() => {
+    if (!story || !currentNode || !isAuthenticated || showInstructions) return;
+    if (!currentNode.audio?.voiceover || !currentNode.audio.sfx?.length) return;
+    const visit = currentNode.id + '#' + passageEntryRef.current;
+    if (voicedSfxVisitRef.current === visit) return;
+    voicedSfxVisitRef.current = visit;
+    sfxPlayedRef.current = new Set();
+    playUntimedSfx(currentNode.audio.sfx);
+  }, [story, currentNode, isAuthenticated, showInstructions, passageEntry, playUntimedSfx]);
+
+  // Sound effects on a passage with no narration. There's no voiceover
+  // clock to follow, so each one's offset counts from arriving. With
+  // narration they're fired from playVoiceover's onplay/ontimeupdate.
+  //
+  // Keyed on the visit, not the node: restarting on the same passage is
+  // a new visit and plays them again, while the effect re-running for
+  // other reasons (closing Help) only picks up the ones not yet heard,
+  // each after only what's left of its delay: time on the passage before
+  // Help opened counts, time spent in Help doesn't.
+  const sfxVisitRef = useRef<string | null>(null);
+  const sfxVisitElapsedRef = useRef(0);
+  useEffect(() => {
+    if (!story || !currentNode || !isAuthenticated || showInstructions) return;
+    if (currentNode.audio?.voiceover) return;
+    const sfx = currentNode.audio?.sfx;
+    if (!sfx?.length) return;
+    const visit = currentNode.id + '#' + passageEntry;
+    if (sfxVisitRef.current !== visit) {
+      sfxVisitRef.current = visit;
+      sfxVisitElapsedRef.current = 0;
+      sfxPlayedRef.current = new Set();
+    }
+    const startedAt = Date.now();
+    const alreadyElapsed = sfxVisitElapsedRef.current;
+    const timers = sfx.map((fx) =>
+      setTimeout(
+        () => {
+          if (currentNodeIdRef.current !== currentNode.id) return;
+          playDueSfx(sfx, sfxOffset(fx));
+        },
+        Math.max(0, sfxOffset(fx) - alreadyElapsed),
+      ),
+    );
+    sfxTimersRef.current.push(...timers);
+    return () => {
+      timers.forEach(clearTimeout);
+      if (sfxVisitRef.current === visit) {
+        sfxVisitElapsedRef.current = alreadyElapsed + (Date.now() - startedAt);
+      }
+    };
+  }, [story, currentNode, isAuthenticated, showInstructions, playDueSfx, passageEntry]);
+
   // Voiceover-less auto-advance: when the current node has no audio
   // there's no `audio.onended` to hook into, so the auto-advance path
   // inside playVoiceover is dead. Wire it up here so authors can use
@@ -2349,6 +2667,24 @@ export default function App() {
                 />
                 <span style={styles.volumePreviewValue}>{userBgMusicVolume}%</span>
               </div>
+              <div style={styles.volumePreviewRow}>
+                <label htmlFor="intro-ambience-volume" style={styles.volumePreviewLabel}>
+                  Ambience & effects
+                </label>
+                <input
+                  type="range"
+                  id="intro-ambience-volume"
+                  min="0"
+                  max="100"
+                  value={userAmbienceVolume}
+                  onChange={(e) => setUserAmbienceVolume(parseInt(e.target.value))}
+                  style={styles.volumeSlider}
+                  aria-label={
+                    'Ambience and sound effects volume ' + userAmbienceVolume + ' percent'
+                  }
+                />
+                <span style={styles.volumePreviewValue}>{userAmbienceVolume}%</span>
+              </div>
               <p style={styles.volumeHint}>
                 <span style={styles.volumeHintIcon} className="wl-icon" aria-hidden="true">
                   <Settings width={14} height={14} />
@@ -2430,12 +2766,7 @@ export default function App() {
   // the end of the story.
   const choiceListHidden = story?.settings?.showChoiceList === false;
   const fallThrough = story ? fallThroughTarget(currentNode.id, currentNode, story.nodes) : null;
-  const isEnd =
-    reachedEnding ||
-    currentNode.tags.includes('ending') ||
-    (currentNode.choices.length === 0 && !currentNode.divert && !fallThrough) ||
-    currentNode.divert === 'END' ||
-    currentNode.divert === 'DONE';
+  const isEnd = reachedEnding || onEndingPassage;
 
   /* `<html lang>` carries the story's own language in a generated
      build (see backend/src/services/build-html.ts), which is right —
@@ -2648,6 +2979,27 @@ export default function App() {
             />
             <span style={styles.settingsValue} aria-hidden="true">
               {userBgMusicVolume}%
+            </span>
+          </div>
+          <div style={styles.settingsRow}>
+            <label htmlFor="ambience-volume" style={styles.settingsLabel}>
+              Ambience & effects
+            </label>
+            <input
+              type="range"
+              id="ambience-volume"
+              min="0"
+              max="100"
+              value={userAmbienceVolume}
+              onChange={(e) => setUserAmbienceVolume(parseInt(e.target.value))}
+              style={styles.settingsSlider}
+              aria-valuenow={userAmbienceVolume}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-label={'Ambience and sound effects volume ' + userAmbienceVolume + ' percent'}
+            />
+            <span style={styles.settingsValue} aria-hidden="true">
+              {userAmbienceVolume}%
             </span>
           </div>
           {/*: save slot management */}
@@ -2992,6 +3344,7 @@ export default function App() {
                 onClick={(e) => {
                   e.stopPropagation();
                   audioRetryCountRef.current = 0;
+                  resumingRef.current = true;
                   setShowConnectionIssue(false);
                   if (currentNodeId && currentNode?.audio?.voiceover) {
                     retryFailedAudio(

@@ -22,7 +22,7 @@ import {
   statSync,
   unlinkSync,
 } from 'fs';
-import { dirname, join, isAbsolute } from 'path';
+import { dirname, isAbsolute, resolve, sep } from 'path';
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
 
@@ -133,7 +133,26 @@ class LocalStorage implements ObjectStorage {
 
   private path(key: string): string {
     validateKey(key);
-    return join(this.root, key);
+    // validateKey already rejects `..` segments and absolute-looking
+    // keys, which covers every realistic traversal attempt — but that
+    // safety lives in a hand-rolled check a static analyzer has no way
+    // to verify holds. Resolving the joined path and asserting it's
+    // still under `root` is the same containment property in a form
+    // that's checkable at this one call site regardless of what
+    // validateKey does or doesn't catch, and regardless of how it
+    // might change later.
+    //
+    // A single startsWith check on the resolved path, with nothing else in
+    // the condition, is the form CodeQL recognises as a containment guard;
+    // an extra clause in front of it (an equality check against the root
+    // itself) hid it. The root itself is never a valid object anyway, so
+    // a key that resolves to it (".") is refused too.
+    const resolvedRoot = resolve(this.root);
+    const dest = resolve(resolvedRoot, key);
+    if (!dest.startsWith(resolvedRoot + sep)) {
+      throw new Error(`Invalid storage key (escapes storage root): ${key}`);
+    }
+    return dest;
   }
 
   async uploadFile(key: string, localPath: string): Promise<void> {

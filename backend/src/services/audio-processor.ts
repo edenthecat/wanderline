@@ -38,6 +38,7 @@ export function collectUsedAudioFilenames(
     if (node.audio?.ambience) usedFilenames.add(node.audio.ambience);
     if (node.audio?.choice1) usedFilenames.add(node.audio.choice1);
     if (node.audio?.choice2) usedFilenames.add(node.audio.choice2);
+    for (const fx of node.audio?.sfx ?? []) usedFilenames.add(fx.file);
   }
 
   // Add indicator audio from settings
@@ -245,8 +246,10 @@ export function processAudioForBuild(
 /**
  * Updates story data filenames after WAV-to-MP3 conversion,
  * and removes references to missing audio files.
+ *
+ * Exported for tests.
  */
-function updateStoryDataFilenames(
+export function updateStoryDataFilenames(
   storyData: StoryData,
   filenameMapping: Record<string, string>,
   availableFiles: Set<string>,
@@ -258,6 +261,15 @@ function updateStoryDataFilenames(
       updateOrRemoveAudioRef(node.audio, 'ambience', filenameMapping, availableFiles);
       updateOrRemoveAudioRef(node.audio, 'choice1', filenameMapping, availableFiles);
       updateOrRemoveAudioRef(node.audio, 'choice2', filenameMapping, availableFiles);
+      // Same rename-or-drop as the single slots: a WAV converted to MP3
+      // is renamed, and a file missing from the build is dropped rather
+      // than left for the player to 404 on.
+      if (node.audio.sfx) {
+        node.audio.sfx = node.audio.sfx
+          .map((fx) => ({ ...fx, file: filenameMapping[fx.file] || fx.file }))
+          .filter((fx) => availableFiles.has(fx.file));
+        if (node.audio.sfx.length === 0) delete node.audio.sfx;
+      }
     }
   }
 
@@ -278,9 +290,9 @@ function updateStoryDataFilenames(
   }
 }
 
-function updateOrRemoveAudioRef(
-  obj: Record<string, string | undefined>,
-  key: string,
+function updateOrRemoveAudioRef<K extends string>(
+  obj: Partial<Record<K, string>>,
+  key: K,
   filenameMapping: Record<string, string>,
   availableFiles: Set<string>,
 ): void {

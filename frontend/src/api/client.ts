@@ -375,8 +375,18 @@ export function fetchAudioFiles(projectId: string): Promise<{ audioFiles: AudioF
  * through the JSON request helper. Centralized here so a base-path
  * change (e.g. an nginx prefix) only touches one place.
  */
-export function audioFileUrl(projectId: string, audioId: string): string {
-  return `${API_BASE}/projects/${projectId}/audio/file/${audioId}`;
+export function audioFileUrl(
+  projectId: string,
+  audioId: string,
+  version: string | undefined,
+): string {
+  // `version` (the stored filename) changes when a new take is uploaded
+  // over the file, so an audition element that already loaded the old
+  // take can't replay it from its buffer. The server ignores it.
+  // Required, so a call site can't forget it; undefined only where the
+  // stored name genuinely isn't known.
+  const v = version ? `?v=${encodeURIComponent(version)}` : '';
+  return `${API_BASE}/projects/${projectId}/audio/file/${audioId}${v}`;
 }
 
 export async function uploadAudioFile(
@@ -401,6 +411,29 @@ export async function uploadAudioFile(
     throw new ApiError(res.status, body.error || res.statusText);
   }
 
+  return res.json();
+}
+
+/** Upload a new take over an existing file. The file keeps its id, so
+ * every passage using it (and each effect's timing) plays the new take;
+ * the old take is deleted. */
+export async function replaceAudioTake(
+  projectId: string,
+  audioId: string,
+  file: File,
+): Promise<{ audioFile: AudioFile }> {
+  const formData = new FormData();
+  formData.append('audio', file);
+  const res = await fetch(`${API_BASE}/projects/${projectId}/audio/${audioId}/replace`, {
+    method: 'POST',
+    credentials: 'include',
+    body: formData,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    // statusText is empty over HTTP/2; never hand the UI a blank message.
+    throw new ApiError(res.status, body.error || res.statusText || `Upload failed (${res.status})`);
+  }
   return res.json();
 }
 
@@ -429,6 +462,9 @@ export interface AudioAssignments {
     choice1?: string;
     choice2?: string;
     sfx: string[];
+    /** When each sound effect plays, in ms, keyed by file id. Absent for
+     * one that plays as the passage starts. */
+    sfxOffsets?: Record<string, number>;
   };
 }
 
@@ -443,11 +479,29 @@ export function assignAudio(
   nodeId: string,
   audioType: string,
   audioFileId: string,
+  offsetMs?: number | null,
+  /** Refuse (409) rather than replace if the slot has been filled since
+   * the caller last looked. */
+  expectEmpty?: boolean,
 ): Promise<{ assignment: AudioAssignmentRaw }> {
   return request(`/projects/${projectId}/audio/assignments`, {
     method: 'POST',
-    body: JSON.stringify({ nodeId, audioType, audioFileId }),
+    body: JSON.stringify({ nodeId, audioType, audioFileId, offsetMs, expectEmpty }),
   });
+}
+
+/** Set when one of a node's sound effects plays: ms into the narration
+ * (or after arriving, with no narration). Null plays it at the start. */
+export function setSfxOffset(
+  projectId: string,
+  nodeId: string,
+  audioFileId: string,
+  offsetMs: number | null,
+): Promise<{ assignment: AudioAssignmentRaw }> {
+  return request(
+    `/projects/${projectId}/audio/assignments/${encodeURIComponent(nodeId)}/sfx/${audioFileId}`,
+    { method: 'PATCH', body: JSON.stringify({ offsetMs }) },
+  );
 }
 
 export function removeAudioAssignment(
@@ -457,9 +511,12 @@ export function removeAudioAssignment(
   audioFileId?: string,
 ): Promise<{ success: boolean }> {
   const params = audioFileId ? `?audioFileId=${encodeURIComponent(audioFileId)}` : '';
-  return request(`/projects/${projectId}/audio/assignments/${nodeId}/${audioType}${params}`, {
-    method: 'DELETE',
-  });
+  // Node ids are free text (a Twee passage can be "Left/Right" or "What
+  // now?"), so they have to be encoded to land on the right route.
+  return request(
+    `/projects/${projectId}/audio/assignments/${encodeURIComponent(nodeId)}/${encodeURIComponent(audioType)}${params}`,
+    { method: 'DELETE' },
+  );
 }
 
 export interface BulkReassignOp {
@@ -488,6 +545,8 @@ export function bulkReassignAudio(
 export interface OrphanedAudioFile {
   id: string;
   name: string;
+  /** Stored name; changes with each new take. */
+  filename?: string;
   sizeBytes: number;
   mimeType?: string;
   createdAt: string;
@@ -1082,6 +1141,8 @@ export interface ProjectSettings {
   // settings panel; these are the starting points.
   voiceoverVolume?: number;
   backgroundMusicVolume?: number;
+  // Per-passage ambience beds and sound effects share one level.
+  ambienceVolume?: number;
   indicatorVolume?: number;
   // Default UI sound: id of an indicator-category audio file that
   // the generated app plays for choice/transition cues. Null/unset

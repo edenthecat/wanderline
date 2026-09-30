@@ -3945,3 +3945,56 @@ details[open] > .audio-section-summary {
 .command-palette-truncated {
   border-top: 1px solid var(--color-border);
 }
+
+/* Editable audio rows in the node panel. */
+.node-audio-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.node-audio-header .node-audio-title {
+  margin: 0;
+}
+.node-audio-row {
+  flex-wrap: wrap;
+}
+.node-audio-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+.node-audio-picker {
+  max-width: 11rem;
+  font-size: 12px;
+}
+/* Keeps rows without a play control aligned with those that have one. */
+.audition-btn-spacer {
+  flex: none;
+  width: 28px;
+}
+.node-audio-offset {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.node-audio-offset input {
+  width: 4.5rem;
+  padding: 2px 6px;
+  font-size: 12px;
+}
+/* Choose-then-confirm picker, on its own line under the row it edits. */
+.node-audio-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-basis: 100%;
+  padding-left: 36px;
+}
+.node-audio-more {
+  margin-top: 4px;
+}

@@ -129,6 +129,12 @@ describe('LocalStorage', () => {
     await expect(storage.delete('audio/../../../etc/passwd')).rejects.toThrow('path traversal');
   });
 
+  // The root itself is a directory, never an object.
+  it('rejects a key that resolves to the storage root', async () => {
+    const storage = getStorage();
+    await expect(storage.exists('.')).rejects.toThrow('escapes storage root');
+  });
+
   it('rejects null bytes in keys', async () => {
     const storage = getStorage();
     await expect(storage.exists('a\0b')).rejects.toThrow('null byte');

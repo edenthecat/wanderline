@@ -33,6 +33,7 @@ export interface OrderableNode {
     ambience?: string;
     choice1?: string;
     choice2?: string;
+    sfx?: Array<{ file: string }>;
   };
 }
 
@@ -118,6 +119,7 @@ export function orderAudioUrlsForDownload(story: OrderableStory | null): string[
     if (audio.choice1) urls.add(base + audio.choice1);
     if (audio.choice2) urls.add(base + audio.choice2);
     if (audio.ambience) urls.add(base + audio.ambience);
+    for (const fx of audio.sfx ?? []) urls.add(base + fx.file);
   }
 
   // Remaining music last: pleasant, but a story missing its later
