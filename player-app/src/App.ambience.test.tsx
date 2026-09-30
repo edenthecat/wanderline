@@ -461,6 +461,25 @@ describe('sound effects', () => {
     expect(sounding('bell.mp3')).toHaveLength(1);
   });
 
+  // Time on the passage before Help opened counts toward an effect's
+  // delay; closing Help only waits out what's left of it.
+  it('on a passage with no narration: resume their countdown after Help', async () => {
+    load({
+      start: node('start', 'The beginning.', { sfx: [{ file: 'bell.mp3', offsetMs: 10_000 }] }, ON),
+      later,
+    });
+    await start();
+    await screen.findByText('The beginning.');
+    await wait(9000);
+    expect(sounding('bell.mp3')).toHaveLength(0);
+    fireEvent.click(screen.getByLabelText('Help and instructions'));
+    await wait(5000);
+    expect(sounding('bell.mp3')).toHaveLength(0);
+    fireEvent.click(await screen.findByLabelText('Start the story'));
+    await wait(1500);
+    expect(sounding('bell.mp3')).toHaveLength(1);
+  });
+
   it('stop when the listener moves on, and a pending one never fires', async () => {
     load({
       start: node(

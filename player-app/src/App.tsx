@@ -1791,8 +1791,11 @@ export default function App() {
   //
   // Keyed on the visit, not the node: restarting on the same passage is
   // a new visit and plays them again, while the effect re-running for
-  // other reasons (closing Help) only picks up the ones not yet heard.
+  // other reasons (closing Help) only picks up the ones not yet heard,
+  // each after only what's left of its delay: time on the passage before
+  // Help opened counts, time spent in Help doesn't.
   const sfxVisitRef = useRef<string | null>(null);
+  const sfxVisitElapsedRef = useRef(0);
   useEffect(() => {
     if (!story || !currentNode || !isAuthenticated || showInstructions) return;
     if (currentNode.audio?.voiceover) return;
@@ -1801,16 +1804,27 @@ export default function App() {
     const visit = currentNode.id + '#' + passageEntry;
     if (sfxVisitRef.current !== visit) {
       sfxVisitRef.current = visit;
+      sfxVisitElapsedRef.current = 0;
       sfxPlayedRef.current = new Set();
     }
+    const startedAt = Date.now();
+    const alreadyElapsed = sfxVisitElapsedRef.current;
     const timers = sfx.map((fx) =>
-      setTimeout(() => {
-        if (currentNodeIdRef.current !== currentNode.id) return;
-        playDueSfx(sfx, sfxOffset(fx));
-      }, sfxOffset(fx)),
+      setTimeout(
+        () => {
+          if (currentNodeIdRef.current !== currentNode.id) return;
+          playDueSfx(sfx, sfxOffset(fx));
+        },
+        Math.max(0, sfxOffset(fx) - alreadyElapsed),
+      ),
     );
     sfxTimersRef.current.push(...timers);
-    return () => timers.forEach(clearTimeout);
+    return () => {
+      timers.forEach(clearTimeout);
+      if (sfxVisitRef.current === visit) {
+        sfxVisitElapsedRef.current = alreadyElapsed + (Date.now() - startedAt);
+      }
+    };
   }, [story, currentNode, isAuthenticated, showInstructions, playDueSfx, passageEntry]);
 
   // Voiceover-less auto-advance: when the current node has no audio

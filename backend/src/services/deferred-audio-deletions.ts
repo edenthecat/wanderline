@@ -1,28 +1,15 @@
 // Deleting a replaced take once no build needs it.
 //
-// See migrations/1752200000000_deferred_audio_deletions.sql. A take
-// replaced while one of the project's builds is running can't be deleted
-// then (the build is about to copy it by name), so it's recorded and
-// removed here once the project has no build in progress.
+// See migrations/1752200000000_deferred_audio_deletions.sql. Every old
+// take is recorded in the same transaction that swaps it out (see the
+// replace route), and removed here once the project has no build in
+// progress: a running build is about to copy audio by name.
 
 import type { Pool } from 'pg';
 import { unlink } from 'fs/promises';
 import { getStorage, audioKey } from './storage.js';
 import { uploadPath } from './upload-path.js';
 import { logger } from '../logger.js';
-
-/** Remember to delete `filename` once the project's builds are done. */
-export async function deferAudioDeletion(
-  pool: Pool,
-  projectId: string,
-  filename: string,
-): Promise<void> {
-  await pool.query(
-    `INSERT INTO deferred_audio_deletions (project_id, filename) VALUES ($1, $2)
-     ON CONFLICT DO NOTHING`,
-    [projectId, filename],
-  );
-}
 
 /**
  * Carry out deferred deletions for projects with no build in progress:

@@ -11,10 +11,7 @@ import { getStorage, audioKey } from '../services/storage.js';
 import { buildMatchTables, matchAudioFile } from '../services/audio-matcher.js';
 import { UPLOAD_DIR } from '../config.js';
 import { uploadPath } from '../services/upload-path.js';
-import {
-  deferAudioDeletion,
-  flushDeferredAudioDeletions,
-} from '../services/deferred-audio-deletions.js';
+import { flushDeferredAudioDeletions } from '../services/deferred-audio-deletions.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -563,6 +560,17 @@ export function createAudioRouter(pool: Pool): Router {
               [audioId, id, stored.filename, file.originalname, stored.mimeType, stored.size],
             );
             audioFile = updated.rows[0] ?? null;
+            // The old take is now referenced by nothing. Record that in
+            // the same transaction as the swap, so it can't be orphaned by
+            // anything failing after the commit; the deferred flush below
+            // (or the next one) deletes it once no build still needs it.
+            if (oldFilename && oldFilename !== stored.filename) {
+              await client.query(
+                `INSERT INTO deferred_audio_deletions (project_id, filename) VALUES ($1, $2)
+                 ON CONFLICT DO NOTHING`,
+                [id, oldFilename],
+              );
+            }
           }
           await client.query('COMMIT');
         } catch (err) {
@@ -588,41 +596,16 @@ export function createAudioRouter(pool: Pool): Router {
       }
 
       // Committed: the new take is live, so from here nothing may report
-      // failure or touch it. What's left is tidying up after the old one.
+      // failure or touch it. The old take was recorded for deletion in the
+      // transaction; the flush deletes it now unless a build is running (a
+      // build copies audio by the filenames it has already assembled), in
+      // which case the build's own flush, or startup's, gets it later.
+      // Never throws.
+      await flushDeferredAudioDeletions(pool, id);
       try {
-        // The old take is no longer referenced by the story; drop it the
-        // way deleting a file does. Unless a build is running: it copies
-        // audio by the filenames it has already assembled, and pulling the
-        // object from under it would ship a build missing this clip.
-        // Keeping one old object is the cheaper mistake.
-        const activeBuild = await pool.query(
-          `SELECT 1 FROM project_builds
-           WHERE project_id = $1 AND status IN ('pending', 'processing') AND deleted_at IS NULL
-           LIMIT 1`,
-          [id],
-        );
-        if (activeBuild.rows.length > 0) {
-          // Deleted once the project's builds are done. Flush straight
-          // after: if the build finished between the check above and this
-          // insert, its own flush has already run and missed this row.
-          if (oldFilename) {
-            await deferAudioDeletion(pool, id, oldFilename);
-            void flushDeferredAudioDeletions(pool, id);
-          }
-        } else if (oldFilename && oldFilename !== stored?.filename) {
-          try {
-            await getStorage().delete(audioKey(id, oldFilename));
-            await unlinkLocal(oldFilename);
-          } catch (err) {
-            // Nothing points at it any more; leave it for the deferred
-            // flush to retry rather than orphaning it.
-            req.log.warn({ err }, 'Failed to delete replaced audio; deferring');
-            await deferAudioDeletion(pool, id, oldFilename);
-          }
-        }
         await pool.query('UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1', [id]);
       } catch (err) {
-        req.log.warn({ err }, 'Replaced audio, but tidying up after the old take failed');
+        req.log.warn({ err }, 'Replaced audio, but bumping the project timestamp failed');
       }
       res.json({ audioFile });
     },

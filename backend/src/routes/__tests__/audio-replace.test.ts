@@ -72,8 +72,10 @@ afterAll(() => rmSync(uploadDir, { recursive: true, force: true }));
 function script(opts: { exists?: boolean; vanished?: boolean; buildRunning?: boolean } = {}) {
   const { exists = true, vanished = false, buildRunning = false } = opts;
   return async (sql: string) => {
-    // The deferred-deletion flush: nothing due while the build runs.
-    if (sql.includes('FROM deferred_audio_deletions d')) return { rows: [] };
+    // The deferred-deletion flush: the old take is due unless a build runs.
+    if (sql.includes('FROM deferred_audio_deletions d')) {
+      return { rows: buildRunning ? [] : [{ project_id: PROJECT, filename: 'old-take.mp3' }] };
+    }
     if (sql.includes('SELECT 1 FROM audio_files')) return { rows: exists ? [{}] : [] };
     if (sql.includes('FOR UPDATE')) {
       return { rows: vanished ? [] : [{ filename: 'old-take.mp3' }] };
@@ -110,8 +112,16 @@ describe('POST /:audioId/replace', () => {
     expect(key.endsWith(String(updateParams[2]))).toBe(true);
     expect(updateParams[3]).toBe('take-2.mp3');
 
-    // The old take is removed, like deleting a file does.
+    // The old take is recorded for deletion inside the swap's transaction,
+    // so nothing failing afterwards can orphan it...
+    const record = calls.findIndex(([sql]) => sql.includes('INSERT INTO deferred_audio_deletions'));
+    expect(calls[record][1]).toEqual([PROJECT, 'old-take.mp3']);
+    expect(record).toBeLessThan(calls.findIndex(([sql]) => sql === 'COMMIT'));
+    // ...and then removed, like deleting a file does, and forgotten.
     expect(storage.delete).toHaveBeenCalledWith(`audio/${PROJECT}/old-take.mp3`);
+    expect(calls.some(([sql]) => sql.startsWith('DELETE FROM deferred_audio_deletions'))).toBe(
+      true,
+    );
     // The old name is read under a lock, in the same transaction.
     const sqls = calls.map(([sql]) => sql);
     const lock = sqls.findIndex((sql) => sql.includes('FOR UPDATE'));
@@ -247,7 +257,7 @@ describe('POST /:audioId/replace', () => {
 
   // Nothing points at the old take any more, so a failed delete must be
   // retried later rather than leaving it in storage forever.
-  it('defers the old take’s deletion if deleting it fails', async () => {
+  it('keeps the old take recorded for retry if deleting it fails', async () => {
     const storage = makeStorage({
       delete: jest.fn(async (key: string) => {
         if (key.endsWith('old-take.mp3')) throw new Error('gcs blip');
@@ -264,6 +274,10 @@ describe('POST /:audioId/replace', () => {
     expect(res.status).toBe(200);
     const deferred = calls.find(([sql]) => sql.includes('INSERT INTO deferred_audio_deletions'));
     expect(deferred?.[1]).toEqual([PROJECT, 'old-take.mp3']);
+    // Still recorded: the flush only forgets it once the delete succeeds.
+    expect(calls.some(([sql]) => sql.startsWith('DELETE FROM deferred_audio_deletions'))).toBe(
+      false,
+    );
   });
 
   it('400s without a file', async () => {
