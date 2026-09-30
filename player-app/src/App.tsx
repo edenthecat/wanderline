@@ -1785,6 +1785,22 @@ export default function App() {
     return () => releases.forEach((release) => release());
   }, [story, currentNode, retainAudio]);
 
+  // Untimed effects on a narrated passage play as the passage starts,
+  // not when (or whether) its narration does: going back, loading a save
+  // or restarting leave the narration waiting for play, and the effects
+  // shouldn't wait with it. Once per visit (playVoiceover checks the same
+  // visit, so its own start doesn't fire them again); closing Help re-runs
+  // this without replaying them.
+  useEffect(() => {
+    if (!story || !currentNode || !isAuthenticated || showInstructions) return;
+    if (!currentNode.audio?.voiceover || !currentNode.audio.sfx?.length) return;
+    const visit = currentNode.id + '#' + passageEntryRef.current;
+    if (voicedSfxVisitRef.current === visit) return;
+    voicedSfxVisitRef.current = visit;
+    sfxPlayedRef.current = new Set();
+    playUntimedSfx(currentNode.audio.sfx);
+  }, [story, currentNode, isAuthenticated, showInstructions, passageEntry, playUntimedSfx]);
+
   // Sound effects on a passage with no narration. There's no voiceover
   // clock to follow, so each one's offset counts from arriving. With
   // narration they're fired from playVoiceover's onplay/ontimeupdate.

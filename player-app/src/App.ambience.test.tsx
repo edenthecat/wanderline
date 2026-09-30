@@ -380,6 +380,33 @@ describe('sound effects', () => {
     expect(door[0].paused).toBe(false);
   });
 
+  // Going back leaves the narration waiting for play; the passage has
+  // still started, so its untimed effects play.
+  it('play untimed ones on arrival even when the narration waits for play', async () => {
+    load({
+      start: node(
+        'start',
+        'The beginning.',
+        { voiceover: 'start.mp3', sfx: [{ file: 'door.mp3' }] },
+        [{ text: 'On', target: 'second' }],
+      ),
+      second: node('second', 'The middle.', { voiceover: 'second.mp3' }, ON),
+      later,
+    });
+    await start();
+    await screen.findByLabelText('Pause narration');
+    fireEvent.click(await screen.findByLabelText(/^Choice 1/));
+    await screen.findByText('The middle.');
+    await wait(500);
+    expect(sounding('door.mp3')).toHaveLength(0);
+
+    fireEvent.click(await screen.findByLabelText('Go back to the previous part'));
+    await screen.findByText('The beginning.');
+    await wait(50);
+    expect(screen.getByLabelText('Play narration')).toBeTruthy();
+    expect(sounding('door.mp3')).toHaveLength(1);
+  });
+
   it('on a passage with no narration: counts from arriving', async () => {
     load({
       start: node('start', 'The beginning.', {

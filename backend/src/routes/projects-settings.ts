@@ -93,6 +93,16 @@ const VALUE_GUARDS = new Map<string, (value: unknown) => unknown>([
     'choiceAudioDelayMs',
     (value) => sanitizeChoiceAudioDelayMs(value, undefined),
   ],
+  [
+    // The ambience + sound-effect level, a percentage. The player and the
+    // editor both show it as one (a stored 1000 would read "1000%" while
+    // playing at 100%), so hold it to 0-100; a non-number is dropped.
+    'ambienceVolume',
+    (value) =>
+      typeof value === 'number' && Number.isFinite(value)
+        ? Math.min(100, Math.max(0, value))
+        : undefined,
+  ],
 ]);
 
 // Exported for tests: this function is where the settings contract
@@ -228,7 +238,8 @@ export function mountSettingsRoutes(router: Router, pool: Pool): void {
    *       so partial patches don't wipe sibling keys.
    *       `choiceAudioDelayMs` must be a finite number and is clamped to
    *       [0, 2147483647] (the largest delay setTimeout can represent);
-   *       anything else is dropped.
+   *       anything else is dropped. `ambienceVolume` is a percentage,
+   *       clamped to [0, 100]; a non-number is dropped.
    *     tags: [Settings]
    *     parameters:
    *       - in: path
