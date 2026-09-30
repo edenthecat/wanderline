@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sfxOffset, takeDueSfx } from './passage-sfx';
+import { isUntimed, sfxOffset, takeDueSfx, takeUntimedSfx } from './passage-sfx';
 
 describe('sfxOffset', () => {
   it('treats a missing, negative or non-finite offset as the start', () => {
@@ -34,5 +34,21 @@ describe('takeDueSfx', () => {
   it('takes everything still pending when the narration ends', () => {
     const played = new Set([0]);
     expect(takeDueSfx(sfx, Number.POSITIVE_INFINITY, played)).toEqual([1, 2]);
+  });
+});
+
+describe('untimed effects', () => {
+  it('are the ones with no timing of their own; an explicit 0 is timed', () => {
+    expect(isUntimed({ file: 'a' })).toBe(true);
+    expect(isUntimed({ file: 'a', offsetMs: 0 })).toBe(false);
+    expect(isUntimed({ file: 'a', offsetMs: 500 })).toBe(false);
+  });
+
+  it('are taken once each, leaving timed ones for the narration', () => {
+    const sfx = [{ file: 'door' }, { file: 'bell', offsetMs: 0 }, { file: 'gong' }];
+    const played = new Set<number>();
+    expect(takeUntimedSfx(sfx, played)).toEqual([0, 2]);
+    expect(takeUntimedSfx(sfx, played)).toEqual([]);
+    expect(takeDueSfx(sfx, 0, played)).toEqual([1]);
   });
 });

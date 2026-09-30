@@ -7,9 +7,9 @@
 // player never played ambience.
 //
 // Timing follows the player (player-app/src/passage-sfx.ts): an effect
-// with no offset plays as the passage starts; one with an offset plays
-// that far into the narration, or that long after starting on a passage
-// with no narration. Anything timed past the narration plays when it
+// with no offset plays as the passage starts; one with an offset (0
+// included) plays that far into the narration, or that long after
+// starting on a passage with no narration. Anything timed past the narration plays when it
 // ends. The mix stops by itself a moment after the narration ends (or
 // after the last effect, with neither narration nor ambience); with only
 // ambience it loops until stopped.
@@ -43,6 +43,9 @@ export interface UseMixAuditionResult {
   play: (spec: MixSpec) => void;
   stop: () => void;
 }
+
+const isUntimed = (fx: MixSfx) =>
+  !(typeof fx.offsetMs === 'number' && Number.isFinite(fx.offsetMs) && fx.offsetMs >= 0);
 
 const offsetOf = (fx: MixSfx) =>
   typeof fx.offsetMs === 'number' && Number.isFinite(fx.offsetMs) && fx.offsetMs > 0
@@ -114,9 +117,11 @@ export function useMixAudition(): UseMixAuditionResult {
         if (!live() || sounding > 0) return;
         if (voiceDone || (onlyEffects && played.size === spec.sfx.length)) finishSoon();
       };
-      const fireDue = (elapsedMs: number) => {
+      // `elapsedMs` null: the untimed ones, as the passage starts.
+      const fireDue = (elapsedMs: number | null) => {
         spec.sfx.forEach((fx, i) => {
-          if (played.has(i) || elapsedMs < offsetOf(fx)) return;
+          if (played.has(i)) return;
+          if (elapsedMs === null ? !isUntimed(fx) : elapsedMs < offsetOf(fx)) return;
           played.add(i);
           const el = effects[i];
           el.muted = false;
@@ -135,6 +140,9 @@ export function useMixAudition(): UseMixAuditionResult {
           el.play().catch(settle);
         });
       };
+
+      // As the passage starts, not when the narration does.
+      fireDue(null);
 
       if (spec.ambienceUrl) {
         const bed = own(new Audio(spec.ambienceUrl));

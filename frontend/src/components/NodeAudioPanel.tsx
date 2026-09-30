@@ -22,6 +22,9 @@ import AuditionButton from './AuditionButton';
 
 type SingleSlot = Exclude<NodeAudioSlot, 'sfx'>;
 
+/** How long a replace or remove waits for that effect's timing to save. */
+const SAVE_WAIT_CAP_MS = 10_000;
+
 /** What the server takes for a new take; `audio/*` would offer .m4a,
  * .flac and friends only for them to be refused. */
 export const TAKE_FORMATS = '.mp3,.wav,.ogg,.webm,audio/mpeg,audio/wav,audio/ogg,audio/webm';
@@ -94,6 +97,7 @@ export default function NodeAudioPanel({
   // Nothing attached and nothing to attach from: stay out of the way, as
   // the read-only preview always did.
   const takeInputRef = useRef<HTMLInputElement>(null);
+  const pendingSavesRef = useRef(new Map<string, Promise<boolean>>());
   const takeForRef = useRef<string | null>(null);
 
   if (!hasAnything && !canEdit) return null;
@@ -152,12 +156,36 @@ export default function NodeAudioPanel({
 
   // Timing saves don't wait on (or block) other changes: tabbing from one
   // effect's field to the next must save both.
-  const saveOffset = (fileId: string, ms: number | null) => {
+  // Saves for one effect run in order, so an older value can't land
+  // after a newer one; different effects still save independently.
+  // Resolves to whether the save landed; never rejects.
+  const saveOffset = (fileId: string, ms: number | null): Promise<boolean> => {
     setError(null);
-    actions!.setSfxOffset(nodeId, fileId, ms).catch((e: unknown) => {
-      setError(e instanceof Error ? e.message : 'Could not save the timing');
+    const saves = pendingSavesRef.current;
+    const chain = (saves.get(fileId) ?? Promise.resolve(true))
+      .then(() => actions!.setSfxOffset(nodeId, fileId, ms))
+      .then(
+        () => true,
+        (e: unknown) => {
+          setError(e instanceof Error ? e.message : 'Could not save the timing');
+          return false;
+        },
+      );
+    saves.set(fileId, chain);
+    void chain.finally(() => {
+      if (saves.get(fileId) === chain) saves.delete(fileId);
     });
+    return chain;
   };
+  // Replacing or removing an effect waits for its timing to be saved, so
+  // the timing just typed is the one a replacement carries over.
+  // Capped: a save that hangs (a stuck request has no timeout of its own)
+  // mustn't hold the whole panel busy.
+  const afterSaves = (fileId: string) =>
+    Promise.race([
+      pendingSavesRef.current.get(fileId) ?? Promise.resolve(true),
+      new Promise<void>((resolve) => setTimeout(resolve, SAVE_WAIT_CAP_MS)),
+    ]);
 
   const toggleMix = () => {
     if (mix.playing) {
@@ -294,7 +322,7 @@ export default function NodeAudioPanel({
                     label={`When SFX ${i + 1} plays, in seconds`}
                     onInvalid={() =>
                       setError(
-                        'Timing is in seconds, like 2.5. Leave it empty to play at the start.',
+                        'Timing is in seconds into the narration, like 2.5 (0 is as it starts). Leave it empty to play as soon as the passage starts.',
                       )
                     }
                     onSave={(ms) => saveOffset(fileId, ms)}
@@ -304,7 +332,11 @@ export default function NodeAudioPanel({
                   key,
                   `SFX ${i + 1}`,
                   fileId,
-                  () => void run(() => actions!.clear(nodeId, 'sfx', fileId)),
+                  () =>
+                    void run(async () => {
+                      await afterSaves(fileId);
+                      await actions!.clear(nodeId, 'sfx', fileId);
+                    }),
                 )}
               </span>
               {picking === key && actions && (
@@ -315,7 +347,12 @@ export default function NodeAudioPanel({
                   confirm="Use"
                   label={`Replacement for SFX ${i + 1} on ${nodeId}`}
                   busy={busy}
-                  onPick={(to) => void run(() => actions.replace(nodeId, 'sfx', fileId, to))}
+                  onPick={(to) =>
+                    void run(async () => {
+                      await afterSaves(fileId);
+                      await actions.replace(nodeId, 'sfx', fileId, to);
+                    })
+                  }
                   onCancel={() => setPicking(null)}
                 />
               )}
@@ -481,7 +518,8 @@ function SfxOffsetInput({
 }: {
   ms: number | undefined;
   label: string;
-  onSave: (ms: number | null) => void;
+  /** Resolves to whether the save landed. */
+  onSave: (ms: number | null) => Promise<boolean>;
   onInvalid: () => void;
 }) {
   const saved = formatOffsetSeconds(ms);
@@ -498,18 +536,33 @@ function SfxOffsetInput({
     // which point the ref already holds the new value.
     const previous = lastSaved.current;
     lastSaved.current = saved;
+    // Only while none of this field's own saves are still on their way;
+    // otherwise a value landing mid-sequence would stand in for the
+    // newer one already sent.
+    if (pending.current === 0) lastSent.current = ms ?? null;
     setText((current) => (!editing || current === previous ? saved : current));
-  }, [saved]);
+  }, [saved, ms]);
+  // What this field last asked to be saved. Compared against rather than
+  // the stored value, which lags while a save is in flight: clearing a
+  // value just typed, before its save lands, must still be sent.
+  const lastSent = useRef<number | null>(ms ?? null);
+  const pending = useRef(0);
   const commit = () => {
-    if (text.trim() === saved) return;
     const parsed = parseOffsetSeconds(text);
     if (parsed === 'invalid') {
       onInvalid();
-      setText(saved);
+      setText(formatOffsetSeconds(lastSent.current ?? undefined));
       return;
     }
-    if (parsed === (ms ?? null)) return;
-    onSave(parsed);
+    if (parsed === lastSent.current) return;
+    lastSent.current = parsed;
+    pending.current += 1;
+    void onSave(parsed).then((ok) => {
+      pending.current -= 1;
+      // A failed save didn't change anything: let the same value be sent
+      // again, rather than treating it as already saved.
+      if (!ok && lastSent.current === parsed) lastSent.current = ms ?? null;
+    });
   };
   return (
     <label className="node-audio-offset">
@@ -521,6 +574,7 @@ function SfxOffsetInput({
         className="input"
         value={text}
         placeholder="start"
+        title="Seconds into the narration (0 is as it starts). Empty plays as soon as the passage starts."
         aria-label={label}
         onChange={(e) => setText(e.target.value)}
         onBlur={commit}

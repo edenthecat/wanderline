@@ -70,6 +70,27 @@ describe('useMixAudition', () => {
     expect(find('bell')).toHaveLength(1);
   });
 
+  // No timing means as the passage starts, not when the narration does;
+  // an explicit 0 is on the narration's clock.
+  it('plays untimed effects straight away and waits for the narration for timed ones', () => {
+    const original = FakeAudio.prototype.play;
+    FakeAudio.prototype.play = function (this: FakeAudio) {
+      this.paused = false;
+      // Narration that hasn't started yet.
+      return this.src === 'vo' ? new Promise<void>(() => {}) : Promise.resolve();
+    };
+    try {
+      const { result } = renderHook(() => useMixAudition());
+      act(() => {
+        result.current.play(spec({ sfx: [{ url: 'door' }, { url: 'bell', offsetMs: 0 }] }));
+      });
+      expect(sounding('door')).toHaveLength(1);
+      expect(sounding('bell')).toHaveLength(0);
+    } finally {
+      FakeAudio.prototype.play = original;
+    }
+  });
+
   it('plays anything timed past the narration when it ends, lets it ring out, then stops', async () => {
     const { result } = renderHook(() => useMixAudition());
     await act(async () => {

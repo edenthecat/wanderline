@@ -321,6 +321,65 @@ describe('sound effects', () => {
     expect(elementsFor('bell.mp3').filter((a) => !a.paused)).toHaveLength(1);
   });
 
+  // "No timing" means as the passage starts, not when its narration does:
+  // a pre-roll delay mustn't hold it back. An explicit 0 is on the
+  // narration's clock, so it waits for the words.
+  it('play untimed ones as the passage starts, even before a pre-roll ends', async () => {
+    load({
+      start: {
+        ...node(
+          'start',
+          'The beginning.',
+          {
+            voiceover: 'start.mp3',
+            sfx: [{ file: 'door.mp3' }, { file: 'bell.mp3', offsetMs: 0 }],
+          },
+          ON,
+        ),
+        metadata: { delayBeforeMs: 3000 },
+      },
+      later,
+    });
+    await start();
+    await wait(500);
+    const vo = newest('start.mp3');
+    expect(vo?.paused ?? true).toBe(true);
+    expect(sounding('door.mp3')).toHaveLength(1);
+    expect(sounding('bell.mp3')).toHaveLength(0);
+    await wait(3000);
+    expect(sounding('bell.mp3')).toHaveLength(1);
+  });
+
+  // Play pressed while the pre-roll runs starts the narration afresh, but
+  // mustn't restart an effect that's already sounding for this visit.
+  it('don’t restart when play is pressed during a pre-roll', async () => {
+    load({
+      start: {
+        ...node(
+          'start',
+          'The beginning.',
+          { voiceover: 'start.mp3', sfx: [{ file: 'door.mp3' }] },
+          ON,
+        ),
+        metadata: { delayBeforeMs: 3000 },
+      },
+      later,
+    });
+    await start();
+    await wait(500);
+    const door = elementsFor('door.mp3').filter((a) => !a.paused);
+    expect(door).toHaveLength(1);
+    // Part way through; a restart would rewind it (the cache hands the
+    // same element back, rewound).
+    door[0].currentTime = 0.8;
+    const pause = vi.spyOn(door[0], 'pause');
+    fireEvent.keyDown(window, { key: ' ' });
+    await wait(100);
+    expect(pause).not.toHaveBeenCalled();
+    expect(door[0].currentTime).toBe(0.8);
+    expect(door[0].paused).toBe(false);
+  });
+
   it('on a passage with no narration: counts from arriving', async () => {
     load({
       start: node('start', 'The beginning.', {

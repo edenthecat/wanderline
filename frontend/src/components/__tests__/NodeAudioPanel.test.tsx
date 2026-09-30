@@ -242,9 +242,97 @@ describe('NodeAudioPanel', () => {
     fireEvent.blur(first);
     fireEvent.change(second, { target: { value: '2' } });
     fireEvent.blur(second);
-    expect(a.setSfxOffset).toHaveBeenCalledWith('hall', 'door', 1000);
-    expect(a.setSfxOffset).toHaveBeenCalledWith('hall', 'bell', 2000);
+    await waitFor(() => expect(a.setSfxOffset).toHaveBeenCalledWith('hall', 'door', 1000));
+    await waitFor(() => expect(a.setSfxOffset).toHaveBeenCalledWith('hall', 'bell', 2000));
     release();
+  });
+
+  // Two edits to one effect must land in order, or the older value can
+  // overwrite the newer one.
+  it('saves one effect’s timings in order', async () => {
+    const a = actions();
+    let releaseFirst!: () => void;
+    a.setSfxOffset.mockImplementationOnce(() => new Promise<void>((r) => (releaseFirst = r)));
+    mount({ sfx: ['door'] }, a);
+    const input = screen.getByLabelText('When SFX 1 plays, in seconds');
+    fireEvent.change(input, { target: { value: '1' } });
+    fireEvent.blur(input);
+    fireEvent.change(input, { target: { value: '2' } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(a.setSfxOffset).toHaveBeenCalledTimes(1));
+    // The second waits for the first.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(a.setSfxOffset).toHaveBeenCalledTimes(1);
+    releaseFirst();
+    await waitFor(() => expect(a.setSfxOffset).toHaveBeenCalledTimes(2));
+    expect(a.setSfxOffset.mock.calls.map((c) => c[2])).toEqual([1000, 2000]);
+  });
+
+  // The stored value lags while a save is in flight; clearing a value
+  // just typed, before its save lands, must still be sent.
+  it('sends a change back to the stored value while a save is still in flight', async () => {
+    const a = actions();
+    let release!: () => void;
+    a.setSfxOffset.mockImplementationOnce(() => new Promise<void>((r) => (release = r)));
+    mount({ sfx: ['door'] }, a);
+    const input = screen.getByLabelText('When SFX 1 plays, in seconds');
+    fireEvent.change(input, { target: { value: '1' } });
+    fireEvent.blur(input);
+    // Stored value is still empty; clearing the field must still be sent.
+    fireEvent.change(input, { target: { value: '' } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(a.setSfxOffset).toHaveBeenCalledTimes(1));
+    release();
+    await waitFor(() => expect(a.setSfxOffset).toHaveBeenCalledTimes(2));
+    expect(a.setSfxOffset.mock.calls.map((c) => c[2])).toEqual([1000, null]);
+  });
+
+  it('lets a timing that failed to save be sent again', async () => {
+    const a = actions();
+    a.setSfxOffset.mockRejectedValueOnce(new Error('offline'));
+    mount({ sfx: ['door'] }, a);
+    const input = screen.getByLabelText('When SFX 1 plays, in seconds');
+    fireEvent.change(input, { target: { value: '1' } });
+    fireEvent.blur(input);
+    expect((await screen.findByRole('alert')).textContent).toBe('offline');
+    // Same value, second attempt.
+    fireEvent.blur(input);
+    await waitFor(() => expect(a.setSfxOffset).toHaveBeenCalledTimes(2));
+    expect(a.setSfxOffset.mock.calls.map((c) => c[2])).toEqual([1000, 1000]);
+  });
+
+  it('gives up waiting on a hung timing save before replacing', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const a = actions();
+      a.setSfxOffset.mockImplementationOnce(() => new Promise<void>(() => {}));
+      mount({ sfx: ['door'] }, a);
+      const input = screen.getByLabelText('When SFX 1 plays, in seconds');
+      fireEvent.change(input, { target: { value: '1' } });
+      fireEvent.blur(input);
+      fireEvent.click(screen.getByRole('button', { name: 'Replace' }));
+      choose('Replacement for SFX 1 on hall', 'bell', 'Use');
+      await vi.advanceTimersByTimeAsync(10_000);
+      await waitFor(() => expect(a.replace).toHaveBeenCalledWith('hall', 'sfx', 'door', 'bell'));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('holds a replace until the effect’s timing has saved', async () => {
+    const a = actions();
+    let release!: () => void;
+    a.setSfxOffset.mockImplementationOnce(() => new Promise<void>((r) => (release = r)));
+    mount({ sfx: ['door'] }, a);
+    const input = screen.getByLabelText('When SFX 1 plays, in seconds');
+    fireEvent.change(input, { target: { value: '1' } });
+    fireEvent.blur(input);
+    fireEvent.click(screen.getByRole('button', { name: 'Replace' }));
+    choose('Replacement for SFX 1 on hall', 'bell', 'Use');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(a.replace).not.toHaveBeenCalled();
+    release();
+    await waitFor(() => expect(a.replace).toHaveBeenCalledWith('hall', 'sfx', 'door', 'bell'));
   });
 
   it('disarms the picker once its choice has been added', async () => {

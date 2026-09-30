@@ -4,7 +4,7 @@ import { useMediaControls } from './useMediaControls';
 import { useAudioCache } from './useAudioCache';
 import { orderAudioUrlsForDownload } from './audio-download-order';
 import { useAmbience } from './useAmbience';
-import { takeDueSfx, sfxOffset, type PassageSfx } from './passage-sfx';
+import { takeDueSfx, takeUntimedSfx, sfxOffset, type PassageSfx } from './passage-sfx';
 import OfflineControls from './OfflineControls';
 import { styles } from './styles';
 import {
@@ -368,6 +368,11 @@ function resetClickState(state: ClickDetectionState): ClickDetectionState {
   return createInitialClickState();
 }
 
+/** A 0-100 level as an HTMLMediaElement volume; out-of-range values throw there. */
+function clampVolume(level: number): number {
+  return Number.isFinite(level) ? Math.min(1, Math.max(0, level / 100)) : 0;
+}
+
 /**
  * A passage's ambience bed and sound effects as cache entries. Keyed by
  * URL, not node: the same bed or effect is usually shared by several
@@ -539,6 +544,10 @@ export default function App() {
   // the playVoiceover they call resumes this visit rather than starting
   // it over. Consumed by that call.
   const resumingRef = useRef(false);
+  // passageEntry for code that must not take it as a dependency (see
+  // playVoiceover), and the visit whose untimed effects were last started.
+  const passageEntryRef = useRef(0);
+  const voicedSfxVisitRef = useRef<string | null>(null);
   const choice1AudioRef = useRef<HTMLAudioElement | null>(null);
   const choice2AudioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -944,7 +953,7 @@ export default function App() {
     if (choice2IndicatorRef.current) choice2IndicatorRef.current.volume = userIndicatorVolume / 100;
     if (bgMusicRef.current) bgMusicRef.current.volume = userBgMusicVolume / 100;
     ambienceVolumeRef.current = userAmbienceVolume;
-    for (const el of sfxElementsRef.current) el.volume = userAmbienceVolume / 100;
+    for (const el of sfxElementsRef.current) el.volume = clampVolume(userAmbienceVolume);
   }, [voiceoverVolume, userIndicatorVolume, userBgMusicVolume, userAmbienceVolume]);
 
   const currentNode = story && currentNodeId ? story.nodes[currentNodeId] : null;
@@ -1030,6 +1039,7 @@ export default function App() {
   // into a stale callback, so it can't write the old position back.
   const resetProgress = useCallback(() => {
     playbackEpochRef.current += 1;
+    passageEntryRef.current += 1;
     setPassageEntry((n) => n + 1);
     setAudioProgress(0);
     setAudioDuration(0);
@@ -1246,16 +1256,17 @@ export default function App() {
     [story, navigateToNode, stopPassagePlayback],
   );
 
-  // Fire whichever of this passage's sound effects are due at
-  // `elapsedMs` and haven't played yet this visit.
-  const playDueSfx = useCallback(
-    (sfx: PassageSfx[] | undefined, elapsedMs: number) => {
-      if (!story || !sfx?.length) return;
-      for (const i of takeDueSfx(sfx, elapsedMs, sfxPlayedRef.current)) {
+  // Start the given sound effects of this passage, at the ambience level
+  // (clamped: the setting isn't range-checked, and an out-of-range volume
+  // throws, which would lose the effect for the visit).
+  const startSfx = useCallback(
+    (sfx: PassageSfx[], indices: number[]) => {
+      if (!story) return;
+      for (const i of indices) {
         const url = story.audioBaseUrl + sfx[i].file;
         const el = getCachedAudio('sfx_' + url, url);
         el.loop = false;
-        el.volume = ambienceVolumeRef.current / 100;
+        el.volume = clampVolume(ambienceVolumeRef.current);
         sfxElementsRef.current.push(el);
         el.play().catch(() => {});
       }
@@ -1263,8 +1274,31 @@ export default function App() {
     [story, getCachedAudio],
   );
 
+  // Fire whichever of this passage's sound effects are due at
+  // `elapsedMs` and haven't played yet this visit.
+  const playDueSfx = useCallback(
+    (sfx: PassageSfx[] | undefined, elapsedMs: number) => {
+      if (!sfx?.length) return;
+      startSfx(sfx, takeDueSfx(sfx, elapsedMs, sfxPlayedRef.current));
+    },
+    [startSfx],
+  );
+
+  // Untimed effects go as the passage starts, not when (or if) its
+  // narration does.
+  const playUntimedSfx = useCallback(
+    (sfx: PassageSfx[] | undefined) => {
+      if (!sfx?.length) return;
+      startSfx(sfx, takeUntimedSfx(sfx, sfxPlayedRef.current));
+    },
+    [startSfx],
+  );
+
   const playVoiceover = useCallback(() => {
     if (!story || !currentNode?.audio?.voiceover || !currentNodeId) return;
+    // A call held from an earlier passage (startStory's delayed start, say)
+    // must not start that passage's audio or effects on this one.
+    if (currentNodeIdRef.current !== currentNodeId) return;
     setAudioError(null);
     setAudioSkipped(false);
     setAudioStalled(false);
@@ -1299,9 +1333,17 @@ export default function App() {
       // resuming part way through doesn't repeat the ones already heard.
       // Stop any still sounding from the last time through so a replay
       // doesn't layer over them.
-      sfxPlayedRef.current = new Set();
-      for (const el of sfxElementsRef.current) el.pause();
-      sfxElementsRef.current = [];
+      // Once per visit, though, or again on a deliberate replay after the
+      // end: pressing play while the pre-roll runs also lands here, and
+      // shouldn't restart an effect already sounding.
+      const visit = currentNodeId + '#' + passageEntryRef.current;
+      if (voicedSfxVisitRef.current !== visit || playerStateRef.current === 'ended') {
+        voicedSfxVisitRef.current = visit;
+        sfxPlayedRef.current = new Set();
+        for (const el of sfxElementsRef.current) el.pause();
+        sfxElementsRef.current = [];
+        playUntimedSfx(currentNode.audio?.sfx);
+      }
     }
 
     // Clear any pending retry or pre-roll timeout from a prior call to
@@ -1393,8 +1435,8 @@ export default function App() {
     audio.onplay = () => {
       if (isStale()) return;
       setPlayerState('playing');
-      // Effects with no offset go with the first sound of the passage,
-      // not up to a timeupdate later.
+      // Effects timed at (or before) where the narration is now go with
+      // its first sound, not up to a timeupdate later.
       playDueSfx(currentNode.audio?.sfx, audio.currentTime * 1000);
     };
     audio.onpause = () => {
@@ -1650,6 +1692,7 @@ export default function App() {
     voiceoverVolume,
     userIndicatorVolume,
     playDueSfx,
+    playUntimedSfx,
   ]);
 
   const skipAudio = useCallback(() => {
