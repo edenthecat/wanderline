@@ -125,7 +125,7 @@ export default function OrphanedAudioPanel({
                     is a poor basis for deleting someone's recording. */}
                 <AuditionButton
                   id={f.id}
-                  url={audioFileUrl(projectId, f.id)}
+                  url={audioFileUrl(projectId, f.id, f.filename)}
                   label={f.name}
                   playingId={playingId}
                   toggle={toggle}

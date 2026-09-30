@@ -133,7 +133,7 @@ export default function MusicTab({ projectId }: Props) {
             <li key={track.id} className="music-item" data-testid="music-row">
               <AuditionButton
                 id={track.id}
-                url={audioFileUrl(projectId, track.id)}
+                url={audioFileUrl(projectId, track.id, track.filename)}
                 label={track.original_name}
                 playingId={playingId}
                 toggle={toggle}

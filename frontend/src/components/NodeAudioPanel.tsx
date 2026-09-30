@@ -181,11 +181,22 @@ export default function NodeAudioPanel({
   // the timing just typed is the one a replacement carries over.
   // Capped: a save that hangs (a stuck request has no timeout of its own)
   // mustn't hold the whole panel busy.
-  const afterSaves = (fileId: string) =>
-    Promise.race([
+  // A save that failed stops the replace: carrying on would give the new
+  // take the old timing and silently lose what the author just entered.
+  // A remove doesn't care: the timing goes with the effect.
+  const afterSaves = async (fileId: string, { requireSaved }: { requireSaved: boolean }) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const outcome = await Promise.race([
       pendingSavesRef.current.get(fileId) ?? Promise.resolve(true),
-      new Promise<void>((resolve) => setTimeout(resolve, SAVE_WAIT_CAP_MS)),
+      new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => resolve('timeout'), SAVE_WAIT_CAP_MS);
+      }),
     ]);
+    clearTimeout(timer);
+    if (outcome === false && requireSaved) {
+      throw new Error("That effect's timing didn't save, so nothing was changed. Try again.");
+    }
+  };
 
   const toggleMix = () => {
     if (mix.playing) {
@@ -334,7 +345,7 @@ export default function NodeAudioPanel({
                   fileId,
                   () =>
                     void run(async () => {
-                      await afterSaves(fileId);
+                      await afterSaves(fileId, { requireSaved: false });
                       await actions!.clear(nodeId, 'sfx', fileId);
                     }),
                 )}
@@ -349,7 +360,7 @@ export default function NodeAudioPanel({
                   busy={busy}
                   onPick={(to) =>
                     void run(async () => {
-                      await afterSaves(fileId);
+                      await afterSaves(fileId, { requireSaved: true });
                       await actions.replace(nodeId, 'sfx', fileId, to);
                     })
                   }

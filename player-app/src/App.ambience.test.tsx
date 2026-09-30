@@ -471,6 +471,49 @@ describe('sound effects', () => {
     expect(elementsFor('door.mp3')).toHaveLength(played);
   });
 
+  // Returning from Help starts the narration over; effects timed against
+  // the words have to come round again with them, while untimed ones
+  // (the passage's start, already heard) don't repeat.
+  it('stay in step with narration that starts over after Help', async () => {
+    load({
+      start: node(
+        'start',
+        'The beginning.',
+        {
+          voiceover: 'start.mp3',
+          sfx: [{ file: 'door.mp3' }, { file: 'bell.mp3', offsetMs: 1000 }],
+        },
+        ON,
+      ),
+      later,
+    });
+    await start();
+    await screen.findByLabelText('Pause narration');
+    let vo = newest('start.mp3')!;
+    vo.currentTime = 1.5;
+    act(() => vo.ontimeupdate?.());
+    const doors = elementsFor('door.mp3').length;
+    const bells = elementsFor('bell.mp3').length;
+    expect(sounding('bell.mp3')).toHaveLength(1);
+
+    fireEvent.click(screen.getByLabelText('Help and instructions'));
+    fireEvent.click(await screen.findByLabelText('Start the story'));
+    await screen.findByLabelText('Pause narration');
+    // The bell was still ringing; the restart stops it rather than
+    // letting it overlap its own replay.
+    expect(sounding('bell.mp3')).toHaveLength(0);
+    vo = newest('start.mp3')!;
+    vo.currentTime = 0.2;
+    act(() => vo.ontimeupdate?.());
+    expect(sounding('bell.mp3')).toHaveLength(0);
+    vo.currentTime = 1.1;
+    act(() => vo.ontimeupdate?.());
+    expect(sounding('bell.mp3')).toHaveLength(1);
+    expect(elementsFor('bell.mp3').length).toBeGreaterThanOrEqual(bells);
+    // The door (untimed) wasn't started again.
+    expect(elementsFor('door.mp3')).toHaveLength(doors);
+  });
+
   it('play one timed past the end of the narration when it ends', async () => {
     load({
       start: node(

@@ -4,7 +4,7 @@ import { useMediaControls } from './useMediaControls';
 import { useAudioCache } from './useAudioCache';
 import { orderAudioUrlsForDownload } from './audio-download-order';
 import { useAmbience } from './useAmbience';
-import { takeDueSfx, takeUntimedSfx, sfxOffset, type PassageSfx } from './passage-sfx';
+import { isUntimed, takeDueSfx, takeUntimedSfx, sfxOffset, type PassageSfx } from './passage-sfx';
 import OfflineControls from './OfflineControls';
 import { styles } from './styles';
 import {
@@ -529,6 +529,9 @@ export default function App() {
   // the timers waiting to fire the rest. See passage-sfx.ts.
   const sfxPlayedRef = useRef(new Set<number>());
   const sfxElementsRef = useRef<HTMLAudioElement[]>([]);
+  // Which of the passage's effects each sounding element is, so a
+  // narration restart can stop just the timed ones.
+  const sfxIndexOfRef = useRef(new WeakMap<HTMLAudioElement, number>());
   const sfxTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const choiceRepeatIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoNavigateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1268,6 +1271,7 @@ export default function App() {
         el.loop = false;
         el.volume = clampVolume(ambienceVolumeRef.current);
         sfxElementsRef.current.push(el);
+        sfxIndexOfRef.current.set(el, i);
         el.play().catch(() => {});
       }
     },
@@ -1343,6 +1347,22 @@ export default function App() {
         for (const el of sfxElementsRef.current) el.pause();
         sfxElementsRef.current = [];
         playUntimedSfx(currentNode.audio?.sfx);
+      } else {
+        // Same visit, narration starting over (returning from Help, play
+        // pressed during a pre-roll): effects timed against the words
+        // play again when the words come round again, so they stay in
+        // step. Untimed ones went with the passage's start and don't.
+        const sfx = currentNode.audio?.sfx ?? [];
+        const keepsGoing = (i: number | undefined) =>
+          i !== undefined && !!sfx[i] && isUntimed(sfx[i]);
+        sfxPlayedRef.current = new Set([...sfxPlayedRef.current].filter(keepsGoing));
+        // A timed effect still ringing from before would otherwise sound
+        // twice when the words come round again.
+        sfxElementsRef.current = sfxElementsRef.current.filter((el) => {
+          if (keepsGoing(sfxIndexOfRef.current.get(el))) return true;
+          el.pause();
+          return false;
+        });
       }
     }
 

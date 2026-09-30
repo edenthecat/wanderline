@@ -1344,6 +1344,7 @@ export function createAudioRouter(pool: Pool): Router {
    *                     properties:
    *                       id: { type: string, format: uuid }
    *                       name: { type: string }
+   *                       filename: { type: string }
    *                       sizeBytes: { type: integer }
    *                       mimeType: { type: string }
    *                       createdAt: { type: string, format: date-time }
@@ -1386,7 +1387,7 @@ export function createAudioRouter(pool: Pool): Router {
       // Get all audio files — pulled with the metadata the orphans UI
       // needs to surface: size + upload date + mime type.
       const audioFilesResult = await pool.query(
-        `SELECT id, original_name, size_bytes, mime_type, created_at
+        `SELECT id, filename, original_name, size_bytes, mime_type, created_at
          FROM audio_files WHERE project_id = $1`,
         [id],
       );
@@ -1404,6 +1405,9 @@ export function createAudioRouter(pool: Pool): Router {
         .map((f) => ({
           id: f.id,
           name: f.original_name,
+          // The stored name, which changes with each new take: the editor
+          // versions audition URLs by it.
+          filename: f.filename,
           sizeBytes: f.size_bytes,
           mimeType: f.mime_type,
           createdAt: f.created_at,

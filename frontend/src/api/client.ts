@@ -375,10 +375,16 @@ export function fetchAudioFiles(projectId: string): Promise<{ audioFiles: AudioF
  * through the JSON request helper. Centralized here so a base-path
  * change (e.g. an nginx prefix) only touches one place.
  */
-export function audioFileUrl(projectId: string, audioId: string, version?: string): string {
+export function audioFileUrl(
+  projectId: string,
+  audioId: string,
+  version: string | undefined,
+): string {
   // `version` (the stored filename) changes when a new take is uploaded
   // over the file, so an audition element that already loaded the old
   // take can't replay it from its buffer. The server ignores it.
+  // Required, so a call site can't forget it; undefined only where the
+  // stored name genuinely isn't known.
   const v = version ? `?v=${encodeURIComponent(version)}` : '';
   return `${API_BASE}/projects/${projectId}/audio/file/${audioId}${v}`;
 }
@@ -539,6 +545,8 @@ export function bulkReassignAudio(
 export interface OrphanedAudioFile {
   id: string;
   name: string;
+  /** Stored name; changes with each new take. */
+  filename?: string;
   sizeBytes: number;
   mimeType?: string;
   createdAt: string;

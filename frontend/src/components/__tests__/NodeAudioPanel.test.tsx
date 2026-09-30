@@ -319,6 +319,40 @@ describe('NodeAudioPanel', () => {
     }
   });
 
+  // Carrying on would give the new take the old timing and quietly lose
+  // what the author just entered.
+  it('doesn’t replace an effect whose timing failed to save', async () => {
+    const a = actions();
+    let fail!: (e: Error) => void;
+    a.setSfxOffset.mockImplementationOnce(() => new Promise<void>((_, rej) => (fail = rej)));
+    mount({ sfx: ['door'] }, a);
+    const input = screen.getByLabelText('When SFX 1 plays, in seconds');
+    fireEvent.change(input, { target: { value: '1' } });
+    fireEvent.blur(input);
+    fireEvent.click(screen.getByRole('button', { name: 'Replace' }));
+    choose('Replacement for SFX 1 on hall', 'bell', 'Use');
+    await waitFor(() => expect(a.setSfxOffset).toHaveBeenCalled());
+    fail(new Error('offline'));
+    expect((await screen.findByRole('alert')).textContent).toMatch(/didn't save/);
+    expect(a.replace).not.toHaveBeenCalled();
+  });
+
+  // The timing goes with the effect, so a failed timing save mustn't
+  // stop the effect being removed.
+  it('still removes an effect whose timing failed to save', async () => {
+    const a = actions();
+    let fail!: (e: Error) => void;
+    a.setSfxOffset.mockImplementationOnce(() => new Promise<void>((_, rej) => (fail = rej)));
+    mount({ sfx: ['door'] }, a);
+    const input = screen.getByLabelText('When SFX 1 plays, in seconds');
+    fireEvent.change(input, { target: { value: '1' } });
+    fireEvent.blur(input);
+    fireEvent.click(screen.getByLabelText('Remove SFX 1 from hall'));
+    await waitFor(() => expect(a.setSfxOffset).toHaveBeenCalled());
+    fail(new Error('offline'));
+    await waitFor(() => expect(a.clear).toHaveBeenCalledWith('hall', 'sfx', 'door'));
+  });
+
   it('holds a replace until the effect’s timing has saved', async () => {
     const a = actions();
     let release!: () => void;
