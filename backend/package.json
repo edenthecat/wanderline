@@ -18,7 +18,7 @@
   "dependencies": {
     "@google-cloud/storage": "^7.21.0",
     "@wanderline/shared": "file:../shared",
-    "@sentry/node": "^10.65.0",
+    "@sentry/node": "^11.4.0",
     "archiver": "^8.0.0",
     "bcrypt": "^6.0.0",
     "connect-pg-simple": "^10.0.0",
