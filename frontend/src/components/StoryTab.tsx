@@ -1,5 +1,11 @@
 import { useState, useEffect, useMemo, useRef, useCallback, type ChangeEvent } from 'react';
+import { isTextBlock, type ContentBlock } from '@wanderline/shared';
 import { FLAG_REASON_LABELS } from './flagLabels';
+
+/** First text block's content, for the one-line node preview snippet. */
+function firstTextPreview(content: ContentBlock[]): string | undefined {
+  return content.find(isTextBlock)?.text;
+}
 import FlaggedNodesPanel from './FlaggedNodesPanel';
 import {
   uploadInk,
@@ -743,10 +749,10 @@ export default function StoryTab({
                     {hasCustomTiming(metadata[node.id]) && (
                       <span className="badge badge-gray">timing</span>
                     )}
-                    {node.content[0]?.text && (
+                    {firstTextPreview(node.content) && (
                       <span className="node-preview text-muted">
-                        {node.content[0].text.slice(0, 60)}
-                        {node.content[0].text.length > 60 ? '...' : ''}
+                        {firstTextPreview(node.content)!.slice(0, 60)}
+                        {firstTextPreview(node.content)!.length > 60 ? '...' : ''}
                       </span>
                     )}
                   </div>
@@ -848,10 +854,10 @@ export default function StoryTab({
                           ))}
                         </span>
                       )}
-                      {knot.content[0]?.text && (
+                      {firstTextPreview(knot.content) && (
                         <span className="node-preview text-muted">
-                          {knot.content[0].text.slice(0, 50)}
-                          {knot.content[0].text.length > 50 ? '...' : ''}
+                          {firstTextPreview(knot.content)!.slice(0, 50)}
+                          {firstTextPreview(knot.content)!.length > 50 ? '...' : ''}
                         </span>
                       )}
                       {children.length > 0 && (

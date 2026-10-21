@@ -6,7 +6,12 @@
 
 import * as Y from 'yjs';
 import { seedYDocFromStoryGraph, materializeNodesFromYDoc } from '../yjs-story.js';
-import type { StoryGraph } from '../../types.js';
+import { isTextBlock, type ContentBlock, type StoryGraph } from '../../types.js';
+
+function textOf(block: ContentBlock): string {
+  if (!isTextBlock(block)) throw new Error('expected a text block, got an assignment block');
+  return block.text;
+}
 
 function baseGraph(): StoryGraph {
   return {
@@ -20,8 +25,8 @@ function baseGraph(): StoryGraph {
         type: 'knot',
         parent: null,
         content: [
-          { text: 'Welcome to the story.', tags: [] },
-          { text: 'Pick wisely.', tags: ['narrator:slow'] },
+          { kind: 'text', text: 'Welcome to the story.', tags: [] },
+          { kind: 'text', text: 'Pick wisely.', tags: ['narrator:slow'] },
         ],
         choices: [
           { text: 'Go left', target: 'left', sticky: false, fallback: false, tags: [] },
@@ -41,7 +46,7 @@ function baseGraph(): StoryGraph {
         id: 'left',
         type: 'knot',
         parent: null,
-        content: [{ text: 'You went left.', tags: [] }],
+        content: [{ kind: 'text', text: 'You went left.', tags: [] }],
         choices: [],
         divert: 'END',
         tags: ['theme:blue'],
@@ -52,7 +57,7 @@ function baseGraph(): StoryGraph {
         id: 'right',
         type: 'knot',
         parent: null,
-        content: [{ text: 'You went right.', tags: [] }],
+        content: [{ kind: 'text', text: 'You went right.', tags: [] }],
         choices: [],
         divert: 'END',
         tags: [],
@@ -97,7 +102,7 @@ describe('yjs-story converter', () => {
     // Second seed must not overwrite the mutation.
     seedYDocFromStoryGraph(doc, graph);
     const out = materializeNodesFromYDoc(doc);
-    expect(out.start.content[0].text).toBe('MUTATED');
+    expect(textOf(out.start.content[0])).toBe('MUTATED');
   });
 
   it('character-level concurrent edits to a choice text merge cleanly', () => {

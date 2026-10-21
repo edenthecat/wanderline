@@ -5,6 +5,8 @@
 // Type-only cycle (normalizeStoryGraph imports StoryGraph from here),
 // erased at build, so there is no runtime import cycle.
 import { normalizeStoryGraph } from '../lib/normalizeStoryGraph';
+import type { ContentBlock, Expression, VariableDeclaration } from '@wanderline/shared';
+export type { ContentBlock, Expression, VariableDeclaration };
 
 const API_BASE = '/api';
 
@@ -169,14 +171,22 @@ export interface StoryGraph {
     errors: ValidationMessage[];
     warnings: ValidationMessage[];
   };
+  variables?: VariableDeclaration[];
 }
 
 export interface StoryNode {
   id: string;
   type: 'knot' | 'stitch' | 'gather';
   parent: string | null;
-  content: { text: string; tags: string[] }[];
-  choices: { text: string; target: string; sticky: boolean; fallback: boolean; tags: string[] }[];
+  content: ContentBlock[];
+  choices: {
+    text: string;
+    target: string;
+    sticky: boolean;
+    fallback: boolean;
+    tags: string[];
+    condition?: Expression | null;
+  }[];
   divert: string | null;
   tags: string[];
   lineNumber: number;

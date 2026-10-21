@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import * as Y from 'yjs';
+import { isTextBlock, type ContentBlock } from '@wanderline/shared';
 import {
   type AudioAssignments,
   type AudioFile,
@@ -69,7 +70,7 @@ export function hasCustomTiming(meta?: NodeMetadata): boolean {
 export interface NodeDetailProps {
   nodeId: string;
   node: {
-    content: { text: string; tags: string[] }[];
+    content: ContentBlock[];
     choices: { text: string; target: string }[];
     divert: string | null;
     tags: string[];
@@ -207,6 +208,7 @@ export default function NodeDetail({
   // *player* will see, not what the database stores literally.
   const hasOverride = savedTranscript.trim().length > 0;
   const originalText = node.content
+    .filter(isTextBlock)
     .map((c) => c.text)
     .filter((s) => s.trim().length > 0)
     .join('\n\n');
@@ -345,26 +347,32 @@ export default function NodeDetail({
     <div className="node-detail">
       {node.content.length > 0 && (
         <div className="node-content">
-          {node.content.map((c, i) => (
-            <div key={i} className="node-content-row">
-              <CollabContentTextarea
-                yText={yDocReady ? getContentText(yDoc, nodeId, i) : null}
-                initialText={c.text}
-                onLocalEdit={(text) => onContentEdit(i, text)}
-                ariaLabel={`Content line ${i + 1} on ${nodeId}`}
-                className="node-content-input"
-              />
-              {c.tags.length > 0 && (
-                <span className="node-tags">
-                  {c.tags.map((t, j) => (
-                    <span key={j} className="tag">
-                      #{t}
-                    </span>
-                  ))}
-                </span>
-              )}
-            </div>
-          ))}
+          {node.content.map((c, i) =>
+            // Assignment blocks (variable mutations) have no text to
+            // edit here — condition/assignment editing UI is Phase 5's
+            // job. Skipping them keeps `i` the true array index so the
+            // Yjs binding in getContentText stays correct.
+            isTextBlock(c) ? (
+              <div key={i} className="node-content-row">
+                <CollabContentTextarea
+                  yText={yDocReady ? getContentText(yDoc, nodeId, i) : null}
+                  initialText={c.text}
+                  onLocalEdit={(text) => onContentEdit(i, text)}
+                  ariaLabel={`Content line ${i + 1} on ${nodeId}`}
+                  className="node-content-input"
+                />
+                {c.tags.length > 0 && (
+                  <span className="node-tags">
+                    {c.tags.map((t, j) => (
+                      <span key={j} className="tag">
+                        #{t}
+                      </span>
+                    ))}
+                  </span>
+                )}
+              </div>
+            ) : null,
+          )}
         </div>
       )}
 

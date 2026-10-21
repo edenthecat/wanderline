@@ -616,6 +616,7 @@ function addContentToNode(line: string, node: StoryNode, state?: ParserState): v
 
   if (finalText) {
     const content: TextContent = {
+      kind: 'text',
       text: finalText,
       tags,
     };

@@ -20,6 +20,7 @@ import {
 } from '@xyflow/react';
 import dagre from '@dagrejs/dagre';
 import '@xyflow/react/dist/style.css';
+import { isTextBlock } from '@wanderline/shared';
 import { updateChoiceTarget, updateDivert, type StoryGraph, type StoryNode } from '../api/client';
 import NodeDetail from './NodeDetail';
 import InkSourceEditor from './InkSourceEditor';
@@ -1364,7 +1365,11 @@ interface HoverPreviewProps {
   y: number;
 }
 function HoverPreview({ node, x, y }: HoverPreviewProps) {
-  const contentText = node.content?.map((c) => c.text).join(' ') ?? '';
+  const contentText =
+    node.content
+      ?.filter(isTextBlock)
+      .map((c) => c.text)
+      .join(' ') ?? '';
   const preview =
     contentText.length > 220 ? `${contentText.slice(0, 220).trim()}…` : contentText || '(empty)';
   return (

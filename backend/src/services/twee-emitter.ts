@@ -26,7 +26,7 @@
  * it doesn't start a new passage on re-parse; we prepend `\`.
  */
 
-import type { StoryGraph, StoryNode, Choice } from '../types.js';
+import { isTextBlock, type StoryGraph, type StoryNode, type Choice } from '../types.js';
 
 /**
  * Escape passage names for embedding in a link target. Twee 3 doesn't
@@ -122,7 +122,14 @@ function emitContent(node: StoryNode): string {
   // Escaping happens once, at emitPassage — don't double-escape here
   // (`\::` would become `\\::` and the parser's unescape leaves a
   // stray backslash).
-  const paragraphs = node.content.map((c) => c.text.trim()).filter(Boolean);
+  // Assignment blocks (DEV-199) have no Twee prose to emit yet —
+  // dialect-specific re-emission of `~`-equivalent statements is
+  // Phases 7-9's job. Skipping them here means a graph with no
+  // assignments (every graph today) round-trips exactly as before.
+  const paragraphs = node.content
+    .filter(isTextBlock)
+    .map((c) => c.text.trim())
+    .filter(Boolean);
   const choices = node.choices.map(emitChoice);
   // forward node.divert. An Ink-authored graph with an
   // implicit continuation (`-> kitchen`) has choices=[] and

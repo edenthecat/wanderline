@@ -335,6 +335,7 @@ function bodyToContent(body: string): TextContent[] {
       // authors who want a literal `\::` at line-start can
       // double-escape as `\\::` (and that only affects them if
       // they later mutate the graph, which is a fine trade).
+      kind: 'text',
       text: text.replace(/(^|\n)\\::/g, '$1::'),
       tags: [],
     }));

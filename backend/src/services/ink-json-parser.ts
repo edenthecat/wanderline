@@ -226,7 +226,7 @@ function parseKnotContent(id: string, content: unknown[], parent: string | null)
       }
       if (item === '\n') {
         if (currentText.trim() && !inEval) {
-          node.content.push({ text: currentText.trim(), tags: [] });
+          node.content.push({ kind: 'text', text: currentText.trim(), tags: [] });
           currentText = '';
         }
         continue;
@@ -344,7 +344,7 @@ function parseKnotContent(id: string, content: unknown[], parent: string | null)
 
   // Add any remaining text
   if (currentText.trim()) {
-    node.content.push({ text: currentText.trim(), tags: [] });
+    node.content.push({ kind: 'text', text: currentText.trim(), tags: [] });
   }
 
   return node;

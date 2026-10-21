@@ -1,5 +1,15 @@
 import { parseTwee, TweeParseError } from '../twee-parser.js';
 import { emitTwee } from '../twee-emitter.js';
+import { isTextBlock, type ContentBlock } from '../../types.js';
+
+// Every fixture in this file is pre-DEV-199 (no `~`/assignment
+// content), so a direct index/find into `.content` is always a
+// TextBlock in practice — this throws clearly if that ever stops
+// being true, rather than reading `undefined` silently.
+function textOf(block: ContentBlock): string {
+  if (!isTextBlock(block)) throw new Error('expected a text block, got an assignment block');
+  return block.text;
+}
 
 // Twee 3 parser + emitter round-trip.
 
@@ -8,7 +18,7 @@ describe('parseTwee — minimal', () => {
     const src = `:: Start\nHello world.\n`;
     const g = parseTwee(src);
     expect(Object.keys(g.nodes)).toEqual(['Start']);
-    expect(g.nodes['Start'].content[0].text).toBe('Hello world.');
+    expect(textOf(g.nodes['Start'].content[0])).toBe('Hello world.');
     expect(g.startNode).toBe('Start');
     expect(g.validation.valid).toBe(true);
   });
@@ -64,7 +74,7 @@ describe('parseTwee — link syntax', () => {
   it('strips the link out of the content body so text nodes are just prose', () => {
     const src = `:: Start\nWelcome!\n\n[[Home]]\n\n:: Home\nDone.\n`;
     const g = parseTwee(src);
-    expect(g.nodes['Start'].content.map((c) => c.text)).toEqual(['Welcome!']);
+    expect(g.nodes['Start'].content.filter(isTextBlock).map((c) => c.text)).toEqual(['Welcome!']);
     expect(g.nodes['Start'].choices).toHaveLength(1);
   });
 });
@@ -230,7 +240,7 @@ describe('emitTwee', () => {
     // Inject a `::`-leading line directly on the node so we exercise
     // the escape branch — the parser wouldn't have produced this
     // shape on its own.
-    g.nodes['Start'].content.push({ text: ':: not-a-header', tags: [] });
+    g.nodes['Start'].content.push({ kind: 'text', text: ':: not-a-header', tags: [] });
     const out = emitTwee(g);
     expect(out).toMatch(/\\:: not-a-header/);
   });
@@ -519,7 +529,7 @@ describe('parseTwee — round-trip fidelity', () => {
           id: 'hallway',
           type: 'knot' as const,
           parent: null,
-          content: [{ text: 'Walk forward.', tags: [] }],
+          content: [{ kind: 'text', text: 'Walk forward.', tags: [] }],
           choices: [],
           divert: 'kitchen',
           tags: [],
@@ -529,7 +539,7 @@ describe('parseTwee — round-trip fidelity', () => {
           id: 'kitchen',
           type: 'knot' as const,
           parent: null,
-          content: [{ text: 'Cold.', tags: [] }],
+          content: [{ kind: 'text', text: 'Cold.', tags: [] }],
           choices: [],
           divert: null,
           tags: [],
@@ -545,7 +555,9 @@ describe('parseTwee — round-trip fidelity', () => {
   it('unescapes `\\::` at line start on parse', () => {
     const src = `:: Home\nA line.\n\n\\:: Not a header\n\nAnother line.\n`;
     const g = parseTwee(src);
-    const paragraph = g.nodes.Home.content.find((c) => c.text.includes('Not a header'));
+    const paragraph = g.nodes.Home.content
+      .filter(isTextBlock)
+      .find((c) => c.text.includes('Not a header'));
     expect(paragraph?.text).toContain(':: Not a header');
     expect(paragraph?.text).not.toContain('\\:: Not a header');
   });
@@ -563,7 +575,7 @@ describe('parseTwee — round-trip fidelity', () => {
           id: 'Home',
           type: 'knot' as const,
           parent: null,
-          content: [{ text: ':: this is content, not a header', tags: [] }],
+          content: [{ kind: 'text', text: ':: this is content, not a header', tags: [] }],
           choices: [],
           divert: null,
           tags: [],
@@ -576,7 +588,7 @@ describe('parseTwee — round-trip fidelity', () => {
     // Emitter escapes once so the re-parse sees the paragraph as body.
     expect(emitted).toContain('\\:: this is content');
     const g2 = parseTwee(emitted);
-    const text = g2.nodes.Home.content[0].text;
+    const text = textOf(g2.nodes.Home.content[0]);
     expect(text).toBe(':: this is content, not a header');
   });
 

@@ -16,6 +16,7 @@
 //   - words: total word count across every reachable node's content.
 //     Coarse reading-time estimate at 160 wpm (typical narrator pace).
 
+import { isTextBlock } from '@wanderline/shared';
 import type { StoryGraph, StoryNode } from '../api/client';
 
 const SINK_TARGETS = new Set(['END', 'DONE', '']);
@@ -143,7 +144,7 @@ export function computeStoryHealth(graph: StoryGraph | null | undefined): StoryH
   for (const id of reachable) {
     const node = graph.nodes[id];
     if (!node) continue;
-    for (const item of node.content ?? []) totalWords += countWords(item.text);
+    for (const item of node.content?.filter(isTextBlock) ?? []) totalWords += countWords(item.text);
     if (!hasOutgoing(node, graph) && !isExplicitEnding(node)) deadEnds.push(id);
   }
   deadEnds.sort();

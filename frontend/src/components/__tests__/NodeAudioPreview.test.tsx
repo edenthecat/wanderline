@@ -11,7 +11,7 @@ vi.mock('../CollabContentTextarea', () => ({ default: () => null }));
 
 const baseProps = {
   nodeId: 'her',
-  node: { content: [{ text: 'Hi.', tags: [] }], choices: [], divert: null, tags: [] },
+  node: { content: [{ kind: 'text', text: 'Hi.', tags: [] }], choices: [], divert: null, tags: [] },
   metadataLoaded: true,
   nodeIdSet: new Set(['her']),
   nodeIdOptions: null,

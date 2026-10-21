@@ -1,4 +1,5 @@
 import { parseInk } from '../ink-parser.js';
+import { isTextBlock } from '../../types.js';
 
 describe('Ink Parser', () => {
   describe('Knot Detection', () => {
@@ -500,8 +501,8 @@ Body.
       const result = parseInk(source, 'test-id');
       // The (rejoin) label is stripped — the gather content reads
       // exactly like the unlabeled version.
-      const leftContent = result.nodes['left'].content.map((c) => c.text);
-      const rightContent = result.nodes['right'].content.map((c) => c.text);
+      const leftContent = result.nodes['left'].content.filter(isTextBlock).map((c) => c.text);
+      const rightContent = result.nodes['right'].content.filter(isTextBlock).map((c) => c.text);
       expect(leftContent).toEqual(rightContent);
     });
   });

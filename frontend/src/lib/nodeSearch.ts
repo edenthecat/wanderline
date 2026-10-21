@@ -19,6 +19,7 @@
 // insensitive substring on the node id OR on its content, with the
 // query trimmed.
 
+import { isTextBlock } from '@wanderline/shared';
 import type { StoryNode } from '../api/client';
 
 /** The subset of a node this module needs. Keeps the helpers usable
@@ -36,7 +37,12 @@ export function normalizeQuery(raw: string): string {
 
 /** A node's content lines joined into one string, in reading order. */
 export function nodeContentText(node: SearchableNode | null | undefined): string {
-  return node?.content?.map((c) => c.text).join(' ') ?? '';
+  return (
+    node?.content
+      ?.filter(isTextBlock)
+      .map((c) => c.text)
+      .join(' ') ?? ''
+  );
 }
 
 /**
@@ -85,7 +91,7 @@ export function matchRank(id: string, normalizedQuery: string): number {
  */
 export function nodeExcerpt(node: SearchableNode | null | undefined, maxLength = 120): string {
   let text = '';
-  for (const line of node?.content ?? []) {
+  for (const line of node?.content?.filter(isTextBlock) ?? []) {
     text = text ? `${text} ${line.text}` : line.text;
     // Strictly past, not at: stopping exactly ON the limit would
     // return a truncated excerpt with no ellipsis on it.

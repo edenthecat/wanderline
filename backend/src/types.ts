@@ -3,6 +3,43 @@
  * This allows us to use the types without building the shared package first
  */
 
+import type {
+  Expression,
+  VariableDeclaration,
+  Statement,
+  ContentBlock,
+  TextBlock,
+  AssignmentBlock,
+  TextContent,
+} from '@wanderline/shared';
+
+export type {
+  Expression,
+  VariableDeclaration,
+  Statement,
+  ContentBlock,
+  TextBlock,
+  AssignmentBlock,
+  TextContent,
+};
+
+/**
+ * True for a TextBlock, including a pre-Phase-0 content item that has
+ * no `kind` at all — only an explicit `kind: 'assignment'` should
+ * ever be treated as non-text. Prefer this over `block.kind ===
+ * 'text'` anywhere old data might still be in play.
+ *
+ * Duplicated from @wanderline/shared (not imported) deliberately: a
+ * *value* import from the shared package's compiled ESM output
+ * breaks Jest's CJS module resolution for every file that transitively
+ * imports this one (types.ts is imported almost everywhere), whereas
+ * the `import type` above is erased at compile time and never touches
+ * the runtime. Keep this in sync with expression-types.ts's copy.
+ */
+export function isTextBlock(block: ContentBlock): block is TextBlock {
+  return block.kind !== 'assignment';
+}
+
 // === Story Graph Types ===
 
 export interface StoryGraph {
@@ -12,6 +49,15 @@ export interface StoryGraph {
   startNode: string;
   validation: ValidationResult;
   source?: string;
+  /**
+   * Project-level variable declarations (DEV-199 Phase 0). Parsed
+   * from Ink's VAR/CONST preamble (Phase 1) or a Twine dialect's own
+   * declaration syntax (Phases 6-9) — never partially populated by
+   * either parser yet; this field exists now so the schema, the Yjs
+   * collab codec, and the manifest pipeline don't need another
+   * breaking shape change once parsing lands.
+   */
+  variables?: VariableDeclaration[];
   /**
    * Twee-side round-trip preservation. Neither field is used
    * by the Ink pipeline; both are populated by parseTwee and
@@ -40,7 +86,7 @@ export interface StoryNode {
   id: string;
   type: NodeType;
   parent: string | null;
-  content: TextContent[];
+  content: ContentBlock[];
   choices: Choice[];
   divert: string | null;
   tags: string[];
@@ -57,18 +103,25 @@ export interface StoryNode {
 
 export type NodeType = 'knot' | 'stitch' | 'gather';
 
-export interface TextContent {
-  text: string;
-  tags: string[];
-  conditions?: string[];
-}
+// ContentBlock/TextBlock/AssignmentBlock/isTextBlock/TextContent are
+// re-exported from @wanderline/shared above — see expression-types.ts
+// for the doc comments. Shared (not duplicated per the rest of
+// StoryGraph) because backend validation, player-app playback, and
+// the editor UI must all agree on what counts as a text vs assignment
+// block.
 
 export interface Choice {
   text: string;
   target: string;
   sticky: boolean;
   fallback: boolean;
-  conditions?: string[];
+  /**
+   * A single boolean expression gating this choice's visibility
+   * (DEV-199 Phase 4/7-9). Ink's `{c1}{c2}` multi-condition prefixes
+   * AND together into one expression at parse time, so this is never
+   * a list — see the plan doc's Q4.
+   */
+  condition?: Expression | null;
   tags: string[];
 }
 
