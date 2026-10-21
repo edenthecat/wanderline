@@ -1,9 +1,4 @@
-import {
-  StoryDataError,
-  resolveStoryTitle,
-  collectNodeAudio,
-  stripAssignmentBlocksForPlayer,
-} from '../story-data-builder.js';
+import { StoryDataError, resolveStoryTitle, collectNodeAudio } from '../story-data-builder.js';
 
 describe('StoryDataError', () => {
   it('should create error with message and status code', () => {
@@ -130,37 +125,5 @@ describe('collectNodeAudio', () => {
       fileMap,
     );
     expect(audio.a.sfx).toEqual([{ file: 'door.mp3' }]);
-  });
-});
-
-describe('stripAssignmentBlocksForPlayer', () => {
-  it('drops assignment blocks and keeps text blocks, in order', () => {
-    const content = [
-      { kind: 'text', text: 'Before.', tags: [] },
-      {
-        kind: 'assignment',
-        statement: {
-          kind: 'assignment',
-          name: 'gold',
-          operator: '+=',
-          value: { kind: 'literal', value: 10 },
-        },
-      },
-      { kind: 'text', text: 'After.', tags: [] },
-    ];
-    expect(stripAssignmentBlocksForPlayer(content)).toEqual([
-      { kind: 'text', text: 'Before.', tags: [] },
-      { kind: 'text', text: 'After.', tags: [] },
-    ]);
-  });
-
-  it('is a no-op when there are no assignment blocks', () => {
-    const content = [{ kind: 'text', text: 'Hi.', tags: [] }];
-    expect(stripAssignmentBlocksForPlayer(content)).toEqual(content);
-  });
-
-  it('passes through a non-array value untouched', () => {
-    expect(stripAssignmentBlocksForPlayer(undefined)).toBeUndefined();
-    expect(stripAssignmentBlocksForPlayer(null)).toBeNull();
   });
 });

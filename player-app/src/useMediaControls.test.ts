@@ -134,7 +134,12 @@ describe('useMediaControls — MediaSession bindings', () => {
   it('installs the running-state handlers when a story is playing', () => {
     harnessHooks({
       story: runningStory,
-      currentNode: { id: 'home', content: [{ text: 'Hi.' }], choices: [], divert: null },
+      currentNode: {
+        id: 'home',
+        content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+        choices: [],
+        divert: null,
+      },
       showInstructions: false,
       isAuthenticated: true,
       playerState: 'playing',
@@ -148,7 +153,12 @@ describe('useMediaControls — MediaSession bindings', () => {
   it('mirrors playerState onto navigator.mediaSession.playbackState', () => {
     harnessHooks({
       story: runningStory,
-      currentNode: { id: 'home', content: [{ text: 'Hi.' }], choices: [], divert: null },
+      currentNode: {
+        id: 'home',
+        content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+        choices: [],
+        divert: null,
+      },
       showInstructions: false,
       isAuthenticated: true,
       playerState: 'paused',
@@ -178,7 +188,12 @@ describe('useMediaControls — keydown fallback', () => {
   it('MediaPlayPause invokes the headphone-button handler when the story is authenticated + running', () => {
     const { spies } = harnessHooks({
       story: runningStory,
-      currentNode: { id: 'home', content: [{ text: 'Hi.' }], choices: [], divert: null },
+      currentNode: {
+        id: 'home',
+        content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+        choices: [],
+        divert: null,
+      },
       showInstructions: false,
       isAuthenticated: true,
       playerState: 'playing',
@@ -194,7 +209,7 @@ describe('useMediaControls — keydown fallback', () => {
       story: runningStory,
       currentNode: {
         id: 'home',
-        content: [{ text: 'Hi.' }],
+        content: [{ kind: 'text', text: 'Hi.', tags: [] }],
         choices: [{ target: 'kitchen' }],
         divert: null,
       },
@@ -224,7 +239,12 @@ describe('useMediaControls — keydown fallback', () => {
   it('does nothing for non-media KeyboardEvents', () => {
     const { spies, startStory } = harnessHooks({
       story: runningStory,
-      currentNode: { id: 'home', content: [{ text: 'Hi.' }], choices: [], divert: null },
+      currentNode: {
+        id: 'home',
+        content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+        choices: [],
+        divert: null,
+      },
       showInstructions: false,
       isAuthenticated: true,
       playerState: 'playing',
@@ -268,7 +288,7 @@ describe('useMediaControls — keydown fallback', () => {
         );
         const currentNodeRef = useRef({
           id: 'home',
-          content: [{ text: 'Hi.' }],
+          content: [{ kind: 'text' as const, text: 'Hi.', tags: [] }],
           choices: [],
           divert: null,
         });
@@ -277,7 +297,7 @@ describe('useMediaControls — keydown fallback', () => {
           story: runningStory,
           currentNode: {
             id: 'home',
-            content: [{ text: 'Hi.' }],
+            content: [{ kind: 'text', text: 'Hi.', tags: [] }],
             choices: [],
             divert: null,
           },
@@ -318,7 +338,12 @@ describe('useMediaControls — keydown fallback', () => {
   it('drops auto-repeat keydown events so a sticky button does not fire multiple transports', () => {
     const { spies } = harnessHooks({
       story: runningStory,
-      currentNode: { id: 'home', content: [{ text: 'Hi.' }], choices: [], divert: null },
+      currentNode: {
+        id: 'home',
+        content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+        choices: [],
+        divert: null,
+      },
       showInstructions: false,
       isAuthenticated: true,
       playerState: 'playing',
@@ -336,13 +361,13 @@ describe('useMediaControls — keydown fallback', () => {
 describe('useMediaControls — Bluetooth transport faults', () => {
   const twoChoiceNode = {
     id: 'home',
-    content: [{ text: 'Hi.' }],
+    content: [{ kind: 'text' as const, text: 'Hi.', tags: [] }],
     choices: [{ target: 'kitchen' }, { target: 'garden' }],
     divert: null,
   };
   const linearNode = {
     id: 'hall',
-    content: [{ text: 'A corridor.' }],
+    content: [{ kind: 'text' as const, text: 'A corridor.', tags: [] }],
     choices: [],
     divert: null,
   };
@@ -464,7 +489,12 @@ describe('useMediaControls — position state', () => {
   it('reports duration and position once both are known', () => {
     harnessHooks({
       story: runningStory,
-      currentNode: { id: 'home', content: [{ text: 'Hi.' }], choices: [], divert: null },
+      currentNode: {
+        id: 'home',
+        content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+        choices: [],
+        divert: null,
+      },
       showInstructions: false,
       isAuthenticated: true,
       playerState: 'playing',
@@ -481,7 +511,12 @@ describe('useMediaControls — position state', () => {
   it('clears position state before the duration is known', () => {
     harnessHooks({
       story: runningStory,
-      currentNode: { id: 'home', content: [{ text: 'Hi.' }], choices: [], divert: null },
+      currentNode: {
+        id: 'home',
+        content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+        choices: [],
+        divert: null,
+      },
       showInstructions: false,
       isAuthenticated: true,
       playerState: 'loading',
@@ -502,7 +537,12 @@ describe('useMediaControls — position state', () => {
   it('clears a previous node’s position on navigating to one with no duration yet', () => {
     const { rerender } = harnessHooks({
       story: runningStory,
-      currentNode: { id: 'home', content: [{ text: 'Hi.' }], choices: [], divert: null },
+      currentNode: {
+        id: 'home',
+        content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+        choices: [],
+        divert: null,
+      },
       showInstructions: false,
       isAuthenticated: true,
       playerState: 'playing',
@@ -517,7 +557,12 @@ describe('useMediaControls — position state', () => {
 
     rerender({
       story: runningStory,
-      currentNode: { id: 'kitchen', content: [{ text: 'Bye.' }], choices: [], divert: null },
+      currentNode: {
+        id: 'kitchen',
+        content: [{ kind: 'text', text: 'Bye.', tags: [] }],
+        choices: [],
+        divert: null,
+      },
       showInstructions: false,
       isAuthenticated: true,
       playerState: 'loading',
@@ -533,7 +578,12 @@ describe('useMediaControls — position state', () => {
     // the new node's (shorter) duration.
     harnessHooks({
       story: runningStory,
-      currentNode: { id: 'kitchen', content: [{ text: 'Hi.' }], choices: [], divert: null },
+      currentNode: {
+        id: 'kitchen',
+        content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+        choices: [],
+        divert: null,
+      },
       showInstructions: false,
       isAuthenticated: true,
       playerState: 'playing',
@@ -553,7 +603,12 @@ describe('useMediaControls — position state', () => {
     expect(() =>
       harnessHooks({
         story: runningStory,
-        currentNode: { id: 'home', content: [{ text: 'Hi.' }], choices: [], divert: null },
+        currentNode: {
+          id: 'home',
+          content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+          choices: [],
+          divert: null,
+        },
         showInstructions: false,
         isAuthenticated: true,
         playerState: 'playing',

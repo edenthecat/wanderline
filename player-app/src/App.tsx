@@ -27,7 +27,16 @@ import {
   writeSlots,
   type SaveSlot,
 } from './save-slots';
-import { sanitizeChoiceAudioDelayMs } from '@wanderline/shared';
+import {
+  sanitizeChoiceAudioDelayMs,
+  isTextBlock,
+  evaluate,
+  execute,
+  type ContentBlock,
+  type Expression,
+  type VariableDeclaration,
+  type VariableValue,
+} from '@wanderline/shared';
 
 // The pause before a choice option's audio starts, once the passage's
 // own narration ends — story.settings.choiceAudioDelayMs, defaulting to
@@ -78,8 +87,19 @@ async function loadStoryData(): Promise<StoryData | null> {
 interface StoryNode {
   id: string;
   type: string;
-  content: { text: string }[];
-  choices: { text: string; target: string }[];
+  // ContentBlock (DEV-199 Phase 2): a `~`-assignment block carries no
+  // `.text` — applyNodeAssignments walks this array to mutate the
+  // variable store, and every display site filters to text blocks
+  // (isTextBlock) first. See nodeText() below.
+  content: ContentBlock[];
+  choices: {
+    text: string;
+    target: string;
+    // Not yet acted on — gating choice visibility on this is Phase 4.
+    // Carried through now so the manifest shape doesn't need to
+    // change again when that phase lands.
+    condition?: Expression | null;
+  }[];
   divert: string | null;
   tags: string[];
   audio?: {
@@ -112,6 +132,8 @@ interface StoryData {
   startNode: string;
   nodes: Record<string, StoryNode>;
   indicatorAudio?: { choice1?: string; choice2?: string };
+  /** Project-level variable declarations (DEV-199 Phase 2). */
+  variables?: VariableDeclaration[];
   settings?: {
     password?: string;
     backgroundMusicVolume?: number;
@@ -317,15 +339,82 @@ export function autoAdvanceTarget(
 
 /** The passage as text: an explicit transcript wins, otherwise the Ink content lines joined. */
 export function nodeText(node: {
-  content: { text: string }[];
+  content: ContentBlock[];
   metadata?: { transcript?: string | null };
 }): string {
   const transcript = node.metadata?.transcript?.trim();
   if (transcript) return transcript;
   return node.content
+    .filter(isTextBlock)
     .map((c) => c.text)
     .join(' ')
     .trim();
+}
+
+// Variable store (DEV-199 Phase 2). Pure helpers, exported for
+// testing — App itself only ever calls them from inside a state
+// setter or the load effect.
+
+/**
+ * The variable store's state the moment a story is freshly started
+ * (no save to resume from): each declaration's initializer evaluated
+ * in order, so a later one can reference an earlier one (Ink allows
+ * `VAR b = a * 2`) — mirrors ink-parser.ts's own incremental build.
+ * A declaration whose initializer fails to evaluate (should not
+ * happen for a graph the backend already validated) is skipped
+ * rather than crashing playback.
+ */
+export function initialVariableValues(
+  declarations: VariableDeclaration[] | undefined,
+): Record<string, VariableValue> {
+  const values: Record<string, VariableValue> = {};
+  for (const decl of declarations ?? []) {
+    try {
+      values[decl.name] = evaluate(decl.initialValue, values);
+    } catch {
+      // Skip — leaves the name undefined, same as it would be for a
+      // story with no VAR line for it at all.
+    }
+  }
+  return values;
+}
+
+/**
+ * Run a node's assignment blocks, in document order, against the
+ * current variable store, returning the resulting store. A statement
+ * that fails (e.g. a compound-assign to a name that was never
+ * declared) is skipped rather than crashing playback — the same
+ * tolerant-degradation choice as initialVariableValues above.
+ */
+export function applyNodeAssignments(
+  node: { content: ContentBlock[] } | undefined,
+  variables: Record<string, VariableValue>,
+): Record<string, VariableValue> {
+  if (!node) return variables;
+  let next = variables;
+  for (const item of node.content) {
+    if (item.kind !== 'assignment') continue;
+    try {
+      next = execute(item.statement, next);
+    } catch {
+      // Skip this statement; keep applying the rest of the node's.
+    }
+  }
+  return next;
+}
+
+/**
+ * The variable store for a brand-new playthrough: declared defaults,
+ * then the start node's own assignments — the start node is never
+ * "entered" through navigateToNode (it's set directly, both on first
+ * load and on restart), so nothing else ever applies them.
+ */
+export function freshStartVariables(story: {
+  variables?: VariableDeclaration[];
+  startNode: string;
+  nodes: Record<string, { content: ContentBlock[] }>;
+}): Record<string, VariableValue> {
+  return applyNodeAssignments(story.nodes[story.startNode], initialVariableValues(story.variables));
 }
 
 // Silent-reading pace used only as an auto-advance floor, not a
@@ -399,6 +488,11 @@ export default function App() {
   const offline = useOfflineSupport();
   const [story, setStory] = useState<StoryData | null>(null);
   const [currentNodeId, setCurrentNodeId] = useState<string | null>(null);
+  // DEV-199 Phase 2. Seeded in the load effect (fresh start or
+  // restored from a save slot); mutated by navigateToNode as the
+  // listener moves forward. goBack intentionally leaves this alone —
+  // see goBack's own comment.
+  const [variables, setVariables] = useState<Record<string, VariableValue>>({});
   const [selectedChoice, setSelectedChoice] = useState(0);
   const [playerState, setPlayerState] = useState<PlayerState>('loading');
   const [audioProgress, setAudioProgress] = useState(0);
@@ -608,8 +702,17 @@ export default function App() {
         if (autosave && autosave.nodeId !== data.startNode) {
           setCurrentNodeId(autosave.nodeId);
           setHistory(autosave.history);
+          // Restore the snapshot as-is — it already reflects every
+          // assignment up through this point, so re-running the
+          // resumed node's own would double-apply them. A slot saved
+          // before this field existed has no snapshot to restore;
+          // falling back to the story's bare declared defaults is a
+          // known, documented degrade for that migration case (there's
+          // no recorded history of intermediate nodes to replay).
+          setVariables(autosave.variables ?? initialVariableValues(data.variables));
         } else {
           setCurrentNodeId(data.startNode);
+          setVariables(freshStartVariables(data));
         }
 
         // Volume resolution order: per-device localStorage override
@@ -1010,13 +1113,14 @@ export default function App() {
   }, [currentNodeId]);
 
   const saveProgress = useCallback(
-    (nodeId: string, hist: string[]) => {
+    (nodeId: string, hist: string[], vars: Record<string, VariableValue>) => {
       if (!story) return;
       const nextSlot: SaveSlot = {
         id: AUTOSAVE_SLOT_ID,
         name: 'Autosave',
         nodeId,
         history: hist,
+        variables: vars,
         savedAt: new Date().toISOString(),
       };
       setSaveSlots((prev) => {
@@ -1126,7 +1230,13 @@ export default function App() {
       setSelectedChoice(0);
       resetProgress();
       setPlayerState('ready');
-      saveProgress(nodeId, newHistory);
+      // Entering a node runs its own `~` assignments (DEV-199 Phase
+      // 2) — computed here, not via a setVariables updater, so the
+      // exact resulting snapshot can be saved alongside nodeId/history
+      // in the same call rather than racing a second render.
+      const nextVariables = applyNodeAssignments(story.nodes[nodeId], variables);
+      setVariables(nextVariables);
+      saveProgress(nodeId, newHistory, nextVariables);
       // Store nodeId for autoplay - the effect will pick this up
       if (autoplay) {
         pendingAutoplayNodeIdRef.current = nodeId;
@@ -1163,6 +1273,7 @@ export default function App() {
       story,
       currentNodeId,
       history,
+      variables,
       saveProgress,
       getReachableNodes,
       preloadAudio,
@@ -1171,6 +1282,12 @@ export default function App() {
     ],
   );
 
+  // Stepping back re-shows a previous passage; it is not an undo, so
+  // the variable store is left exactly as it is. Replaying the
+  // original node's assignments on the way back would double-apply
+  // them (they already ran once, going forward) — rewinding them
+  // instead would need a value snapshotted per history entry, which
+  // nothing here tracks.
   const goBack = useCallback(() => {
     if (history.length === 0) return;
     const prev = history[history.length - 1];
@@ -1946,6 +2063,7 @@ export default function App() {
       setSaveSlots([]);
       setCurrentNodeId(story.startNode);
       setHistory([]);
+      setVariables(freshStartVariables(story));
       if (audioRef.current) {
         audioRef.current.pause();
         audioRef.current = null;
@@ -1979,6 +2097,10 @@ export default function App() {
       pendingAutoplayNodeIdRef.current = null;
       setHistory(slot.history);
       setCurrentNodeId(slot.nodeId);
+      // Restore as-is, same reasoning as the autosave-resume path in
+      // the load effect: the snapshot already reflects this node's
+      // own assignments having run once, when it was first saved.
+      setVariables(slot.variables ?? initialVariableValues(story.variables));
       resetProgress();
       stopPassagePlayback();
       // The element was just dropped, and its onpause is now stale, so
@@ -2003,6 +2125,7 @@ export default function App() {
         name,
         nodeId: currentNodeId,
         history,
+        variables,
         savedAt: new Date().toISOString(),
       };
       setSaveSlots((prev) => {
@@ -2011,7 +2134,7 @@ export default function App() {
         return next;
       });
     },
-    [story, currentNodeId, history, saveSlots],
+    [story, currentNodeId, history, variables, saveSlots],
   );
 
   const deleteSlot = useCallback(
@@ -2265,6 +2388,7 @@ export default function App() {
             setHistory([]);
             setSelectedChoice(0);
             setCurrentNodeId(story.startNode);
+            setVariables(freshStartVariables(story));
           }
           break;
         case 'Escape':
@@ -3124,7 +3248,10 @@ export default function App() {
               {currentNode.metadata?.transcript?.trim() ? (
                 <p style={styles.text}>{currentNode.metadata.transcript}</p>
               ) : (
-                currentNode.content.map((c, i) => (
+                // Assignment blocks (DEV-199) have no text of their own
+                // to show — isTextBlock filters them out here the same
+                // way nodeText() does for the spoken/SR-only variant.
+                currentNode.content.filter(isTextBlock).map((c, i) => (
                   <p key={i} style={styles.text}>
                     {c.text}
                   </p>

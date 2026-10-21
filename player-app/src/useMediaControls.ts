@@ -1,3 +1,4 @@
+import { isTextBlock, type ContentBlock } from '@wanderline/shared';
 import { fallThroughTarget } from './fall-through';
 import { isFromTextEntry } from './keyboard-target';
 // extract MediaSession + keydown fallback from App.tsx.
@@ -83,7 +84,7 @@ interface NodeLike {
   id: string;
   type?: string;
   parent?: string | null;
-  content: { text: string }[];
+  content: ContentBlock[];
   choices: { target: string }[];
   divert?: string | null;
   metadata?: { transcript?: string | null };
@@ -467,10 +468,11 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
     const ms = navigator.mediaSession;
     if (!ms) return;
     const trimmedTranscript = currentNode.metadata?.transcript?.trim();
+    const firstTextBlock = currentNode.content.find(isTextBlock);
     ms.metadata = new MediaMetadata({
       title:
         (trimmedTranscript && trimmedTranscript.slice(0, 50)) ||
-        currentNode.content[0]?.text.slice(0, 50) ||
+        firstTextBlock?.text.slice(0, 50) ||
         currentNode.id,
       artist: story.title,
       album: 'Wanderline Story',

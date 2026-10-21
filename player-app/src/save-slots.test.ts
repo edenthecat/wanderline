@@ -160,4 +160,37 @@ describe('save-slots', () => {
     writeSlots(STORY_ID, start);
     expect(readSlotsWithMigration(STORY_ID, validIds)).toEqual(start);
   });
+
+  describe('variables (DEV-199 Phase 2)', () => {
+    it('round-trips a slot with a variable snapshot', () => {
+      const start: SaveSlot[] = [
+        makeSlot({ variables: { gold: 50, seen_market: true, name: 'Anna' } }),
+      ];
+      writeSlots(STORY_ID, start);
+      expect(readSlotsWithMigration(STORY_ID, validIds)).toEqual(start);
+    });
+
+    it('accepts a slot with no variables at all (pre-DEV-199 shape)', () => {
+      localStorage.setItem(
+        `wanderline_${STORY_ID}_slots`,
+        JSON.stringify([makeSlot()].map(({ variables: _variables, ...rest }) => rest)),
+      );
+      const slots = readSlotsWithMigration(STORY_ID, validIds);
+      expect(slots).toHaveLength(1);
+      expect(slots[0].variables).toBeUndefined();
+    });
+
+    it('rejects a slot whose variables is not a flat record of scalars', () => {
+      localStorage.setItem(
+        `wanderline_${STORY_ID}_slots`,
+        JSON.stringify([
+          makeSlot({ id: 'a' }),
+          { ...makeSlot({ id: 'b' }), variables: { nested: { oops: true } } },
+          { ...makeSlot({ id: 'c' }), variables: ['not', 'a', 'record'] },
+        ]),
+      );
+      const slots = readSlotsWithMigration(STORY_ID, validIds);
+      expect(slots.map((s) => s.id)).toEqual(['a']);
+    });
+  });
 });

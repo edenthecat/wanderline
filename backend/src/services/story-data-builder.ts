@@ -1,5 +1,5 @@
 import { Pool } from 'pg';
-import { isTextBlock, type ContentBlock } from '../types.js';
+import type { ContentBlock, Choice, VariableDeclaration } from '../types.js';
 
 /**
  * Pick the title the player renders. Prefer the story-graph
@@ -21,27 +21,6 @@ export function resolveStoryTitle(rawTitle: unknown, projectName: unknown): stri
   if (!looksLikeParserDefault) return graphTitle;
   const fallback = typeof projectName === 'string' ? projectName.trim() : '';
   return fallback || graphTitle;
-}
-
-/**
- * Strip assignment blocks (DEV-199 Phase 1's `~` statements) from a
- * node's content before it reaches the player. The player doesn't
- * understand them yet — wiring this manifest through to a real
- * variable store is Phase 2's job — so without this, an assignment
- * block's missing `.text` renders as a silent empty paragraph with
- * no narration instead of just not being emitted. The same
- * conservative choice `twee-emitter.ts` already makes for the same
- * reason. Extracted (like `resolveStoryTitle` above) so it's
- * unit-testable without the DB-backed `buildStoryData` flow.
- *
- * Takes `unknown` because the caller reads `node.content` off a
- * loosely-typed `story_graph` JSONB row — a non-array value (should
- * never happen, but isn't guaranteed by the type system at this
- * boundary) passes through untouched rather than throwing.
- */
-export function stripAssignmentBlocksForPlayer(content: unknown): unknown {
-  if (!Array.isArray(content)) return content;
-  return (content as ContentBlock[]).filter(isTextBlock);
 }
 
 export class StoryDataError extends Error {
@@ -127,8 +106,12 @@ export function collectNodeAudio(
 export interface StoryDataNode {
   id: string;
   type: string;
-  content: { text: string }[];
-  choices: { text: string; target: string }[];
+  // ContentBlock (DEV-199 Phase 2): a `~`-assignment block carries no
+  // `.text` — the player walks this array to mutate its variable
+  // store (App.tsx's applyNodeAssignments) and filters to text blocks
+  // (isTextBlock) before deriving anything display-facing.
+  content: ContentBlock[];
+  choices: Choice[];
   divert: string | null;
   tags: string[];
   audio?: StoryDataNodeAudio;
@@ -153,6 +136,9 @@ export interface StoryData {
   startNode: string;
   nodes: Record<string, StoryDataNode>;
   indicatorAudio: { choice1?: string; choice2?: string };
+  /** Project-level variable declarations (DEV-199). Not per-node, so
+   * it's wired in separately from the nodes loop in buildStoryData. */
+  variables?: VariableDeclaration[];
   settings?: {
     password?: string;
     voiceoverVolume?: number;
@@ -382,6 +368,9 @@ export async function buildStoryData(
       theme: settings.theme,
     },
     backgroundMusic: backgroundMusicFiles.length > 0 ? backgroundMusicFiles : undefined,
+    // Project-level, not per-node (DEV-199 Phase 2) — the loop below
+    // only ever touches storyData.nodes, so this needs its own line.
+    variables: project.story_graph.variables,
   };
 
   const nodeAudio = collectNodeAudio(assignmentsResult.rows as AssignmentRow[], fileMap);
@@ -395,7 +384,6 @@ export async function buildStoryData(
 
     storyData.nodes[nodeId] = {
       ...nodeData,
-      content: stripAssignmentBlocksForPlayer(nodeData.content),
       audio: nodeAudio[nodeId],
       metadata: metadata || undefined,
     } as StoryDataNode;
