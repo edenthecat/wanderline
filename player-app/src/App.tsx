@@ -315,7 +315,7 @@ export function autoAdvanceTarget(
         id?: string;
         type?: string;
         parent?: string | null;
-        choices?: { target: string }[];
+        choices?: { target: string; condition?: Expression | null }[];
         divert?: string | null;
       }
     | null
@@ -329,9 +329,15 @@ export function autoAdvanceTarget(
     string,
     { id: string; type?: string; parent?: string | null; lineNumber?: number }
   >,
+  // DEV-199 Phase 4: "exactly one way forward" must count only the
+  // choices actually visible, not however many the node happens to
+  // declare — a node with two choices where one is conditionally
+  // hidden has exactly one real way forward, same as if it had been
+  // authored with just the one.
+  variables: Record<string, VariableValue> = {},
 ): string | null {
   if (settings?.autoAdvance !== true || !node) return null;
-  const choices = node.choices ?? [];
+  const choices = (node.choices ?? []).filter((c) => conditionAllows(c.condition, variables));
   if (choices.length === 1) return choices[0]?.target ?? null;
   if (choices.length === 0 && node.divert) return node.divert;
   if (choices.length === 0 && nodes && node.id) return fallThroughTarget(node.id, node, nodes);
@@ -632,6 +638,12 @@ export default function App() {
   const selectedChoiceRef = useRef(0);
   const playerStateRef = useRef<PlayerState>('loading');
   const currentNodeRef = useRef<StoryNode | null>(null);
+  // DEV-199 Phase 4: mirrors currentNodeRef's own reasoning — the
+  // multi-click handlers below read this via a ref (not the
+  // component-level visibleChoices directly) so a rapid double/triple
+  // click right after navigating sees the NEW node's visible choices,
+  // not a closure-captured snapshot of the previous one.
+  const visibleChoicesRef = useRef<StoryNode['choices']>([]);
   const navigateToTargetRef = useRef<((target: string) => void) | null>(null);
   const navigateToNodeRef = useRef<((nodeId: string) => void) | null>(null);
   const goBackRef = useRef<(() => void) | null>(null);
@@ -1100,6 +1112,18 @@ export default function App() {
 
   const currentNode = story && currentNodeId ? story.nodes[currentNodeId] : null;
 
+  // DEV-199 Phase 4: the single source of truth for "what can the
+  // listener currently see and pick" — every choice-count/indexing
+  // decision (auto-continue, the choice1/choice2 audio-cue sequence,
+  // keyboard selection, the rendered list, the ending/divert-fallback
+  // check) reads this instead of currentNode.choices directly, so a
+  // conditionally-hidden choice is consistently invisible everywhere,
+  // not just in the rendered list.
+  const visibleChoices = useMemo(
+    () => (currentNode?.choices ?? []).filter((c) => conditionAllows(c.condition, variables)),
+    [currentNode, variables],
+  );
+
   // Every audio URL referenced by the story — used by the
   // "Download for offline" button to ask the service worker to
   // precache them in one pass. Deduped because background music
@@ -1118,6 +1142,7 @@ export default function App() {
   selectedChoiceRef.current = selectedChoice;
   playerStateRef.current = playerState;
   currentNodeRef.current = currentNode;
+  visibleChoicesRef.current = visibleChoices;
 
   // Tell an embedding editor which passage is on screen, so it can
   // offer to flag THIS one. The reviewer is listening, not reading the
@@ -1623,14 +1648,15 @@ export default function App() {
       // never fire; play it now rather than lose it.
       playDueSfx(currentNode.audio?.sfx, Number.POSITIVE_INFINITY);
 
+      // DEV-199 Phase 4: visibleChoices (the component-level derived
+      // value above) is what every choice-count/indexing decision
+      // below reads — only what the listener can actually see and
+      // pick, not however many the node declares.
+
       // Auto-continue: if only one choice and autoContinue enabled, navigate automatically
-      if (
-        autoContinue &&
-        currentNode.choices?.length === 1 &&
-        story.nodes[currentNode.choices[0].target]
-      ) {
+      if (autoContinue && visibleChoices.length === 1 && story.nodes[visibleChoices[0].target]) {
         autoNavigateTimeoutRef.current = setTimeout(
-          () => navigateToNode(currentNode.choices[0].target),
+          () => navigateToNode(visibleChoices[0].target),
           choiceAudioDelayMs(story.settings),
         );
         return;
@@ -1638,7 +1664,7 @@ export default function App() {
 
       // If node has choices with audio, start repeating choice sequence
       const hasChoiceAudio = choice1AudioRef.current || choice2AudioRef.current;
-      if (currentNode.choices?.length > 0 && hasChoiceAudio) {
+      if (visibleChoices.length > 0 && hasChoiceAudio) {
         // Play sequence: wait (configurable) -> indicator1 -> choice1 -> indicator2 -> choice2 -> wait 2s -> repeat
         const playAudio = (audioEl: HTMLAudioElement | null): Promise<void> => {
           return new Promise((resolve) => {
@@ -1692,6 +1718,7 @@ export default function App() {
             currentNode,
             { autoAdvance: autoAdvanceRef.current },
             story.nodes,
+            variables,
           );
           if (onward) {
             // Same hold as the no-cue branch below, so two passages
@@ -1712,12 +1739,18 @@ export default function App() {
         // Start the sequence
         runChoiceSequence();
       } else if (
-        autoAdvanceTarget(currentNode, { autoAdvance: autoAdvanceRef.current }, story.nodes)
+        autoAdvanceTarget(
+          currentNode,
+          { autoAdvance: autoAdvanceRef.current },
+          story.nodes,
+          variables,
+        )
       ) {
         const target = autoAdvanceTarget(
           currentNode,
           { autoAdvance: autoAdvanceRef.current },
           story.nodes,
+          variables,
         )!;
         // Total post-audio hold = the per-node delayAfterMs (a generic
         // "wait after audio finishes" hint) plus the dedicated
@@ -1861,6 +1894,7 @@ export default function App() {
     currentNodeId,
     navigateToNode,
     autoContinue,
+    visibleChoices,
     getCachedAudio,
     voiceoverVolume,
     userIndicatorVolume,
@@ -1914,7 +1948,7 @@ export default function App() {
     (currentNode.tags.includes('ending') ||
       currentNode.divert === 'END' ||
       currentNode.divert === 'DONE' ||
-      (currentNode.choices.length === 0 &&
+      (visibleChoices.length === 0 &&
         !currentNode.divert &&
         !fallThroughTarget(currentNode.id, currentNode, story.nodes)));
 
@@ -2023,7 +2057,7 @@ export default function App() {
   useEffect(() => {
     if (!story || !currentNode || !isAuthenticated || showInstructions) return;
     if (currentNode.audio?.voiceover) return; // handled by playVoiceover's audio.onended
-    const target = autoAdvanceTarget(currentNode, { autoAdvance }, story.nodes);
+    const target = autoAdvanceTarget(currentNode, { autoAdvance }, story.nodes, variables);
     if (!target) return;
     // Compose: pre-roll → (no audio, so hold at least long enough to
     // read it) → post-audio hold → onward.
@@ -2101,6 +2135,12 @@ export default function App() {
       setCurrentNodeId(story.startNode);
       setHistory([]);
       setVariables(freshStartVariables(story));
+      // DEV-199 Phase 4: a stale index from wherever the listener was
+      // before could point past the start node's visible-choice count
+      // (which now varies with runtime state, not just the story's
+      // authored structure) — pre-existing gap for loadSlot() too, see
+      // its own comment.
+      setSelectedChoice(0);
       if (audioRef.current) {
         audioRef.current.pause();
         audioRef.current = null;
@@ -2138,6 +2178,9 @@ export default function App() {
       // the load effect: the snapshot already reflects this node's
       // own assignments having run once, when it was first saved.
       setVariables(slot.variables ?? initialVariableValues(story.variables));
+      // DEV-199 Phase 4: see restart()'s identical comment — a stale
+      // index could point past the loaded node's visible-choice count.
+      setSelectedChoice(0);
       resetProgress();
       stopPassagePlayback();
       // The element was just dropped, and its onpause is now stale, so
@@ -2292,8 +2335,9 @@ export default function App() {
   const handleDoubleClick = useCallback(() => {
     const node = currentNodeRef.current;
     if (!story || !node) return;
-    if (node.choices.length > 0) {
-      const choice = node.choices[0];
+    const choices = visibleChoicesRef.current;
+    if (choices.length > 0) {
+      const choice = choices[0];
       if (choice) navigateToTarget(choice.target);
     } else {
       // Not just `node.divert`: a fall-through passage is navigable and
@@ -2306,8 +2350,9 @@ export default function App() {
   const handleTripleClick = useCallback(() => {
     const node = currentNodeRef.current;
     if (!story || !node) return;
-    if (node.choices.length > 1) {
-      const choice = node.choices[1];
+    const choices = visibleChoicesRef.current;
+    if (choices.length > 1) {
+      const choice = choices[1];
       if (choice) navigateToTarget(choice.target);
     }
   }, [story, navigateToTarget]);
@@ -2384,17 +2429,17 @@ export default function App() {
           break;
         case 'ArrowUp':
           e.preventDefault();
-          if (currentNode.choices.length > 0) setSelectedChoice((c) => Math.max(0, c - 1));
+          if (visibleChoices.length > 0) setSelectedChoice((c) => Math.max(0, c - 1));
           break;
         case 'ArrowDown':
           e.preventDefault();
-          if (currentNode.choices.length > 0)
-            setSelectedChoice((c) => Math.min(currentNode.choices.length - 1, c + 1));
+          if (visibleChoices.length > 0)
+            setSelectedChoice((c) => Math.min(visibleChoices.length - 1, c + 1));
           break;
         case 'Enter':
           e.preventDefault();
-          if (currentNode.choices.length > 0) {
-            const choice = currentNode.choices[selectedChoice];
+          if (visibleChoices.length > 0) {
+            const choice = visibleChoices[selectedChoice];
             if (choice) navigateToTarget(choice.target);
           } else {
             const onward =
@@ -2463,6 +2508,7 @@ export default function App() {
     isAuthenticated,
     resetProgress,
     stopPassagePlayback,
+    visibleChoices,
   ]);
 
   // MediaSession + keydown fallback + metadata /
@@ -2587,7 +2633,7 @@ export default function App() {
     history: string[];
   } | null>(null);
   useEffect(() => {
-    const choices = currentNode?.choices ?? [];
+    const choices = visibleChoices;
     if (!storyScreenVisible || !currentNode || choices.length === 0) {
       lastChoiceAnnouncedRef.current = null;
       setChoiceAnnouncement(clearAnnouncement);
@@ -2643,7 +2689,7 @@ export default function App() {
         speak(`Choice ${selectedChoice + 1} of ${choices.length}: ${armed.text}`),
       );
     }
-  }, [storyScreenVisible, choiceNavFocused, currentNode, selectedChoice, history]);
+  }, [storyScreenVisible, choiceNavFocused, currentNode, selectedChoice, history, visibleChoices]);
 
   if (playerState === 'error' || !story) {
     return (
@@ -3410,7 +3456,7 @@ export default function App() {
             keys before the global shortcuts ever see them. Off-screen
             until something inside takes focus, then shown, so a sighted
             keyboard user can see where they are. */}
-        {currentNode.choices.length > 0 && (
+        {visibleChoices.length > 0 && (
           <nav
             ref={choiceNavRef}
             style={choiceListHidden && !choiceNavFocused ? styles.srOnly : styles.choices}
@@ -3432,7 +3478,7 @@ export default function App() {
                 button whose meaning has changed turns the next Space,
                 meant to pause, into a second press of whatever now
                 occupies that slot. */}
-            {currentNode.choices.map((c, i) => (
+            {visibleChoices.map((c, i) => (
               <button
                 key={`${c.target}|${c.text}|${i}`}
                 onClick={(e) => {
@@ -3459,7 +3505,7 @@ export default function App() {
           </nav>
         )}
 
-        {(currentNode.divert || fallThrough) && currentNode.choices.length === 0 && !isEnd && (
+        {(currentNode.divert || fallThrough) && visibleChoices.length === 0 && !isEnd && (
           <button
             onClick={(e) => {
               e.stopPropagation();

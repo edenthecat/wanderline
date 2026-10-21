@@ -1019,4 +1019,92 @@ No association with any real narrative.
       expect(result.nodes['start'].content).toEqual([{ kind: 'text', text: '{a|b}', tags: [] }]);
     });
   });
+
+  describe('Ink conditional choice visibility (DEV-199 Phase 4)', () => {
+    it('parses a `{condition}` choice prefix into Choice.condition', () => {
+      const source =
+        '== start ==\nQuestion?\n\n* {gold > 10} Buy something -> shop\n\n== shop ==\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      const [choice] = result.nodes['start'].choices;
+      expect(choice.text).toBe('Buy something');
+      expect(choice.target).toBe('shop');
+      expect(choice.condition).toEqual({
+        kind: 'binary',
+        operator: '>',
+        left: { kind: 'variable', name: 'gold' },
+        right: { kind: 'literal', value: 10 },
+      });
+    });
+
+    it('ANDs stacked `{c1}{c2}` prefixes into one expression', () => {
+      const source =
+        '== start ==\nQuestion?\n\n* {gold > 10}{seen_market} Buy something -> shop\n\n== shop ==\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      const [choice] = result.nodes['start'].choices;
+      expect(choice.condition).toEqual({
+        kind: 'logical',
+        operator: '&&',
+        left: {
+          kind: 'binary',
+          operator: '>',
+          left: { kind: 'variable', name: 'gold' },
+          right: { kind: 'literal', value: 10 },
+        },
+        right: { kind: 'variable', name: 'seen_market' },
+      });
+    });
+
+    it('leaves a choice with no condition prefix without a condition field at all', () => {
+      const source = '== start ==\nQuestion?\n\n* Leave -> END\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.nodes['start'].choices[0]).not.toHaveProperty('condition');
+    });
+
+    it('resolves a condition alongside bracket choice-text syntax', () => {
+      const source =
+        '== start ==\nQuestion?\n\n* {gold > 10} [Buy] You bought it. -> shop\n\n== shop ==\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      const [choice] = result.nodes['start'].choices;
+      expect(choice.text).toBe('Buy');
+      expect(choice.condition).toEqual({
+        kind: 'binary',
+        operator: '>',
+        left: { kind: 'variable', name: 'gold' },
+        right: { kind: 'literal', value: 10 },
+      });
+    });
+
+    it('resolves a condition on a divert-on-next-line choice', () => {
+      const source =
+        '== start ==\nQuestion?\n\n* {gold > 10} Buy something\n    -> shop\n\n== shop ==\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      const [choice] = result.nodes['start'].choices;
+      expect(choice.target).toBe('shop');
+      expect(choice.condition).toBeDefined();
+    });
+
+    it('preserves document order across conditional and unconditional choices', () => {
+      const source =
+        '== start ==\nQuestion?\n\n* Leave -> END\n* {gold > 10} Buy something -> shop\n* Look around -> END\n\n== shop ==\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      const choices = result.nodes['start'].choices;
+      expect(choices.map((c) => c.text)).toEqual(['Leave', 'Buy something', 'Look around']);
+      expect(choices[0]).not.toHaveProperty('condition');
+      expect(choices[1].condition).toBeDefined();
+      expect(choices[2]).not.toHaveProperty('condition');
+    });
+
+    it('falls back to literal text and warns when the choice condition fails to parse', () => {
+      const source = '== start ==\nQuestion?\n\n* {$$$} Buy something -> shop\n\n== shop ==\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      const [choice] = result.nodes['start'].choices;
+      expect(choice.condition).toBeUndefined();
+      expect(choice.text).toBe('{$$$} Buy something');
+      expect(
+        result.validation.warnings.some((w) =>
+          w.message.includes('Could not parse choice condition'),
+        ),
+      ).toBe(true);
+    });
+  });
 });

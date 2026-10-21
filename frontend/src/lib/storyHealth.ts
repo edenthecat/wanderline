@@ -40,6 +40,15 @@ function isSink(target: string | null | undefined): boolean {
   return !target || SINK_TARGETS.has(target);
 }
 
+// DEV-199 Phase 4: a choice's condition (Choice.condition) is NOT
+// consulted here, deliberately. This walk runs in the editor, with no
+// variable store to evaluate a condition against — a story graph has
+// no single "current" variable state, since every playthrough can
+// take a different value into the same node. Treating a conditionally-
+// gated choice as a normal edge means reachability/dead-end analysis
+// answers "could a listener ever reach this via some variable state",
+// which is the only question this static walk can actually answer.
+// An intentional simplification, not an oversight.
 function outgoingTargets(node: StoryNode, graph: StoryGraph): string[] {
   const out: string[] = [];
   for (const c of node.choices ?? []) {

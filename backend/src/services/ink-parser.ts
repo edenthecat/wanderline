@@ -521,6 +521,35 @@ function parseChoiceIntoNode(
     content = content.slice(labelMatch[0].length);
   }
 
+  // Conditional choice visibility (DEV-199 Phase 4): one or more
+  // `{condition}` prefixes right after the marker/label — NOT the
+  // `{condition: text}` form, which is conditional TEXT (Phase 3) and
+  // only applies to content lines. Ink's `{c1}{c2}` stacked prefixes
+  // AND together into one expression (see the plan's architecture
+  // note on Choice.condition being singular, never a list).
+  let condition: Expression | undefined;
+  let conditionMatch: RegExpMatchArray | null;
+  while ((conditionMatch = content.match(/^\{([^{}]+)\}\s*/))) {
+    try {
+      const parsed = parseExpression(conditionMatch[1].trim());
+      condition = condition
+        ? { kind: 'logical', operator: '&&', left: condition, right: parsed }
+        : parsed;
+      content = content.slice(conditionMatch[0].length);
+    } catch (err) {
+      state.warnings.push({
+        type: 'syntax_error',
+        message: `Could not parse choice condition "${conditionMatch[1].trim()}": ${errorMessage(err)}`,
+        lineNumber: state.lineNumber,
+        args: { detail: conditionMatch[1].trim() },
+      });
+      // Leave this (and any further) `{...}` prefix as literal text
+      // rather than risk an infinite loop re-matching the same
+      // unparseable prefix.
+      break;
+    }
+  }
+
   // Extract tags
   const { text, tags } = extractTags(content);
 
@@ -567,6 +596,7 @@ function parseChoiceIntoNode(
     sticky,
     fallback: false,
     tags: label ? [...tags, `internal:label:${label}`] : tags,
+    ...(condition !== undefined ? { condition } : {}),
   };
 
   currentNode.choices.push(choice);

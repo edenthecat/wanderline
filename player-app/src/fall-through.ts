@@ -15,6 +15,19 @@
  * `nodeId` is passed rather than read off `node` because the callers
  * type their node maps differently and the id is always in hand at the
  * call site. Returns null when the passage really is a terminus.
+ *
+ * Deliberately condition-agnostic (DEV-199 Phase 4): `node.choices`
+ * here is the raw authored array, not filtered by which ones are
+ * currently visible. The offline download ordering and the preload
+ * walk have no variable store to evaluate conditions against at all,
+ * so this can't become variable-aware without breaking the "one
+ * shared implementation every caller agrees with" property the
+ * function exists for — the same reasoning storyHealth.ts's own
+ * reachability walk documents for the same tradeoff. A node whose
+ * only choices are all conditionally hidden and has no divert is
+ * treated as a true ending by the player (see App.tsx's
+ * onEndingPassage) rather than falling through to the next stitch,
+ * which is a known simplification, not an oversight.
  */
 export function fallThroughTarget(
   nodeId: string,

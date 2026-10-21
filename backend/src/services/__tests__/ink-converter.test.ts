@@ -333,4 +333,81 @@ describe('convertStoryGraphToInk', () => {
       expect(second.nodes['start'].content).toEqual(first.nodes['start'].content);
     });
   });
+
+  describe('Conditional choice visibility (DEV-199 Phase 4)', () => {
+    it('emits a choice condition as a `{condition}` prefix', () => {
+      const result = convertStoryGraphToInk({
+        id: 'test',
+        title: 'Test',
+        startNode: 'start',
+        nodes: {
+          start: {
+            id: 'start',
+            type: 'knot',
+            content: [{ kind: 'text', text: 'Question?', tags: [] }],
+            choices: [
+              {
+                text: 'Buy something',
+                target: 'shop',
+                condition: {
+                  kind: 'binary',
+                  operator: '>',
+                  left: { kind: 'variable', name: 'gold' },
+                  right: { kind: 'literal', value: 10 },
+                },
+              },
+            ],
+            divert: null,
+            tags: [],
+          },
+          shop: {
+            id: 'shop',
+            type: 'knot',
+            content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+            choices: [],
+            divert: null,
+            tags: [],
+          },
+        },
+      });
+      expect(result).toContain('* {gold > 10} [Buy something] -> shop');
+    });
+
+    it('emits no prefix for a choice with no condition', () => {
+      const result = convertStoryGraphToInk({
+        id: 'test',
+        title: 'Test',
+        startNode: 'start',
+        nodes: {
+          start: {
+            id: 'start',
+            type: 'knot',
+            content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+            choices: [{ text: 'Leave', target: 'END' }],
+            divert: null,
+            tags: [],
+          },
+        },
+      });
+      expect(result).toContain('* [Leave] -> END');
+    });
+
+    it('round-trips a conditional choice through parseInk -> emit -> parseInk', () => {
+      const source = [
+        '== start ==',
+        'Question?',
+        '',
+        '* {gold > 10}{seen_market} Buy something -> shop',
+        '* Leave -> END',
+        '',
+        '== shop ==',
+        'Hi.',
+        '',
+      ].join('\n');
+      const first = parseInk(source, 'test-id');
+      const emitted = convertStoryGraphToInk(first);
+      const second = parseInk(emitted, 'test-id');
+      expect(second.nodes['start'].choices).toEqual(first.nodes['start'].choices);
+    });
+  });
 });

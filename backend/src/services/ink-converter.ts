@@ -4,7 +4,7 @@
  */
 
 import { printExpression, printStatement } from '@wanderline/shared';
-import type { ContentBlock, VariableDeclaration } from '../types.js';
+import type { ContentBlock, Expression, VariableDeclaration } from '../types.js';
 
 interface InkStoryGraph {
   id: string;
@@ -15,7 +15,7 @@ interface InkStoryGraph {
       id: string;
       type: 'knot' | 'stitch' | 'gather';
       content: ContentBlock[];
-      choices: { text: string; target: string }[];
+      choices: { text: string; target: string; condition?: Expression | null }[];
       divert: string | null;
       tags: string[];
     }
@@ -160,7 +160,10 @@ export function convertStoryGraphToInk(storyGraph: InkStoryGraph): string {
     // Write choices
     for (const choice of node.choices) {
       const target = formatTarget(choice.target, currentKnot);
-      lines.push(`* [${choice.text}] -> ${target}`);
+      // Conditional choice visibility (DEV-199 Phase 4) — re-emit as
+      // a `{condition}` prefix, matching what the parser expects.
+      const conditionPrefix = choice.condition ? `{${printExpression(choice.condition)}} ` : '';
+      lines.push(`* ${conditionPrefix}[${choice.text}] -> ${target}`);
     }
 
     // Write divert (if no choices)
