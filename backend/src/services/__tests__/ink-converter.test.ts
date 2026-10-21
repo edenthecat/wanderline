@@ -260,4 +260,77 @@ describe('convertStoryGraphToInk', () => {
       expect(second.nodes['start'].content).toEqual(first.nodes['start'].content);
     });
   });
+
+  describe('Conditional text (DEV-199 Phase 3)', () => {
+    it('wraps a conditional text block in `{condition: text}` on emit', () => {
+      const result = convertStoryGraphToInk({
+        id: 'test',
+        title: 'Test',
+        startNode: 'start',
+        nodes: {
+          start: {
+            id: 'start',
+            type: 'knot',
+            content: [
+              {
+                kind: 'text',
+                text: 'You have plenty of gold.',
+                tags: [],
+                condition: {
+                  kind: 'binary',
+                  operator: '>',
+                  left: { kind: 'variable', name: 'gold' },
+                  right: { kind: 'literal', value: 10 },
+                },
+              },
+            ],
+            choices: [],
+            divert: null,
+            tags: [],
+          },
+        },
+      });
+      expect(result).toContain('{gold > 10: You have plenty of gold.}');
+    });
+
+    it('puts a trailing tag after the closing brace', () => {
+      const result = convertStoryGraphToInk({
+        id: 'test',
+        title: 'Test',
+        startNode: 'start',
+        nodes: {
+          start: {
+            id: 'start',
+            type: 'knot',
+            content: [
+              {
+                kind: 'text',
+                text: 'Rich.',
+                tags: ['narrator:smug'],
+                condition: { kind: 'variable', name: 'rich' },
+              },
+            ],
+            choices: [],
+            divert: null,
+            tags: [],
+          },
+        },
+      });
+      expect(result).toContain('{rich: Rich.} # narrator:smug');
+    });
+
+    it('round-trips conditional text through parseInk -> emit -> parseInk', () => {
+      const source = [
+        '== start ==',
+        '{gold > 10 && seen_market: You remember the well-stocked market.}',
+        'Always shown.',
+        '-> END',
+        '',
+      ].join('\n');
+      const first = parseInk(source, 'test-id');
+      const emitted = convertStoryGraphToInk(first);
+      const second = parseInk(emitted, 'test-id');
+      expect(second.nodes['start'].content).toEqual(first.nodes['start'].content);
+    });
+  });
 });

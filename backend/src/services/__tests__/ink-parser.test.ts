@@ -898,4 +898,125 @@ No association with any real narrative.
       ]);
     });
   });
+
+  describe('Ink conditional text (DEV-199 Phase 3)', () => {
+    it('parses a `{condition: text}` line into a TextBlock with its condition', () => {
+      const source = '== start ==\n{gold > 10: You have plenty of gold.}\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.nodes['start'].content).toEqual([
+        {
+          kind: 'text',
+          text: 'You have plenty of gold.',
+          tags: [],
+          condition: {
+            kind: 'binary',
+            operator: '>',
+            left: { kind: 'variable', name: 'gold' },
+            right: { kind: 'literal', value: 10 },
+          },
+        },
+      ]);
+    });
+
+    it('interleaves conditional and unconditional lines in document order', () => {
+      const source =
+        '== start ==\nAlways shown.\n{seen_market: You remember the market.}\nAlso always shown.\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.nodes['start'].content).toEqual([
+        { kind: 'text', text: 'Always shown.', tags: [] },
+        {
+          kind: 'text',
+          text: 'You remember the market.',
+          tags: [],
+          condition: { kind: 'variable', name: 'seen_market' },
+        },
+        { kind: 'text', text: 'Also always shown.', tags: [] },
+      ]);
+    });
+
+    it('preserves a trailing tag on a conditional line', () => {
+      const source = '== start ==\n{gold > 10: Rich.} # narrator:smug\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.nodes['start'].content).toEqual([
+        {
+          kind: 'text',
+          text: 'Rich.',
+          tags: ['narrator:smug'],
+          condition: {
+            kind: 'binary',
+            operator: '>',
+            left: { kind: 'variable', name: 'gold' },
+            right: { kind: 'literal', value: 10 },
+          },
+        },
+      ]);
+    });
+
+    it('resolves an inline divert inside the conditional text', () => {
+      const source = '== start ==\n{gold > 10: Onward. -> next}\n\n== next ==\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      const startNode = result.nodes['start'];
+      expect(startNode.divert).toBe('next');
+      expect(startNode.content).toEqual([
+        {
+          kind: 'text',
+          text: 'Onward.',
+          tags: [],
+          condition: {
+            kind: 'binary',
+            operator: '>',
+            left: { kind: 'variable', name: 'gold' },
+            right: { kind: 'literal', value: 10 },
+          },
+        },
+      ]);
+    });
+
+    it('combines logical operators in the condition', () => {
+      const source = '== start ==\n{seen_market && gold > 10: Rich and well-travelled.}\n';
+      const result = parseInk(source, 'test-id');
+      const [block] = result.nodes['start'].content;
+      expect(block).toEqual({
+        kind: 'text',
+        text: 'Rich and well-travelled.',
+        tags: [],
+        condition: {
+          kind: 'logical',
+          operator: '&&',
+          left: { kind: 'variable', name: 'seen_market' },
+          right: {
+            kind: 'binary',
+            operator: '>',
+            left: { kind: 'variable', name: 'gold' },
+            right: { kind: 'literal', value: 10 },
+          },
+        },
+      });
+    });
+
+    it('falls back to literal text and warns when the condition fails to parse', () => {
+      const source = '== start ==\n{$$$: broken}\n';
+      const result = parseInk(source, 'test-id');
+      const [block] = result.nodes['start'].content;
+      expect(isTextBlock(block)).toBe(true);
+      if (isTextBlock(block)) {
+        expect(block.text).toBe('{$$$: broken}');
+        expect(block.condition).toBeUndefined();
+      }
+      expect(
+        result.validation.warnings.some((w) =>
+          w.message.includes("Could not parse conditional text's condition"),
+        ),
+      ).toBe(true);
+    });
+
+    it('does not treat a colon-less brace line (Ink alternatives/sequences) as conditional text', () => {
+      // {a|b} is a different, unsupported Ink feature (sequences,
+      // shuffles, once-only lists) — it must pass through exactly as
+      // it did before this phase: inert literal text, no condition.
+      const source = '== start ==\n{a|b}\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.nodes['start'].content).toEqual([{ kind: 'text', text: '{a|b}', tags: [] }]);
+    });
+  });
 });

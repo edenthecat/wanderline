@@ -32,6 +32,7 @@ import {
   isTextBlock,
   evaluate,
   execute,
+  truthy,
   type ContentBlock,
   type Expression,
   type VariableDeclaration,
@@ -337,15 +338,42 @@ export function autoAdvanceTarget(
   return null;
 }
 
-/** The passage as text: an explicit transcript wins, otherwise the Ink content lines joined. */
-export function nodeText(node: {
-  content: ContentBlock[];
-  metadata?: { transcript?: string | null };
-}): string {
+/**
+ * Whether a conditional block (DEV-199 Phase 3: text; Phase 4:
+ * choices) should show, given the current variable store. No
+ * condition at all always shows. A condition that fails to evaluate
+ * (references a variable that was renamed/removed since the story was
+ * authored) is treated as false — hidden, not shown-with-a-crash and
+ * not shown-unconditionally, the same tolerant-degradation choice as
+ * applyNodeAssignments above.
+ */
+export function conditionAllows(
+  condition: Expression | null | undefined,
+  variables: Record<string, VariableValue>,
+): boolean {
+  if (!condition) return true;
+  try {
+    return truthy(evaluate(condition, variables));
+  } catch {
+    return false;
+  }
+}
+
+/** The passage as text: an explicit transcript wins, otherwise the
+ * Ink content lines joined — skipping any text block whose condition
+ * (DEV-199 Phase 3) doesn't hold against the current variable store. */
+export function nodeText(
+  node: {
+    content: ContentBlock[];
+    metadata?: { transcript?: string | null };
+  },
+  variables: Record<string, VariableValue> = {},
+): string {
   const transcript = node.metadata?.transcript?.trim();
   if (transcript) return transcript;
   return node.content
     .filter(isTextBlock)
+    .filter((c) => conditionAllows(c.condition, variables))
     .map((c) => c.text)
     .join(' ')
     .trim();
@@ -2001,7 +2029,7 @@ export default function App() {
     // read it) → post-audio hold → onward.
     const holdMs = Math.max(
       currentNode.metadata?.autoAdvanceDelayMs ?? 2000,
-      readingFloorMs(nodeText(currentNode)),
+      readingFloorMs(nodeText(currentNode, variables)),
     );
     const totalDelay =
       (currentNode.metadata?.delayBeforeMs ?? 0) +
@@ -2029,6 +2057,7 @@ export default function App() {
     showInstructions,
     autoAdvance,
     passageEntry,
+    variables,
   ]);
 
   // Debounce showing connection issues to avoid flashing for quick retries
@@ -2462,7 +2491,10 @@ export default function App() {
   });
 
   // The passage as text, for the screen-reader-only announcement below.
-  const passageText = useMemo(() => (currentNode ? nodeText(currentNode) : ''), [currentNode]);
+  const passageText = useMemo(
+    () => (currentNode ? nodeText(currentNode, variables) : ''),
+    [currentNode, variables],
+  );
 
   // Screen readers announce MUTATIONS to a live region they have
   // already registered: text present the moment the region is inserted
@@ -3256,14 +3288,19 @@ export default function App() {
               {currentNode.metadata?.transcript?.trim() ? (
                 <p style={styles.text}>{currentNode.metadata.transcript}</p>
               ) : (
-                // Assignment blocks (DEV-199) have no text of their own
-                // to show — isTextBlock filters them out here the same
-                // way nodeText() does for the spoken/SR-only variant.
-                currentNode.content.filter(isTextBlock).map((c, i) => (
-                  <p key={i} style={styles.text}>
-                    {c.text}
-                  </p>
-                ))
+                // Assignment blocks (DEV-199 Phase 1) have no text of
+                // their own, and a text block's condition (Phase 3)
+                // may not hold against the current variable store —
+                // both filtered out here the same way nodeText() does
+                // for the spoken/SR-only variant.
+                currentNode.content
+                  .filter(isTextBlock)
+                  .filter((c) => conditionAllows(c.condition, variables))
+                  .map((c, i) => (
+                    <p key={i} style={styles.text}>
+                      {c.text}
+                    </p>
+                  ))
               )}
             </article>
           )}

@@ -146,8 +146,11 @@ export function convertStoryGraphToInk(storyGraph: InkStoryGraph): string {
         lines.push(`~ ${printStatement(content.statement)}`);
         continue;
       }
-      // Write content tags inline
-      let line = content.text;
+      // Conditional text (DEV-199 Phase 3) — wrap in `{condition: text}`
+      // before tags, matching the shape the parser expects on re-import.
+      let line = content.condition
+        ? `{${printExpression(content.condition)}: ${content.text}}`
+        : content.text;
       if (content.tags.length > 0) {
         line += ' ' + content.tags.map((t) => `# ${t}`).join(' ');
       }

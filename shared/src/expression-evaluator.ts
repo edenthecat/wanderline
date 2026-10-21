@@ -17,7 +17,15 @@ import type {
 
 export class ExpressionEvaluationError extends Error {}
 
-function truthy(value: VariableValue): boolean {
+/**
+ * Ink's own truthiness rule for a VariableValue: a boolean as itself,
+ * a number as nonzero, a string as nonempty. Exported (not just an
+ * internal evaluator detail) because any caller that gates on a
+ * boolean Expression's result — conditional text, conditional choice
+ * visibility — needs the exact same rule the evaluator's own `!`/`&&`/
+ * `||` use, not a second ad-hoc truthiness check that could diverge.
+ */
+export function truthy(value: VariableValue): boolean {
   if (typeof value === 'boolean') return value;
   if (typeof value === 'number') return value !== 0;
   return value.length > 0;

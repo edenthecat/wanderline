@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   evaluate,
   execute,
+  truthy,
   ExpressionEvaluationError,
   type Expression,
   type AssignmentStatement,
@@ -142,6 +143,29 @@ describe('evaluate — logical operators and truthiness', () => {
     expect(() => evaluate({ kind: 'unary', operator: '-', operand: lit('x') }, {})).toThrow(
       ExpressionEvaluationError,
     );
+  });
+});
+
+// Exported directly (not just an evaluator-internal detail) because
+// conditional text/choices (Phase 3+) need the exact same truthiness
+// rule used above, applied to an already-evaluated condition result.
+describe('truthy', () => {
+  it('a boolean is itself', () => {
+    expect(truthy(true)).toBe(true);
+    expect(truthy(false)).toBe(false);
+  });
+
+  it('a number is truthy unless exactly zero', () => {
+    expect(truthy(0)).toBe(false);
+    expect(truthy(-0)).toBe(false);
+    expect(truthy(1)).toBe(true);
+    expect(truthy(-1)).toBe(true);
+  });
+
+  it('a string is truthy unless empty', () => {
+    expect(truthy('')).toBe(false);
+    expect(truthy('false')).toBe(true);
+    expect(truthy('0')).toBe(true);
   });
 });
 

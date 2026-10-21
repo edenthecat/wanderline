@@ -732,12 +732,41 @@ function parseContent(line: string, state: ParserState): void {
   addContentToNode(line, currentNode, state);
 }
 
+// Ink conditional text (DEV-199 Phase 3): `{condition: text}` wrapping
+// an entire content line. Only this single-condition form is
+// supported — Ink's `{a|b}` alternatives/sequences (cycles, shuffles,
+// once-only lists) are a different feature and stay unsupported
+// (unmatched here, so they fall through as inert text exactly as they
+// did before this phase, which is not a regression).
+const CONDITIONAL_TEXT_RE = /^\{([^{}]+?):(.*)\}$/;
+
 function addContentToNode(line: string, node: StoryNode, state?: ParserState): void {
   const { text, tags } = extractTags(line);
 
+  let innerText = text;
+  let condition: Expression | undefined;
+  const conditionalMatch = text.match(CONDITIONAL_TEXT_RE);
+  if (conditionalMatch) {
+    try {
+      condition = parseExpression(conditionalMatch[1].trim());
+      innerText = conditionalMatch[2].trim();
+    } catch (err) {
+      if (state) {
+        state.warnings.push({
+          type: 'syntax_error',
+          message: `Could not parse conditional text's condition "${conditionalMatch[1].trim()}": ${errorMessage(err)}`,
+          lineNumber: state.lineNumber,
+          args: { detail: conditionalMatch[1].trim() },
+        });
+      }
+      // Fall through with innerText still the whole original line —
+      // same tolerant-degradation choice as the ~ assignment fallback.
+    }
+  }
+
   // Check for inline divert. Allow leading-dot relative targets.
-  let finalText = text;
-  const divertMatch = text.match(/^(.+?)\s*->\s*(\.?\w+(?:\.\w+)?)\s*$/);
+  let finalText = innerText;
+  const divertMatch = innerText.match(/^(.+?)\s*->\s*(\.?\w+(?:\.\w+)?)\s*$/);
   if (divertMatch) {
     finalText = divertMatch[1].trim();
     if (!node.divert) {
@@ -756,6 +785,7 @@ function addContentToNode(line: string, node: StoryNode, state?: ParserState): v
       kind: 'text',
       text: finalText,
       tags,
+      ...(condition !== undefined ? { condition } : {}),
     };
     node.content.push(content);
   }
