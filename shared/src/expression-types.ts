@@ -91,9 +91,17 @@ export interface AssignmentBlock {
  * no `kind` at all — only an explicit `kind: 'assignment'` should
  * ever be treated as non-text. Prefer this over `block.kind ===
  * 'text'` anywhere old data might still be in play.
+ *
+ * Accepts `null`/`undefined` (returning `false`, i.e. filtered out
+ * rather than crashing) because every real caller gets this array by
+ * casting loosely-typed JSONB `story_graph` data — the type system
+ * doesn't actually guarantee every element is a well-formed
+ * `ContentBlock`, only that it should be. A malformed element should
+ * disappear from a `.filter(isTextBlock)` call, not take the whole
+ * request down with `Cannot read properties of null`.
  */
-export function isTextBlock(block: ContentBlock): block is TextBlock {
-  return block.kind !== 'assignment';
+export function isTextBlock(block: ContentBlock | null | undefined): block is TextBlock {
+  return block != null && block.kind !== 'assignment';
 }
 
 /** @deprecated Use {@link ContentBlock} (a TextBlock | AssignmentBlock union). Kept only as an alias during the DEV-199 migration. */
