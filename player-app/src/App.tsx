@@ -694,12 +694,20 @@ export default function App() {
         const loadedSlots = readSlotsWithMigration(data.id, validNodeIds);
         setSaveSlots(loadedSlots);
         const autosave = loadedSlots.find((s) => s.id === AUTOSAVE_SLOT_ID);
-        // Auto-resume the autosave only when it diverges from the
-        // start node — otherwise we'd surface a "Resume?" affordance
-        // for a brand-new story that the user has only just opened.
+        // Auto-resume the autosave only when it reflects real progress
+        // — otherwise we'd surface a "Resume?" affordance for a
+        // brand-new story that the user has only just opened. nodeId
+        // alone can't tell these apart: a story that diverts/choices
+        // back to its own start node leaves a non-empty history even
+        // though nodeId again equals startNode, so check history too
+        // (navigateToNode always pushes the node being left, so an
+        // autosave written by any real navigation has at least one
+        // entry — only the pristine "never navigated" case has none).
         // If the user has manual slots saved, show the picker on the
         // instructions screen instead (handled in the JSX).
-        if (autosave && autosave.nodeId !== data.startNode) {
+        const autosaveHasProgress =
+          autosave && (autosave.nodeId !== data.startNode || autosave.history.length > 0);
+        if (autosaveHasProgress) {
           setCurrentNodeId(autosave.nodeId);
           setHistory(autosave.history);
           // Restore the snapshot as-is — it already reflects every

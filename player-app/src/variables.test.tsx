@@ -266,4 +266,32 @@ describe('variable store — integration', () => {
     // 999, not 1009 — the resumed node's `+= 10` must not re-fire.
     expect(readAutosave()?.variables).toEqual({ gold: 999 });
   });
+
+  it('resumes a real playthrough even when its autosave nodeId equals the start node', async () => {
+    // A story that loops back to its own start node leaves an autosave
+    // whose nodeId equals startNode but whose history is non-empty —
+    // nodeId alone can't tell that apart from a brand-new game. This
+    // must still restore the saved snapshot, not reset to fresh.
+    localStorage.setItem(
+      `wanderline_${STORY_ID}_slots`,
+      JSON.stringify([
+        {
+          id: 'autosave',
+          name: 'Autosave',
+          nodeId: 'start',
+          history: ['start', 'second'],
+          variables: { gold: 42 },
+          savedAt: new Date().toISOString(),
+        },
+      ]),
+    );
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = makeVariableStory();
+    render(<App />);
+    fireEvent.click(await screen.findByLabelText('Start the story'));
+    // Advance once more — if the resume had wrongly reset to fresh
+    // (gold: 0), this would land on 10, not 52.
+    fireEvent.click(await screen.findByLabelText(/^Choice 1/));
+    await screen.findByText('You found gold.');
+    expect(readAutosave()?.variables).toEqual({ gold: 52 });
+  });
 });
