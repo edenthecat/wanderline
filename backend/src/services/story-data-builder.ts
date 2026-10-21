@@ -1,4 +1,5 @@
 import { Pool } from 'pg';
+import { isTextBlock, type ContentBlock } from '../types.js';
 
 /**
  * Pick the title the player renders. Prefer the story-graph
@@ -20,6 +21,27 @@ export function resolveStoryTitle(rawTitle: unknown, projectName: unknown): stri
   if (!looksLikeParserDefault) return graphTitle;
   const fallback = typeof projectName === 'string' ? projectName.trim() : '';
   return fallback || graphTitle;
+}
+
+/**
+ * Strip assignment blocks (DEV-199 Phase 1's `~` statements) from a
+ * node's content before it reaches the player. The player doesn't
+ * understand them yet — wiring this manifest through to a real
+ * variable store is Phase 2's job — so without this, an assignment
+ * block's missing `.text` renders as a silent empty paragraph with
+ * no narration instead of just not being emitted. The same
+ * conservative choice `twee-emitter.ts` already makes for the same
+ * reason. Extracted (like `resolveStoryTitle` above) so it's
+ * unit-testable without the DB-backed `buildStoryData` flow.
+ *
+ * Takes `unknown` because the caller reads `node.content` off a
+ * loosely-typed `story_graph` JSONB row — a non-array value (should
+ * never happen, but isn't guaranteed by the type system at this
+ * boundary) passes through untouched rather than throwing.
+ */
+export function stripAssignmentBlocksForPlayer(content: unknown): unknown {
+  if (!Array.isArray(content)) return content;
+  return (content as ContentBlock[]).filter(isTextBlock);
 }
 
 export class StoryDataError extends Error {
@@ -373,6 +395,7 @@ export async function buildStoryData(
 
     storyData.nodes[nodeId] = {
       ...nodeData,
+      content: stripAssignmentBlocksForPlayer(nodeData.content),
       audio: nodeAudio[nodeId],
       metadata: metadata || undefined,
     } as StoryDataNode;

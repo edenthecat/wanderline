@@ -718,4 +718,184 @@ No association with any real narrative.
       expect(chamberNode.choices[1].target).toBe('passage');
     });
   });
+
+  describe('VAR/CONST declarations (DEV-199 Phase 1)', () => {
+    it('parses a VAR declaration with an inferred number type', () => {
+      const result = parseInk('VAR gold = 50\n\n== start ==\nHi.\n-> END\n', 'test-id');
+      expect(result.variables).toEqual([
+        {
+          name: 'gold',
+          type: 'number',
+          initialValue: { kind: 'literal', value: 50 },
+          isConst: false,
+        },
+      ]);
+    });
+
+    it('parses a CONST declaration with isConst true', () => {
+      const result = parseInk('CONST max_health = 100\n\n== start ==\nHi.\n', 'test-id');
+      expect(result.variables).toEqual([
+        {
+          name: 'max_health',
+          type: 'number',
+          initialValue: { kind: 'literal', value: 100 },
+          isConst: true,
+        },
+      ]);
+    });
+
+    it('infers string and bool types', () => {
+      const result = parseInk(
+        'VAR greeting = "hello"\nVAR flag = true\n\n== start ==\nHi.\n',
+        'test-id',
+      );
+      expect(result.variables).toEqual([
+        {
+          name: 'greeting',
+          type: 'string',
+          initialValue: { kind: 'literal', value: 'hello' },
+          isConst: false,
+        },
+        {
+          name: 'flag',
+          type: 'bool',
+          initialValue: { kind: 'literal', value: true },
+          isConst: false,
+        },
+      ]);
+    });
+
+    it('evaluates an initializer that references an earlier declaration', () => {
+      const result = parseInk('VAR a = 5\nVAR b = a * 2\n\n== start ==\nHi.\n', 'test-id');
+      expect(result.variables?.[1]).toEqual({
+        name: 'b',
+        type: 'number',
+        initialValue: {
+          kind: 'binary',
+          operator: '*',
+          left: { kind: 'variable', name: 'a' },
+          right: { kind: 'literal', value: 2 },
+        },
+        isConst: false,
+      });
+    });
+
+    it('does not create an implicit start node for a leading VAR line', () => {
+      const result = parseInk('VAR gold = 50\n\n== start ==\nHi.\n-> END\n', 'test-id');
+      expect(result.nodes['_intro']).toBeUndefined();
+      expect(result.startNode).toBe('start');
+    });
+
+    it('warns and skips a VAR whose initializer references an undeclared variable', () => {
+      const result = parseInk('VAR b = unknown_var + 1\n\n== start ==\nHi.\n', 'test-id');
+      expect(result.variables).toBeUndefined();
+      expect(
+        result.validation.warnings.some((w) => w.message.includes('Could not determine a type')),
+      ).toBe(true);
+    });
+
+    it('warns and skips a VAR with an unparseable initializer', () => {
+      const result = parseInk('VAR b = $$$\n\n== start ==\nHi.\n', 'test-id');
+      expect(result.variables).toBeUndefined();
+      expect(result.validation.warnings.some((w) => w.message.includes('Could not parse'))).toBe(
+        true,
+      );
+    });
+
+    it('leaves variables undefined for a story with no declarations', () => {
+      const result = parseInk('== start ==\nHi.\n-> END\n', 'test-id');
+      expect(result.variables).toBeUndefined();
+    });
+  });
+
+  describe('In-content `~` assignment (DEV-199 Phase 1)', () => {
+    it('interleaves an assignment block between text blocks in document order', () => {
+      const source = '== start ==\nBefore.\n~ gold = gold + 10\nAfter.\n-> END\n';
+      const result = parseInk(source, 'test-id');
+      const content = result.nodes['start'].content;
+      expect(content).toEqual([
+        { kind: 'text', text: 'Before.', tags: [] },
+        {
+          kind: 'assignment',
+          statement: {
+            kind: 'assignment',
+            name: 'gold',
+            operator: '=',
+            value: {
+              kind: 'binary',
+              operator: '+',
+              left: { kind: 'variable', name: 'gold' },
+              right: { kind: 'literal', value: 10 },
+            },
+          },
+        },
+        { kind: 'text', text: 'After.', tags: [] },
+      ]);
+    });
+
+    it('parses a compound assignment operator', () => {
+      const source = '== start ==\n~ gold += 10\n';
+      const result = parseInk(source, 'test-id');
+      const [block] = result.nodes['start'].content;
+      expect(block).toEqual({
+        kind: 'assignment',
+        statement: {
+          kind: 'assignment',
+          name: 'gold',
+          operator: '+=',
+          value: { kind: 'literal', value: 10 },
+        },
+      });
+    });
+
+    it('places a leading assignment on an implicit start node', () => {
+      const source = '~ gold = 0\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      const content = result.nodes[result.startNode].content;
+      expect(content[0]).toEqual({
+        kind: 'assignment',
+        statement: {
+          kind: 'assignment',
+          name: 'gold',
+          operator: '=',
+          value: { kind: 'literal', value: 0 },
+        },
+      });
+      expect(content[1]).toEqual({ kind: 'text', text: 'Hi.', tags: [] });
+    });
+
+    it('falls back to literal text and warns on a `~` line it does not understand yet (e.g. `~ return x`)', () => {
+      const source = '== debug ==\n~ return msg\n';
+      const result = parseInk(source, 'test-id');
+      const [block] = result.nodes['debug'].content;
+      expect(isTextBlock(block)).toBe(true);
+      if (isTextBlock(block)) {
+        expect(block.text).toBe('~ return msg');
+      }
+      expect(
+        result.validation.warnings.some((w) => w.message.includes('Could not parse assignment')),
+      ).toBe(true);
+    });
+
+    it('preserves the exact original line (no inserted space) when falling back on a line with no space after `~`', () => {
+      const source = '== debug ==\n~return msg\n';
+      const result = parseInk(source, 'test-id');
+      const [block] = result.nodes['debug'].content;
+      expect(isTextBlock(block)).toBe(true);
+      if (isTextBlock(block)) {
+        expect(block.text).toBe('~return msg');
+      }
+    });
+
+    it('round-trips through the shared content array unaffected when no assignment lines are present', () => {
+      // Guards against a regression where adding `~` dispatch somehow
+      // changes behavior for the overwhelming majority of existing
+      // stories that never use it.
+      const source = '== start ==\nJust narration.\n-> END\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.nodes['start'].content).toEqual([
+        { kind: 'text', text: 'Just narration.', tags: [] },
+      ]);
+    });
+  });
 });

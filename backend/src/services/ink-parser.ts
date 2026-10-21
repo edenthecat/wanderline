@@ -3,6 +3,7 @@
  * Parses .ink files into the Wanderline story graph format
  */
 
+import { parseExpression, parseStatement, evaluate } from '@wanderline/shared';
 import type {
   StoryGraph,
   StoryNode,
@@ -10,6 +11,11 @@ import type {
   Choice,
   ValidationResult,
   ValidationMessage,
+  Expression,
+  Statement,
+  VariableDeclaration,
+  VariableType,
+  VariableValue,
 } from '../types.js';
 
 // Re-export types for convenience
@@ -29,6 +35,14 @@ interface ParserState {
   // skips these so the divert isn't double-counted as a fall-through
   // attached to the parent knot.
   consumedLines: Set<number>;
+  // DEV-199 Phase 1: VAR/CONST preamble declarations, in file order.
+  variables: VariableDeclaration[];
+  // Values of variables declared so far (by name), kept ONLY to
+  // type-infer each subsequent VAR/CONST's initializer when it
+  // references an earlier declaration (Ink allows `VAR b = a * 2`).
+  // Not consulted anywhere else — the actual runtime variable store
+  // lives in the player (Phase 2).
+  variableValues: Record<string, VariableValue>;
 }
 
 const IMPLICIT_START_NODE = '_intro';
@@ -47,6 +61,8 @@ export function parseInk(source: string, storyId: string, title?: string): Story
     pendingDivert: null,
     lastChoiceIndex: null,
     consumedLines: new Set(),
+    variables: [],
+    variableValues: {},
   };
 
   const lines = source.split('\n');
@@ -61,6 +77,12 @@ export function parseInk(source: string, storyId: string, title?: string): Story
     if (isKnotDeclaration(trimmed)) {
       break;
     }
+
+    // A VAR/CONST preamble line is a declaration, not story content —
+    // without this, a leading `VAR gold = 50` would trip the
+    // "content before first knot" check and spawn an unwanted
+    // implicit start node.
+    if (VARIABLE_DECL_RE.test(trimmed)) continue;
 
     // Found non-empty, non-comment content before a knot
     hasContentBeforeFirstKnot = true;
@@ -109,6 +131,7 @@ export function parseInk(source: string, storyId: string, title?: string): Story
     startNode,
     validation,
     source,
+    ...(state.variables.length > 0 ? { variables: state.variables } : {}),
   };
 }
 
@@ -141,6 +164,12 @@ const KNOT_DECL_RE = /^={2,}\s*(function\s+)?(\w+)\s*(?:\([^)]*\))?\s*={0,}\s*(#
 function isKnotDeclaration(trimmed: string): boolean {
   return KNOT_DECL_RE.test(stripLineComment(trimmed).trimEnd());
 }
+
+// VAR/CONST declaration (DEV-199 Phase 1). Ink declares these at
+// global scope — conventionally at the top of the file, but not
+// required to be — so this is matched wherever parseLine encounters
+// it, not just in a "preamble" position.
+const VARIABLE_DECL_RE = /^(VAR|CONST)\s+(\w+)\s*=\s*(.+)$/;
 
 /**
  * Strip an Ink `// line comment` (everything from `//` to EOL) but
@@ -209,6 +238,13 @@ function parseLine(line: string, state: ParserState, allLines: string[], lineInd
     return;
   }
 
+  // VAR/CONST declaration (DEV-199 Phase 1).
+  const variableDeclMatch = trimmed.match(VARIABLE_DECL_RE);
+  if (variableDeclMatch) {
+    parseVariableDeclarationLine(variableDeclMatch, state);
+    return;
+  }
+
   // Knot declaration (=== knot_name === or == knot_name ==, with
   // optional `function` keyword and optional trailing tag/comment).
   const knotMatch = trimmed.match(KNOT_DECL_RE);
@@ -246,6 +282,12 @@ function parseLine(line: string, state: ParserState, allLines: string[], lineInd
   // Gather (-)
   if (trimmed.startsWith('-') && !trimmed.startsWith('->')) {
     parseGather(trimmed, state);
+    return;
+  }
+
+  // In-content assignment (~ statement — DEV-199 Phase 1).
+  if (trimmed.startsWith('~')) {
+    parseAssignmentLine(trimmed, state);
     return;
   }
 
@@ -575,6 +617,101 @@ function parseGather(line: string, state: ParserState): void {
   if (content) {
     parseContent(content, state);
   }
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Parse a `VAR name = expr` / `CONST name = expr` declaration into
+ * `state.variables`. Ink has no separate type annotation — the type
+ * is inferred from the initializer, which may itself reference an
+ * earlier declaration (`VAR b = a * 2`), so this evaluates against
+ * `state.variableValues` (built up incrementally, in file order)
+ * rather than requiring a literal.
+ *
+ * Any failure (unparseable expression, or one that can't be
+ * evaluated yet — e.g. it references a variable not yet declared)
+ * is reported as a warning and the declaration is skipped, rather
+ * than failing the whole parse.
+ */
+function parseVariableDeclarationLine(match: RegExpMatchArray, state: ParserState): void {
+  const [, keyword, name, rhsRaw] = match;
+  const isConst = keyword === 'CONST';
+
+  let initialValue: Expression;
+  try {
+    initialValue = parseExpression(rhsRaw.trim());
+  } catch (err) {
+    state.warnings.push({
+      type: 'syntax_error',
+      message: `Could not parse ${keyword} ${name}'s initial value: ${errorMessage(err)}`,
+      lineNumber: state.lineNumber,
+      args: { name, keyword },
+    });
+    return;
+  }
+
+  let value: VariableValue;
+  try {
+    value = evaluate(initialValue, state.variableValues);
+  } catch (err) {
+    state.warnings.push({
+      type: 'syntax_error',
+      message: `Could not determine a type for ${keyword} ${name}: ${errorMessage(err)}`,
+      lineNumber: state.lineNumber,
+      args: { name, keyword },
+    });
+    return;
+  }
+
+  const type: VariableType =
+    typeof value === 'number' ? 'number' : typeof value === 'boolean' ? 'bool' : 'string';
+  state.variables.push({ name, type, initialValue, isConst });
+  state.variableValues[name] = value;
+}
+
+/**
+ * Parse an in-content `~ statement` line (DEV-199 Phase 1) into an
+ * AssignmentBlock, interleaved with surrounding TextBlocks in
+ * document order on the current node.
+ *
+ * Only `name <assignOp> expr` is understood yet — Ink's `~ return`,
+ * `~ temp x = ...`, `~ x++`/`~ x--`, and bare function calls are not
+ * (see expression-parser.ts's header). Falling back to plain content
+ * on a parse failure matches this parser's pre-DEV-199 behavior for
+ * every `~` line (none were understood then either), so an
+ * unsupported form still shows up for the author to notice and fix,
+ * rather than silently vanishing.
+ */
+function parseAssignmentLine(trimmedLine: string, state: ParserState): void {
+  // `trimmedLine` still has its leading `~` — strip it here (rather
+  // than at the call site) so the fallback below can re-emit the
+  // EXACT original line on a parse failure, whitespace included,
+  // instead of a reconstruction that could drift from what the
+  // author actually wrote (e.g. `~return x` with no space).
+  const rest = trimmedLine.slice(1).trim();
+  let statement: Statement;
+  try {
+    statement = parseStatement(rest);
+  } catch (err) {
+    state.warnings.push({
+      type: 'syntax_error',
+      message: `Could not parse assignment "${trimmedLine}": ${errorMessage(err)}`,
+      lineNumber: state.lineNumber,
+      args: { detail: rest },
+    });
+    parseContent(trimmedLine, state);
+    return;
+  }
+
+  let currentNode = getCurrentNode(state);
+  if (!currentNode) {
+    createImplicitStartNode(state);
+    currentNode = getCurrentNode(state);
+  }
+  currentNode?.content.push({ kind: 'assignment', statement });
 }
 
 /**

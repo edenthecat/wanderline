@@ -1,4 +1,5 @@
 import { convertStoryGraphToInk } from '../ink-converter.js';
+import { parseInk } from '../ink-parser.js';
 
 describe('convertStoryGraphToInk', () => {
   it('should convert a simple knot to Ink format', () => {
@@ -10,7 +11,7 @@ describe('convertStoryGraphToInk', () => {
         start: {
           id: 'start',
           type: 'knot',
-          content: [{ text: 'Hello world!', tags: [] }],
+          content: [{ kind: 'text', text: 'Hello world!', tags: [] }],
           choices: [],
           divert: null,
           tags: [],
@@ -31,7 +32,7 @@ describe('convertStoryGraphToInk', () => {
         start: {
           id: 'start',
           type: 'knot',
-          content: [{ text: 'Choose:', tags: [] }],
+          content: [{ kind: 'text', text: 'Choose:', tags: [] }],
           choices: [
             { text: 'Go left', target: 'left' },
             { text: 'Go right', target: 'right' },
@@ -42,7 +43,7 @@ describe('convertStoryGraphToInk', () => {
         left: {
           id: 'left',
           type: 'knot',
-          content: [{ text: 'You went left.', tags: [] }],
+          content: [{ kind: 'text', text: 'You went left.', tags: [] }],
           choices: [],
           divert: 'END',
           tags: [],
@@ -50,7 +51,7 @@ describe('convertStoryGraphToInk', () => {
         right: {
           id: 'right',
           type: 'knot',
-          content: [{ text: 'You went right.', tags: [] }],
+          content: [{ kind: 'text', text: 'You went right.', tags: [] }],
           choices: [],
           divert: 'END',
           tags: [],
@@ -72,7 +73,7 @@ describe('convertStoryGraphToInk', () => {
         start: {
           id: 'start',
           type: 'knot',
-          content: [{ text: 'Moving on...', tags: [] }],
+          content: [{ kind: 'text', text: 'Moving on...', tags: [] }],
           choices: [],
           divert: 'next',
           tags: [],
@@ -80,7 +81,7 @@ describe('convertStoryGraphToInk', () => {
         next: {
           id: 'next',
           type: 'knot',
-          content: [{ text: 'Next section.', tags: [] }],
+          content: [{ kind: 'text', text: 'Next section.', tags: [] }],
           choices: [],
           divert: null,
           tags: [],
@@ -100,7 +101,7 @@ describe('convertStoryGraphToInk', () => {
         start: {
           id: 'start',
           type: 'knot',
-          content: [{ text: 'Begin', tags: [] }],
+          content: [{ kind: 'text', text: 'Begin', tags: [] }],
           choices: [],
           divert: 'start.sub',
           tags: [],
@@ -108,7 +109,7 @@ describe('convertStoryGraphToInk', () => {
         'start.sub': {
           id: 'start.sub',
           type: 'stitch',
-          content: [{ text: 'Sub content', tags: [] }],
+          content: [{ kind: 'text', text: 'Sub content', tags: [] }],
           choices: [],
           divert: null,
           tags: [],
@@ -131,7 +132,7 @@ describe('convertStoryGraphToInk', () => {
         start: {
           id: 'start',
           type: 'knot',
-          content: [{ text: 'Tagged line', tags: ['speaker:narrator'] }],
+          content: [{ kind: 'text', text: 'Tagged line', tags: ['speaker:narrator'] }],
           choices: [],
           divert: null,
           tags: [],
@@ -151,7 +152,7 @@ describe('convertStoryGraphToInk', () => {
         chapter1: {
           id: 'chapter1',
           type: 'knot',
-          content: [{ text: 'Chapter 1', tags: [] }],
+          content: [{ kind: 'text', text: 'Chapter 1', tags: [] }],
           choices: [],
           divert: null,
           tags: [],
@@ -159,7 +160,7 @@ describe('convertStoryGraphToInk', () => {
         chapter2: {
           id: 'chapter2',
           type: 'knot',
-          content: [{ text: 'Chapter 2', tags: [] }],
+          content: [{ kind: 'text', text: 'Chapter 2', tags: [] }],
           choices: [],
           divert: null,
           tags: [],
@@ -170,5 +171,93 @@ describe('convertStoryGraphToInk', () => {
     const ch1Pos = result.indexOf('=== chapter1 ===');
     const ch2Pos = result.indexOf('=== chapter2 ===');
     expect(ch2Pos).toBeLessThan(ch1Pos);
+  });
+
+  describe('Variable declarations and assignment (DEV-199 Phase 1)', () => {
+    it('emits VAR/CONST declarations before any knot content', () => {
+      const result = convertStoryGraphToInk({
+        id: 'test',
+        title: 'Test',
+        startNode: 'start',
+        variables: [
+          {
+            name: 'gold',
+            type: 'number',
+            initialValue: { kind: 'literal', value: 50 },
+            isConst: false,
+          },
+          {
+            name: 'max_health',
+            type: 'number',
+            initialValue: { kind: 'literal', value: 100 },
+            isConst: true,
+          },
+        ],
+        nodes: {
+          start: {
+            id: 'start',
+            type: 'knot',
+            content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+            choices: [],
+            divert: null,
+            tags: [],
+          },
+        },
+      });
+      expect(result).toContain('VAR gold = 50');
+      expect(result).toContain('CONST max_health = 100');
+      expect(result.indexOf('VAR gold = 50')).toBeLessThan(result.indexOf('=== start ==='));
+    });
+
+    it('emits an assignment block as a `~` statement', () => {
+      const result = convertStoryGraphToInk({
+        id: 'test',
+        title: 'Test',
+        startNode: 'start',
+        nodes: {
+          start: {
+            id: 'start',
+            type: 'knot',
+            content: [
+              { kind: 'text', text: 'Before.', tags: [] },
+              {
+                kind: 'assignment',
+                statement: {
+                  kind: 'assignment',
+                  name: 'gold',
+                  operator: '+=',
+                  value: { kind: 'literal', value: 10 },
+                },
+              },
+              { kind: 'text', text: 'After.', tags: [] },
+            ],
+            choices: [],
+            divert: null,
+            tags: [],
+          },
+        },
+      });
+      const lines = result.split('\n').filter(Boolean);
+      expect(lines.indexOf('Before.')).toBeLessThan(lines.indexOf('~ gold += 10'));
+      expect(lines.indexOf('~ gold += 10')).toBeLessThan(lines.indexOf('After.'));
+    });
+
+    it('round-trips VAR declarations and in-content assignment through parseInk -> emit -> parseInk', () => {
+      const source = [
+        'VAR gold = 50',
+        '',
+        '== start ==',
+        'Before.',
+        '~ gold += 10',
+        'After.',
+        '-> END',
+        '',
+      ].join('\n');
+      const first = parseInk(source, 'test-id');
+      const emitted = convertStoryGraphToInk(first);
+      const second = parseInk(emitted, 'test-id');
+      expect(second.variables).toEqual(first.variables);
+      expect(second.nodes['start'].content).toEqual(first.nodes['start'].content);
+    });
   });
 });

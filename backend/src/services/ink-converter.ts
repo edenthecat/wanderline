@@ -3,6 +3,9 @@
  * Extracted from projects.ts for reuse.
  */
 
+import { printExpression, printStatement } from '@wanderline/shared';
+import type { ContentBlock, VariableDeclaration } from '../types.js';
+
 interface InkStoryGraph {
   id: string;
   title: string;
@@ -11,13 +14,14 @@ interface InkStoryGraph {
     {
       id: string;
       type: 'knot' | 'stitch' | 'gather';
-      content: { text: string; tags: string[] }[];
+      content: ContentBlock[];
       choices: { text: string; target: string }[];
       divert: string | null;
       tags: string[];
     }
   >;
   startNode: string;
+  variables?: VariableDeclaration[];
 }
 
 /**
@@ -35,6 +39,14 @@ export function convertStoryGraphToInk(storyGraph: InkStoryGraph): string {
   const lines: string[] = [];
   const nodes = storyGraph.nodes;
   const processedNodes = new Set<string>();
+
+  // VAR/CONST preamble (DEV-199 Phase 1), in declaration order. Must
+  // come before any knot content, matching Ink's own convention and
+  // what the parser expects on re-import.
+  for (const decl of storyGraph.variables ?? []) {
+    const keyword = decl.isConst ? 'CONST' : 'VAR';
+    lines.push(`${keyword} ${decl.name} = ${printExpression(decl.initialValue)}`);
+  }
 
   // sanitize a StoryNode id into a legal Ink knot / stitch
   // identifier. Ink allows only `[A-Za-z_][A-Za-z0-9_]*`, but Twee
@@ -129,6 +141,11 @@ export function convertStoryGraphToInk(storyGraph: InkStoryGraph): string {
 
     // Write content
     for (const content of node.content) {
+      // In-content assignment (DEV-199 Phase 1) — re-emit as `~ stmt`.
+      if (content.kind === 'assignment') {
+        lines.push(`~ ${printStatement(content.statement)}`);
+        continue;
+      }
       // Write content tags inline
       let line = content.text;
       if (content.tags.length > 0) {
