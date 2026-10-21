@@ -1,11 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useCallback, type ChangeEvent } from 'react';
 import { isTextBlock, type ContentBlock } from '@wanderline/shared';
 import { FLAG_REASON_LABELS } from './flagLabels';
-
-/** First text block's content, for the one-line node preview snippet. */
-function firstTextPreview(content: ContentBlock[]): string | undefined {
-  return content.find(isTextBlock)?.text;
-}
 import FlaggedNodesPanel from './FlaggedNodesPanel';
 import {
   uploadInk,
@@ -26,6 +21,11 @@ import { useYjs } from '../hooks/useYjs';
 import { useNodeEditor } from '../hooks/useNodeEditor';
 import { useYjsSeedReady } from '../hooks/useStoryYDoc';
 import { nodeMatchesQuery, normalizeQuery } from '../lib/nodeSearch';
+
+/** First text block's content, for the one-line node preview snippet. */
+function firstTextPreview(content: ContentBlock[]): string | undefined {
+  return content.find(isTextBlock)?.text;
+}
 
 interface Props {
   projectId: string;

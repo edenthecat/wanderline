@@ -319,12 +319,6 @@ const LOGICAL_PRECEDENCE: Record<LogicalOperator, number> = {
   '&&': 2,
 };
 
-// Operators where `a OP (b OP c)` means something different from
-// `(a OP b) OP c` — the right operand has to stay parenthesized even
-// at equal precedence, unlike the associative operators (+, *, &&, ||,
-// ==, !=, comparisons aren't chained at all in this grammar).
-const RIGHT_ASSOCIATIVE_NEEDS_PARENS = new Set<BinaryOperator>(['-', '/', '%']);
-
 function precedenceOf(expr: Expression): number {
   if (expr.kind === 'binary') return BINARY_PRECEDENCE[expr.operator];
   if (expr.kind === 'logical') return LOGICAL_PRECEDENCE[expr.operator];
@@ -339,19 +333,23 @@ function printValue(value: VariableValue): string {
   return String(value);
 }
 
-function printChild(
-  child: Expression,
-  parentPrecedence: number,
-  isRightOperand: boolean,
-  parentOperator?: BinaryOperator,
-): string {
+/**
+ * Every precedence tier in this grammar parses strictly
+ * left-associatively (`a - b - c` always builds `(a - b) - c`, never
+ * `a - (b - c)` — and the same is true of every other operator, not
+ * just the non-associative ones). So the only way a right-nested
+ * same-precedence child can exist in the AST at all is if the source
+ * had explicit parens there, and the printer must put them back or
+ * the reprinted source parses into a different tree. A left child at
+ * the same precedence is exactly what plain left-to-right parsing
+ * already produces with no parens, so it only needs them at strictly
+ * lower precedence.
+ */
+function printChild(child: Expression, parentPrecedence: number, isRightOperand: boolean): string {
   const childPrecedence = precedenceOf(child);
-  const needsParens =
-    childPrecedence < parentPrecedence ||
-    (isRightOperand &&
-      childPrecedence === parentPrecedence &&
-      parentOperator !== undefined &&
-      RIGHT_ASSOCIATIVE_NEEDS_PARENS.has(parentOperator));
+  const needsParens = isRightOperand
+    ? childPrecedence <= parentPrecedence
+    : childPrecedence < parentPrecedence;
   const printed = printExpression(child);
   return needsParens ? `(${printed})` : printed;
 }
@@ -375,7 +373,7 @@ export function printExpression(expr: Expression): string {
     case 'binary': {
       const precedence = BINARY_PRECEDENCE[expr.operator];
       const left = printChild(expr.left, precedence, false);
-      const right = printChild(expr.right, precedence, true, expr.operator);
+      const right = printChild(expr.right, precedence, true);
       return `${left} ${expr.operator} ${right}`;
     }
     case 'logical': {

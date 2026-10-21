@@ -154,6 +154,12 @@ describe('round-trip: parse -> print -> re-parse', () => {
     'a < b && b < c',
     '-(-x)',
     '"a" + "b" + "c"',
+    'a + (b + c)',
+    'a * (b * c)',
+    'a == (b == c)',
+    'a && (b && c)',
+    'a || (b || c)',
+    'a < (b < c)',
   ])('%s', (source) => {
     roundTrip(source);
   });
@@ -170,6 +176,14 @@ describe('round-trip: parse -> print -> re-parse', () => {
     // 10 - (3 - 2) must keep its parens on re-print, or it would
     // silently change meaning (reprinting as "10 - 3 - 2" = 5, not 9).
     expect(printExpression(parseExpression('10 - (3 - 2)'))).toBe('10 - (3 - 2)');
+    // Every tier parses strictly left-associatively, so a right-nested
+    // same-precedence child — even for operators where the regrouping
+    // happens to be value-preserving, like + or && — only exists in
+    // the AST because the source had explicit parens there. Losing
+    // them on reprint changes which AST the string parses back into,
+    // even when it doesn't change the evaluated value.
+    expect(printExpression(parseExpression('a + (b + c)'))).toBe('a + (b + c)');
+    expect(printExpression(parseExpression('a && (b && c)'))).toBe('a && (b && c)');
   });
 
   it.each(['x = 5', 'gold += 10', 'total = a + b * 2'])('%s', (source) => {
