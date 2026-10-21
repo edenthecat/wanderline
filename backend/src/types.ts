@@ -3,42 +3,27 @@
  * This allows us to use the types without building the shared package first
  */
 
-import type {
-  Expression,
-  VariableDeclaration,
-  Statement,
-  ContentBlock,
-  TextBlock,
-  AssignmentBlock,
-  TextContent,
+import {
+  isTextBlock,
+  type Expression,
+  type VariableDeclaration,
+  type Statement,
+  type ContentBlock,
+  type TextBlock,
+  type AssignmentBlock,
+  type TextContent,
 } from '@wanderline/shared';
 
-export type {
-  Expression,
-  VariableDeclaration,
-  Statement,
-  ContentBlock,
-  TextBlock,
-  AssignmentBlock,
-  TextContent,
+export {
+  isTextBlock,
+  type Expression,
+  type VariableDeclaration,
+  type Statement,
+  type ContentBlock,
+  type TextBlock,
+  type AssignmentBlock,
+  type TextContent,
 };
-
-/**
- * True for a TextBlock, including a pre-Phase-0 content item that has
- * no `kind` at all — only an explicit `kind: 'assignment'` should
- * ever be treated as non-text. Prefer this over `block.kind ===
- * 'text'` anywhere old data might still be in play.
- *
- * Duplicated from @wanderline/shared (not imported) deliberately: a
- * *value* import from the shared package's compiled ESM output
- * breaks Jest's CJS module resolution for every file that transitively
- * imports this one (types.ts is imported almost everywhere), whereas
- * the `import type` above is erased at compile time and never touches
- * the runtime. Keep this in sync with expression-types.ts's copy.
- */
-export function isTextBlock(block: ContentBlock): block is TextBlock {
-  return block.kind !== 'assignment';
-}
 
 // === Story Graph Types ===
 
@@ -103,13 +88,12 @@ export interface StoryNode {
 
 export type NodeType = 'knot' | 'stitch' | 'gather';
 
-// ContentBlock/TextBlock/AssignmentBlock/TextContent are re-exported
-// (type-only) from @wanderline/shared above — see expression-types.ts
-// for the doc comments. isTextBlock is duplicated rather than
-// re-exported; see its own comment above for why. These types are
-// shared (not duplicated per the rest of StoryGraph) because backend
-// validation, player-app playback, and the editor UI must all agree
-// on what counts as a text vs assignment block.
+// ContentBlock/TextBlock/AssignmentBlock/TextContent/isTextBlock are
+// re-exported from @wanderline/shared above — see expression-types.ts
+// for the doc comments. Shared (not duplicated per the rest of
+// StoryGraph) because backend validation, player-app playback, and
+// the editor UI must all agree on what counts as a text vs assignment
+// block.
 
 export interface Choice {
   text: string;
