@@ -152,7 +152,8 @@ export type ValidationType =
   | 'missing_start'
   | 'duplicate_node'
   | 'syntax_error'
-  | 'orphaned_stitch';
+  | 'orphaned_stitch'
+  | 'ambiguous_twee_dialect';
 
 export interface ValidationMessage {
   type: ValidationType | string;

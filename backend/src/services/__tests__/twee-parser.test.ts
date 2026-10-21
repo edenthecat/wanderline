@@ -1,4 +1,4 @@
-import { parseTwee, TweeParseError } from '../twee-parser.js';
+import { parseTwee, TweeParseError, detectTweeDialect } from '../twee-parser.js';
 import { emitTwee } from '../twee-emitter.js';
 import { isTextBlock, type ContentBlock } from '../../types.js';
 
@@ -619,5 +619,145 @@ describe('parseTwee — round-trip fidelity', () => {
     expect(dup.some((w) => w.args?.nodeName === 'StoryTitle')).toBe(true);
     // Last one wins for the title itself.
     expect(g.title).toBe('Second');
+  });
+});
+
+describe('detectTweeDialect (DEV-199 Phase 6)', () => {
+  it('prefers the StoryData format field, case-insensitively, with a version suffix', () => {
+    expect(detectTweeDialect({ format: 'Harlowe' }, '')).toEqual({
+      dialect: 'harlowe',
+      sniffed: false,
+      ambiguous: false,
+    });
+    expect(detectTweeDialect({ format: 'sugarcube 2.36.1' }, '')).toEqual({
+      dialect: 'sugarcube',
+      sniffed: false,
+      ambiguous: false,
+    });
+    expect(detectTweeDialect({ format: 'CHAPBOOK' }, '')).toEqual({
+      dialect: 'chapbook',
+      sniffed: false,
+      ambiguous: false,
+    });
+  });
+
+  it('sniffs Harlowe macro syntax when format is missing', () => {
+    const result = detectTweeDialect(
+      undefined,
+      ':: Start\n(set: $gold to 5)\n(if: $gold > 0)[Rich]\n',
+    );
+    expect(result).toEqual({ dialect: 'harlowe', sniffed: true, ambiguous: false });
+  });
+
+  it('sniffs SugarCube macro syntax when format is missing', () => {
+    const result = detectTweeDialect(
+      undefined,
+      ':: Start\n<<set $gold to 5>>\n<<if $gold > 0>>Rich<</if>>\n',
+    );
+    expect(result).toEqual({ dialect: 'sugarcube', sniffed: true, ambiguous: false });
+  });
+
+  it('sniffs Chapbook macro syntax when format is missing', () => {
+    const result = detectTweeDialect(
+      undefined,
+      ':: Start\ngold: 5\n--\n[if gold > 0]Rich[continued]\n',
+    );
+    expect(result).toEqual({ dialect: 'chapbook', sniffed: true, ambiguous: false });
+  });
+
+  it('falls back to sniffing when format names an unrecognized format', () => {
+    const result = detectTweeDialect({ format: 'Snowman' }, ':: Start\n<<set $gold to 5>>\n');
+    expect(result).toEqual({ dialect: 'sugarcube', sniffed: true, ambiguous: false });
+  });
+
+  it('is NOT flagged ambiguous for plain prose with no format and no macros — nothing to misdetect', () => {
+    // The overwhelmingly common case (an ordinary hyperlink-based
+    // Twee story) must not get a warning with no actionable follow-up.
+    expect(detectTweeDialect(undefined, ':: Start\nJust plain prose.\n')).toEqual({
+      dialect: null,
+      sniffed: true,
+      ambiguous: false,
+    });
+  });
+
+  it('IS flagged ambiguous on a genuine tie between two dialects’ signatures', () => {
+    // One Harlowe-shaped macro, one SugarCube-shaped macro — equal
+    // hits, so picking either would be an arbitrary guess, and unlike
+    // the no-signal case there's real macro syntax here worth flagging.
+    const result = detectTweeDialect(undefined, ':: Start\n(set: $x to 1)\n<<set $y to 2>>\n');
+    expect(result).toEqual({ dialect: null, sniffed: true, ambiguous: true });
+  });
+
+  it('IS flagged ambiguous when StoryData names an unrecognized format and nothing sniffs', () => {
+    // The author told us a format explicitly; it just isn't one of
+    // the three this parser knows. Worth surfacing even with zero
+    // macro syntax, unlike the silent "no format at all" case.
+    const result = detectTweeDialect({ format: 'Snowman' }, ':: Start\nJust plain prose.\n');
+    expect(result).toEqual({ dialect: null, sniffed: true, ambiguous: true });
+  });
+
+  it('does not mistake a lone prose em-dash line for Chapbook', () => {
+    // A bare `--` line alone (no real [if]/insert macro anywhere) is
+    // too easily confused with a prose em-dash paragraph break to
+    // count by itself — otherwise a plain Harlowe/SugarCube story
+    // that happens to format a dramatic pause this way would
+    // misdetect as Chapbook. No signal anywhere else either, so this
+    // is the silent "nothing to misdetect" case, not ambiguous.
+    const result = detectTweeDialect(undefined, ':: Start\nSome prose.\n--\nMore prose.\n');
+    expect(result).toEqual({ dialect: null, sniffed: true, ambiguous: false });
+  });
+
+  it('the vars-block separator is a tie-breaking bonus on top of a real Chapbook insert, not a standalone signal', () => {
+    // One Chapbook insert plus the separator (2 points) beats one
+    // lone Harlowe-shaped macro elsewhere (1 point).
+    const result = detectTweeDialect(
+      undefined,
+      ':: Start\ngold: 5\n--\n[if gold > 0]Rich[continued]\n(goto: "Elsewhere")\n',
+    );
+    expect(result).toEqual({ dialect: 'chapbook', sniffed: true, ambiguous: false });
+  });
+});
+
+describe('parseTwee — Twine macro dialect detection (DEV-199 Phase 6)', () => {
+  it('resolves graph.twee.dialect from a Harlowe StoryData format field', () => {
+    const src = `:: StoryData\n{"start":"Start","format":"Harlowe","format-version":"3.3.9"}\n\n:: Start\nHi.\n`;
+    const g = parseTwee(src);
+    expect(g.twee?.dialect).toBe('harlowe');
+    expect(g.validation.warnings.some((w) => w.type === 'ambiguous_twee_dialect')).toBe(false);
+  });
+
+  it('resolves graph.twee.dialect from a SugarCube StoryData format field', () => {
+    const src = `:: StoryData\n{"start":"Start","format":"SugarCube","format-version":"2.36.1"}\n\n:: Start\nHi.\n`;
+    const g = parseTwee(src);
+    expect(g.twee?.dialect).toBe('sugarcube');
+  });
+
+  it('resolves graph.twee.dialect from a Chapbook StoryData format field', () => {
+    const src = `:: StoryData\n{"start":"Start","format":"Chapbook","format-version":"1.2.3"}\n\n:: Start\nHi.\n`;
+    const g = parseTwee(src);
+    expect(g.twee?.dialect).toBe('chapbook');
+  });
+
+  it('sniffs a dialect and sets graph.twee.dialect when StoryData has no format', () => {
+    const src = `:: Start\n<<set $gold to 5>>\n<<if $gold > 0>>Rich<</if>>\n`;
+    const g = parseTwee(src);
+    expect(g.twee?.dialect).toBe('sugarcube');
+    expect(g.validation.warnings.some((w) => w.type === 'ambiguous_twee_dialect')).toBe(false);
+  });
+
+  it('does not warn for a plain, macro-free Twee story — nothing to misdetect', () => {
+    const src = `:: Start\nJust plain prose, no macros anywhere.\n`;
+    const g = parseTwee(src);
+    expect(g.twee?.dialect).toBeUndefined();
+    expect(g.validation.warnings.some((w) => w.type === 'ambiguous_twee_dialect')).toBe(false);
+  });
+
+  it('warns with ambiguous_twee_dialect and leaves graph.twee.dialect unset on a genuine tie', () => {
+    const src = `:: Start\n(set: $x to 1)\n<<set $y to 2>>\n`;
+    const g = parseTwee(src);
+    expect(g.twee?.dialect).toBeUndefined();
+    const warning = g.validation.warnings.find((w) => w.type === 'ambiguous_twee_dialect');
+    expect(warning).toBeDefined();
+    expect(warning?.message).toContain('Harlowe');
   });
 });

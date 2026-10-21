@@ -68,8 +68,23 @@ export interface StoryGraph {
   twee?: {
     storyData?: Record<string, unknown>;
     specials?: Record<string, string>;
+    /**
+     * Detected Twine macro dialect (DEV-199 Phase 6), read from
+     * StoryData's `format` field or sniffed from macro syntax when
+     * that's missing/unrecognized. Consumed by Phases 7-9's
+     * dialect-specific `<<macro>>`/`(macro:)`/`[macro]` parsing.
+     * Undefined when detection was genuinely ambiguous — surfaced as
+     * an `ambiguous_twee_dialect` validation warning instead of a
+     * silent guess.
+     */
+    dialect?: TweeDialect;
   };
 }
+
+/** Twine macro dialects Wanderline's Twee parser distinguishes
+ * between (DEV-199 Phase 6+). Not Snowman or a custom/third-party
+ * format — those stay undetected, matching the "ambiguous" case. */
+export type TweeDialect = 'harlowe' | 'sugarcube' | 'chapbook';
 
 export interface StoryNode {
   id: string;
@@ -153,7 +168,8 @@ export type ValidationType =
   | 'missing_start'
   | 'duplicate_node'
   | 'syntax_error'
-  | 'orphaned_stitch';
+  | 'orphaned_stitch'
+  | 'ambiguous_twee_dialect';
 
 // === Project Types ===
 

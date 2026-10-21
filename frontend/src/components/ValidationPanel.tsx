@@ -62,6 +62,11 @@ function humanize(msg: ValidationMessage): { title: string; hint?: string; docs?
         hint: 'The parser couldn’t recognize this line. Common causes: an unclosed `[ ]`, a stray `*` not followed by content, or invalid characters in an identifier (letters / digits / underscore only).',
         docs: INK_DOCS,
       };
+    case 'ambiguous_twee_dialect':
+      return {
+        title: msg.message,
+        hint: "Variables and conditionals written as macros (Harlowe's `(set:)`, SugarCube's `<<set>>`, Chapbook's vars block) won't be understood until Wanderline can tell which one this story uses. Open the story in Twine, check Story Details for its Format, and re-export — or add macros so there's something to detect.",
+      };
     default:
       return { title: msg.message };
   }
