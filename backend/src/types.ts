@@ -103,12 +103,13 @@ export interface StoryNode {
 
 export type NodeType = 'knot' | 'stitch' | 'gather';
 
-// ContentBlock/TextBlock/AssignmentBlock/isTextBlock/TextContent are
-// re-exported from @wanderline/shared above — see expression-types.ts
-// for the doc comments. Shared (not duplicated per the rest of
-// StoryGraph) because backend validation, player-app playback, and
-// the editor UI must all agree on what counts as a text vs assignment
-// block.
+// ContentBlock/TextBlock/AssignmentBlock/TextContent are re-exported
+// (type-only) from @wanderline/shared above — see expression-types.ts
+// for the doc comments. isTextBlock is duplicated rather than
+// re-exported; see its own comment above for why. These types are
+// shared (not duplicated per the rest of StoryGraph) because backend
+// validation, player-app playback, and the editor UI must all agree
+// on what counts as a text vs assignment block.
 
 export interface Choice {
   text: string;
