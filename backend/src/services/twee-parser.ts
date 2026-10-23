@@ -45,16 +45,19 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { evaluate } from '@wanderline/shared';
 import type {
   StoryGraph,
   StoryNode,
-  TextContent,
+  ContentBlock,
   Choice,
   ValidationResult,
   ValidationMessage,
   NodeType,
   TweeDialect,
 } from '../types.js';
+import { extractLinks, bodyToContent } from './twee-content.js';
+import { processHarlowePassageBody, createHarloweVariableState } from './harlowe-macros.js';
 
 export class TweeParseError extends Error {
   constructor(
@@ -250,73 +253,6 @@ const SPECIAL_PASSAGES = new Set([
 ]);
 
 /**
- * extract every link on a passage body + return the body
- * text with the links removed (so the plain content lines don't
- * contain markup). Handles all four shapes documented in the file
- * header.
- *
- * A conditional `[Cond]` suffix (Twine's SugarCube macro pattern) is
- * tolerated but stripped — the parser doesn't evaluate conditions.
- */
-function extractLinks(body: string): { choices: Choice[]; contentBody: string } {
-  const choices: Choice[] = [];
-  const linkPattern = /\[\[([^\][]*?)\]\](?:\[[^\]]*\])?/g;
-  const contentBody = body.replace(linkPattern, (_full, inner: string) => {
-    const link = parseLinkInner(inner);
-    if (link) choices.push(link);
-    // Links are removed from the content stream — they're modelled
-    // as choices, not inline text.
-    return '';
-  });
-  return { choices, contentBody };
-}
-
-function parseLinkInner(inner: string): Choice | null {
-  const trimmed = inner.trim();
-  if (!trimmed) return null;
-  let text: string;
-  let target: string;
-  // Split on the FIRST occurrence of the delimiter — `String.split`
-  // returns every segment, so `'a->b->c'.split('->')` yields three
-  // parts and destructuring silently drops `->c`. Use indexOf so a
-  // delimiter appearing later in the text/target survives.
-  //
-  // Delimiter priority when multiple are present in the same link:
-  // `|` beats `->`/`<-`. A link like `[[Attack -> retreat|Cave]]`
-  // is authored as pipe form (text on the left, target on the right)
-  // — splitting at `->` first would produce text='Attack' and
-  // target='retreat|Cave' which is neither what the author wrote nor
-  // a resolvable passage. Arrow-form links exist too but they never
-  // legitimately contain a `|` in the text or target (Twee 3 spec).
-  let idx: number;
-  if ((idx = trimmed.indexOf('|')) !== -1) {
-    // Shape: [[Text|Target]]
-    text = trimmed.slice(0, idx).trim();
-    target = trimmed.slice(idx + 1).trim();
-  } else if ((idx = trimmed.indexOf('->')) !== -1) {
-    // Shape: [[Text->Target]]
-    text = trimmed.slice(0, idx).trim();
-    target = trimmed.slice(idx + 2).trim();
-  } else if ((idx = trimmed.indexOf('<-')) !== -1) {
-    // Shape: [[Target<-Text]] (reversed)
-    target = trimmed.slice(0, idx).trim();
-    text = trimmed.slice(idx + 2).trim();
-  } else {
-    // Shape: [[Target]] — display text is the target name.
-    text = trimmed;
-    target = trimmed;
-  }
-  if (!target) return null;
-  return {
-    text: text || target,
-    target,
-    sticky: false,
-    fallback: false,
-    tags: [],
-  };
-}
-
-/**
  * Twee 3 identifiers can contain spaces, but StoryGraph node
  * ids are keyed under Record<string, StoryNode>. We use the passage
  * name verbatim as the id — same convention Ink uses for knot names —
@@ -325,32 +261,6 @@ function parseLinkInner(inner: string): Choice | null {
  */
 function passageNameToId(name: string): string {
   return name;
-}
-
-/**
- * Parse the raw body content into a TextContent[]. Twee stores prose
- * as a single flat block; we split on blank lines to give each paragraph
- * its own TextContent (parity with Ink's stitch-per-paragraph feel).
- */
-function bodyToContent(body: string): TextContent[] {
-  const trimmed = body.trim();
-  if (!trimmed) return [];
-  return trimmed
-    .split(/\n\s*\n/)
-    .map((chunk) => chunk.trim())
-    .filter(Boolean)
-    .map((text): TextContent => ({
-      // reverse the `\::` line-start escape the emitter
-      // writes. Without this, a genuine `::` paragraph starts
-      // gets a permanent leading backslash on every round-trip.
-      // Only strips the ONE backslash that guards the delimiter;
-      // authors who want a literal `\::` at line-start can
-      // double-escape as `\\::` (and that only affects them if
-      // they later mutate the graph, which is a fine trade).
-      kind: 'text',
-      text: text.replace(/(^|\n)\\::/g, '$1::'),
-      tags: [],
-    }));
 }
 
 export interface ParseTweeOptions {
@@ -475,6 +385,35 @@ export function detectTweeDialect(
  * returned graph so the import survives and shows the user what
  * needs fixing (missing link targets, orphaned passages, etc.).
  */
+/**
+ * Find StoryData's `format` field (if any) WITHOUT running the full
+ * special-passage handling pass — needed before the main loop below,
+ * since every passage's body has to be processed with the right
+ * dialect-specific (or generic) pipeline from its very first
+ * iteration, not just once storyData happens to have been seen.
+ * "Last StoryData wins" matches the main loop's own duplicate-header
+ * handling.
+ */
+function findStoryDataForDialectDetection(
+  rawPassages: RawPassage[],
+): Record<string, unknown> | undefined {
+  let result: Record<string, unknown> | undefined;
+  for (const raw of rawPassages) {
+    if (raw.header.name !== 'StoryData') continue;
+    try {
+      const parsed = JSON.parse(raw.body.trim());
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        result = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Ignore — the main loop's handleSpecialPassage pass surfaces
+      // (or silently tolerates) malformed StoryData as before; this
+      // early pass only cares about `format`, when parseable at all.
+    }
+  }
+  return result;
+}
+
 export function parseTwee(source: string, options: ParseTweeOptions = {}): StoryGraph {
   if (detectTwee1(source)) {
     throw new TweeParseError(
@@ -510,6 +449,23 @@ export function parseTwee(source: string, options: ParseTweeOptions = {}): Story
   // PassageFooter / etc) so re-emit reproduces them.
   const specials: Record<string, string> = Object.create(null);
   const seenSpecials = new Set<string>();
+
+  // Twine macro dialect detection (DEV-199 Phase 6) — resolved before
+  // the main loop, not after, because EVERY passage body below needs
+  // to know which pipeline (generic, or a dialect module's own) to
+  // run through from its first iteration.
+  const dialectResult = detectTweeDialect(findStoryDataForDialectDetection(rawPassages), source);
+  if (dialectResult.ambiguous) {
+    warnings.push({
+      type: 'ambiguous_twee_dialect',
+      message:
+        "Could not determine which Twine macro format (Harlowe, SugarCube, or Chapbook) this story uses. Macro-based variables and conditionals won't be understood until the format is set in Twine's Story Details, or the story is re-exported with a format-identifying StoryData block.",
+    });
+  }
+  // DEV-199 Phase 7: implicit variable declarations threaded across
+  // every passage, in file order, so the first (set:)/(put:) for a
+  // given $-name anywhere in the story is the one that declares it.
+  const harloweVariableState = createHarloweVariableState();
 
   for (const raw of rawPassages) {
     if (SPECIAL_PASSAGES.has(raw.header.name)) {
@@ -564,13 +520,29 @@ export function parseTwee(source: string, options: ParseTweeOptions = {}): Story
       );
     }
 
-    const { choices, contentBody } = extractLinks(raw.body);
+    let content: ContentBlock[];
+    let choices: Choice[];
+    if (dialectResult.dialect === 'harlowe') {
+      const processed = processHarlowePassageBody(
+        raw.body,
+        harloweVariableState,
+        evaluate,
+        warnings,
+        raw.header.lineNumber,
+      );
+      content = processed.content;
+      choices = processed.choices;
+    } else {
+      const extracted = extractLinks(raw.body);
+      choices = extracted.choices;
+      content = bodyToContent(extracted.contentBody);
+    }
 
     const node: StoryNode = {
       id,
       type: 'knot' as NodeType,
       parent: null,
-      content: bodyToContent(contentBody),
+      content,
       choices,
       divert: null,
       tags: raw.header.tags,
@@ -605,20 +577,6 @@ export function parseTwee(source: string, options: ParseTweeOptions = {}): Story
   // Post-pass: unreachable + missing-target validation.
   validateReferences(nodes, resolvedStart, errors, warnings);
 
-  // Twine macro dialect detection (DEV-199 Phase 6). Doesn't itself
-  // change how macros parse yet — Phases 7-9 are what actually read
-  // graph.twee.dialect — but genuinely ambiguous input is surfaced
-  // now rather than silently deferred, since it's exactly the
-  // condition those later phases would otherwise guess through.
-  const dialectResult = detectTweeDialect(storyData, source);
-  if (dialectResult.ambiguous) {
-    warnings.push({
-      type: 'ambiguous_twee_dialect',
-      message:
-        "Could not determine which Twine macro format (Harlowe, SugarCube, or Chapbook) this story uses. Macro-based variables and conditionals won't be understood until the format is set in Twine's Story Details, or the story is re-exported with a format-identifying StoryData block.",
-    });
-  }
-
   const validation: ValidationResult = {
     valid: errors.length === 0,
     errors,
@@ -632,6 +590,9 @@ export function parseTwee(source: string, options: ParseTweeOptions = {}): Story
     startNode: resolvedStart,
     validation,
     source,
+    ...(harloweVariableState.variables.length > 0
+      ? { variables: harloweVariableState.variables }
+      : {}),
     twee:
       storyData || Object.keys(specials).length > 0 || dialectResult.dialect
         ? {

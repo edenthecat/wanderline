@@ -26,7 +26,8 @@
  * it doesn't start a new passage on re-parse; we prepend `\`.
  */
 
-import { isTextBlock, type StoryGraph, type StoryNode, type Choice } from '../types.js';
+import type { StoryGraph, StoryNode, Choice, ContentBlock, TweeDialect } from '../types.js';
+import { renderHarloweExpression, renderHarloweAssignment } from './harlowe-macros.js';
 
 /**
  * Escape passage names for embedding in a link target. Twee 3 doesn't
@@ -64,9 +65,10 @@ function isChoiceTextSafe(text: string): boolean {
 }
 
 /**
- * Emit a single choice as `[[Text|Target]]`, collapsing to `[[Target]]`
- * when text and target coincide (matches the source most Twee editors
- * produce and keeps the round-trip byte-shorter for the common case).
+ * Emit a single choice's link as `[[Text|Target]]`, collapsing to
+ * `[[Target]]` when text and target coincide (matches the source
+ * most Twee editors produce and keeps the round-trip byte-shorter
+ * for the common case).
  *
  * Throws on unsafe target names (containing `[`, `]`, or `|`). The
  * parser rejects such names at import time — see the same-named
@@ -74,7 +76,7 @@ function isChoiceTextSafe(text: string): boolean {
  * practice. Fail loudly instead of silently producing malformed
  * Twee that can't be re-parsed.
  */
-function emitChoice(choice: Choice): string {
+function emitChoiceLink(choice: Choice): string {
   if (!isLinkSafe(choice.target)) {
     throw new Error(
       `Cannot emit Twee link — target "${choice.target}" contains an unsupported character (\`[\`, \`]\`, \`|\`, \`->\`, or \`<-\`). Rename the target passage first.`,
@@ -87,6 +89,24 @@ function emitChoice(choice: Choice): string {
     );
   }
   return `[[${choice.text}|${choice.target}]]`;
+}
+
+/**
+ * Emit a choice, wrapping its link in a `(if: COND)[...]` hook when
+ * it carries a condition (DEV-199 Phase 4/7) AND the graph's dialect
+ * is one that actually understands hooks. A condition on a graph
+ * with no resolved dialect (or a dialect other than Harlowe, until
+ * Phases 8-9 add their own re-emission) has no Twee macro form to
+ * emit into yet — the condition is silently dropped rather than
+ * emitted as something that wouldn't parse back, same conservative
+ * choice this emitter already makes for assignment blocks.
+ */
+function emitChoice(choice: Choice, dialect: TweeDialect | undefined): string {
+  const link = emitChoiceLink(choice);
+  if (dialect === 'harlowe' && choice.condition) {
+    return `(if: ${renderHarloweExpression(choice.condition)})[${link}]`;
+  }
+  return link;
 }
 
 /**
@@ -118,19 +138,34 @@ function emitPassage(
   return `${header}\n${safeBody}\n`;
 }
 
-function emitContent(node: StoryNode): string {
-  // Escaping happens once, at emitPassage — don't double-escape here
-  // (`\::` would become `\\::` and the parser's unescape leaves a
-  // stray backslash).
-  // Assignment blocks (DEV-199) have no Twee prose to emit yet —
-  // dialect-specific re-emission of `~`-equivalent statements is
-  // Phases 7-9's job. Skipping them here means a graph with no
-  // assignments (every graph today) round-trips exactly as before.
+/**
+ * Render one content block for emission, or null when it contributes
+ * nothing (an empty text block, or an assignment/condition this
+ * dialect has no macro form for yet). Escaping happens once, at
+ * emitPassage — don't double-escape here (`\::` would become `\\::`
+ * and the parser's unescape leaves a stray backslash).
+ */
+function emitContentBlock(content: ContentBlock, dialect: TweeDialect | undefined): string | null {
+  if (content.kind === 'assignment') {
+    // DEV-199 Phase 7: Harlowe re-emits as `(set: ...)`. Phases 8-9
+    // (SugarCube/Chapbook) will add their own case here; until a
+    // graph's dialect has one, an assignment block has no Twee prose
+    // to emit into, same as before this phase existed.
+    return dialect === 'harlowe' ? renderHarloweAssignment(content.statement) : null;
+  }
+  const text = content.text.trim();
+  if (!text) return null;
+  if (dialect === 'harlowe' && content.condition) {
+    return `(if: ${renderHarloweExpression(content.condition)})[${text}]`;
+  }
+  return text;
+}
+
+function emitContent(node: StoryNode, dialect: TweeDialect | undefined): string {
   const paragraphs = node.content
-    .filter(isTextBlock)
-    .map((c) => c.text.trim())
-    .filter(Boolean);
-  const choices = node.choices.map(emitChoice);
+    .map((c) => emitContentBlock(c, dialect))
+    .filter((s): s is string => s !== null);
+  const choices = node.choices.map((c) => emitChoice(c, dialect));
   // forward node.divert. An Ink-authored graph with an
   // implicit continuation (`-> kitchen`) has choices=[] and
   // divert='kitchen'. Without emitting the divert, the exported Twee
@@ -212,7 +247,7 @@ export function emitTwee(graph: StoryGraph): string {
 
   for (const id of orderedIds) {
     const node = graph.nodes[id];
-    blocks.push(emitPassage(id, node.tags, emitContent(node), node.metadata));
+    blocks.push(emitPassage(id, node.tags, emitContent(node, graph.twee?.dialect), node.metadata));
   }
 
   return blocks.join('\n');

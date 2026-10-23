@@ -761,3 +761,166 @@ describe('parseTwee — Twine macro dialect detection (DEV-199 Phase 6)', () => 
     expect(warning?.message).toContain('Harlowe');
   });
 });
+
+describe('parseTwee — Harlowe macro support (DEV-199 Phase 7)', () => {
+  const harloweSrc = (body: string) =>
+    `:: StoryData\n{"start":"Start","format":"Harlowe"}\n\n:: Start\n${body}\n`;
+
+  it('declares a variable implicitly from the first (set:), inferring its type', () => {
+    const g = parseTwee(harloweSrc('(set: $gold to 5)\nYou have gold.'));
+    expect(g.variables).toEqual([
+      { name: 'gold', type: 'number', initialValue: { kind: 'literal', value: 5 }, isConst: false },
+    ]);
+    const block = g.nodes['Start'].content.find((c) => c.kind === 'assignment');
+    expect(block).toEqual({
+      kind: 'assignment',
+      statement: {
+        kind: 'assignment',
+        name: 'gold',
+        operator: '=',
+        value: { kind: 'literal', value: 5 },
+      },
+    });
+    expect(textOf(g.nodes['Start'].content.find((c) => c.kind === 'text')!)).toBe('You have gold.');
+  });
+
+  it('does not re-declare a variable already declared by an earlier (set:)', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"Harlowe"}\n\n:: Start\n(set: $gold to 5)\n\n:: Other\n(set: $gold to 10)\n`,
+    );
+    expect(g.variables).toHaveLength(1);
+    expect(g.variables?.[0]).toEqual({
+      name: 'gold',
+      type: 'number',
+      initialValue: { kind: 'literal', value: 5 },
+      isConst: false,
+    });
+  });
+
+  it('parses multi-assignment (set:) via top-level commas', () => {
+    const g = parseTwee(harloweSrc('(set: $x to 1, $y to 2)'));
+    const names = g.variables?.map((v) => v.name);
+    expect(names).toEqual(['x', 'y']);
+  });
+
+  it('parses (put: VALUE into $x) the same as (set:)', () => {
+    const g = parseTwee(harloweSrc('(put: 5 into $gold)'));
+    expect(g.variables?.[0].name).toBe('gold');
+  });
+
+  it('parses a bool-typed variable from a word-form comparison initializer', () => {
+    const g = parseTwee(harloweSrc('(set: $seen to $gold > 10)'));
+    // $gold is undeclared at evaluation time, so the comparison throws
+    // and the declaration is skipped rather than guessing a type —
+    // same "best effort, never crash" contract as ink-parser.ts.
+    expect(g.variables).toBeUndefined();
+  });
+
+  it('parses (if: COND)[TEXT] as a conditional text block', () => {
+    const g = parseTwee(harloweSrc('(set: $gold to 5)\n(if: $gold > 3)[You are rich.]'));
+    const conditional = g.nodes['Start'].content.find((c) => c.kind === 'text' && c.condition);
+    expect(conditional).toBeDefined();
+    expect(textOf(conditional!)).toBe('You are rich.');
+    expect(conditional?.condition).toEqual({
+      kind: 'binary',
+      operator: '>',
+      left: { kind: 'variable', name: 'gold' },
+      right: { kind: 'literal', value: 3 },
+    });
+  });
+
+  it('parses (if: COND)[[[Link]]] (hook wrapping a link) as a conditional choice', () => {
+    const g = parseTwee(harloweSrc('(if: $gold > 3)[[[Shop]]]'));
+    expect(g.nodes['Start'].choices).toEqual([
+      {
+        text: 'Shop',
+        target: 'Shop',
+        sticky: false,
+        fallback: false,
+        tags: [],
+        condition: {
+          kind: 'binary',
+          operator: '>',
+          left: { kind: 'variable', name: 'gold' },
+          right: { kind: 'literal', value: 3 },
+        },
+      },
+    ]);
+  });
+
+  it('leaves content inert with a warning when an (if:) condition fails to parse', () => {
+    const g = parseTwee(harloweSrc('(if: $gold >> 3)[Broken]'));
+    expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(true);
+    expect(g.nodes['Start'].content.some((c) => c.kind === 'text' && c.condition)).toBe(false);
+  });
+
+  it('leaves an unsupported macro like (display:) as inert text', () => {
+    const g = parseTwee(harloweSrc('(display: "Header")'));
+    expect(textOf(g.nodes['Start'].content[0])).toContain('(display:');
+  });
+});
+
+describe('emitTwee — Harlowe re-emission (DEV-199 Phase 7)', () => {
+  it('emits an assignment block as (set: $name to VALUE)', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"Harlowe"}\n\n:: Start\n(set: $gold to 5)\nHi.\n`,
+    );
+    const out = emitTwee(g);
+    expect(out).toContain('(set: $gold to 5)');
+  });
+
+  it('emits a conditional text block wrapped in (if: COND)[...]', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"Harlowe"}\n\n:: Start\n(set: $gold to 5)\n(if: $gold > 3)[Rich.]\n`,
+    );
+    const out = emitTwee(g);
+    expect(out).toContain('(if: ($gold) > (3))[Rich.]');
+  });
+
+  it('emits a conditional choice wrapped in (if: COND)[[[Link]]]', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"Harlowe"}\n\n:: Start\n(if: $gold > 3)[[[Shop]]]\n\n:: Shop\nHi.\n`,
+    );
+    const out = emitTwee(g);
+    expect(out).toContain('(if: ($gold) > (3))[[[Shop]]]');
+  });
+
+  it('drops assignment/condition content for a non-Harlowe dialect, same as before this phase', () => {
+    const g = parseTwee(`:: Start\nHi.\n\n:: Shop\nHi.\n`);
+    g.nodes['Start'].content.push({
+      kind: 'assignment',
+      statement: {
+        kind: 'assignment',
+        name: 'gold',
+        operator: '=',
+        value: { kind: 'literal', value: 5 },
+      },
+    });
+    g.nodes['Start'].choices.push({
+      text: 'Shop',
+      target: 'Shop',
+      sticky: false,
+      fallback: false,
+      tags: [],
+      condition: { kind: 'variable', name: 'seen' },
+    });
+    const out = emitTwee(g);
+    expect(out).not.toContain('(set:');
+    expect(out).not.toContain('(if:');
+    expect(out).toContain('[[Shop]]');
+  });
+});
+
+describe('Harlowe round-trip: parse → emit → parse (DEV-199 Phase 7)', () => {
+  it('produces an equivalent graph for assignment + conditional text + conditional choice', () => {
+    const src =
+      `:: StoryData\n{"start":"Start","format":"Harlowe"}\n\n` +
+      `:: Start\n(set: $gold to 5)\n(if: $gold > 3)[You are rich.]\n(if: $gold > 3)[[[Shop]]]\n\n` +
+      `:: Shop\nWelcome.\n`;
+    const first = parseTwee(src);
+    const reparsed = parseTwee(emitTwee(first));
+    expect(reparsed.variables).toEqual(first.variables);
+    expect(reparsed.nodes['Start'].content).toEqual(first.nodes['Start'].content);
+    expect(reparsed.nodes['Start'].choices).toEqual(first.nodes['Start'].choices);
+  });
+});
