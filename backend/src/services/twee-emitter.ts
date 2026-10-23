@@ -29,6 +29,7 @@
 import type { StoryGraph, StoryNode, Choice, ContentBlock, TweeDialect } from '../types.js';
 import { renderHarloweExpression, renderHarloweAssignment } from './harlowe-macros.js';
 import { renderSugarCubeExpression, renderSugarCubeAssignment } from './sugarcube-macros.js';
+import { renderChapbookExpression, renderChapbookAssignment } from './chapbook-macros.js';
 
 /**
  * Escape passage names for embedding in a link target. Twee 3 doesn't
@@ -93,15 +94,22 @@ function emitChoiceLink(choice: Choice): string {
 }
 
 /**
- * Emit a choice, wrapping its link in a `(if: COND)[...]` hook (or
- * SugarCube's `<<if COND>>...<</if>>` block) when it carries a
- * condition (DEV-199 Phase 4/7/8) AND the graph's dialect actually
- * understands one of those forms. A condition on a graph with no
- * resolved dialect (or Chapbook, until Phase 9 adds its own
- * re-emission) has no Twee macro form to emit into yet — the
- * condition is silently dropped rather than emitted as something that
- * wouldn't parse back, same conservative choice this emitter already
- * makes for assignment blocks.
+ * Emit a choice, wrapping its link in a `(if: COND)[...]` hook,
+ * SugarCube's `<<if COND>>...<</if>>` block, or Chapbook's
+ * `[if COND]`/`[continue]` modifier pair, when it carries a condition
+ * (DEV-199 Phase 4/7/8/9) AND the graph's dialect actually understands
+ * one of those forms. A condition on a graph with no resolved dialect
+ * has no Twee macro/modifier form to emit into at all — the condition
+ * is silently dropped rather than emitted as something that wouldn't
+ * parse back, same conservative choice this emitter already makes
+ * for assignment blocks.
+ *
+ * Chapbook's `[continue]` immediately after resets the modifier state
+ * back to unconditional, so this condition can never "leak" onto
+ * whatever paragraph gets emitted next — each conditioned
+ * choice/block is wrapped independently rather than reconstructed
+ * into a compact if/else chain, the same simplification Harlowe's and
+ * SugarCube's emitters already make.
  */
 function emitChoice(choice: Choice, dialect: TweeDialect | undefined): string {
   const link = emitChoiceLink(choice);
@@ -111,6 +119,9 @@ function emitChoice(choice: Choice, dialect: TweeDialect | undefined): string {
   }
   if (dialect === 'sugarcube') {
     return `<<if ${renderSugarCubeExpression(choice.condition)}>>${link}<</if>>`;
+  }
+  if (dialect === 'chapbook') {
+    return `[if ${renderChapbookExpression(choice.condition)}]\n${link}\n\n[continue]`;
   }
   return link;
 }
@@ -153,10 +164,13 @@ function emitPassage(
  */
 function emitContentBlock(content: ContentBlock, dialect: TweeDialect | undefined): string | null {
   if (content.kind === 'assignment') {
-    // DEV-199 Phase 7/8: Harlowe re-emits as `(set: ...)`, SugarCube
-    // as `<<set ...>>`. Phase 9 (Chapbook) will add its own case
-    // here; until a graph's dialect has one, an assignment block has
-    // no Twee prose to emit into, same as before Phase 7 existed.
+    // Harlowe re-emits as `(set: ...)`, SugarCube as `<<set ...>>`.
+    // Chapbook assignments are hoisted into a leading vars section by
+    // emitContent below instead of rendered inline here (Chapbook's
+    // vars section is a whole-passage block, not an inline macro) —
+    // return null so this generic per-block path doesn't ALSO try to
+    // emit them. A graph with no resolved dialect still has no Twee
+    // prose to put an assignment block into at all.
     if (dialect === 'harlowe') return renderHarloweAssignment(content.statement);
     if (dialect === 'sugarcube') return renderSugarCubeAssignment(content.statement);
     return null;
@@ -170,15 +184,17 @@ function emitContentBlock(content: ContentBlock, dialect: TweeDialect | undefine
     if (dialect === 'sugarcube') {
       return `<<if ${renderSugarCubeExpression(content.condition)}>>${text}<</if>>`;
     }
+    if (dialect === 'chapbook') {
+      return `[if ${renderChapbookExpression(content.condition)}]\n${text}\n\n[continue]`;
+    }
   }
   // Same conservative choice as emitChoice above: a condition on a
-  // graph with no resolved dialect (or Chapbook, until Phase 9) has
-  // no Twee macro form to emit into yet, so it's dropped — the text
-  // itself still emits, UNCONDITIONALLY, rather than vanishing
-  // entirely or emitting something that wouldn't parse back. An
-  // Ink-authored conditionally-gated passage exported as plain Twee
-  // (no dialect) loses that gating; Phase 9 closes this gap for
-  // Chapbook the same way Phases 7-8 did for Harlowe/SugarCube.
+  // graph with no resolved dialect has no Twee macro/modifier form to
+  // emit into, so it's dropped — the text itself still emits,
+  // UNCONDITIONALLY, rather than vanishing entirely or emitting
+  // something that wouldn't parse back. An Ink-authored
+  // conditionally-gated passage exported as plain Twee (no dialect)
+  // loses that gating.
   return text;
 }
 
@@ -203,7 +219,21 @@ function emitContent(node: StoryNode, dialect: TweeDialect | undefined): string 
   // round-trip parse sees each as its own paragraph and links land
   // on their own lines (matches the shape most Twine editors
   // produce).
-  return [...paragraphs, ...choices, ...divert].join('\n\n');
+  const body = [...paragraphs, ...choices, ...divert].join('\n\n');
+
+  if (dialect === 'chapbook') {
+    // Chapbook's vars section is a whole-passage block at the very
+    // TOP, not an inline macro — hoist every assignment block here
+    // (emitContentBlock already returned null for them above) rather
+    // than interleaving them with the displayed text.
+    const varsLines = node.content
+      .filter((c) => c.kind === 'assignment')
+      .map((c) => renderChapbookAssignment(c.statement));
+    if (varsLines.length > 0) {
+      return `${varsLines.join('\n')}\n--${body ? `\n${body}` : ''}`;
+    }
+  }
+  return body;
 }
 
 /**

@@ -59,6 +59,7 @@ import type {
 import { extractLinks, bodyToContent, createVariableState } from './twee-content.js';
 import { processHarlowePassageBody } from './harlowe-macros.js';
 import { processSugarCubePassageBody } from './sugarcube-macros.js';
+import { processChapbookPassageBody } from './chapbook-macros.js';
 
 export class TweeParseError extends Error {
   constructor(
@@ -537,6 +538,16 @@ export function parseTwee(source: string, options: ParseTweeOptions = {}): Story
       choices = processed.choices;
     } else if (dialectResult.dialect === 'sugarcube') {
       const processed = processSugarCubePassageBody(
+        raw.body,
+        variableState,
+        evaluate,
+        warnings,
+        raw.header.lineNumber,
+      );
+      content = processed.content;
+      choices = processed.choices;
+    } else if (dialectResult.dialect === 'chapbook') {
+      const processed = processChapbookPassageBody(
         raw.body,
         variableState,
         evaluate,

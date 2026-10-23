@@ -408,6 +408,7 @@ export function processSugarCubePassageBody(
             evaluateExpr,
             warnings,
             lineNumber,
+            `$${statement.name}`,
           );
         } else if (!Object.hasOwn(state.values, statement.name)) {
           // A compound op (+=/-=/etc) can't declare a variable — it

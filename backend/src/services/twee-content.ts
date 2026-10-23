@@ -92,6 +92,11 @@ export function createVariableState(): DialectVariableState {
  * call regardless (it's valid source either way), and without the
  * warning an author gets no signal that `name` was never declared,
  * right up until this statement throws uncaught at actual playback.
+ *
+ * `displayName` is what the warning message names the variable as —
+ * Harlowe/SugarCube pass `$name` (their own sigil form) to keep the
+ * message consistent with what the author actually typed; Chapbook
+ * has no sigil at all, so it can just pass `name` bare (the default).
  */
 export function declareVariableIfNew(
   name: string,
@@ -100,6 +105,7 @@ export function declareVariableIfNew(
   evaluateExpr: (expr: Expression, vars: Record<string, VariableValue>) => VariableValue,
   warnings: ValidationMessage[],
   lineNumber: number,
+  displayName: string = name,
 ): void {
   if (Object.hasOwn(state.values, name)) return;
   let value: VariableValue;
@@ -108,7 +114,7 @@ export function declareVariableIfNew(
   } catch (err) {
     warnings.push({
       type: 'syntax_error',
-      message: `Could not determine a type for $${name}: ${errorMessage(err)}`,
+      message: `Could not determine a type for ${displayName}: ${errorMessage(err)}`,
       lineNumber,
     });
     return;

@@ -1247,3 +1247,212 @@ describe('SugarCube round-trip: parse → emit → parse (DEV-199 Phase 8)', () 
     expect(reparsed.nodes['Start'].content).toEqual(first.nodes['Start'].content);
   });
 });
+
+describe('parseTwee — Chapbook macro support (DEV-199 Phase 9)', () => {
+  const chapbookSrc = (body: string) =>
+    `:: StoryData\n{"start":"Start","format":"Chapbook"}\n\n:: Start\n${body}\n`;
+
+  it('declares every vars-section line implicitly, inferring type, as leading assignment blocks', () => {
+    const g = parseTwee(chapbookSrc('gold: 5\n--\nYou have gold.'));
+    expect(g.variables).toEqual([
+      { name: 'gold', type: 'number', initialValue: { kind: 'literal', value: 5 }, isConst: false },
+    ]);
+    expect(g.nodes['Start'].content[0]).toEqual({
+      kind: 'assignment',
+      statement: {
+        kind: 'assignment',
+        name: 'gold',
+        operator: '=',
+        value: { kind: 'literal', value: 5 },
+      },
+    });
+    expect(textOf(g.nodes['Start'].content[1])).toBe('You have gold.');
+  });
+
+  it('treats a passage with no "--" separator as having no vars section at all', () => {
+    const g = parseTwee(chapbookSrc('Just plain prose, no vars here.'));
+    expect(g.variables).toBeUndefined();
+    expect(g.nodes['Start'].content.some((c) => c.kind === 'assignment')).toBe(false);
+    expect(textOf(g.nodes['Start'].content[0])).toBe('Just plain prose, no vars here.');
+  });
+
+  it('does not re-declare a variable already declared by an earlier vars section', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"Chapbook"}\n\n:: Start\ngold: 5\n--\nHi.\n\n:: Other\ngold: 10\n--\nHi.\n`,
+    );
+    expect(g.variables).toHaveLength(1);
+    expect(g.variables?.[0]).toEqual({
+      name: 'gold',
+      type: 'number',
+      initialValue: { kind: 'literal', value: 5 },
+      isConst: false,
+    });
+  });
+
+  it('honors multiple assignments to the same name in one vars section, in file order', () => {
+    const g = parseTwee(chapbookSrc("transportation: 'car'\ntransportation: 'plane'\n--\nGo."));
+    const assignments = g.nodes['Start'].content.filter((c) => c.kind === 'assignment');
+    expect(assignments).toHaveLength(2);
+    expect(assignments.map((a) => (a.kind === 'assignment' ? a.statement.value : null))).toEqual([
+      { kind: 'literal', value: 'car' },
+      { kind: 'literal', value: 'plane' },
+    ]);
+  });
+
+  it('skips a conditional vars-section assignment ("name (COND): value") with a warning — not representable yet', () => {
+    const g = parseTwee(
+      chapbookSrc("transportation: 'car'\ntransportation (far): 'plane'\n--\nGo."),
+    );
+    const assignments = g.nodes['Start'].content.filter((c) => c.kind === 'assignment');
+    expect(assignments).toHaveLength(1);
+    expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(true);
+  });
+
+  it('parses [if COND]TEXT as a conditional text block that persists until the next modifier', () => {
+    const g = parseTwee(
+      chapbookSrc(
+        'hasKey: true\n--\nAt the door.\n\n[if hasKey]\nYou could unlock it.\n\nYou wait.',
+      ),
+    );
+    const textBlocks = g.nodes['Start'].content.filter(isTextBlock);
+    expect(textBlocks.map((b) => b.text)).toEqual([
+      'At the door.',
+      'You could unlock it.',
+      'You wait.',
+    ]);
+    expect(textBlocks[0].condition).toBeUndefined();
+    expect(textBlocks[1].condition).toEqual({ kind: 'variable', name: 'hasKey' });
+    expect(textBlocks[2].condition).toEqual({ kind: 'variable', name: 'hasKey' });
+  });
+
+  it('[else] negates the most recent [if], and [continue] resets back to unconditional', () => {
+    const g = parseTwee(
+      chapbookSrc(
+        'hasKey: true\n--\n[if hasKey]\nYou could unlock it.\n\n[else]\nNo key.\n\n[continue]\nYou turn back.',
+      ),
+    );
+    const textBlocks = g.nodes['Start'].content.filter(isTextBlock);
+    expect(textBlocks.map((b) => b.text)).toEqual([
+      'You could unlock it.',
+      'No key.',
+      'You turn back.',
+    ]);
+    expect(textBlocks[0].condition).toEqual({ kind: 'variable', name: 'hasKey' });
+    expect(textBlocks[1].condition).toEqual({
+      kind: 'unary',
+      operator: '!',
+      operand: { kind: 'variable', name: 'hasKey' },
+    });
+    expect(textBlocks[2].condition).toBeUndefined();
+  });
+
+  it('[unless COND] is the negation of COND', () => {
+    const g = parseTwee(chapbookSrc('tookAntidote: false\n--\n[unless tookAntidote]\nYou die.'));
+    const block = g.nodes['Start'].content.find(isTextBlock);
+    expect(block?.condition).toEqual({
+      kind: 'unary',
+      operator: '!',
+      operand: { kind: 'variable', name: 'tookAntidote' },
+    });
+  });
+
+  it('parses [if COND][[Link]] (wrapping a link) as a conditional choice', () => {
+    const g = parseTwee(chapbookSrc('hasKey: true\n--\n[if hasKey]\n[[Shop]]\n\n[continue]'));
+    expect(g.nodes['Start'].choices).toEqual([
+      {
+        text: 'Shop',
+        target: 'Shop',
+        sticky: false,
+        fallback: false,
+        tags: [],
+        condition: { kind: 'variable', name: 'hasKey' },
+      },
+    ]);
+  });
+
+  it('translates strict equality (===) and re-quotes strings in a condition', () => {
+    const g = parseTwee(chapbookSrc('color: "red"\n--\n[if color === "red"]\nRed alert.'));
+    const block = g.nodes['Start'].content.find(isTextBlock);
+    expect(block?.condition).toEqual({
+      kind: 'binary',
+      operator: '==',
+      left: { kind: 'variable', name: 'color' },
+      right: { kind: 'literal', value: 'red' },
+    });
+  });
+
+  it('leaves content inert with a warning when an [if] condition fails to parse', () => {
+    const g = parseTwee(chapbookSrc('[if hasKey ===]\nBroken'));
+    expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(true);
+    expect(g.nodes['Start'].content.some((c) => c.kind === 'text' && c.condition)).toBe(false);
+  });
+
+  it('does NOT promote a wrapped link to an unconditional choice when its [if] condition fails to parse', () => {
+    const g = parseTwee(chapbookSrc('[if hasKey ===]\n[[Shop]]'));
+    expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(true);
+    expect(g.nodes['Start'].choices).toEqual([]);
+  });
+
+  it('warns and leaves it inert when [else] has no preceding [if] in the passage', () => {
+    const g = parseTwee(chapbookSrc('[else]\nSomething.'));
+    expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(true);
+    expect(g.nodes['Start'].content.some((c) => c.kind === 'text' && c.condition)).toBe(false);
+  });
+});
+
+describe('emitTwee — Chapbook re-emission (DEV-199 Phase 9)', () => {
+  it('hoists assignment blocks into a leading vars section, separated by "--"', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"Chapbook"}\n\n:: Start\ngold: 5\n--\nHi.\n`,
+    );
+    const out = emitTwee(g);
+    expect(out).toContain('gold: 5\n--\nHi.');
+  });
+
+  it('expands a compound assignment, since Chapbook has no += shorthand', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"Chapbook"}\n\n:: Start\ngold: 5\n--\nHi.\n`,
+    );
+    g.nodes['Start'].content.push({
+      kind: 'assignment',
+      statement: {
+        kind: 'assignment',
+        name: 'gold',
+        operator: '+=',
+        value: { kind: 'literal', value: 10 },
+      },
+    });
+    const out = emitTwee(g);
+    expect(out).toContain('gold: gold + 10');
+  });
+
+  it('emits a conditional text block wrapped in [if COND]/[continue]', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"Chapbook"}\n\n:: Start\ngold: 5\n--\n[if gold > 3]\nRich.\n\n[continue]\n`,
+    );
+    const out = emitTwee(g);
+    expect(out).toContain('[if (gold > 3)]\nRich.\n\n[continue]');
+  });
+
+  it('emits a conditional choice wrapped in [if COND]/[continue]', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"Chapbook"}\n\n:: Start\ngold: 5\n--\n[if gold > 3]\n[[Shop]]\n\n[continue]\n\n:: Shop\nHi.\n`,
+    );
+    const out = emitTwee(g);
+    expect(out).toContain('[if (gold > 3)]\n[[Shop]]\n\n[continue]');
+  });
+});
+
+describe('Chapbook round-trip: parse → emit → parse (DEV-199 Phase 9)', () => {
+  it('produces an equivalent graph for vars section + conditional text + conditional choice', () => {
+    const src =
+      `:: StoryData\n{"start":"Start","format":"Chapbook"}\n\n` +
+      `:: Start\ngold: 5\n--\n[if gold > 3]\nRich.\n\n[continue]\n\n[if gold > 3]\n[[Shop]]\n\n[continue]\n\n` +
+      `:: Shop\nWelcome.\n`;
+    const first = parseTwee(src);
+    const reparsed = parseTwee(emitTwee(first));
+    expect(reparsed.variables).toEqual(first.variables);
+    expect(reparsed.nodes['Start'].content).toEqual(first.nodes['Start'].content);
+    expect(reparsed.nodes['Start'].choices).toEqual(first.nodes['Start'].choices);
+  });
+});
