@@ -158,6 +158,14 @@ function emitContentBlock(content: ContentBlock, dialect: TweeDialect | undefine
   if (dialect === 'harlowe' && content.condition) {
     return `(if: ${renderHarloweExpression(content.condition)})[${text}]`;
   }
+  // Same conservative choice as emitChoice above: a condition on a
+  // graph with no resolved dialect (or a dialect other than Harlowe)
+  // has no Twee macro form to emit into yet, so it's dropped — the
+  // text itself still emits, UNCONDITIONALLY, rather than vanishing
+  // entirely or emitting something that wouldn't parse back. An
+  // Ink-authored conditionally-gated passage exported as plain Twee
+  // (no dialect) loses that gating; Phases 8-9 close this gap for
+  // SugarCube/Chapbook the same way Phase 7 did for Harlowe.
   return text;
 }
 

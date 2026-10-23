@@ -150,6 +150,13 @@ function translateWordOperators(text: string): string {
     .replace(/\bnot\b\s*/gi, '!');
 }
 
+// Shared by translateHarloweExpression (re-quoting a parsed string)
+// and renderHarloweExpression's literal case (emitting one), so the
+// two directions of the round-trip can't drift out of sync.
+function escapeDoubleQuoted(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
 export function translateHarloweExpression(source: string): string {
   let out = '';
   let plainBuffer = '';
@@ -182,7 +189,14 @@ export function translateHarloweExpression(source: string): string {
       let j = i + 1;
       let value = '';
       while (j < source.length && source[j] !== quote) {
-        if (source[j] === '\\' && j + 1 < source.length) {
+        // Only `\\` and `\<quote>` are recognized escapes — a
+        // backslash before any other character (e.g. a Windows path
+        // like 'C:\Users\x') is literal and must be kept, not eaten.
+        if (
+          source[j] === '\\' &&
+          j + 1 < source.length &&
+          (source[j + 1] === '\\' || source[j + 1] === quote)
+        ) {
           value += source[j + 1];
           j += 2;
           continue;
@@ -190,7 +204,7 @@ export function translateHarloweExpression(source: string): string {
         value += source[j];
         j++;
       }
-      out += `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+      out += `"${escapeDoubleQuoted(value)}"`;
       i = j + 1;
       continue;
     }
@@ -229,7 +243,7 @@ export function renderHarloweExpression(expr: Expression): string {
   switch (expr.kind) {
     case 'literal':
       if (typeof expr.value === 'string') {
-        return `"${expr.value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+        return `"${escapeDoubleQuoted(expr.value)}"`;
       }
       return String(expr.value);
     case 'variable':
@@ -292,23 +306,34 @@ export function createHarloweVariableState(): HarloweVariableState {
  * Record `name`'s first-seen initial value as a declaration, unless
  * it's already declared. Mirrors ink-parser.ts's
  * parseVariableDeclarationLine: the type is inferred by evaluating
- * the initializer against variables already known, and a value that
- * fails to evaluate (e.g. references a variable not yet declared) is
- * silently skipped rather than failing the whole parse — Harlowe
- * authors can and do forward-reference across passages in ways a
- * single linear pass can't always resolve.
+ * the initializer against variables already known. A value that
+ * fails to evaluate (e.g. references a variable not yet declared)
+ * skips the declaration rather than failing the whole parse — same
+ * tolerant-degradation as everywhere else in this module — but, like
+ * ink-parser.ts's own version, warns rather than failing silently: an
+ * assignment statement still gets emitted into content for this macro
+ * call regardless (it's valid Harlowe either way), and without the
+ * warning an author gets no signal that `name` was never declared,
+ * right up until this statement throws uncaught at actual playback.
  */
 function declareIfNew(
   name: string,
   initialValue: Expression,
   state: HarloweVariableState,
   evaluateExpr: (expr: Expression, vars: Record<string, VariableValue>) => VariableValue,
+  warnings: ValidationMessage[],
+  lineNumber: number,
 ): void {
   if (Object.hasOwn(state.values, name)) return;
   let value: VariableValue;
   try {
     value = evaluateExpr(initialValue, state.values);
-  } catch {
+  } catch (err) {
+    warnings.push({
+      type: 'syntax_error',
+      message: `Could not determine a type for $${name}: ${errorMessage(err)}`,
+      lineNumber,
+    });
     return;
   }
   const type =
@@ -468,7 +493,7 @@ export function processHarlowePassageBody(
       const kind = call.name as 'set' | 'put';
       const assignments = parseSetOrPutArgs(kind, call.argsText, warnings, lineNumber);
       for (const { name, value } of assignments) {
-        declareIfNew(name, value, state, evaluateExpr);
+        declareIfNew(name, value, state, evaluateExpr, warnings, lineNumber);
         const statement: Statement = { kind: 'assignment', name, operator: '=', value };
         content.push({ kind: 'assignment', statement });
       }
@@ -499,9 +524,14 @@ export function processHarlowePassageBody(
         lineNumber,
       });
       // Tolerant-degradation: leave the whole `(if: ...)[...]` as
-      // inert text, same choice every other dialect's parser makes
-      // for a condition that fails to parse.
-      pushGenericParagraph(remaining.slice(call.start, hook.end), content, choices);
+      // LITERAL inert text — bodyToContent only (no extractLinks).
+      // A hook can wrap a `[[Link]]` (the conditional-choice shape
+      // below); running extractLinks on it here would still turn
+      // that link into a real, unconditional Choice even though its
+      // gating condition failed to parse, silently making it
+      // always-visible instead of leaving it inert for the author to
+      // notice via the warning above.
+      content.push(...bodyToContent(remaining.slice(call.start, hook.end)));
       cursor += hook.end;
       continue;
     }

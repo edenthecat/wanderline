@@ -42,6 +42,14 @@ describe('translateHarloweExpression', () => {
     expect(translateHarloweExpression('$line is "this is cool"')).toBe('line == "this is cool"');
   });
 
+  it('keeps a literal backslash that is not escaping the quote or itself (e.g. a Windows path)', () => {
+    // Regression: the unescape loop used to treat ANY backslash as an
+    // escape sequence (dropping it, keeping only the next char),
+    // silently merging "Users" and "x" together and losing both
+    // backslashes from a path like 'C:\Users\x'.
+    expect(translateHarloweExpression("'C:\\Users\\x'")).toBe('"C:\\\\Users\\\\x"');
+  });
+
   it('unescapes relative to the original quote, then re-escapes for double quotes', () => {
     // A single-quoted string with an escaped single quote inside
     // means a literal apostrophe — re-quoting it in double quotes

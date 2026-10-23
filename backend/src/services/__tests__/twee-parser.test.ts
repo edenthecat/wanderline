@@ -816,12 +816,24 @@ describe('parseTwee — Harlowe macro support (DEV-199 Phase 7)', () => {
     expect(g.variables).toBeUndefined();
   });
 
+  it('warns (rather than failing silently) when a (set:) initializer references an undeclared variable', () => {
+    // Regression: declareIfNew used to swallow this with no warning
+    // at all, leaving an author with zero signal that `seen` was
+    // never declared — right up until this statement throws uncaught
+    // at playback, since `gold` is never set anywhere in this story.
+    const g = parseTwee(harloweSrc('(set: $seen to $gold > 10)'));
+    expect(
+      g.validation.warnings.some((w) => w.type === 'syntax_error' && w.message.includes('$seen')),
+    ).toBe(true);
+  });
+
   it('parses (if: COND)[TEXT] as a conditional text block', () => {
     const g = parseTwee(harloweSrc('(set: $gold to 5)\n(if: $gold > 3)[You are rich.]'));
-    const conditional = g.nodes['Start'].content.find((c) => c.kind === 'text' && c.condition);
+    const conditional = g.nodes['Start'].content.find((c) => isTextBlock(c) && c.condition);
     expect(conditional).toBeDefined();
-    expect(textOf(conditional!)).toBe('You are rich.');
-    expect(conditional?.condition).toEqual({
+    if (!isTextBlock(conditional)) throw new Error('expected a text block');
+    expect(textOf(conditional)).toBe('You are rich.');
+    expect(conditional.condition).toEqual({
       kind: 'binary',
       operator: '>',
       left: { kind: 'variable', name: 'gold' },
@@ -852,6 +864,16 @@ describe('parseTwee — Harlowe macro support (DEV-199 Phase 7)', () => {
     const g = parseTwee(harloweSrc('(if: $gold >> 3)[Broken]'));
     expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(true);
     expect(g.nodes['Start'].content.some((c) => c.kind === 'text' && c.condition)).toBe(false);
+  });
+
+  it('does NOT promote a hook-wrapped link to an unconditional choice when its (if:) condition fails to parse', () => {
+    // Regression: the fallback used to run extractLinks on the raw
+    // "(if: ...)[[[Link]]]" text, which still turned the wrapped
+    // link into a real Choice — just with no condition — silently
+    // making it always-visible instead of leaving it inert.
+    const g = parseTwee(harloweSrc('(if: $gold >> 3)[[[Shop]]]'));
+    expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(true);
+    expect(g.nodes['Start'].choices).toEqual([]);
   });
 
   it('leaves an unsupported macro like (display:) as inert text', () => {
