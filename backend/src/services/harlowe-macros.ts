@@ -45,10 +45,16 @@ import type {
   Expression,
   Statement,
   ValidationMessage,
-  VariableDeclaration,
   VariableValue,
 } from '../types.js';
-import { extractLinks, bodyToContent } from './twee-content.js';
+import {
+  extractLinks,
+  bodyToContent,
+  readQuotedLiteral,
+  escapeDoubleQuoted,
+  declareVariableIfNew,
+  type DialectVariableState,
+} from './twee-content.js';
 
 /**
  * Scan forward from `start` (which must index the opening
@@ -150,13 +156,6 @@ function translateWordOperators(text: string): string {
     .replace(/\bnot\b\s*/gi, '!');
 }
 
-// Shared by translateHarloweExpression (re-quoting a parsed string)
-// and renderHarloweExpression's literal case (emitting one), so the
-// two directions of the round-trip can't drift out of sync.
-function escapeDoubleQuoted(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-}
-
 export function translateHarloweExpression(source: string): string {
   let out = '';
   let plainBuffer = '';
@@ -185,27 +184,9 @@ export function translateHarloweExpression(source: string): string {
       // backslash-forward copy would double-escape a `\'` from a
       // single-quoted source string.
       flushPlain();
-      const quote = ch;
-      let j = i + 1;
-      let value = '';
-      while (j < source.length && source[j] !== quote) {
-        // Only `\\` and `\<quote>` are recognized escapes — a
-        // backslash before any other character (e.g. a Windows path
-        // like 'C:\Users\x') is literal and must be kept, not eaten.
-        if (
-          source[j] === '\\' &&
-          j + 1 < source.length &&
-          (source[j + 1] === '\\' || source[j + 1] === quote)
-        ) {
-          value += source[j + 1];
-          j += 2;
-          continue;
-        }
-        value += source[j];
-        j++;
-      }
+      const { value, end } = readQuotedLiteral(source, i);
       out += `"${escapeDoubleQuoted(value)}"`;
-      i = j + 1;
+      i = end;
       continue;
     }
     if (ch === '$') {
@@ -287,59 +268,6 @@ export function renderHarloweAssignment(statement: Statement): string {
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
-}
-
-/** Mutable, per-story state threaded through every passage so a
- * `$name` seen for the first time anywhere in the story — not just
- * within one passage — is the one that declares it, matching
- * Harlowe's own "first (set:)/(put:) wins" semantics. */
-export interface HarloweVariableState {
-  variables: VariableDeclaration[];
-  values: Record<string, VariableValue>;
-}
-
-export function createHarloweVariableState(): HarloweVariableState {
-  return { variables: [], values: {} };
-}
-
-/**
- * Record `name`'s first-seen initial value as a declaration, unless
- * it's already declared. Mirrors ink-parser.ts's
- * parseVariableDeclarationLine: the type is inferred by evaluating
- * the initializer against variables already known. A value that
- * fails to evaluate (e.g. references a variable not yet declared)
- * skips the declaration rather than failing the whole parse — same
- * tolerant-degradation as everywhere else in this module — but, like
- * ink-parser.ts's own version, warns rather than failing silently: an
- * assignment statement still gets emitted into content for this macro
- * call regardless (it's valid Harlowe either way), and without the
- * warning an author gets no signal that `name` was never declared,
- * right up until this statement throws uncaught at actual playback.
- */
-function declareIfNew(
-  name: string,
-  initialValue: Expression,
-  state: HarloweVariableState,
-  evaluateExpr: (expr: Expression, vars: Record<string, VariableValue>) => VariableValue,
-  warnings: ValidationMessage[],
-  lineNumber: number,
-): void {
-  if (Object.hasOwn(state.values, name)) return;
-  let value: VariableValue;
-  try {
-    value = evaluateExpr(initialValue, state.values);
-  } catch (err) {
-    warnings.push({
-      type: 'syntax_error',
-      message: `Could not determine a type for $${name}: ${errorMessage(err)}`,
-      lineNumber,
-    });
-    return;
-  }
-  const type =
-    typeof value === 'number' ? 'number' : typeof value === 'boolean' ? 'bool' : 'string';
-  state.variables.push({ name, type, initialValue, isConst: false });
-  state.values[name] = value;
 }
 
 /** One parsed `name <- EXPR` pair from inside a (set:)/(put:) macro's
@@ -457,7 +385,7 @@ function matchFollowingHook(
  */
 export function processHarlowePassageBody(
   body: string,
-  state: HarloweVariableState,
+  state: DialectVariableState,
   evaluateExpr: (expr: Expression, vars: Record<string, VariableValue>) => VariableValue,
   warnings: ValidationMessage[],
   lineNumber: number,
@@ -493,7 +421,7 @@ export function processHarlowePassageBody(
       const kind = call.name as 'set' | 'put';
       const assignments = parseSetOrPutArgs(kind, call.argsText, warnings, lineNumber);
       for (const { name, value } of assignments) {
-        declareIfNew(name, value, state, evaluateExpr, warnings, lineNumber);
+        declareVariableIfNew(name, value, state, evaluateExpr, warnings, lineNumber);
         const statement: Statement = { kind: 'assignment', name, operator: '=', value };
         content.push({ kind: 'assignment', statement });
       }

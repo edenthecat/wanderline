@@ -11,7 +11,112 @@
  * first place. Neither module imports the other; both import this.
  */
 
-import type { Choice, TextContent } from '../types.js';
+import type {
+  Choice,
+  Expression,
+  TextContent,
+  ValidationMessage,
+  VariableDeclaration,
+  VariableValue,
+} from '../types.js';
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Read one quoted string literal starting at `source[start]` (which
+ * must be a `"` or `'`). Only `\\` and `\<quote>` are recognized
+ * escapes — a backslash before any other character (e.g. a Windows
+ * path like 'C:\Users\x') is literal and must be kept, not eaten.
+ * Returns the unescaped value and the index just past the closing
+ * quote. Shared by every dialect's expression translator (Harlowe,
+ * SugarCube) so a fix to this logic — it has a real history of edge
+ * cases (DEV-199 Phase 7 review) — never has to be ported to a copy.
+ */
+export function readQuotedLiteral(source: string, start: number): { value: string; end: number } {
+  const quote = source[start];
+  let j = start + 1;
+  let value = '';
+  while (j < source.length && source[j] !== quote) {
+    if (
+      source[j] === '\\' &&
+      j + 1 < source.length &&
+      (source[j + 1] === '\\' || source[j + 1] === quote)
+    ) {
+      value += source[j + 1];
+      j += 2;
+      continue;
+    }
+    value += source[j];
+    j++;
+  }
+  return { value, end: j + 1 };
+}
+
+/** Escape a raw string value for embedding in the canonical grammar's
+ * double-quote-only string literal syntax. The inverse of
+ * readQuotedLiteral's unescaping — shared by every dialect's
+ * expression translator/renderer so the two directions can't drift
+ * out of sync. */
+export function escapeDoubleQuoted(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+/** Mutable, per-story state threaded through every passage of a
+ * macro-based Twine dialect (Harlowe, SugarCube) so a variable seen
+ * for the first time anywhere in the story — not just within one
+ * passage — is the one that implicitly declares it, matching both
+ * dialects' "first assignment wins" semantics (neither has a
+ * separate upfront declaration syntax like Ink's VAR). */
+export interface DialectVariableState {
+  variables: VariableDeclaration[];
+  values: Record<string, VariableValue>;
+}
+
+export function createVariableState(): DialectVariableState {
+  return { variables: [], values: {} };
+}
+
+/**
+ * Record `name`'s first-seen initial value as a declaration, unless
+ * it's already declared. Mirrors ink-parser.ts's
+ * parseVariableDeclarationLine: the type is inferred by evaluating
+ * the initializer against variables already known. A value that
+ * fails to evaluate (e.g. references a variable not yet declared)
+ * skips the declaration rather than failing the whole parse — same
+ * tolerant-degradation every dialect module uses — but, like
+ * ink-parser.ts's own version, warns rather than failing silently: an
+ * assignment statement still gets emitted into content for this macro
+ * call regardless (it's valid source either way), and without the
+ * warning an author gets no signal that `name` was never declared,
+ * right up until this statement throws uncaught at actual playback.
+ */
+export function declareVariableIfNew(
+  name: string,
+  initialValue: Expression,
+  state: DialectVariableState,
+  evaluateExpr: (expr: Expression, vars: Record<string, VariableValue>) => VariableValue,
+  warnings: ValidationMessage[],
+  lineNumber: number,
+): void {
+  if (Object.hasOwn(state.values, name)) return;
+  let value: VariableValue;
+  try {
+    value = evaluateExpr(initialValue, state.values);
+  } catch (err) {
+    warnings.push({
+      type: 'syntax_error',
+      message: `Could not determine a type for $${name}: ${errorMessage(err)}`,
+      lineNumber,
+    });
+    return;
+  }
+  const type =
+    typeof value === 'number' ? 'number' : typeof value === 'boolean' ? 'bool' : 'string';
+  state.variables.push({ name, type, initialValue, isConst: false });
+  state.values[name] = value;
+}
 
 /**
  * Extract every `[[...]]` link from `body`, returning the links as

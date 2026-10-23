@@ -946,3 +946,230 @@ describe('Harlowe round-trip: parse → emit → parse (DEV-199 Phase 7)', () =>
     expect(reparsed.nodes['Start'].choices).toEqual(first.nodes['Start'].choices);
   });
 });
+
+describe('parseTwee — SugarCube macro support (DEV-199 Phase 8)', () => {
+  const sugarcubeSrc = (body: string) =>
+    `:: StoryData\n{"start":"Start","format":"SugarCube"}\n\n:: Start\n${body}\n`;
+
+  it('declares a variable implicitly from the first <<set>>, inferring its type', () => {
+    const g = parseTwee(sugarcubeSrc('<<set $gold to 5>>\nYou have gold.'));
+    expect(g.variables).toEqual([
+      { name: 'gold', type: 'number', initialValue: { kind: 'literal', value: 5 }, isConst: false },
+    ]);
+    const block = g.nodes['Start'].content.find((c) => c.kind === 'assignment');
+    expect(block).toEqual({
+      kind: 'assignment',
+      statement: {
+        kind: 'assignment',
+        name: 'gold',
+        operator: '=',
+        value: { kind: 'literal', value: 5 },
+      },
+    });
+    expect(textOf(g.nodes['Start'].content.find((c) => c.kind === 'text')!)).toBe('You have gold.');
+  });
+
+  it('does not re-declare a variable already declared by an earlier <<set>>', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"SugarCube"}\n\n:: Start\n<<set $gold to 5>>\n\n:: Other\n<<set $gold to 10>>\n`,
+    );
+    expect(g.variables).toHaveLength(1);
+    expect(g.variables?.[0]).toEqual({
+      name: 'gold',
+      type: 'number',
+      initialValue: { kind: 'literal', value: 5 },
+      isConst: false,
+    });
+  });
+
+  it('parses a native compound assignment (+=) directly, no desugaring needed', () => {
+    const g = parseTwee(sugarcubeSrc('<<set $gold to 5>>\n<<set $gold += 10>>'));
+    const assignments = g.nodes['Start'].content.filter((c) => c.kind === 'assignment');
+    expect(assignments).toHaveLength(2);
+    expect(assignments[1]).toEqual({
+      kind: 'assignment',
+      statement: {
+        kind: 'assignment',
+        name: 'gold',
+        operator: '+=',
+        value: { kind: 'literal', value: 10 },
+      },
+    });
+  });
+
+  it('parses a single <<if>>...<</if>> as a conditional text block', () => {
+    const g = parseTwee(sugarcubeSrc('<<set $gold to 5>>\n<<if $gold gt 3>>You are rich.<</if>>'));
+    const conditional = g.nodes['Start'].content.find((c) => isTextBlock(c) && c.condition);
+    expect(conditional).toBeDefined();
+    if (!isTextBlock(conditional)) throw new Error('expected a text block');
+    expect(textOf(conditional)).toBe('You are rich.');
+    expect(conditional.condition).toEqual({
+      kind: 'binary',
+      operator: '>',
+      left: { kind: 'variable', name: 'gold' },
+      right: { kind: 'literal', value: 3 },
+    });
+  });
+
+  it('parses <<if>>...<<elseif>>...<<else>>...<</if>> as mutually-exclusive conditional text blocks', () => {
+    const g = parseTwee(
+      sugarcubeSrc(
+        '<<set $gold to 5>>\n<<if $gold gt 10>>Rich<<elseif $gold gt 0>>Some gold<<else>>Broke<</if>>',
+      ),
+    );
+    const textBlocks = g.nodes['Start'].content.filter(isTextBlock);
+    expect(textBlocks.map((b) => b.text)).toEqual(['Rich', 'Some gold', 'Broke']);
+    const gt = (n: number): object => ({
+      kind: 'binary',
+      operator: '>',
+      left: { kind: 'variable', name: 'gold' },
+      right: { kind: 'literal', value: n },
+    });
+    expect(textBlocks[0].condition).toEqual(gt(10));
+    expect(textBlocks[1].condition).toEqual({
+      kind: 'logical',
+      operator: '&&',
+      left: { kind: 'unary', operator: '!', operand: gt(10) },
+      right: gt(0),
+    });
+    expect(textBlocks[2].condition).toEqual({
+      kind: 'logical',
+      operator: '&&',
+      left: { kind: 'unary', operator: '!', operand: gt(10) },
+      right: { kind: 'unary', operator: '!', operand: gt(0) },
+    });
+  });
+
+  it('parses <<if>>[[Link]]<</if>> (wrapping a link) as a conditional choice', () => {
+    const g = parseTwee(sugarcubeSrc('<<if $gold gt 3>>[[Shop]]<</if>>'));
+    expect(g.nodes['Start'].choices).toEqual([
+      {
+        text: 'Shop',
+        target: 'Shop',
+        sticky: false,
+        fallback: false,
+        tags: [],
+        condition: {
+          kind: 'binary',
+          operator: '>',
+          left: { kind: 'variable', name: 'gold' },
+          right: { kind: 'literal', value: 3 },
+        },
+      },
+    ]);
+  });
+
+  it('parses an <<if>>/<<else>> wrapping DIFFERENT links as two mutually-exclusive conditional choices', () => {
+    const g = parseTwee(sugarcubeSrc('<<if $gold gt 10>>[[Shop]]<<else>>[[Beg]]<</if>>'));
+    expect(g.nodes['Start'].choices.map((c) => c.text)).toEqual(['Shop', 'Beg']);
+    expect(g.nodes['Start'].choices[0].condition).toEqual({
+      kind: 'binary',
+      operator: '>',
+      left: { kind: 'variable', name: 'gold' },
+      right: { kind: 'literal', value: 10 },
+    });
+    expect(g.nodes['Start'].choices[1].condition).toEqual({
+      kind: 'unary',
+      operator: '!',
+      operand: {
+        kind: 'binary',
+        operator: '>',
+        left: { kind: 'variable', name: 'gold' },
+        right: { kind: 'literal', value: 10 },
+      },
+    });
+  });
+
+  it('warns (rather than failing silently) when a <<set>> initializer references an undeclared variable', () => {
+    const g = parseTwee(sugarcubeSrc('<<set $seen to $gold gt 10>>'));
+    expect(g.variables).toBeUndefined();
+    expect(
+      g.validation.warnings.some((w) => w.type === 'syntax_error' && w.message.includes('$seen')),
+    ).toBe(true);
+  });
+
+  it('leaves content inert with a warning when an <<if>> condition fails to parse', () => {
+    const g = parseTwee(sugarcubeSrc('<<if $gold is>>Broken<</if>>'));
+    expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(true);
+    expect(g.nodes['Start'].content.some((c) => c.kind === 'text' && c.condition)).toBe(false);
+  });
+
+  it('does NOT promote a wrapped link to an unconditional choice when its <<if>> condition fails to parse', () => {
+    const g = parseTwee(sugarcubeSrc('<<if $gold is>>[[Shop]]<</if>>'));
+    expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(true);
+    expect(g.nodes['Start'].choices).toEqual([]);
+  });
+
+  it('leaves an unsupported macro like <<print>> as inert text', () => {
+    const g = parseTwee(sugarcubeSrc('<<print $gold>>'));
+    expect(textOf(g.nodes['Start'].content[0])).toContain('<<print');
+  });
+
+  it('does not strip a temp variable (_name) sigil — using one surfaces as an undefined-variable warning, not a silent $-collision', () => {
+    const g = parseTwee(sugarcubeSrc('<<set $seen to _counter>>'));
+    expect(g.variables).toBeUndefined();
+    expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(true);
+  });
+});
+
+describe('emitTwee — SugarCube re-emission (DEV-199 Phase 8)', () => {
+  it('emits an assignment block as <<set $name = VALUE>>', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"SugarCube"}\n\n:: Start\n<<set $gold to 5>>\nHi.\n`,
+    );
+    const out = emitTwee(g);
+    expect(out).toContain('<<set $gold = 5>>');
+  });
+
+  it('emits a compound assignment block natively', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"SugarCube"}\n\n:: Start\n<<set $gold to 5>>\n<<set $gold += 10>>\n`,
+    );
+    const out = emitTwee(g);
+    expect(out).toContain('<<set $gold += 10>>');
+  });
+
+  it('emits a conditional text block wrapped in <<if COND>>...<</if>>', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"SugarCube"}\n\n:: Start\n<<set $gold to 5>>\n<<if $gold gt 3>>Rich.<</if>>\n`,
+    );
+    const out = emitTwee(g);
+    expect(out).toContain('<<if ($gold > 3)>>Rich.<</if>>');
+  });
+
+  it('emits a conditional choice wrapped in <<if COND>>...<</if>>', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"SugarCube"}\n\n:: Start\n<<if $gold gt 3>>[[Shop]]<</if>>\n\n:: Shop\nHi.\n`,
+    );
+    const out = emitTwee(g);
+    expect(out).toContain('<<if ($gold > 3)>>[[Shop]]<</if>>');
+  });
+});
+
+describe('SugarCube round-trip: parse → emit → parse (DEV-199 Phase 8)', () => {
+  it('produces an equivalent graph for assignment + conditional text + conditional choice', () => {
+    const src =
+      `:: StoryData\n{"start":"Start","format":"SugarCube"}\n\n` +
+      `:: Start\n<<set $gold to 5>>\n<<if $gold gt 3>>You are rich.<</if>>\n<<if $gold gt 3>>[[Shop]]<</if>>\n\n` +
+      `:: Shop\nWelcome.\n`;
+    const first = parseTwee(src);
+    const reparsed = parseTwee(emitTwee(first));
+    expect(reparsed.variables).toEqual(first.variables);
+    expect(reparsed.nodes['Start'].content).toEqual(first.nodes['Start'].content);
+    expect(reparsed.nodes['Start'].choices).toEqual(first.nodes['Start'].choices);
+  });
+
+  it('preserves per-branch semantics of an if/elseif/else chain, even though it re-emits as independent <<if>> blocks', () => {
+    // The emitted TEXT won't come back as an if/elseif/else chain
+    // (emitContentBlock wraps each conditioned block independently,
+    // same simplification Harlowe's emitter already makes) — but the
+    // resolved per-branch conditions must still be equivalent after
+    // a reparse, since that's what actually governs visibility.
+    const src =
+      `:: StoryData\n{"start":"Start","format":"SugarCube"}\n\n` +
+      `:: Start\n<<set $gold to 5>>\n<<if $gold gt 10>>Rich<<elseif $gold gt 0>>Some gold<<else>>Broke<</if>>\n`;
+    const first = parseTwee(src);
+    const reparsed = parseTwee(emitTwee(first));
+    expect(reparsed.nodes['Start'].content).toEqual(first.nodes['Start'].content);
+  });
+});

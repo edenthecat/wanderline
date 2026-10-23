@@ -56,8 +56,9 @@ import type {
   NodeType,
   TweeDialect,
 } from '../types.js';
-import { extractLinks, bodyToContent } from './twee-content.js';
-import { processHarlowePassageBody, createHarloweVariableState } from './harlowe-macros.js';
+import { extractLinks, bodyToContent, createVariableState } from './twee-content.js';
+import { processHarlowePassageBody } from './harlowe-macros.js';
+import { processSugarCubePassageBody } from './sugarcube-macros.js';
 
 export class TweeParseError extends Error {
   constructor(
@@ -462,10 +463,12 @@ export function parseTwee(source: string, options: ParseTweeOptions = {}): Story
         "Could not determine which Twine macro format (Harlowe, SugarCube, or Chapbook) this story uses. Macro-based variables and conditionals won't be understood until the format is set in Twine's Story Details, or the story is re-exported with a format-identifying StoryData block.",
     });
   }
-  // DEV-199 Phase 7: implicit variable declarations threaded across
-  // every passage, in file order, so the first (set:)/(put:) for a
-  // given $-name anywhere in the story is the one that declares it.
-  const harloweVariableState = createHarloweVariableState();
+  // DEV-199 Phases 7-8: implicit variable declarations threaded across
+  // every passage, in file order, so the first (set:)/(put:)/<<set>>
+  // for a given $-name anywhere in the story is the one that declares
+  // it. Dialect is resolved once per whole-file parse, so only ONE of
+  // Harlowe/SugarCube's processors ever runs against this state.
+  const variableState = createVariableState();
 
   for (const raw of rawPassages) {
     if (SPECIAL_PASSAGES.has(raw.header.name)) {
@@ -525,7 +528,17 @@ export function parseTwee(source: string, options: ParseTweeOptions = {}): Story
     if (dialectResult.dialect === 'harlowe') {
       const processed = processHarlowePassageBody(
         raw.body,
-        harloweVariableState,
+        variableState,
+        evaluate,
+        warnings,
+        raw.header.lineNumber,
+      );
+      content = processed.content;
+      choices = processed.choices;
+    } else if (dialectResult.dialect === 'sugarcube') {
+      const processed = processSugarCubePassageBody(
+        raw.body,
+        variableState,
         evaluate,
         warnings,
         raw.header.lineNumber,
@@ -590,9 +603,7 @@ export function parseTwee(source: string, options: ParseTweeOptions = {}): Story
     startNode: resolvedStart,
     validation,
     source,
-    ...(harloweVariableState.variables.length > 0
-      ? { variables: harloweVariableState.variables }
-      : {}),
+    ...(variableState.variables.length > 0 ? { variables: variableState.variables } : {}),
     twee:
       storyData || Object.keys(specials).length > 0 || dialectResult.dialect
         ? {
