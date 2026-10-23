@@ -64,8 +64,8 @@ import type {
   VariableValue,
 } from '../types.js';
 import {
-  extractLinks,
   bodyToContent,
+  pushGenericParagraph,
   readQuotedLiteral,
   escapeDoubleQuoted,
   declareVariableIfNew,
@@ -209,6 +209,15 @@ interface Tag {
 
 const TAG_START_RE = /<<\s*(\/?[A-Za-z][A-Za-z0-9]*)/g;
 
+// Names findTags warns about when their closing `>>` can't be found
+// (see findTags) — an unrecognized tag staying silently inert is
+// normal (every macro this module doesn't specially handle does
+// that), but one of THESE names failing to close is almost always a
+// stray quote inside the author's own condition/argument text, worth
+// surfacing rather than silently dropping the whole tag with no
+// diagnostic at all.
+const RECOGNIZED_TAG_NAMES = new Set(['set', 'if', 'elseif', 'else', '/if']);
+
 /**
  * Scan forward from `start` (which must index the `<` of a tag's
  * opening `<<`) and return the index one past its matching `>>`,
@@ -239,14 +248,31 @@ function matchTagEnd(text: string, start: number): number {
 /** Find every `<<name ...>>` tag in `text`, in order. Doesn't descend
  * into a tag's own arguments looking for nested tags — the only
  * nesting this module cares about (if/elseif/else/\/if) is tracked
- * separately by walking this flat list and counting depth. */
-function findTags(text: string): Tag[] {
+ * separately by walking this flat list and counting depth.
+ *
+ * When a tag's closing `>>` can't be found (usually a stray quote
+ * inside its own condition/argument text, e.g. `<<if $x is Bob's>>`)
+ * the tag is dropped, same tolerant-degradation every dialect module
+ * uses — but if its name is one of RECOGNIZED_TAG_NAMES, a warning is
+ * raised first so the drop isn't completely silent; an unrecognized
+ * custom macro name failing to close stays silent, since this module
+ * never claimed to understand it in the first place.
+ */
+function findTags(text: string, warnings: ValidationMessage[], lineNumber: number): Tag[] {
   const tags: Tag[] = [];
   const re = new RegExp(TAG_START_RE);
   let match: RegExpExecArray | null;
   while ((match = re.exec(text))) {
     const end = matchTagEnd(text, match.index);
     if (end === -1) {
+      const name = match[1].toLowerCase();
+      if (RECOGNIZED_TAG_NAMES.has(name)) {
+        warnings.push({
+          type: 'syntax_error',
+          message: `Could not find the closing ">>" for "<<${match[1]} ...>>" — check for a stray quote inside it.`,
+          lineNumber,
+        });
+      }
       re.lastIndex = match.index + 2;
       continue;
     }
@@ -359,7 +385,7 @@ export function processSugarCubePassageBody(
   let cursor = 0;
   while (cursor < body.length) {
     const remaining = body.slice(cursor);
-    const tags = findTags(remaining);
+    const tags = findTags(remaining, warnings, lineNumber);
     const tagIndex = tags.findIndex((t) => t.name === 'set' || t.name === 'if');
     if (tagIndex === -1) {
       pushGenericParagraph(remaining, content, choices);
@@ -374,14 +400,30 @@ export function processSugarCubePassageBody(
       const translated = translateSugarCubeExpression(tag.argsText);
       try {
         const statement = parseStatement(translated);
-        declareVariableIfNew(
-          statement.name,
-          statement.value,
-          state,
-          evaluateExpr,
-          warnings,
-          lineNumber,
-        );
+        if (statement.operator === '=') {
+          declareVariableIfNew(
+            statement.name,
+            statement.value,
+            state,
+            evaluateExpr,
+            warnings,
+            lineNumber,
+          );
+        } else if (!Object.hasOwn(state.values, statement.name)) {
+          // A compound op (+=/-=/etc) can't declare a variable — it
+          // needs an EXISTING value to combine with. Real SugarCube
+          // would evaluate this against `undefined` (producing NaN
+          // or string-concatenation garbage), so warn rather than
+          // guessing a type/initialValue from the bare RHS, which
+          // would silently misreport what this statement actually
+          // does (e.g. `<<set $gold += 10>>` as $gold's first-ever
+          // mention must NOT be reported as "$gold starts at 10").
+          warnings.push({
+            type: 'syntax_error',
+            message: `$${statement.name} is modified with "${statement.operator}" before any plain <<set $${statement.name} to ...>> declares it.`,
+            lineNumber,
+          });
+        }
         content.push({ kind: 'assignment', statement });
       } catch (err) {
         warnings.push({
@@ -409,9 +451,15 @@ export function processSugarCubePassageBody(
     // the negation of every earlier branch's test, so the branches
     // stay mutually exclusive (matching if/elseif/else's actual
     // runtime semantics) rather than letting a later TRUE branch
-    // double-fire alongside an earlier one.
-    const contentLengthBeforeThisIf = content.length;
-    const choicesLengthBeforeThisIf = choices.length;
+    // double-fire alongside an earlier one. Branch output is staged
+    // into pendingContent/pendingChoices and only merged into the
+    // real content/choices arrays once the WHOLE chain has parsed
+    // successfully — a structural guarantee against discarding
+    // anything unrelated that might land in content/choices in
+    // between, which a snapshot-the-length-then-truncate approach
+    // would be one future edit away from breaking.
+    const pendingContent: ContentBlock[] = [];
+    const pendingChoices: Choice[] = [];
     let priorNegations: Expression | null = null;
     let sawBrokenCondition = false;
     for (const branch of block.branches) {
@@ -434,13 +482,54 @@ export function processSugarCubePassageBody(
           ? and(priorNegations, branchCondition)
           : (branchCondition ?? priorNegations);
       if (effectiveCondition) {
-        const { choices: innerChoices, contentBody: innerText } = extractLinks(
-          remaining.slice(branch.bodyStart, branch.bodyEnd),
-        );
-        for (const choice of innerChoices)
-          choices.push({ ...choice, condition: effectiveCondition });
-        for (const b of bodyToContent(innerText))
-          content.push({ ...b, condition: effectiveCondition });
+        const branchText = remaining.slice(branch.bodyStart, branch.bodyEnd);
+        if (/<<\s*set\b/i.test(branchText)) {
+          // A <<set>> nested inside a conditional block has no way
+          // to be represented yet — ContentBlock's assignment variant
+          // has no `condition` field, so there's no honest way to
+          // make it run only when this branch is active. Leaving the
+          // branch as literal text (with a warning) is less wrong
+          // than silently running the assignment unconditionally.
+          warnings.push({
+            type: 'syntax_error',
+            message:
+              '<<set>> inside a conditional <<if>>/<<elseif>>/<<else>> block is not supported yet — move the assignment outside the block.',
+            lineNumber,
+          });
+          pendingContent.push(...bodyToContent(branchText));
+        } else {
+          // Recurse so a nested <<if>> (and any plain prose/links) is
+          // fully understood, not just left as literal text — this
+          // is a strict generalization of the old extractLinks-only
+          // handling: a branch with no nested macros recurses into
+          // exactly the same { no tag found -> pushGenericParagraph }
+          // fallback path, so simple branches are unaffected.
+          const nested = processSugarCubePassageBody(
+            branchText,
+            state,
+            evaluateExpr,
+            warnings,
+            lineNumber,
+          );
+          for (const choice of nested.choices) {
+            pendingChoices.push({
+              ...choice,
+              condition: choice.condition
+                ? and(effectiveCondition, choice.condition)
+                : effectiveCondition,
+            });
+          }
+          for (const b of nested.content) {
+            if (b.kind === 'assignment') {
+              pendingContent.push(b);
+              continue;
+            }
+            pendingContent.push({
+              ...b,
+              condition: b.condition ? and(effectiveCondition, b.condition) : effectiveCondition,
+            });
+          }
+        }
       }
       if (branchCondition) {
         priorNegations = priorNegations
@@ -454,24 +543,15 @@ export function processSugarCubePassageBody(
       // same reasoning as Harlowe's hook-with-unparseable-condition
       // case: a branch wrapping a `[[Link]]` must not get silently
       // promoted to an unconditional Choice just because a sibling
-      // branch's condition failed to parse.
-      content.length = contentLengthBeforeThisIf;
-      choices.length = choicesLengthBeforeThisIf;
+      // branch's condition failed to parse. pendingContent/
+      // pendingChoices are simply never merged in this case.
       content.push(...bodyToContent(remaining.slice(tag.start, block.end)));
+    } else {
+      content.push(...pendingContent);
+      choices.push(...pendingChoices);
     }
     cursor += block.end;
   }
 
   return { content, choices };
-}
-
-/** Fallback for a paragraph that isn't (one of) the specially-handled
- * tag shapes above — run it through the exact same generic
- * extractLinks + bodyToContent pipeline a non-macro passage gets, so
- * an unrecognized tag stays exactly as inert text (same as every
- * Twee macro was before this phase) instead of disappearing. */
-function pushGenericParagraph(paragraph: string, content: ContentBlock[], choices: Choice[]): void {
-  const { choices: foundChoices, contentBody } = extractLinks(paragraph);
-  choices.push(...foundChoices);
-  content.push(...bodyToContent(contentBody));
 }

@@ -1110,6 +1110,80 @@ describe('parseTwee — SugarCube macro support (DEV-199 Phase 8)', () => {
     expect(g.variables).toBeUndefined();
     expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(true);
   });
+
+  it("warns (rather than silently declaring with the wrong value) when a compound <<set>> is a variable's first-ever mention", () => {
+    // Regression: a compound op (+=/-=/etc) can't declare a variable
+    // — it needs an EXISTING value to combine with. This used to be
+    // declared as if the bare RHS were a plain assignment (`$gold`
+    // "starting" at 10), silently misreporting what the statement
+    // actually does.
+    const g = parseTwee(sugarcubeSrc('<<set $gold += 10>>'));
+    expect(g.variables).toBeUndefined();
+    expect(
+      g.validation.warnings.some((w) => w.type === 'syntax_error' && w.message.includes('$gold')),
+    ).toBe(true);
+  });
+
+  it('recurses into a nested <<if>> inside a branch, combining conditions with AND', () => {
+    // Regression: a branch's body used to only go through the
+    // generic extractLinks+bodyToContent fallback, so a nested
+    // <<if>> was never recognized as one — it leaked as raw macro
+    // text instead of producing its own, further-gated content.
+    const g = parseTwee(
+      sugarcubeSrc(
+        '<<set $a to true>>\n<<set $b to true>>\n<<if $a>>outer <<if $b>>inner<</if>> text<</if>>',
+      ),
+    );
+    const textBlocks = g.nodes['Start'].content.filter(isTextBlock);
+    expect(textBlocks.map((b) => b.text)).toEqual(['outer', 'inner', 'text']);
+    expect(textBlocks[0].condition).toEqual({ kind: 'variable', name: 'a' });
+    expect(textBlocks[1].condition).toEqual({
+      kind: 'logical',
+      operator: '&&',
+      left: { kind: 'variable', name: 'a' },
+      right: { kind: 'variable', name: 'b' },
+    });
+    expect(textBlocks[2].condition).toEqual({ kind: 'variable', name: 'a' });
+  });
+
+  it('recurses into a nested <<if>> wrapping a link, combining it into one doubly-conditional choice', () => {
+    const g = parseTwee(
+      sugarcubeSrc(
+        '<<set $a to true>>\n<<set $b to true>>\n<<if $a>><<if $b>>[[Shop]]<</if>><</if>>',
+      ),
+    );
+    expect(g.nodes['Start'].choices).toEqual([
+      {
+        text: 'Shop',
+        target: 'Shop',
+        sticky: false,
+        fallback: false,
+        tags: [],
+        condition: {
+          kind: 'logical',
+          operator: '&&',
+          left: { kind: 'variable', name: 'a' },
+          right: { kind: 'variable', name: 'b' },
+        },
+      },
+    ]);
+  });
+
+  it('warns and leaves a branch inert when it contains a nested <<set>> — not representable yet, since AssignmentBlock has no condition field', () => {
+    const g = parseTwee(sugarcubeSrc('<<if $a>>hi <<set $b to 1>> there<</if>>'));
+    expect(g.nodes['Start'].content.some((c) => c.kind === 'assignment')).toBe(false);
+    expect(textOf(g.nodes['Start'].content[0])).toContain('<<set $b to 1>>');
+    expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(true);
+  });
+
+  it('warns rather than silently dropping a tag whose own argument text has an unescaped quote', () => {
+    // Regression: a stray apostrophe inside <<if>>'s own condition
+    // text (not a real string literal) made findTags treat it as an
+    // opening quote, run off the end looking for its match, and drop
+    // the whole tag with zero diagnostic.
+    const g = parseTwee(sugarcubeSrc("<<if $name is Bob's>>hi<</if>>"));
+    expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(true);
+  });
 });
 
 describe('emitTwee — SugarCube re-emission (DEV-199 Phase 8)', () => {

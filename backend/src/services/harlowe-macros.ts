@@ -50,6 +50,7 @@ import type {
 import {
   extractLinks,
   bodyToContent,
+  pushGenericParagraph,
   readQuotedLiteral,
   escapeDoubleQuoted,
   declareVariableIfNew,
@@ -478,15 +479,4 @@ export function processHarlowePassageBody(
   }
 
   return { content, choices };
-}
-
-/** Fallback for a paragraph that isn't (one of) the specially-handled
- * macro shapes above — run it through the exact same generic
- * extractLinks + bodyToContent pipeline a non-macro passage gets, so
- * an unrecognized macro call stays exactly as inert text (same as
- * every Twee macro was before this phase) instead of disappearing. */
-function pushGenericParagraph(paragraph: string, content: ContentBlock[], choices: Choice[]): void {
-  const { choices: foundChoices, contentBody } = extractLinks(paragraph);
-  choices.push(...foundChoices);
-  content.push(...bodyToContent(contentBody));
 }

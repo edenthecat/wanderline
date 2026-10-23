@@ -13,6 +13,7 @@
 
 import type {
   Choice,
+  ContentBlock,
   Expression,
   TextContent,
   ValidationMessage,
@@ -181,6 +182,23 @@ function parseLinkInner(inner: string): Choice | null {
     fallback: false,
     tags: [],
   };
+}
+
+/** Fallback for passage text that isn't (one of) a dialect module's
+ * own specially-handled macro/tag shapes — run it through the exact
+ * same generic extractLinks + bodyToContent pipeline a non-macro
+ * passage gets, so an unrecognized macro/tag stays exactly as inert
+ * text (same as every Twee macro was before dialect support existed)
+ * instead of disappearing. Shared by every dialect module so this
+ * fallback behavior can't drift between them. */
+export function pushGenericParagraph(
+  paragraph: string,
+  content: ContentBlock[],
+  choices: Choice[],
+): void {
+  const { choices: foundChoices, contentBody } = extractLinks(paragraph);
+  choices.push(...foundChoices);
+  content.push(...bodyToContent(contentBody));
 }
 
 /**
