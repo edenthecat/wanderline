@@ -11,9 +11,32 @@ import { useEffect, useState, type FormEvent } from 'react';
 import {
   updateVariables,
   printExpression,
+  type Expression,
   type StoryGraph,
   type VariableDeclaration,
 } from '../api/client';
+
+/** True if `expr` reads `name` anywhere in its tree — used to catch
+ * "can't delete X, Y's initial value still depends on it" before
+ * sending a save the server would reject with a much less legible
+ * evaluator error (variables are evaluated in array order, so a
+ * deleted dependency isn't just stale, it's undefined). */
+function expressionReferencesVariable(expr: Expression, name: string): boolean {
+  switch (expr.kind) {
+    case 'literal':
+      return false;
+    case 'variable':
+      return expr.name === name;
+    case 'unary':
+      return expressionReferencesVariable(expr.operand, name);
+    case 'binary':
+    case 'logical':
+      return (
+        expressionReferencesVariable(expr.left, name) ||
+        expressionReferencesVariable(expr.right, name)
+      );
+  }
+}
 
 interface Props {
   projectId: string;
@@ -103,6 +126,17 @@ export default function VariablesTab({ projectId, storyGraph, onStoryUpdated }: 
   }
 
   async function handleDelete(name: string) {
+    const dependents = variables.filter(
+      (v) => v.name !== name && expressionReferencesVariable(v.initialValue, name),
+    );
+    if (dependents.length > 0) {
+      setError(
+        `Can't delete "${name}" — ${dependents.map((d) => d.name).join(', ')} still ` +
+          `reference${dependents.length === 1 ? 's' : ''} it in its initial value. Update ` +
+          `${dependents.length === 1 ? 'that variable' : 'those variables'} first.`,
+      );
+      return;
+    }
     if (
       !confirm(`Delete variable "${name}"? Any condition still referencing it will stop matching.`)
     )

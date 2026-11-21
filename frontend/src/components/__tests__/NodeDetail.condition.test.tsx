@@ -75,7 +75,7 @@ describe('NodeDetail — choice condition', () => {
     render(<NodeDetail {...props({ onChoiceConditionEdit })} />);
 
     fireEvent.click(screen.getByText('+ Condition'));
-    const input = screen.getByLabelText('Choice 1 condition');
+    const input = screen.getByLabelText('Choice 1 condition on her');
     fireEvent.change(input, { target: { value: 'gold > 10' } });
     fireEvent.click(screen.getByText('Save'));
 
@@ -89,7 +89,7 @@ describe('NodeDetail — choice condition', () => {
     render(<NodeDetail {...props({ onChoiceConditionEdit })} />);
 
     fireEvent.click(screen.getByText('+ Condition'));
-    fireEvent.change(screen.getByLabelText('Choice 1 condition'), {
+    fireEvent.change(screen.getByLabelText('Choice 1 condition on her'), {
       target: { value: 'gold >>' },
     });
     fireEvent.click(screen.getByText('Save'));

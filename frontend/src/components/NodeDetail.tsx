@@ -575,7 +575,7 @@ export default function NodeDetail({
                 <ConditionEditor
                   value={ch.condition}
                   onSave={(text) => onChoiceConditionEdit(i, text)}
-                  ariaLabel={`Choice ${i + 1} condition`}
+                  ariaLabel={`Choice ${i + 1} condition on ${nodeId}`}
                 />
               )}
               {(onSwapChoices || onDeleteChoice) && (

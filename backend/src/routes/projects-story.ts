@@ -1539,14 +1539,22 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
       }
 
       const seenNames = new Set<string>();
-      const variableValues: Record<string, string | number | boolean> = {};
+      // Object.create(null), not {} — a declared name of `__proto__`
+      // would otherwise hit Object.prototype's accessor instead of
+      // being stored as a real entry, so a LATER declaration that
+      // reads it back via `name in variableValues` would see it as
+      // already (falsely) present.
+      const variableValues: Record<string, string | number | boolean> = Object.create(null);
       const nextVariables: VariableDeclaration[] = [];
 
       for (let i = 0; i < variables.length; i++) {
         const entry = variables[i];
         const name = entry?.name;
         const initialValueSource = entry?.initialValue;
-        const isConst = Boolean(entry?.isConst);
+        // Only a real boolean false means false — Boolean(entry?.isConst)
+        // would otherwise coerce the string "false" (or any other
+        // truthy non-boolean) to true.
+        const isConst = entry?.isConst === true;
 
         if (typeof name !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
           res.status(400).json({

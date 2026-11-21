@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import VariablesTab from '../VariablesTab';
 import type { StoryGraph } from '../../api/client';
 
@@ -10,6 +10,10 @@ const mockUpdateVariables = vi.hoisted(() => vi.fn());
 vi.mock('../../api/client', async () => {
   const actual = await vi.importActual<typeof import('../../api/client')>('../../api/client');
   return { ...actual, updateVariables: mockUpdateVariables };
+});
+
+beforeEach(() => {
+  mockUpdateVariables.mockReset();
 });
 
 function graph(variables: StoryGraph['variables']): StoryGraph {
@@ -149,6 +153,47 @@ describe('VariablesTab', () => {
     await waitFor(() => {
       expect(mockUpdateVariables).toHaveBeenCalledWith('p1', []);
     });
+    confirmSpy.mockRestore();
+  });
+
+  // Regression: deleting a variable another variable's initialValue
+  // depends on used to send the PATCH anyway, which the server
+  // rejected with a confusing evaluator error ("could not determine a
+  // value — Undefined variable: base") instead of a clear message —
+  // and the confirm() dialog's claim that only conditions would stop
+  // matching was simply wrong in this case.
+  it('blocks deleting a variable another variable depends on, without even confirming', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm');
+    render(
+      <VariablesTab
+        projectId="p1"
+        storyGraph={graph([
+          {
+            name: 'base',
+            type: 'number',
+            initialValue: { kind: 'literal', value: 10 },
+            isConst: false,
+          },
+          {
+            name: 'doubled',
+            type: 'number',
+            initialValue: {
+              kind: 'binary',
+              operator: '*',
+              left: { kind: 'variable', name: 'base' },
+              right: { kind: 'literal', value: 2 },
+            },
+            isConst: false,
+          },
+        ])}
+      />,
+    );
+
+    fireEvent.click(screen.getAllByText('Delete')[0]);
+
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(mockUpdateVariables).not.toHaveBeenCalled();
+    expect(screen.getByText(/Can't delete "base" — doubled still references it/)).toBeTruthy();
     confirmSpy.mockRestore();
   });
 });

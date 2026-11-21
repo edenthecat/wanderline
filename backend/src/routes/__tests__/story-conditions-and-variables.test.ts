@@ -280,4 +280,42 @@ describe('PATCH /:id/story/variables', () => {
 
     expect(res.status).toBe(400);
   });
+
+  // Regression: Boolean(entry?.isConst) coerced the string "false"
+  // (any non-boolean truthy value, really) to true — the opposite of
+  // what a non-UI caller sending isConst: "false" would mean.
+  it('treats a non-boolean isConst as false rather than coercing it to true', async () => {
+    const { app } = makeApp(graph({ a: { id: 'a', content: [], choices: [], tags: [] } }));
+    const res = await request(app)
+      .patch('/api/projects/p1/story/variables')
+      .send({ variables: [{ name: 'gold', initialValue: '1', isConst: 'false' }] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.story_graph.variables[0].isConst).toBe(false);
+  });
+
+  // Regression: a plain {} variableValues map let a declared name of
+  // `__proto__` hit Object.prototype's accessor instead of being
+  // stored as a real own property, so a later declaration reading it
+  // back saw the inherited Object.prototype object instead of the
+  // declared value.
+  it('handles a variable literally named __proto__ as a normal declaration', async () => {
+    const { app } = makeApp(graph({ a: { id: 'a', content: [], choices: [], tags: [] } }));
+    const res = await request(app)
+      .patch('/api/projects/p1/story/variables')
+      .send({
+        variables: [
+          { name: '__proto__', initialValue: '5', isConst: false },
+          { name: 'y', initialValue: '__proto__ + 1', isConst: false },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.story_graph.variables[1].initialValue).toEqual({
+      kind: 'binary',
+      operator: '+',
+      left: { kind: 'variable', name: '__proto__' },
+      right: { kind: 'literal', value: 1 },
+    });
+  });
 });
