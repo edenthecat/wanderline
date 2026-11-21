@@ -691,5 +691,28 @@ describe('NodeAudioPanel', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Attach audio…' }));
       expect(screen.getByLabelText('Voiceover to attach to hall')).toBeTruthy();
     });
+
+    // sfx has its own entries independently gated by condition (no
+    // single-default-slot concept like voiceover/ambience/choice1/2),
+    // so it gets its own affordance rather than one SLOTS row per type.
+    it('builds a conditioned sound effect and assigns it with that condition', async () => {
+      const a = mount({ sfx: [] }, actions(), [MOOD]);
+      fireEvent.click(screen.getByText('+ Add conditional sound effect…'));
+
+      fireEvent.change(screen.getByLabelText('Comparison operator'), { target: { value: '==' } });
+      fireEvent.change(screen.getByLabelText('Value'), { target: { value: 'angry' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Next: pick a file' }));
+
+      expect(screen.getByText('when mood == "angry", play')).toBeTruthy();
+      choose('Sound effect to play when mood == "angry" on hall', 'door', 'Add');
+
+      await waitFor(() =>
+        expect(a.assign).toHaveBeenCalledWith('hall', 'sfx', 'door', {
+          variable: 'mood',
+          operator: '==',
+          value: 'angry',
+        }),
+      );
+    });
   });
 });

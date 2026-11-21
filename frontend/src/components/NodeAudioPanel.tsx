@@ -127,7 +127,7 @@ export default function NodeAudioPanel({
   const [picking, setPicking] = useState<string | null>(null);
   const [showEmpty, setShowEmpty] = useState(false);
   // Which slot's "add a conditional variant" builder is open.
-  const [addingConditionFor, setAddingConditionFor] = useState<SingleSlot | null>(null);
+  const [addingConditionFor, setAddingConditionFor] = useState<NodeAudioSlot | null>(null);
 
   const sfx = nodeAudio?.sfx ?? [];
   const offsets = nodeAudio?.sfxOffsets ?? {};
@@ -477,6 +477,34 @@ export default function NodeAudioPanel({
             </li>
           );
         })}
+        {canAddCondition && (
+          <li className="node-audio-row">
+            <span className="audition-btn-spacer" aria-hidden="true" />
+            <span className="node-audio-label text-muted">Sound effect</span>
+            {addingConditionFor === 'sfx' ? (
+              <ConditionVariantBuilder
+                slotLabel="Sound effect"
+                category="sfx"
+                nodeId={nodeId}
+                declaredVariables={declaredVariables}
+                audioFiles={audioFiles}
+                busy={busy}
+                onSubmit={(condition, fileId) =>
+                  void run(() => actions!.assign(nodeId, 'sfx', fileId, condition))
+                }
+                onCancel={() => setAddingConditionFor(null)}
+              />
+            ) : (
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost"
+                onClick={() => setAddingConditionFor('sfx')}
+              >
+                + Add conditional sound effect…
+              </button>
+            )}
+          </li>
+        )}
         {canEdit &&
           showEmpty &&
           slotsWithoutDefault.map((slot) => (
