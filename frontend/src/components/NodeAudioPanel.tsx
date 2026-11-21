@@ -132,7 +132,12 @@ export default function NodeAudioPanel({
   const sfx = nodeAudio?.sfx ?? [];
   const offsets = nodeAudio?.sfxOffsets ?? {};
   const attachedSlots = SLOTS.filter((s) => (nodeAudio?.[s.key]?.length ?? 0) > 0);
-  const emptySlots = SLOTS.filter((s) => (nodeAudio?.[s.key]?.length ?? 0) === 0);
+  // Not the complement of attachedSlots any more: a slot can have
+  // conditioned-only variants (no default yet) and still need the
+  // simple "Attach audio…" flow to add the default/fallback — that's
+  // the ONLY in-panel way to add one, since the conditional-variant
+  // builder always requires a condition.
+  const slotsWithoutDefault = SLOTS.filter((s) => !defaultVariant(nodeAudio?.[s.key]));
   const hasAnything = attachedSlots.length > 0 || sfx.length > 0;
   const canEdit = !!actions && audioFiles.length > 0;
   const canAddCondition = canEdit && declaredVariables.length > 0;
@@ -194,6 +199,12 @@ export default function NodeAudioPanel({
     try {
       await op();
       setPicking(null);
+      // Closes the "add a conditional variant" builder back to its
+      // button state on success too — without this, the builder
+      // stayed open pointing at the already-saved condition, and a
+      // second file pick there re-sent the same condition and 409'd
+      // (expectEmpty sees the just-created row as "already filled").
+      setAddingConditionFor(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not update the audio');
     } finally {
@@ -468,7 +479,7 @@ export default function NodeAudioPanel({
         })}
         {canEdit &&
           showEmpty &&
-          emptySlots.map((slot) => (
+          slotsWithoutDefault.map((slot) => (
             <li key={slot.key} className="node-audio-row">
               <span className="audition-btn-spacer" aria-hidden="true" />
               <span className="node-audio-label">{slot.label}</span>

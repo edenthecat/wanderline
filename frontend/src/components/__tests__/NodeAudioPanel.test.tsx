@@ -657,5 +657,39 @@ describe('NodeAudioPanel', () => {
       );
       expect(screen.getByText('Voiceover — when mood == "angry"')).toBeTruthy();
     });
+
+    // Regression: onSubmit succeeding used to leave the builder open
+    // pointing at the already-saved condition — a second file pick
+    // there re-sent the identical condition and 409'd.
+    it('closes the builder back to its button once a conditioned variant is added', async () => {
+      const a = mount({ sfx: [] }, actions(), [MOOD]);
+      fireEvent.click(screen.getAllByText('+ Add conditional variant…')[SLOT_INDEX.voiceover]);
+      fireEvent.change(screen.getByLabelText('Value'), { target: { value: 'angry' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Next: pick a file' }));
+      choose('Voiceover to play when mood == "angry" on hall', 'vo1', 'Add');
+
+      await waitFor(() => expect(a.assign).toHaveBeenCalledTimes(1));
+      // Back to the button, not still open on the file picker.
+      expect(screen.queryByText(/when mood/)).toBeNull();
+      expect(screen.getAllByText('+ Add conditional variant…')[SLOT_INDEX.voiceover]).toBeTruthy();
+    });
+
+    // Regression: a slot with only conditioned variants (no default
+    // yet) used to be excluded from "Attach audio…" entirely, with no
+    // in-panel way to add the fallback afterward.
+    it('still offers "Attach audio…" for a slot that has a conditioned variant but no default', () => {
+      mount(
+        {
+          voiceover: [
+            { fileId: 'vo1', condition: { variable: 'mood', operator: '==', value: 'angry' } },
+          ],
+          sfx: [],
+        },
+        actions(),
+        [MOOD],
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Attach audio…' }));
+      expect(screen.getByLabelText('Voiceover to attach to hall')).toBeTruthy();
+    });
   });
 });

@@ -1976,7 +1976,7 @@ export default function App() {
   useEffect(() => {
     const handleOnline = () => {
       // If we have an error or are stalled, retry playback
-      if ((audioError || audioStalled) && currentNode?.audio?.voiceover) {
+      if ((audioError || audioStalled) && resolvedVoiceoverFile) {
         audioRetryCountRef.current = 0; // Reset retry count
         resumingRef.current = true;
         setAudioError(null);
@@ -1987,7 +1987,7 @@ export default function App() {
 
     window.addEventListener('online', handleOnline);
     return () => window.removeEventListener('online', handleOnline);
-  }, [audioError, audioStalled, currentNode, playVoiceover]);
+  }, [audioError, audioStalled, resolvedVoiceoverFile, playVoiceover]);
 
   // No visibilitychange handler here on purpose. This is an audio-
   // narrative player, so listening through a lock screen or with the
@@ -2021,8 +2021,7 @@ export default function App() {
   // looping under "The End" indefinitely.
   const storyOver =
     reachedEnding ||
-    (onEndingPassage &&
-      (!currentNode?.audio?.voiceover || playerState === 'ended' || !!audioError));
+    (onEndingPassage && (!resolvedVoiceoverFile || playerState === 'ended' || !!audioError));
   const ambienceFile =
     story && isAuthenticated && !showInstructions && !storyOver
       ? resolveAudioVariant(currentNode?.audio?.ambience, variables)
@@ -2329,10 +2328,10 @@ export default function App() {
     setShowInstructions(false);
     startBackgroundMusic();
     // Auto-play first node after a short delay
-    if (currentNode?.audio?.voiceover) {
+    if (resolvedVoiceoverFile) {
       setTimeout(() => playVoiceover(), 300);
     }
-  }, [startBackgroundMusic, currentNode, playVoiceover]);
+  }, [startBackgroundMusic, resolvedVoiceoverFile, playVoiceover]);
 
   // Handle password submission
   const handlePasswordSubmit = useCallback(
@@ -2359,7 +2358,7 @@ export default function App() {
     if (
       pendingNodeId &&
       pendingNodeId === currentNodeId &&
-      currentNode?.audio?.voiceover &&
+      resolvedVoiceoverFile &&
       playerState === 'ready'
     ) {
       pendingAutoplayNodeIdRef.current = null;
@@ -2367,7 +2366,7 @@ export default function App() {
       const timer = setTimeout(() => playVoiceover(), 100);
       return () => clearTimeout(timer);
     }
-  }, [currentNodeId, showInstructions, currentNode, playerState, playVoiceover]);
+  }, [currentNodeId, showInstructions, resolvedVoiceoverFile, playerState, playVoiceover]);
 
   // Click handlers for headphone controls
   /**

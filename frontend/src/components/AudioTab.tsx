@@ -18,6 +18,7 @@ import {
   type BulkReassignOp,
   type BulkUploadResult,
   type StoryGraph,
+  type SimpleCondition,
 } from '../api/client';
 import OrphanedAudioPanel from './OrphanedAudioPanel';
 import AssignmentAuditPanel from './AssignmentAuditPanel';
@@ -88,17 +89,25 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
   // manually, then DELETE + POST each one. The 'sfx' slot is
   // multi-valued so the same file may appear twice on a node.
   const usagesByFileId = useMemo(() => {
-    const map = new Map<string, Array<{ nodeId: string; audioType: AudioType }>>();
-    const push = (fileId: string, nodeId: string, audioType: AudioType) => {
+    const map = new Map<
+      string,
+      Array<{ nodeId: string; audioType: AudioType; condition?: SimpleCondition }>
+    >();
+    const push = (
+      fileId: string,
+      nodeId: string,
+      audioType: AudioType,
+      condition?: SimpleCondition,
+    ) => {
       const list = map.get(fileId);
-      if (list) list.push({ nodeId, audioType });
-      else map.set(fileId, [{ nodeId, audioType }]);
+      if (list) list.push({ nodeId, audioType, condition });
+      else map.set(fileId, [{ nodeId, audioType, condition }]);
     };
     for (const [nodeId, a] of Object.entries(assignments)) {
-      for (const v of a.voiceover ?? []) push(v.fileId, nodeId, 'voiceover');
-      for (const v of a.ambience ?? []) push(v.fileId, nodeId, 'ambience');
-      for (const v of a.choice1 ?? []) push(v.fileId, nodeId, 'choice1');
-      for (const v of a.choice2 ?? []) push(v.fileId, nodeId, 'choice2');
+      for (const v of a.voiceover ?? []) push(v.fileId, nodeId, 'voiceover', v.condition);
+      for (const v of a.ambience ?? []) push(v.fileId, nodeId, 'ambience', v.condition);
+      for (const v of a.choice1 ?? []) push(v.fileId, nodeId, 'choice1', v.condition);
+      for (const v of a.choice2 ?? []) push(v.fileId, nodeId, 'choice2', v.condition);
       for (const sfxId of a.sfx) push(sfxId, nodeId, 'sfx');
     }
     // Sort each list for stable rendering across refetches.
@@ -344,13 +353,18 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
     }
   }
 
-  async function handleRemoveAssignment(nodeId: string, audioType: string, audioFileId?: string) {
+  async function handleRemoveAssignment(
+    nodeId: string,
+    audioType: string,
+    audioFileId?: string,
+    condition?: SimpleCondition,
+  ) {
     if (!confirm(`Remove ${audioType} assignment from ${nodeId}?`)) return;
     setError(null);
     setSuccessMessage(null);
 
     try {
-      await removeAudioAssignment(projectId, nodeId, audioType, audioFileId);
+      await removeAudioAssignment(projectId, nodeId, audioType, audioFileId, condition);
       await loadAll();
       bumpLiveSignal(yDoc, AUDIO_ASSIGNMENTS_SIGNAL);
     } catch (err) {
@@ -727,29 +741,43 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
               </thead>
               <tbody>
                 {nodesWithAssignments.map(([nodeId, nodeAssign]) => {
-                  const rows: { type: string; fileId: string }[] = [];
+                  const rows: {
+                    audioType: AudioType;
+                    label: string;
+                    fileId: string;
+                    condition?: SimpleCondition;
+                  }[] = [];
                   // A slot can hold several variants now (one default +
                   // any number of variable-conditioned ones) — each gets
                   // its own row, labelled so a conditioned variant isn't
-                  // silently indistinguishable from the default.
+                  // silently indistinguishable from the default. The
+                  // REAL audioType/condition (not the display label) is
+                  // what Remove needs to target the right row — the
+                  // same file can legitimately appear twice under two
+                  // different conditions, so fileId alone can't key a
+                  // row either.
                   for (const slotType of ['voiceover', 'choice1', 'choice2', 'ambience'] as const) {
                     for (const v of nodeAssign[slotType] ?? []) {
                       rows.push({
-                        type: v.condition ? `${slotType} (conditioned)` : slotType,
+                        audioType: slotType,
+                        label: v.condition ? `${slotType} (conditioned)` : slotType,
                         fileId: v.fileId,
+                        condition: v.condition,
                       });
                     }
                   }
-                  for (const sfxId of nodeAssign.sfx) rows.push({ type: 'sfx', fileId: sfxId });
+                  for (const sfxId of nodeAssign.sfx) {
+                    rows.push({ audioType: 'sfx', label: 'sfx', fileId: sfxId });
+                  }
                   return rows.map((row, idx) => (
-                    <tr key={`${nodeId}-${row.type}-${row.fileId}`}>
+                    <tr key={`${nodeId}-${row.audioType}-${row.fileId}-${idx}`}>
                       {idx === 0 ? (
                         <td className="node-name" rowSpan={rows.length}>
                           {nodeId}
                         </td>
                       ) : null}
                       <td>
-                        <span className="badge badge-blue">{row.type}</span>
+                        <span className="badge badge-blue">{row.label}</span>
                       </td>
                       <td className="audio-filename">{getFileName(row.fileId)}</td>
                       <td>
@@ -758,8 +786,9 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
                           onClick={() =>
                             handleRemoveAssignment(
                               nodeId,
-                              row.type,
-                              row.type === 'sfx' ? row.fileId : undefined,
+                              row.audioType,
+                              row.audioType === 'sfx' ? row.fileId : undefined,
+                              row.condition,
                             )
                           }
                         >
@@ -1046,6 +1075,7 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
                                                     u.nodeId,
                                                     u.audioType,
                                                     u.audioType === 'sfx' ? f.id : undefined,
+                                                    u.condition,
                                                   )
                                                 }
                                                 disabled={isSwapping}

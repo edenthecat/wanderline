@@ -71,13 +71,14 @@ function node(
 const ON = [{ text: 'On', target: 'later' }];
 const later = node('later', 'Later.', undefined);
 
-function load(nodes: Record<string, unknown>) {
+function load(nodes: Record<string, unknown>, overrides: Record<string, unknown> = {}) {
   (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = {
     id: 'ambience-test',
     title: 'Ambience Test',
     audioBaseUrl: './audio/',
     startNode: 'start',
     nodes,
+    ...overrides,
   };
   render(<App />);
 }
@@ -253,6 +254,44 @@ describe('ambience at the end of the story', () => {
       ]),
       last: node('last', 'The last words.', { ambience: [{ file: 'rain.mp3' }] }),
     });
+    await start();
+    await wait(AMBIENCE_FADE_MS);
+    expect(sounding('rain.mp3')).toHaveLength(1);
+    fireEvent.click(await screen.findByLabelText(/^Choice 1/));
+    await screen.findByText('The last words.');
+    await wait(AMBIENCE_FADE_MS + 100);
+    expect(sounding('rain.mp3')).toHaveLength(0);
+  });
+
+  // Regression: storyOver's ending check used to test the raw
+  // voiceover array's truthiness rather than resolving it, so a
+  // final passage whose only voiceover candidate is conditioned (and
+  // currently false) was treated as "has a voiceover" — the bed kept
+  // looping under "The End" since storyOver never went true.
+  it('stops on a final passage whose only voiceover candidate is conditioned and does not match', async () => {
+    load(
+      {
+        start: node('start', 'The beginning.', { ambience: [{ file: 'rain.mp3' }] }, [
+          { text: 'On', target: 'last' },
+        ]),
+        last: node('last', 'The last words.', {
+          ambience: [{ file: 'rain.mp3' }],
+          voiceover: [
+            { file: 'angry.mp3', condition: { variable: 'mood', operator: '==', value: 'angry' } },
+          ],
+        }),
+      },
+      {
+        variables: [
+          {
+            name: 'mood',
+            type: 'string',
+            initialValue: { kind: 'literal', value: 'cheerful' },
+            isConst: false,
+          },
+        ],
+      },
+    );
     await start();
     await wait(AMBIENCE_FADE_MS);
     expect(sounding('rain.mp3')).toHaveLength(1);
