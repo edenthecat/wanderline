@@ -1117,4 +1117,100 @@ No association with any real narrative.
       ).toBe(true);
     });
   });
+
+  describe('LIST declarations (DEV-199 Phase 10)', () => {
+    it('declares a LIST with its members in order and the parenthesized ones active', () => {
+      const source = '== start ==\nLIST kettleState = cold, (boiling), recently_boiled\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.variables).toEqual([
+        {
+          name: 'kettleState',
+          type: 'list',
+          isConst: false,
+          listMembers: ['cold', 'boiling', 'recently_boiled'],
+          initialValue: {
+            kind: 'literal',
+            value: {
+              kind: 'list',
+              origin: 'kettleState',
+              items: [{ name: 'boiling', ordinal: 1 }],
+              allItems: [
+                { name: 'cold', ordinal: 0 },
+                { name: 'boiling', ordinal: 1 },
+                { name: 'recently_boiled', ordinal: 2 },
+              ],
+            },
+          },
+        },
+      ]);
+    });
+
+    it('declares a LIST with no initially-active members as an empty list', () => {
+      const source = '== start ==\nLIST flags = seenIntro, metGuard\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.variables?.[0].initialValue).toMatchObject({
+        kind: 'literal',
+        value: { kind: 'list', items: [] },
+      });
+    });
+
+    it('resolves a bare member name in a LATER condition as a list literal, not an undeclared variable', () => {
+      const source =
+        '== start ==\nLIST kettleState = cold, (boiling), recently_boiled\n{kettleState == boiling: It is boiling.}\n';
+      const result = parseInk(source, 'test-id');
+      const [block] = result.nodes['start'].content;
+      expect(isTextBlock(block)).toBe(true);
+      if (isTextBlock(block)) {
+        expect(block.text).toBe('It is boiling.');
+        expect(block.condition).toEqual({
+          kind: 'binary',
+          operator: '==',
+          left: { kind: 'variable', name: 'kettleState' },
+          right: {
+            kind: 'literal',
+            value: {
+              kind: 'list',
+              origin: 'kettleState',
+              items: [{ name: 'boiling', ordinal: 1 }],
+              allItems: [
+                { name: 'cold', ordinal: 0 },
+                { name: 'boiling', ordinal: 1 },
+                { name: 'recently_boiled', ordinal: 2 },
+              ],
+            },
+          },
+        });
+      }
+    });
+
+    it('resolves a bare member name in a LATER ~ assignment as a list literal', () => {
+      const source =
+        '== start ==\nLIST kettleState = cold, boiling\n~ kettleState += boiling\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      const assignmentBlock = result.nodes['start'].content.find((c) => c.kind === 'assignment');
+      expect(assignmentBlock).toBeDefined();
+      if (assignmentBlock && assignmentBlock.kind === 'assignment') {
+        expect(assignmentBlock.statement.value).toMatchObject({
+          kind: 'literal',
+          value: { kind: 'list', items: [{ name: 'boiling', ordinal: 1 }] },
+        });
+      }
+    });
+
+    it('a LIST declaration before the first knot does not spawn an implicit start node', () => {
+      const source = 'LIST kettleState = cold, (boiling)\n\n== start ==\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.nodes['_intro']).toBeUndefined();
+      expect(result.startNode).toBe('start');
+    });
+
+    it('warns and skips an invalid member name rather than crashing', () => {
+      const source = '== start ==\nLIST bad = 1nvalid\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.variables).toBeUndefined();
+      expect(
+        result.validation.warnings.some((w) => w.message.includes('not a valid member name')),
+      ).toBe(true);
+    });
+  });
 });

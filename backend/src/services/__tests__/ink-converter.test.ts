@@ -423,4 +423,65 @@ describe('convertStoryGraphToInk', () => {
       );
     });
   });
+
+  describe('LIST declarations (DEV-199 Phase 10)', () => {
+    it('emits every declared member, with the active ones parenthesized', () => {
+      const result = convertStoryGraphToInk({
+        id: 'test',
+        title: 'Test',
+        startNode: 'start',
+        variables: [
+          {
+            name: 'kettleState',
+            type: 'list',
+            isConst: false,
+            listMembers: ['cold', 'boiling', 'recently_boiled'],
+            initialValue: {
+              kind: 'literal',
+              value: {
+                kind: 'list',
+                origin: 'kettleState',
+                items: [{ name: 'boiling', ordinal: 1 }],
+                allItems: [
+                  { name: 'cold', ordinal: 0 },
+                  { name: 'boiling', ordinal: 1 },
+                  { name: 'recently_boiled', ordinal: 2 },
+                ],
+              },
+            },
+          },
+        ],
+        nodes: {
+          start: {
+            id: 'start',
+            type: 'knot',
+            content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+            choices: [],
+            divert: null,
+            tags: [],
+          },
+        },
+      });
+      expect(result).toContain('LIST kettleState = cold, (boiling), recently_boiled');
+    });
+
+    it('round-trips a LIST declaration, its condition, and an in-content assignment through parseInk -> emit -> parseInk', () => {
+      const source = [
+        'LIST kettleState = cold, (boiling), recently_boiled',
+        '',
+        '== start ==',
+        '~ kettleState += recently_boiled',
+        '{kettleState == boiling: It is boiling.}',
+        '-> END',
+        '',
+      ].join('\n');
+      const first = parseInk(source, 'test-id');
+      const emitted = convertStoryGraphToInk(first);
+      const second = parseInk(emitted, 'test-id');
+      expect(second.variables).toEqual(first.variables);
+      expect(stripIds(second.nodes['start'].content)).toEqual(
+        stripIds(first.nodes['start'].content),
+      );
+    });
+  });
 });

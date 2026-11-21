@@ -4,7 +4,7 @@
  */
 
 import { randomUUID } from 'crypto';
-import { parseExpression, parseStatement, evaluate } from '@wanderline/shared';
+import { parseExpression, parseStatement, evaluate, isListValue } from '@wanderline/shared';
 import type {
   StoryGraph,
   StoryNode,
@@ -17,6 +17,8 @@ import type {
   VariableDeclaration,
   VariableType,
   VariableValue,
+  ListItem,
+  ExpressionParseContext,
 } from '../types.js';
 
 // Re-export types for convenience
@@ -44,6 +46,13 @@ interface ParserState {
   // Not consulted anywhere else — the actual runtime variable store
   // lives in the player (Phase 2).
   variableValues: Record<string, VariableValue>;
+  // DEV-199 Phase 10: every LIST member declared so far, across every
+  // LIST in the file, and each LIST's full member set — threaded into
+  // every parseExpression/parseStatement call below as `context` so
+  // a bare `cold` in a LATER condition/assignment resolves as a list
+  // literal, not an undeclared-variable reference.
+  listMembers: Record<string, { origin: string; ordinal: number }>;
+  listDefinitions: Record<string, ListItem[]>;
 }
 
 const IMPLICIT_START_NODE = '_intro';
@@ -64,6 +73,8 @@ export function parseInk(source: string, storyId: string, title?: string): Story
     consumedLines: new Set(),
     variables: [],
     variableValues: {},
+    listMembers: {},
+    listDefinitions: {},
   };
 
   const lines = source.split('\n');
@@ -79,11 +90,11 @@ export function parseInk(source: string, storyId: string, title?: string): Story
       break;
     }
 
-    // A VAR/CONST preamble line is a declaration, not story content —
-    // without this, a leading `VAR gold = 50` would trip the
-    // "content before first knot" check and spawn an unwanted
-    // implicit start node.
-    if (VARIABLE_DECL_RE.test(trimmed)) continue;
+    // A VAR/CONST/LIST preamble line is a declaration, not story
+    // content — without this, a leading `VAR gold = 50` (or `LIST
+    // kettleState = ...`) would trip the "content before first knot"
+    // check and spawn an unwanted implicit start node.
+    if (VARIABLE_DECL_RE.test(trimmed) || LIST_DECL_RE.test(trimmed)) continue;
 
     // Found non-empty, non-comment content before a knot
     hasContentBeforeFirstKnot = true;
@@ -172,6 +183,22 @@ function isKnotDeclaration(trimmed: string): boolean {
 // it, not just in a "preamble" position.
 const VARIABLE_DECL_RE = /^(VAR|CONST)\s+(\w+)\s*=\s*(.+)$/;
 
+// LIST declaration (DEV-199 Phase 10) — same "wherever it appears"
+// scoping as VAR/CONST above.
+const LIST_DECL_RE = /^LIST\s+(\w+)\s*=\s*(.+)$/;
+
+/** The known-list-members context every parseExpression/parseStatement
+ * call in this file needs, so a bare identifier matching a LIST
+ * member declared EARLIER in the file resolves as a list literal. A
+ * list member declared LATER in the file is simply not yet known at
+ * the point an earlier line is parsed — same ordering rule Ink's own
+ * VAR/CONST forward-reference handling already has (state.variableValues
+ * only has what's been declared so far, not what comes later). */
+function expressionContext(state: ParserState | undefined): ExpressionParseContext {
+  if (!state) return {};
+  return { listMembers: state.listMembers, listDefinitions: state.listDefinitions };
+}
+
 /**
  * Strip an Ink `// line comment` (everything from `//` to EOL) but
  * leave the rest of the line intact. Tags (`# foo`) are NOT touched
@@ -243,6 +270,13 @@ function parseLine(line: string, state: ParserState, allLines: string[], lineInd
   const variableDeclMatch = trimmed.match(VARIABLE_DECL_RE);
   if (variableDeclMatch) {
     parseVariableDeclarationLine(variableDeclMatch, state);
+    return;
+  }
+
+  // LIST declaration (DEV-199 Phase 10).
+  const listDeclMatch = trimmed.match(LIST_DECL_RE);
+  if (listDeclMatch) {
+    parseListDeclarationLine(listDeclMatch, state);
     return;
   }
 
@@ -532,7 +566,7 @@ function parseChoiceIntoNode(
   let conditionMatch: RegExpMatchArray | null;
   while ((conditionMatch = content.match(/^\{([^{}]+)\}\s*/))) {
     try {
-      const parsed = parseExpression(conditionMatch[1].trim());
+      const parsed = parseExpression(conditionMatch[1].trim(), expressionContext(state));
       condition = condition
         ? { kind: 'logical', operator: '&&', left: condition, right: parsed }
         : parsed;
@@ -674,7 +708,7 @@ function parseVariableDeclarationLine(match: RegExpMatchArray, state: ParserStat
 
   let initialValue: Expression;
   try {
-    initialValue = parseExpression(rhsRaw.trim());
+    initialValue = parseExpression(rhsRaw.trim(), expressionContext(state));
   } catch (err) {
     state.warnings.push({
       type: 'syntax_error',
@@ -698,9 +732,79 @@ function parseVariableDeclarationLine(match: RegExpMatchArray, state: ParserStat
     return;
   }
 
-  const type: VariableType =
-    typeof value === 'number' ? 'number' : typeof value === 'boolean' ? 'bool' : 'string';
+  const type: VariableType = isListValue(value)
+    ? 'list'
+    : typeof value === 'number'
+      ? 'number'
+      : typeof value === 'boolean'
+        ? 'bool'
+        : 'string';
   state.variables.push({ name, type, initialValue, isConst });
+  state.variableValues[name] = value;
+}
+
+/**
+ * Parse a `LIST name = member1, (member2), member3` declaration
+ * (DEV-199 Phase 10). Parens around a member mark it initially
+ * active; everything else in `state.listMembers`/`listDefinitions`
+ * exists so a bare member name in a LATER expression/statement
+ * resolves as a list literal rather than an undeclared-variable
+ * reference — see `expressionContext`.
+ */
+function parseListDeclarationLine(match: RegExpMatchArray, state: ParserState): void {
+  const [, name, rhsRaw] = match;
+  const memberTokens = rhsRaw
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean);
+  if (memberTokens.length === 0) {
+    state.warnings.push({
+      type: 'syntax_error',
+      message: `LIST ${name} declares no members`,
+      lineNumber: state.lineNumber,
+      args: { name },
+    });
+    return;
+  }
+
+  const allItems: ListItem[] = [];
+  const activeNames: string[] = [];
+  for (let i = 0; i < memberTokens.length; i++) {
+    let token = memberTokens[i];
+    const active = token.startsWith('(') && token.endsWith(')');
+    if (active) token = token.slice(1, -1).trim();
+    if (!/^[A-Za-z_]\w*$/.test(token)) {
+      state.warnings.push({
+        type: 'syntax_error',
+        message: `LIST ${name}: "${token}" is not a valid member name`,
+        lineNumber: state.lineNumber,
+        args: { name, member: token },
+      });
+      return;
+    }
+    allItems.push({ name: token, ordinal: i });
+    if (active) activeNames.push(token);
+  }
+
+  // Register every member BEFORE building the initial-value literal,
+  // so a member can reference an earlier member of the SAME
+  // declaration — not meaningful for list literals themselves, but
+  // keeps this consistent with how VAR/CONST registers incrementally.
+  for (const item of allItems) {
+    state.listMembers[item.name] = { origin: name, ordinal: item.ordinal };
+  }
+  state.listDefinitions[name] = allItems;
+
+  const activeItems = allItems.filter((item) => activeNames.includes(item.name));
+  const value: VariableValue = { kind: 'list', origin: name, items: activeItems, allItems };
+  const initialValue: Expression = { kind: 'literal', value };
+  state.variables.push({
+    name,
+    type: 'list',
+    initialValue,
+    isConst: false,
+    listMembers: allItems.map((item) => item.name),
+  });
   state.variableValues[name] = value;
 }
 
@@ -726,7 +830,7 @@ function parseAssignmentLine(trimmedLine: string, state: ParserState): void {
   const rest = trimmedLine.slice(1).trim();
   let statement: Statement;
   try {
-    statement = parseStatement(rest);
+    statement = parseStatement(rest, expressionContext(state));
   } catch (err) {
     state.warnings.push({
       type: 'syntax_error',
@@ -780,7 +884,7 @@ function addContentToNode(line: string, node: StoryNode, state?: ParserState): v
   const conditionalMatch = text.match(CONDITIONAL_TEXT_RE);
   if (conditionalMatch) {
     try {
-      condition = parseExpression(conditionalMatch[1].trim());
+      condition = parseExpression(conditionalMatch[1].trim(), expressionContext(state));
       innerText = conditionalMatch[2].trim();
     } catch (err) {
       if (state) {

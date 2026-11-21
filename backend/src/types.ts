@@ -5,6 +5,7 @@
 
 import {
   isTextBlock,
+  isListValue,
   type Expression,
   type VariableDeclaration,
   type VariableType,
@@ -14,10 +15,15 @@ import {
   type TextBlock,
   type AssignmentBlock,
   type TextContent,
+  type ListItem,
+  type ListValue,
+  type ListFunctionName,
+  type ExpressionParseContext,
 } from '@wanderline/shared';
 
 export {
   isTextBlock,
+  isListValue,
   type Expression,
   type VariableDeclaration,
   type VariableType,
@@ -27,6 +33,10 @@ export {
   type TextBlock,
   type AssignmentBlock,
   type TextContent,
+  type ListItem,
+  type ListValue,
+  type ListFunctionName,
+  type ExpressionParseContext,
 };
 
 // === Story Graph Types ===

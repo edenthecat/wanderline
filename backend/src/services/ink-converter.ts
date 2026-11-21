@@ -3,7 +3,7 @@
  * Extracted from projects.ts for reuse.
  */
 
-import { printExpression, printStatement } from '@wanderline/shared';
+import { printExpression, printStatement, isListValue } from '@wanderline/shared';
 import type { ContentBlock, Expression, VariableDeclaration } from '../types.js';
 
 interface InkStoryGraph {
@@ -40,10 +40,26 @@ export function convertStoryGraphToInk(storyGraph: InkStoryGraph): string {
   const nodes = storyGraph.nodes;
   const processedNodes = new Set<string>();
 
-  // VAR/CONST preamble (DEV-199 Phase 1), in declaration order. Must
-  // come before any knot content, matching Ink's own convention and
-  // what the parser expects on re-import.
+  // VAR/CONST/LIST preamble (DEV-199 Phase 1 / Phase 10), in
+  // declaration order. Must come before any knot content, matching
+  // Ink's own convention and what the parser expects on re-import.
   for (const decl of storyGraph.variables ?? []) {
+    if (decl.type === 'list') {
+      // A LIST declares its FULL member set, with parens marking
+      // which ones start active — this is NOT `printExpression` of
+      // the initial value, which only carries the active subset, not
+      // every member the LIST defines.
+      const activeNames = new Set(
+        decl.initialValue.kind === 'literal' && isListValue(decl.initialValue.value)
+          ? decl.initialValue.value.items.map((item) => item.name)
+          : [],
+      );
+      const members = (decl.listMembers ?? []).map((name) =>
+        activeNames.has(name) ? `(${name})` : name,
+      );
+      lines.push(`LIST ${decl.name} = ${members.join(', ')}`);
+      continue;
+    }
     const keyword = decl.isConst ? 'CONST' : 'VAR';
     lines.push(`${keyword} ${decl.name} = ${printExpression(decl.initialValue)}`);
   }
