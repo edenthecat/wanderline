@@ -395,6 +395,58 @@ describe('emitTwee — link corruption guards', () => {
   });
 });
 
+// DEV-199 Phase 10: Harlowe/SugarCube/Chapbook have no LIST
+// equivalent — emitTwee must reject a graph whose choice condition
+// bears a bare `{kind:'variable'}` reference to a declared LIST
+// variable, not just a LIST literal/has-hasnt/LIST_* call. This
+// exercises the real threading through emitTwee -> emitChoice ->
+// renderXExpression, not just the dialect renderer in isolation.
+describe('emitTwee — rejects a bare reference to a LIST-typed variable (DEV-199 Phase 10)', () => {
+  const graphWithListCondition = (dialect: 'harlowe' | 'sugarcube' | 'chapbook') => ({
+    id: 's1',
+    title: 'Untitled',
+    nodes: {
+      Start: {
+        id: 'Start',
+        type: 'knot' as const,
+        parent: null,
+        content: [],
+        choices: [
+          {
+            text: 'Go',
+            target: 'Start',
+            sticky: false,
+            fallback: false,
+            tags: [],
+            condition: { kind: 'variable' as const, name: 'kettleState' },
+          },
+        ],
+        divert: null,
+        tags: [],
+        lineNumber: 1,
+      },
+    },
+    startNode: 'Start',
+    validation: { valid: true, errors: [], warnings: [] },
+    variables: [
+      {
+        name: 'kettleState',
+        type: 'list' as const,
+        isConst: false,
+        initialValue: {
+          kind: 'literal' as const,
+          value: { kind: 'list' as const, origin: 'kettleState', items: [], allItems: [] },
+        },
+      },
+    ],
+    twee: { dialect },
+  });
+
+  it.each(['harlowe', 'sugarcube', 'chapbook'] as const)('rejects for %s', (dialect) => {
+    expect(() => emitTwee(graphWithListCondition(dialect))).toThrow(/LIST/);
+  });
+});
+
 describe('parseLinkInner — first-occurrence split (Copilot #3509091752)', () => {
   // Previously the parser used `String.split(delimiter)`, which splits
   // on ALL occurrences and destructuring `[a, b] = parts` silently

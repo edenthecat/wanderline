@@ -720,6 +720,18 @@ function parseVariableDeclarationLine(match: RegExpMatchArray, state: ParserStat
     });
     return;
   }
+  // A VAR/CONST sharing a name with an already-declared LIST's OWN
+  // name is the same hazard in the other direction — the LIST's name
+  // is itself a valid reference to its full initial-value literal.
+  if (Object.hasOwn(state.listDefinitions, name)) {
+    state.warnings.push({
+      type: 'syntax_error',
+      message: `${keyword} ${name} collides with an already-declared LIST of the same name`,
+      lineNumber: state.lineNumber,
+      args: { name, keyword },
+    });
+    return;
+  }
 
   let initialValue: Expression;
   try {
@@ -768,6 +780,36 @@ function parseVariableDeclarationLine(match: RegExpMatchArray, state: ParserStat
  */
 function parseListDeclarationLine(match: RegExpMatchArray, state: ParserState): void {
   const [, name, rhsRaw] = match;
+
+  // The LIST's own name must not collide with an already-declared
+  // VAR/CONST, another LIST's own name (a LIST's own name is ALSO
+  // registered in state.variableValues below, the same as any VAR —
+  // it resolves as a plain variable reference everywhere outside
+  // listMembers, so one check against variableValues covers both),
+  // or another LIST's member — each of those already claims `name`
+  // as a valid bare reference, and silently letting this declaration
+  // win would permanently shadow whichever one came first with no
+  // warning.
+  if (Object.hasOwn(state.variableValues, name)) {
+    state.warnings.push({
+      type: 'syntax_error',
+      message: `LIST ${name} collides with an already-declared variable of the same name`,
+      lineNumber: state.lineNumber,
+      args: { name },
+    });
+    return;
+  }
+  const collidingOwnName = state.listMembers[name];
+  if (collidingOwnName) {
+    state.warnings.push({
+      type: 'syntax_error',
+      message: `LIST ${name} collides with a member of LIST ${collidingOwnName.origin}`,
+      lineNumber: state.lineNumber,
+      args: { name },
+    });
+    return;
+  }
+
   const memberTokens = rhsRaw
     .split(',')
     .map((t) => t.trim())
@@ -813,6 +855,9 @@ function parseListDeclarationLine(match: RegExpMatchArray, state: ParserState): 
       });
       return;
     }
+    // A member colliding with another already-declared LIST's OWN
+    // name is already caught by the variableValues check above —
+    // that LIST's name is registered there too, the same as any VAR.
     const existingMember = state.listMembers[token];
     if (existingMember && existingMember.origin !== name) {
       state.warnings.push({

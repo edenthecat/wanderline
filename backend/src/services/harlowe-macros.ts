@@ -222,12 +222,16 @@ export function translateHarloweExpression(source: string): string {
  * extra paren never changes meaning, so this trades slightly noisier
  * output for not having to re-derive Harlowe's precedence table.
  */
-export function renderHarloweExpression(expr: Expression): string {
-  if (expressionUsesListFeatures(expr)) {
+export function renderHarloweExpression(
+  expr: Expression,
+  listVariableNames?: ReadonlySet<string>,
+): string {
+  if (expressionUsesListFeatures(expr, listVariableNames)) {
     // Ink's LIST type (DEV-199 Phase 10) is scoped to Ink only —
     // Harlowe has no equivalent. Checked up front (not just in the
-    // 'listFunction' case below) so a LIST-valued literal or a
-    // has/hasnt binary expression is rejected too, instead of
+    // 'listFunction' case below) so a LIST-valued literal, a
+    // has/hasnt binary expression, or a bare reference to a
+    // known-LIST-typed variable is rejected too, instead of
     // mis-rendering as `[object Object]` or invalid operator text.
     throw new Error('Harlowe export does not support LIST expressions');
   }
@@ -240,19 +244,19 @@ export function renderHarloweExpression(expr: Expression): string {
     case 'variable':
       return `$${expr.name}`;
     case 'unary': {
-      const operand = renderHarloweExpression(expr.operand);
+      const operand = renderHarloweExpression(expr.operand, listVariableNames);
       return expr.operator === '!' ? `not (${operand})` : `-(${operand})`;
     }
     case 'binary': {
-      const left = renderHarloweExpression(expr.left);
-      const right = renderHarloweExpression(expr.right);
+      const left = renderHarloweExpression(expr.left, listVariableNames);
+      const right = renderHarloweExpression(expr.right, listVariableNames);
       if (expr.operator === '==') return `(${left}) is (${right})`;
       if (expr.operator === '!=') return `(${left}) is not (${right})`;
       return `(${left}) ${expr.operator} (${right})`;
     }
     case 'logical': {
-      const left = renderHarloweExpression(expr.left);
-      const right = renderHarloweExpression(expr.right);
+      const left = renderHarloweExpression(expr.left, listVariableNames);
+      const right = renderHarloweExpression(expr.right, listVariableNames);
       return `(${left}) ${expr.operator === '&&' ? 'and' : 'or'} (${right})`;
     }
     case 'listFunction':
@@ -274,13 +278,16 @@ export function renderHarloweExpression(expr: Expression): string {
  * `(set: $gold to $gold + 10)`. Semantically identical; Harlowe has
  * no compound-assignment macro shorthand to re-emit into instead.
  */
-export function renderHarloweAssignment(statement: Statement): string {
+export function renderHarloweAssignment(
+  statement: Statement,
+  listVariableNames?: ReadonlySet<string>,
+): string {
   const target = `$${statement.name}`;
   if (statement.operator === '=') {
-    return `(set: ${target} to ${renderHarloweExpression(statement.value)})`;
+    return `(set: ${target} to ${renderHarloweExpression(statement.value, listVariableNames)})`;
   }
   const baseOperator = statement.operator.slice(0, -1);
-  return `(set: ${target} to (${target}) ${baseOperator} (${renderHarloweExpression(statement.value)}))`;
+  return `(set: ${target} to (${target}) ${baseOperator} (${renderHarloweExpression(statement.value, listVariableNames)}))`;
 }
 
 function errorMessage(err: unknown): string {

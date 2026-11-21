@@ -4,6 +4,7 @@ import {
   execute,
   truthy,
   isListValue,
+  expressionUsesListFeatures,
   ExpressionEvaluationError,
   type Expression,
   type AssignmentStatement,
@@ -573,5 +574,62 @@ describe('isListValue', () => {
     expect(isListValue(5)).toBe(false);
     expect(isListValue('cold')).toBe(false);
     expect(isListValue(true)).toBe(false);
+  });
+});
+
+describe('expressionUsesListFeatures', () => {
+  it('a bare LIST-valued literal is detected with no context', () => {
+    expect(expressionUsesListFeatures(list('cold'))).toBe(true);
+  });
+
+  it('has/hasnt is detected even between two plain variable operands', () => {
+    const expr: Expression = {
+      kind: 'binary',
+      operator: 'has',
+      left: { kind: 'variable', name: 'kettleState' },
+      right: { kind: 'variable', name: 'boiling' },
+    };
+    expect(expressionUsesListFeatures(expr)).toBe(true);
+  });
+
+  it('a LIST_* call is detected with no context', () => {
+    expect(
+      expressionUsesListFeatures({
+        kind: 'listFunction',
+        name: 'LIST_COUNT',
+        args: [list('cold')],
+      }),
+    ).toBe(true);
+  });
+
+  it('a bare variable reference is NOT detected without a listVariableNames set', () => {
+    expect(expressionUsesListFeatures({ kind: 'variable', name: 'kettleState' })).toBe(false);
+  });
+
+  it('a bare variable reference IS detected when its name is in listVariableNames', () => {
+    const expr: Expression = { kind: 'variable', name: 'kettleState' };
+    expect(expressionUsesListFeatures(expr, new Set(['kettleState']))).toBe(true);
+    expect(expressionUsesListFeatures(expr, new Set(['someOtherVar']))).toBe(false);
+  });
+
+  it('detects a list-typed variable buried inside a binary/logical/unary subtree', () => {
+    const names = new Set(['kettleState']);
+    const buried: Expression = {
+      kind: 'logical',
+      operator: '&&',
+      left: { kind: 'unary', operator: '!', operand: { kind: 'variable', name: 'kettleState' } },
+      right: { kind: 'literal', value: true },
+    };
+    expect(expressionUsesListFeatures(buried, names)).toBe(true);
+  });
+
+  it('a plain numeric/string/bool expression tree is never flagged', () => {
+    const expr: Expression = {
+      kind: 'binary',
+      operator: '+',
+      left: { kind: 'variable', name: 'gold' },
+      right: { kind: 'literal', value: 5 },
+    };
+    expect(expressionUsesListFeatures(expr)).toBe(false);
   });
 });

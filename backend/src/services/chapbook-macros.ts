@@ -144,8 +144,11 @@ export function translateChapbookExpression(source: string): string {
  * slightly noisier output for not having to re-derive a precedence
  * table (same choice Harlowe/SugarCube's renderers make).
  */
-export function renderChapbookExpression(expr: Expression): string {
-  if (expressionUsesListFeatures(expr)) {
+export function renderChapbookExpression(
+  expr: Expression,
+  listVariableNames?: ReadonlySet<string>,
+): string {
+  if (expressionUsesListFeatures(expr, listVariableNames)) {
     throw new Error('Chapbook export does not support LIST expressions');
   }
   switch (expr.kind) {
@@ -157,19 +160,19 @@ export function renderChapbookExpression(expr: Expression): string {
     case 'variable':
       return expr.name;
     case 'unary': {
-      const operand = renderChapbookExpression(expr.operand);
+      const operand = renderChapbookExpression(expr.operand, listVariableNames);
       return `${expr.operator}${operand}`;
     }
     case 'binary': {
-      const left = renderChapbookExpression(expr.left);
-      const right = renderChapbookExpression(expr.right);
+      const left = renderChapbookExpression(expr.left, listVariableNames);
+      const right = renderChapbookExpression(expr.right, listVariableNames);
       const operator =
         expr.operator === '==' ? '===' : expr.operator === '!=' ? '!==' : expr.operator;
       return `(${left} ${operator} ${right})`;
     }
     case 'logical': {
-      const left = renderChapbookExpression(expr.left);
-      const right = renderChapbookExpression(expr.right);
+      const left = renderChapbookExpression(expr.left, listVariableNames);
+      const right = renderChapbookExpression(expr.right, listVariableNames);
       return `(${left} ${expr.operator} ${right})`;
     }
     case 'listFunction':
@@ -193,12 +196,15 @@ export function renderChapbookExpression(expr: Expression): string {
  * compound statement is expanded the same way Harlowe's (set:)
  * re-emission already does.
  */
-export function renderChapbookAssignment(statement: Statement): string {
+export function renderChapbookAssignment(
+  statement: Statement,
+  listVariableNames?: ReadonlySet<string>,
+): string {
   if (statement.operator === '=') {
-    return `${statement.name}: ${renderChapbookExpression(statement.value)}`;
+    return `${statement.name}: ${renderChapbookExpression(statement.value, listVariableNames)}`;
   }
   const baseOperator = statement.operator.slice(0, -1);
-  return `${statement.name}: ${statement.name} ${baseOperator} ${renderChapbookExpression(statement.value)}`;
+  return `${statement.name}: ${statement.name} ${baseOperator} ${renderChapbookExpression(statement.value, listVariableNames)}`;
 }
 
 /** A vars-section line matches `name: EXPR` or `name (COND): EXPR` —

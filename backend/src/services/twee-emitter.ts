@@ -111,17 +111,21 @@ function emitChoiceLink(choice: Choice): string {
  * into a compact if/else chain, the same simplification Harlowe's and
  * SugarCube's emitters already make.
  */
-function emitChoice(choice: Choice, dialect: TweeDialect | undefined): string {
+function emitChoice(
+  choice: Choice,
+  dialect: TweeDialect | undefined,
+  listVariableNames: ReadonlySet<string>,
+): string {
   const link = emitChoiceLink(choice);
   if (!choice.condition) return link;
   if (dialect === 'harlowe') {
-    return `(if: ${renderHarloweExpression(choice.condition)})[${link}]`;
+    return `(if: ${renderHarloweExpression(choice.condition, listVariableNames)})[${link}]`;
   }
   if (dialect === 'sugarcube') {
-    return `<<if ${renderSugarCubeExpression(choice.condition)}>>${link}<</if>>`;
+    return `<<if ${renderSugarCubeExpression(choice.condition, listVariableNames)}>>${link}<</if>>`;
   }
   if (dialect === 'chapbook') {
-    return `[if ${renderChapbookExpression(choice.condition)}]\n${link}\n\n[continue]`;
+    return `[if ${renderChapbookExpression(choice.condition, listVariableNames)}]\n${link}\n\n[continue]`;
   }
   return link;
 }
@@ -162,7 +166,11 @@ function emitPassage(
  * emitPassage — don't double-escape here (`\::` would become `\\::`
  * and the parser's unescape leaves a stray backslash).
  */
-function emitContentBlock(content: ContentBlock, dialect: TweeDialect | undefined): string | null {
+function emitContentBlock(
+  content: ContentBlock,
+  dialect: TweeDialect | undefined,
+  listVariableNames: ReadonlySet<string>,
+): string | null {
   if (content.kind === 'assignment') {
     // Harlowe re-emits as `(set: ...)`, SugarCube as `<<set ...>>`.
     // Chapbook assignments are hoisted into a leading vars section by
@@ -171,21 +179,22 @@ function emitContentBlock(content: ContentBlock, dialect: TweeDialect | undefine
     // return null so this generic per-block path doesn't ALSO try to
     // emit them. A graph with no resolved dialect still has no Twee
     // prose to put an assignment block into at all.
-    if (dialect === 'harlowe') return renderHarloweAssignment(content.statement);
-    if (dialect === 'sugarcube') return renderSugarCubeAssignment(content.statement);
+    if (dialect === 'harlowe') return renderHarloweAssignment(content.statement, listVariableNames);
+    if (dialect === 'sugarcube')
+      return renderSugarCubeAssignment(content.statement, listVariableNames);
     return null;
   }
   const text = content.text.trim();
   if (!text) return null;
   if (content.condition) {
     if (dialect === 'harlowe') {
-      return `(if: ${renderHarloweExpression(content.condition)})[${text}]`;
+      return `(if: ${renderHarloweExpression(content.condition, listVariableNames)})[${text}]`;
     }
     if (dialect === 'sugarcube') {
-      return `<<if ${renderSugarCubeExpression(content.condition)}>>${text}<</if>>`;
+      return `<<if ${renderSugarCubeExpression(content.condition, listVariableNames)}>>${text}<</if>>`;
     }
     if (dialect === 'chapbook') {
-      return `[if ${renderChapbookExpression(content.condition)}]\n${text}\n\n[continue]`;
+      return `[if ${renderChapbookExpression(content.condition, listVariableNames)}]\n${text}\n\n[continue]`;
     }
   }
   // Same conservative choice as emitChoice above: a condition on a
@@ -198,11 +207,15 @@ function emitContentBlock(content: ContentBlock, dialect: TweeDialect | undefine
   return text;
 }
 
-function emitContent(node: StoryNode, dialect: TweeDialect | undefined): string {
+function emitContent(
+  node: StoryNode,
+  dialect: TweeDialect | undefined,
+  listVariableNames: ReadonlySet<string>,
+): string {
   const paragraphs = node.content
-    .map((c) => emitContentBlock(c, dialect))
+    .map((c) => emitContentBlock(c, dialect, listVariableNames))
     .filter((s): s is string => s !== null);
-  const choices = node.choices.map((c) => emitChoice(c, dialect));
+  const choices = node.choices.map((c) => emitChoice(c, dialect, listVariableNames));
   // forward node.divert. An Ink-authored graph with an
   // implicit continuation (`-> kitchen`) has choices=[] and
   // divert='kitchen'. Without emitting the divert, the exported Twee
@@ -228,7 +241,7 @@ function emitContent(node: StoryNode, dialect: TweeDialect | undefined): string 
     // than interleaving them with the displayed text.
     const varsLines = node.content
       .filter((c) => c.kind === 'assignment')
-      .map((c) => renderChapbookAssignment(c.statement));
+      .map((c) => renderChapbookAssignment(c.statement, listVariableNames));
     if (varsLines.length > 0) {
       return `${varsLines.join('\n')}\n--${body ? `\n${body}` : ''}`;
     }
@@ -244,6 +257,15 @@ function emitContent(node: StoryNode, dialect: TweeDialect | undefined): string 
  */
 export function emitTwee(graph: StoryGraph): string {
   const blocks: string[] = [];
+
+  // DEV-199 Phase 10: Harlowe/SugarCube/Chapbook have no LIST
+  // equivalent. A bare `{kind:'variable'}` reference gives the
+  // renderers no way to tell a LIST-typed variable from any other —
+  // this is the set they check against to reject one instead of
+  // mis-rendering `$kettleState` as if it held a plain scalar.
+  const listVariableNames = new Set(
+    (graph.variables ?? []).filter((v) => v.type === 'list').map((v) => v.name),
+  );
 
   if (graph.title && graph.title !== 'Untitled') {
     blocks.push(emitPassage('StoryTitle', [], graph.title));
@@ -298,7 +320,14 @@ export function emitTwee(graph: StoryGraph): string {
 
   for (const id of orderedIds) {
     const node = graph.nodes[id];
-    blocks.push(emitPassage(id, node.tags, emitContent(node, graph.twee?.dialect), node.metadata));
+    blocks.push(
+      emitPassage(
+        id,
+        node.tags,
+        emitContent(node, graph.twee?.dialect, listVariableNames),
+        node.metadata,
+      ),
+    );
   }
 
   return blocks.join('\n');

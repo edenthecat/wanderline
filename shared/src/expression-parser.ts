@@ -448,6 +448,17 @@ class Parser {
         if (!info) {
           throw new ExpressionParseError(`'${nameToken.value}' is not a known LIST member`);
         }
+        if (items.length > 0 && info.origin !== items[0].info.origin) {
+          // A list literal's members must all come from the SAME
+          // declared LIST — mixing origins would produce a ListValue
+          // whose `items` claims a member absent from its own
+          // `allItems` (that member's real origin's definition),
+          // silently corrupting any downstream LIST_ALL/LIST_INVERT/
+          // LIST_RANGE on the value.
+          throw new ExpressionParseError(
+            `list literal mixes members from different LISTs ('${items[0].name}' is from ${items[0].info.origin}, '${nameToken.value}' is from ${info.origin})`,
+          );
+        }
         items.push({ name: nameToken.value, info });
         if (this.peek().type === 'comma') {
           this.advance();

@@ -1267,5 +1267,69 @@ No association with any real narrative.
       const reparsed = parseInk(ink, 'test-id');
       expect(reparsed.variables?.find((v) => v.name === 'temp')).toEqual(tempDecl);
     });
+
+    it('warns and skips a LIST whose OWN name collides with an already-declared VAR', () => {
+      const source = '== start ==\nVAR kettleState = 5\nLIST kettleState = cold, boiling\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.variables).toHaveLength(1);
+      expect(result.variables?.[0]).toMatchObject({ name: 'kettleState', type: 'number' });
+      expect(result.validation.warnings.some((w) => w.message.includes('collides with'))).toBe(
+        true,
+      );
+    });
+
+    it('warns and skips a VAR whose OWN name collides with an already-declared LIST', () => {
+      const source = '== start ==\nLIST kettleState = cold, boiling\nVAR kettleState = 5\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.variables).toHaveLength(1);
+      expect(result.variables?.[0]).toMatchObject({ name: 'kettleState', type: 'list' });
+      expect(result.validation.warnings.some((w) => w.message.includes('collides with'))).toBe(
+        true,
+      );
+    });
+
+    it('warns and skips a second LIST whose OWN name collides with an already-declared LIST', () => {
+      const source =
+        '== start ==\nLIST kettleState = cold, boiling\nLIST kettleState = p, q\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.variables).toHaveLength(1);
+      expect(result.variables?.[0].listMembers).toEqual(['cold', 'boiling']);
+      expect(result.validation.warnings.some((w) => w.message.includes('collides with'))).toBe(
+        true,
+      );
+    });
+
+    it('warns and skips a LIST whose OWN name collides with another LIST’s member', () => {
+      const source = '== start ==\nLIST a = boiling, y\nLIST boiling = p, q\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.variables).toHaveLength(1);
+      expect(result.variables?.[0].name).toBe('a');
+      expect(result.validation.warnings.some((w) => w.message.includes('collides with'))).toBe(
+        true,
+      );
+    });
+
+    it('warns and skips a LIST member that collides with another already-declared LIST’s OWN name', () => {
+      const source = '== start ==\nLIST a = p, q\nLIST b = a, z\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.variables).toHaveLength(1);
+      expect(result.variables?.[0].name).toBe('a');
+      expect(result.validation.warnings.some((w) => w.message.includes('collides with'))).toBe(
+        true,
+      );
+    });
+
+    it('rejects a list literal mixing members from two different LISTs', () => {
+      const source = '== start ==\nLIST a = x, y\nLIST b = p, q\n~ temp = (x, p)\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      // The assignment statement failed to parse, so no assignment
+      // block is emitted for it — just the plain text line.
+      expect(result.nodes['start'].content.some((c) => c.kind === 'assignment')).toBe(false);
+      expect(
+        result.validation.warnings.some((w) =>
+          w.message.includes('mixes members from different LISTs'),
+        ),
+      ).toBe(true);
+    });
   });
 });

@@ -190,6 +190,26 @@ describe('renderHarloweExpression', () => {
       const call: Expression = { kind: 'listFunction', name: 'LIST_COUNT', args: [listLiteral] };
       expect(() => renderHarloweExpression(call)).toThrow(/LIST/);
     });
+
+    it('a bare reference to a variable known to be LIST-typed, via the listVariableNames set', () => {
+      const bareRef: Expression = { kind: 'variable', name: 'kettleState' };
+      // With no context, a bare variable reference can't be known to
+      // be LIST-typed — only caught when the caller passes the set.
+      expect(renderHarloweExpression(bareRef)).toBe('$kettleState');
+      expect(() => renderHarloweExpression(bareRef, new Set(['kettleState']))).toThrow(/LIST/);
+    });
+
+    it('a binary expression between two LIST-typed variable operands (no literal, no has/hasnt)', () => {
+      const plusExpr: Expression = {
+        kind: 'binary',
+        operator: '+',
+        left: { kind: 'variable', name: 'kettleState' },
+        right: { kind: 'variable', name: 'bathState' },
+      };
+      expect(() =>
+        renderHarloweExpression(plusExpr, new Set(['kettleState', 'bathState'])),
+      ).toThrow(/LIST/);
+    });
   });
 });
 

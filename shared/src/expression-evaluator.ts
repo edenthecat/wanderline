@@ -42,31 +42,46 @@ export function truthy(value: VariableValue): boolean {
 
 /**
  * Does this expression tree use Ink's LIST type anywhere — a
- * list-valued literal, a `has`/`hasnt` operator, or a LIST_* builtin
- * call? Used by Twine dialect exporters (Harlowe/SugarCube/Chapbook
- * have no LIST equivalent) to reject a LIST-bearing expression up
- * front, rather than letting it slip through a `literal`/`binary`
- * case that doesn't itself check for list values (e.g. `+`/`==`
- * between two lists would otherwise mis-render as a plain
- * string/object instead of being caught).
+ * list-valued literal, a `has`/`hasnt` operator, a LIST_* builtin
+ * call, or a bare reference to a variable KNOWN to be LIST-typed?
+ * Used by Twine dialect exporters (Harlowe/SugarCube/Chapbook have
+ * no LIST equivalent) to reject a LIST-bearing expression up front,
+ * rather than letting it slip through a `literal`/`binary` case that
+ * doesn't itself check for list values (e.g. `+`/`==` between two
+ * lists would otherwise mis-render as a plain string/object instead
+ * of being caught).
+ *
+ * `listVariableNames` is required to catch a bare `{kind:'variable'}`
+ * reference to a LIST-typed variable — nothing in the Expression
+ * itself says a variable node is list-typed, so the caller must pass
+ * the set of declared LIST variable names it knows about. Omitting it
+ * only misses that one case; every other LIST-bearing shape (a
+ * literal, has/hasnt, a LIST_* call) is still caught with no context
+ * at all.
  */
-export function expressionUsesListFeatures(expr: Expression): boolean {
+export function expressionUsesListFeatures(
+  expr: Expression,
+  listVariableNames?: ReadonlySet<string>,
+): boolean {
   switch (expr.kind) {
     case 'literal':
       return isListValue(expr.value);
     case 'variable':
-      return false;
+      return listVariableNames?.has(expr.name) ?? false;
     case 'unary':
-      return expressionUsesListFeatures(expr.operand);
+      return expressionUsesListFeatures(expr.operand, listVariableNames);
     case 'binary':
       return (
         expr.operator === 'has' ||
         expr.operator === 'hasnt' ||
-        expressionUsesListFeatures(expr.left) ||
-        expressionUsesListFeatures(expr.right)
+        expressionUsesListFeatures(expr.left, listVariableNames) ||
+        expressionUsesListFeatures(expr.right, listVariableNames)
       );
     case 'logical':
-      return expressionUsesListFeatures(expr.left) || expressionUsesListFeatures(expr.right);
+      return (
+        expressionUsesListFeatures(expr.left, listVariableNames) ||
+        expressionUsesListFeatures(expr.right, listVariableNames)
+      );
     case 'listFunction':
       return true;
   }

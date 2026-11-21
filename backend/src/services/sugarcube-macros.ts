@@ -159,8 +159,11 @@ export function translateSugarCubeExpression(source: string): string {
  * — an extra paren never changes meaning, so this trades slightly
  * noisier output for not having to re-derive a precedence table.
  */
-export function renderSugarCubeExpression(expr: Expression): string {
-  if (expressionUsesListFeatures(expr)) {
+export function renderSugarCubeExpression(
+  expr: Expression,
+  listVariableNames?: ReadonlySet<string>,
+): string {
+  if (expressionUsesListFeatures(expr, listVariableNames)) {
     throw new Error('SugarCube export does not support LIST expressions');
   }
   switch (expr.kind) {
@@ -172,17 +175,17 @@ export function renderSugarCubeExpression(expr: Expression): string {
     case 'variable':
       return `$${expr.name}`;
     case 'unary': {
-      const operand = renderSugarCubeExpression(expr.operand);
+      const operand = renderSugarCubeExpression(expr.operand, listVariableNames);
       return `${expr.operator}${operand}`;
     }
     case 'binary': {
-      const left = renderSugarCubeExpression(expr.left);
-      const right = renderSugarCubeExpression(expr.right);
+      const left = renderSugarCubeExpression(expr.left, listVariableNames);
+      const right = renderSugarCubeExpression(expr.right, listVariableNames);
       return `(${left} ${expr.operator} ${right})`;
     }
     case 'logical': {
-      const left = renderSugarCubeExpression(expr.left);
-      const right = renderSugarCubeExpression(expr.right);
+      const left = renderSugarCubeExpression(expr.left, listVariableNames);
+      const right = renderSugarCubeExpression(expr.right, listVariableNames);
       return `(${left} ${expr.operator} ${right})`;
     }
     case 'listFunction':
@@ -203,9 +206,13 @@ export function renderSugarCubeExpression(expr: Expression): string {
  * compound statement (`gold += 10`) re-emits natively as
  * `<<set $gold += 10>>` with no expansion needed.
  */
-export function renderSugarCubeAssignment(statement: Statement): string {
+export function renderSugarCubeAssignment(
+  statement: Statement,
+  listVariableNames?: ReadonlySet<string>,
+): string {
   return `<<set $${statement.name} ${statement.operator} ${renderSugarCubeExpression(
     statement.value,
+    listVariableNames,
   )}>>`;
 }
 

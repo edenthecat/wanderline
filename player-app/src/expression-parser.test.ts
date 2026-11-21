@@ -218,6 +218,23 @@ function roundTripList(source: string): void {
   expect(reparsed).toEqual(ast);
 }
 
+// A second, independent LIST alongside kettleState, for testing that
+// a multi-member list literal can't mix members from two different
+// LISTs (each has its own origin/ordinal space).
+const BATH_ALL = [
+  { name: 'empty', ordinal: 0 },
+  { name: 'full', ordinal: 1 },
+];
+const TWO_LIST_CONTEXT: ExpressionParseContext = {
+  listMembers: {
+    ...KETTLE_CONTEXT.listMembers,
+    ...Object.fromEntries(
+      BATH_ALL.map((item) => [item.name, { origin: 'bathState', ordinal: item.ordinal }]),
+    ),
+  },
+  listDefinitions: { ...KETTLE_CONTEXT.listDefinitions, bathState: BATH_ALL },
+};
+
 describe('parseExpression — LIST literals', () => {
   it('a bare member name is a single-item LIST literal, not a variable', () => {
     expect(parseExpression('cold', KETTLE_CONTEXT)).toEqual({
@@ -270,6 +287,12 @@ describe('parseExpression — LIST literals', () => {
 
   it.each(['cold', '(cold, boiling)', '()'])('round-trips %s', (source) => {
     roundTripList(source);
+  });
+
+  it('rejects a list literal mixing members from two different LISTs', () => {
+    expect(() => parseExpression('(cold, full)', TWO_LIST_CONTEXT)).toThrow(
+      /mixes members from different LISTs/,
+    );
   });
 });
 
