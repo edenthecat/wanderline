@@ -247,6 +247,8 @@ export default function StoryTab({
     handleNodeContentEdit,
     handleChoiceTargetEdit,
     handleDivertEdit,
+    handleChoiceConditionEdit,
+    handleContentConditionEdit,
     handleAddChoice,
     handleDeleteChoice,
     handleSwapChoices,
@@ -778,6 +780,12 @@ export default function StoryTab({
                     onContentEdit={(ci, text) => handleNodeContentEdit(node.id, ci, text)}
                     onChoiceTargetEdit={(ci, target) => handleChoiceTargetEdit(node.id, ci, target)}
                     onDivertEdit={(target) => handleDivertEdit(node.id, target)}
+                    onChoiceConditionEdit={(ci, condition) =>
+                      handleChoiceConditionEdit(node.id, ci, condition)
+                    }
+                    onContentConditionEdit={(ci, condition) =>
+                      handleContentConditionEdit(node.id, ci, condition)
+                    }
                     onAddChoice={(c) => handleAddChoice(node.id, c)}
                     onDeleteChoice={(ci) => handleDeleteChoice(node.id, ci)}
                     onSwapChoices={(from, to) => handleSwapChoices(node.id, from, to)}
@@ -909,6 +917,12 @@ export default function StoryTab({
                             handleChoiceTargetEdit(knot.id, ci, target)
                           }
                           onDivertEdit={(target) => handleDivertEdit(knot.id, target)}
+                          onChoiceConditionEdit={(ci, condition) =>
+                            handleChoiceConditionEdit(knot.id, ci, condition)
+                          }
+                          onContentConditionEdit={(ci, condition) =>
+                            handleContentConditionEdit(knot.id, ci, condition)
+                          }
                           onAddChoice={(c) => handleAddChoice(knot.id, c)}
                           onDeleteChoice={(ci) => handleDeleteChoice(knot.id, ci)}
                           onSwapChoices={(from, to) => handleSwapChoices(knot.id, from, to)}
@@ -977,6 +991,12 @@ export default function StoryTab({
                                 handleChoiceTargetEdit(child.id, ci, target)
                               }
                               onDivertEdit={(target) => handleDivertEdit(child.id, target)}
+                              onChoiceConditionEdit={(ci, condition) =>
+                                handleChoiceConditionEdit(child.id, ci, condition)
+                              }
+                              onContentConditionEdit={(ci, condition) =>
+                                handleContentConditionEdit(child.id, ci, condition)
+                              }
                               onAddChoice={(c) => handleAddChoice(child.id, c)}
                               onDeleteChoice={(ci) => handleDeleteChoice(child.id, ci)}
                               onSwapChoices={(from, to) => handleSwapChoices(child.id, from, to)}

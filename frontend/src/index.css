@@ -896,6 +896,37 @@ textarea:focus,
   margin-left: 0;
 }
 
+/* Read-only preview of a `~ name op expr` assignment line — no
+   editor exists for the expression itself yet (DEV-199 Phase 5). */
+.node-content-assignment code {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+}
+
+/* Inline condition builder shared by choice rows and text-block
+   rows — free-text Ink-expression syntax, parsed/printed via
+   expression-parser.ts. See ConditionEditor.tsx. */
+.condition-editor {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.condition-editor-input {
+  min-width: 200px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+}
+
+.condition-badge {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.condition-editor-error {
+  flex-basis: 100%;
+}
+
 .transcript-override {
   display: flex;
   flex-direction: column;
@@ -968,6 +999,17 @@ textarea:focus,
 }
 
 .timing-field-checkbox input {
+  width: 16px;
+  height: 16px;
+}
+
+.field-checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.field-checkbox input {
   width: 16px;
   height: 16px;
 }

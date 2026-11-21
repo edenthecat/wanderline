@@ -9,7 +9,12 @@
 
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import * as Y from 'yjs';
-import { isTextBlock, type ContentBlock } from '@wanderline/shared';
+import {
+  isTextBlock,
+  printStatement,
+  type ContentBlock,
+  type Expression,
+} from '@wanderline/shared';
 import {
   type AudioAssignments,
   type AudioFile,
@@ -19,6 +24,7 @@ import {
   type NodeMetadata,
   type VariableDeclaration,
 } from '../api/client';
+import ConditionEditor from './ConditionEditor';
 import { FLAG_REASON_LABELS } from './flagLabels';
 import NodeAudioPanel from './NodeAudioPanel';
 import type { NodeAudioActions } from '../hooks/useNodeEditor';
@@ -72,7 +78,7 @@ export interface NodeDetailProps {
   nodeId: string;
   node: {
     content: ContentBlock[];
-    choices: { text: string; target: string }[];
+    choices: { text: string; target: string; condition?: Expression | null }[];
     divert: string | null;
     tags: string[];
     audio?: Record<string, unknown>;
@@ -90,6 +96,11 @@ export interface NodeDetailProps {
   onContentEdit: (contentIndex: number, newText: string) => void;
   onChoiceTargetEdit: (choiceIndex: number, newTarget: string) => void;
   onDivertEdit: (newTarget: string) => void;
+  /** Set/clear a choice's visibility condition. Optional — hides the
+   * condition editor affordance when omitted. */
+  onChoiceConditionEdit?: (choiceIndex: number, condition: string | null) => Promise<void>;
+  /** Set/clear a text block's visibility condition. Optional — same. */
+  onContentConditionEdit?: (contentIndex: number, condition: string | null) => Promise<void>;
   /** Append a fresh choice. Optional — when omitted, the "+ Add choice"
    * button is hidden (e.g. for read-only contexts). */
   onAddChoice?: (choice: { text: string; target: string }) => Promise<void>;
@@ -151,6 +162,8 @@ export default function NodeDetail({
   onContentEdit,
   onChoiceTargetEdit,
   onDivertEdit,
+  onChoiceConditionEdit,
+  onContentConditionEdit,
   onAddChoice,
   onDeleteChoice,
   onSwapChoices,
@@ -356,9 +369,10 @@ export default function NodeDetail({
         <div className="node-content">
           {node.content.map((c, i) =>
             // Assignment blocks (variable mutations) have no text to
-            // edit here — condition/assignment editing UI is Phase 5's
-            // job. Skipping them keeps `i` the true array index so the
-            // Yjs binding in getContentText stays correct.
+            // edit here, just a read-only preview of the statement —
+            // changing the expression itself isn't built yet. Still
+            // rendered (not skipped) so `i` stays the true array
+            // index, matching the Yjs binding in getContentText.
             isTextBlock(c) ? (
               <div key={i} className="node-content-row">
                 <CollabContentTextarea
@@ -377,8 +391,19 @@ export default function NodeDetail({
                     ))}
                   </span>
                 )}
+                {onContentConditionEdit && (
+                  <ConditionEditor
+                    value={c.condition}
+                    onSave={(text) => onContentConditionEdit(i, text)}
+                    ariaLabel={`Content line ${i + 1} condition on ${nodeId}`}
+                  />
+                )}
               </div>
-            ) : null,
+            ) : (
+              <div key={i} className="node-content-row node-content-assignment">
+                <code className="text-muted">~ {printStatement(c.statement)}</code>
+              </div>
+            ),
           )}
         </div>
       )}
@@ -546,6 +571,13 @@ export default function NodeDetail({
                 )}
                 {nodeIdOptions}
               </select>
+              {onChoiceConditionEdit && (
+                <ConditionEditor
+                  value={ch.condition}
+                  onSave={(text) => onChoiceConditionEdit(i, text)}
+                  ariaLabel={`Choice ${i + 1} condition`}
+                />
+              )}
               {(onSwapChoices || onDeleteChoice) && (
                 <span className="node-choice-actions">
                   {onSwapChoices && (

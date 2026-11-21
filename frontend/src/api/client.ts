@@ -9,18 +9,22 @@ import type {
   ContentBlock,
   Expression,
   VariableDeclaration,
+  VariableType,
   VariableValue,
   SimpleCondition,
   ComparisonOperator,
 } from '@wanderline/shared';
+import { parseExpression, printExpression, ExpressionParseError } from '@wanderline/shared';
 export type {
   ContentBlock,
   Expression,
   VariableDeclaration,
+  VariableType,
   VariableValue,
   SimpleCondition,
   ComparisonOperator,
 };
+export { parseExpression, printExpression, ExpressionParseError };
 
 const API_BASE = '/api';
 
@@ -1482,5 +1486,51 @@ export function renameNode(
   return request(`/projects/${projectId}/story/node/rename`, {
     method: 'PATCH',
     body: JSON.stringify({ oldId, newId }),
+  });
+}
+
+/** Set (or, with `condition: null`, clear) a choice's visibility
+ * condition. `condition` is Ink-expression-syntax source text,
+ * parsed server-side — see `parseExpression`/`printExpression` for
+ * the matching client-side display/validation helpers. */
+export function updateChoiceCondition(
+  projectId: string,
+  nodeId: string,
+  choiceIndex: number,
+  condition: string | null,
+): Promise<StoryEditResult> {
+  return request(`/projects/${projectId}/story/choice/condition`, {
+    method: 'PATCH',
+    body: JSON.stringify({ nodeId, choiceIndex, condition }),
+  });
+}
+
+/** Set (or, with `condition: null`, clear) a text block's visibility
+ * condition. 400s if the block at `contentIndex` is an assignment
+ * block (those have no condition). */
+export function updateContentCondition(
+  projectId: string,
+  nodeId: string,
+  contentIndex: number,
+  condition: string | null,
+): Promise<StoryEditResult> {
+  return request(`/projects/${projectId}/story/node/content/condition`, {
+    method: 'PATCH',
+    body: JSON.stringify({ nodeId, contentIndex, condition }),
+  });
+}
+
+/** Replace the project's entire variable declaration list. Each
+ * entry's `initialValue` is Ink-expression-syntax source text; the
+ * server infers `type` by evaluating it (declarations earlier in the
+ * array are in scope for later ones), so the caller never sends a
+ * `type` field. */
+export function updateVariables(
+  projectId: string,
+  variables: Array<{ name: string; initialValue: string; isConst: boolean }>,
+): Promise<StoryEditResult> {
+  return request(`/projects/${projectId}/story/variables`, {
+    method: 'PATCH',
+    body: JSON.stringify({ variables }),
   });
 }

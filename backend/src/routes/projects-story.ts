@@ -8,6 +8,12 @@ import { emitInk } from '../services/ink-converter.js';
 import { randomUUID } from 'crypto';
 import { captureSnapshot } from './projects-snapshots.js';
 import { invalidateRoom } from '../services/collab-server.js';
+import { parseExpression, ExpressionParseError, evaluate } from '@wanderline/shared';
+import { isTextBlock, type VariableDeclaration, type VariableType } from '../types.js';
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 export function mountStoryRoutes(router: Router, pool: Pool): void {
   /**
@@ -1346,6 +1352,272 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
     });
 
     res.json({ success: true, story_graph: renamedGraph });
+  });
+
+  // Replace a choice's visibility condition. An empty/null condition
+  // clears it (the choice becomes unconditional) — mirrors the Expression |
+  // null shape Choice.condition already has from DEV-199 Phase 4.
+  router.patch('/:id/story/choice/condition', async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { nodeId, choiceIndex, condition } = req.body;
+
+      if (!nodeId || choiceIndex === undefined || condition === undefined) {
+        res.status(400).json({ error: 'nodeId, choiceIndex, and condition are required' });
+        return;
+      }
+      if (
+        typeof nodeId !== 'string' ||
+        !Number.isInteger(choiceIndex) ||
+        choiceIndex < 0 ||
+        (condition !== null && typeof condition !== 'string')
+      ) {
+        res.status(400).json({
+          error:
+            'nodeId must be a string, choiceIndex a non-negative integer, condition a string or null',
+        });
+        return;
+      }
+
+      let parsedCondition = null;
+      if (condition !== null && condition.trim().length > 0) {
+        try {
+          parsedCondition = parseExpression(condition);
+        } catch (err) {
+          res.status(400).json({
+            error:
+              err instanceof ExpressionParseError
+                ? err.message
+                : `Could not parse condition: ${errorMessage(err)}`,
+          });
+          return;
+        }
+      }
+
+      const storyResult = await pool.query(
+        `SELECT story_graph FROM project_stories WHERE project_id = $1`,
+        [id],
+      );
+      if (storyResult.rows.length === 0 || !storyResult.rows[0].story_graph) {
+        res.status(404).json({ error: 'Story not found' });
+        return;
+      }
+
+      const storyGraph = storyResult.rows[0].story_graph;
+      const node = storyGraph.nodes[nodeId];
+      if (!node) {
+        res.status(404).json({ error: 'Node not found' });
+        return;
+      }
+      if (!node.choices || choiceIndex >= node.choices.length) {
+        res.status(400).json({ error: 'Choice index out of range' });
+        return;
+      }
+
+      node.choices[choiceIndex].condition = parsedCondition;
+
+      await pool.query(
+        `UPDATE project_stories
+         SET story_graph = $1, updated_at = CURRENT_TIMESTAMP,
+             ink_source = NULL, twee_source = NULL
+         WHERE project_id = $2`,
+        [JSON.stringify(storyGraph), id],
+      );
+      await pool.query('UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1', [id]);
+      await invalidateRoom(id);
+
+      res.json({ success: true, story_graph: storyGraph });
+    } catch (error) {
+      req.log.error({ err: error }, 'Failed to update choice condition');
+      res.status(500).json({ error: 'Failed to update choice condition' });
+    }
+  });
+
+  // Replace a text block's visibility condition. Assignment blocks
+  // have no condition field (they always run) — rejected with 400
+  // rather than silently doing nothing.
+  router.patch('/:id/story/node/content/condition', async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { nodeId, contentIndex, condition } = req.body;
+
+      if (!nodeId || contentIndex === undefined || condition === undefined) {
+        res.status(400).json({ error: 'nodeId, contentIndex, and condition are required' });
+        return;
+      }
+      if (
+        typeof nodeId !== 'string' ||
+        !Number.isInteger(contentIndex) ||
+        contentIndex < 0 ||
+        (condition !== null && typeof condition !== 'string')
+      ) {
+        res.status(400).json({
+          error:
+            'nodeId must be a string, contentIndex a non-negative integer, condition a string or null',
+        });
+        return;
+      }
+
+      let parsedCondition;
+      if (condition !== null && condition.trim().length > 0) {
+        try {
+          parsedCondition = parseExpression(condition);
+        } catch (err) {
+          res.status(400).json({
+            error:
+              err instanceof ExpressionParseError
+                ? err.message
+                : `Could not parse condition: ${errorMessage(err)}`,
+          });
+          return;
+        }
+      }
+
+      const storyResult = await pool.query(
+        `SELECT story_graph FROM project_stories WHERE project_id = $1`,
+        [id],
+      );
+      if (storyResult.rows.length === 0 || !storyResult.rows[0].story_graph) {
+        res.status(404).json({ error: 'Story not found' });
+        return;
+      }
+
+      const storyGraph = storyResult.rows[0].story_graph;
+      const node = storyGraph.nodes[nodeId];
+      if (!node) {
+        res.status(404).json({ error: 'Node not found' });
+        return;
+      }
+      if (!node.content || contentIndex >= node.content.length) {
+        res.status(400).json({ error: 'Content index out of range' });
+        return;
+      }
+      const block = node.content[contentIndex];
+      if (!isTextBlock(block)) {
+        res.status(400).json({ error: 'Cannot set a condition on an assignment block' });
+        return;
+      }
+
+      if (parsedCondition === undefined) {
+        delete block.condition;
+      } else {
+        block.condition = parsedCondition;
+      }
+
+      await pool.query(
+        `UPDATE project_stories
+         SET story_graph = $1, updated_at = CURRENT_TIMESTAMP,
+             ink_source = NULL, twee_source = NULL
+         WHERE project_id = $2`,
+        [JSON.stringify(storyGraph), id],
+      );
+      await pool.query('UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1', [id]);
+      await invalidateRoom(id);
+
+      res.json({ success: true, story_graph: storyGraph });
+    } catch (error) {
+      req.log.error({ err: error }, 'Failed to update content condition');
+      res.status(500).json({ error: 'Failed to update content condition' });
+    }
+  });
+
+  // Replace the project's entire variable declaration list. Mirrors
+  // ink-parser's own VAR/CONST handling: a variable's `type` isn't
+  // author-chosen, it's inferred from evaluating `initialValue` (so
+  // the UI and the Ink source parser can never disagree about what
+  // `VAR gold = 5` means). Declarations are evaluated in array order
+  // so a later one can reference an earlier one's initial value,
+  // exactly like Ink's own top-of-file preamble.
+  router.patch('/:id/story/variables', async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { variables } = req.body;
+
+      if (!Array.isArray(variables)) {
+        res.status(400).json({ error: 'variables must be an array' });
+        return;
+      }
+
+      const seenNames = new Set<string>();
+      const variableValues: Record<string, string | number | boolean> = {};
+      const nextVariables: VariableDeclaration[] = [];
+
+      for (let i = 0; i < variables.length; i++) {
+        const entry = variables[i];
+        const name = entry?.name;
+        const initialValueSource = entry?.initialValue;
+        const isConst = Boolean(entry?.isConst);
+
+        if (typeof name !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+          res.status(400).json({
+            error: `Variable ${i + 1}: name must be a valid identifier (letters, digits, underscore, not starting with a digit)`,
+          });
+          return;
+        }
+        if (seenNames.has(name)) {
+          res.status(400).json({ error: `Variable ${i + 1}: duplicate name "${name}"` });
+          return;
+        }
+        seenNames.add(name);
+
+        if (typeof initialValueSource !== 'string' || initialValueSource.trim().length === 0) {
+          res.status(400).json({ error: `Variable "${name}": initialValue is required` });
+          return;
+        }
+
+        let expr;
+        try {
+          expr = parseExpression(initialValueSource);
+        } catch (err) {
+          res.status(400).json({
+            error: `Variable "${name}": ${err instanceof ExpressionParseError ? err.message : errorMessage(err)}`,
+          });
+          return;
+        }
+
+        let value;
+        try {
+          value = evaluate(expr, variableValues);
+        } catch (err) {
+          res.status(400).json({
+            error: `Variable "${name}": could not determine a value — ${errorMessage(err)}`,
+          });
+          return;
+        }
+
+        const type: VariableType =
+          typeof value === 'number' ? 'number' : typeof value === 'boolean' ? 'bool' : 'string';
+        variableValues[name] = value;
+        nextVariables.push({ name, type, initialValue: expr, isConst });
+      }
+
+      const storyResult = await pool.query(
+        `SELECT story_graph FROM project_stories WHERE project_id = $1`,
+        [id],
+      );
+      if (storyResult.rows.length === 0 || !storyResult.rows[0].story_graph) {
+        res.status(404).json({ error: 'Story not found' });
+        return;
+      }
+
+      const storyGraph = storyResult.rows[0].story_graph;
+      storyGraph.variables = nextVariables;
+
+      await pool.query(
+        `UPDATE project_stories
+         SET story_graph = $1, updated_at = CURRENT_TIMESTAMP,
+             ink_source = NULL, twee_source = NULL
+         WHERE project_id = $2`,
+        [JSON.stringify(storyGraph), id],
+      );
+      await pool.query('UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1', [id]);
+      await invalidateRoom(id);
+
+      res.json({ success: true, story_graph: storyGraph });
+    } catch (error) {
+      req.log.error({ err: error }, 'Failed to update variables');
+      res.status(500).json({ error: 'Failed to update variables' });
+    }
   });
 
   /**

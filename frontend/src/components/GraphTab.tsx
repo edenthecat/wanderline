@@ -1320,6 +1320,12 @@ function GraphTabInner({
                 editor.handleChoiceTargetEdit(selectedNodeId, ci, target)
               }
               onDivertEdit={(target) => editor.handleDivertEdit(selectedNodeId, target)}
+              onChoiceConditionEdit={(ci, condition) =>
+                editor.handleChoiceConditionEdit(selectedNodeId, ci, condition)
+              }
+              onContentConditionEdit={(ci, condition) =>
+                editor.handleContentConditionEdit(selectedNodeId, ci, condition)
+              }
               onAddChoice={(choice) => editor.handleAddChoice(selectedNodeId, choice)}
               onDeleteChoice={(ci) => editor.handleDeleteChoice(selectedNodeId, ci)}
               onSwapChoices={(from, to) => editor.handleSwapChoices(selectedNodeId, from, to)}

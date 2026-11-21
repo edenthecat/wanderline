@@ -33,8 +33,10 @@ import {
   fetchMetadata,
   renameNode,
   swapChoices,
+  updateChoiceCondition,
   updateChoiceTarget,
   updateChoiceText,
+  updateContentCondition,
   updateDivert,
   updateNodeContentText,
   updateNodeMetadata,
@@ -137,6 +139,21 @@ export interface UseNodeEditorResult {
   handleNodeContentEdit: (nodeId: string, contentIndex: number, newText: string) => void;
   handleChoiceTargetEdit: (nodeId: string, choiceIndex: number, newTarget: string) => void;
   handleDivertEdit: (nodeId: string, newTarget: string) => void;
+  /** Set/clear a choice's visibility condition. Rejects with the
+   * server's parse-error message on bad input — callers surface it
+   * locally rather than via the shared editorError banner. */
+  handleChoiceConditionEdit: (
+    nodeId: string,
+    choiceIndex: number,
+    condition: string | null,
+  ) => Promise<void>;
+  /** Set/clear a text block's visibility condition. Same error
+   * contract as handleChoiceConditionEdit. */
+  handleContentConditionEdit: (
+    nodeId: string,
+    contentIndex: number,
+    condition: string | null,
+  ) => Promise<void>;
   handleAddChoice: (
     nodeId: string,
     choice: { text: string; target: string },
@@ -529,6 +546,26 @@ export function useNodeEditor({
     [projectId, onStoryUpdated],
   );
 
+  // Condition edits have their own inline error slot in NodeDetail
+  // (next to the input, like the transcript-override save), so unlike
+  // handleChoiceTargetEdit/handleDivertEdit above these rethrow
+  // instead of populating the shared editorError banner.
+  const handleChoiceConditionEdit = useCallback(
+    async (nodeId: string, choiceIndex: number, condition: string | null) => {
+      await updateChoiceCondition(projectId, nodeId, choiceIndex, condition);
+      onStoryUpdated();
+    },
+    [projectId, onStoryUpdated],
+  );
+
+  const handleContentConditionEdit = useCallback(
+    async (nodeId: string, contentIndex: number, condition: string | null) => {
+      await updateContentCondition(projectId, nodeId, contentIndex, condition);
+      onStoryUpdated();
+    },
+    [projectId, onStoryUpdated],
+  );
+
   const handleAddChoice = useCallback(
     async (nodeId: string, choice: { text: string; target: string }, atIndex?: number) => {
       // Note: we surface failure via the local AddChoiceRow form
@@ -631,6 +668,8 @@ export function useNodeEditor({
     handleNodeContentEdit,
     handleChoiceTargetEdit,
     handleDivertEdit,
+    handleChoiceConditionEdit,
+    handleContentConditionEdit,
     handleAddChoice,
     handleDeleteChoice,
     handleSwapChoices,
