@@ -38,7 +38,6 @@
  *     datamaps, etc.
  */
 
-import { randomUUID } from 'crypto';
 import { parseExpression } from '@wanderline/shared';
 import type {
   ContentBlock,
@@ -55,6 +54,7 @@ import {
   readQuotedLiteral,
   escapeDoubleQuoted,
   declareVariableIfNew,
+  newBlockId,
   type DialectVariableState,
 } from './twee-content.js';
 
@@ -425,7 +425,7 @@ export function processHarlowePassageBody(
       for (const { name, value } of assignments) {
         declareVariableIfNew(name, value, state, evaluateExpr, warnings, lineNumber, `$${name}`);
         const statement: Statement = { kind: 'assignment', name, operator: '=', value };
-        content.push({ id: randomUUID(), kind: 'assignment', statement });
+        content.push({ id: newBlockId(), kind: 'assignment', statement });
       }
       cursor += call.end;
       continue;

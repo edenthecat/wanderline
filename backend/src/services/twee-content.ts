@@ -61,6 +61,15 @@ export function readQuotedLiteral(source: string, start: number): { value: strin
  * readQuotedLiteral's unescaping — shared by every dialect's
  * expression translator/renderer so the two directions can't drift
  * out of sync. */
+/** A fresh stable id for a newly-parsed block/choice (DEV-199
+ * stable-id rollout). Exported so the three dialect modules
+ * (harlowe/sugarcube/chapbook-macros.ts) mint ids through this
+ * shared module rather than each importing crypto directly — this
+ * is already their one shared import point (see file header). */
+export function newBlockId(): string {
+  return randomUUID();
+}
+
 export function escapeDoubleQuoted(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }

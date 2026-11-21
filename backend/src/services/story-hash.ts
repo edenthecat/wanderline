@@ -72,6 +72,41 @@ export function canonicalize(value: unknown): string {
 }
 
 /**
+ * Content blocks and choices each carry a randomUUID() `id` (DEV-199
+ * stable-id rollout) minted FRESH on every Ink/Twee parse — unlike a
+ * node's own `id` (a meaningful knot/stitch name), these exist only
+ * so the editor can address a block/choice independent of its array
+ * position; they say nothing about what the story actually contains.
+ * Re-importing byte-identical source would otherwise hash differently
+ * every time purely because of these, defeating dedup. Strips them
+ * (and only them — `node.id` is untouched) before hashing.
+ */
+function stripVolatileIds(storyGraph: unknown): unknown {
+  if (storyGraph === null || typeof storyGraph !== 'object') return storyGraph;
+  const graph = storyGraph as { nodes?: Record<string, unknown> };
+  if (!graph.nodes || typeof graph.nodes !== 'object') return storyGraph;
+  const nodes: Record<string, unknown> = {};
+  for (const [nodeId, rawNode] of Object.entries(graph.nodes)) {
+    if (rawNode === null || typeof rawNode !== 'object') {
+      nodes[nodeId] = rawNode;
+      continue;
+    }
+    const node = rawNode as { content?: unknown[]; choices?: unknown[] };
+    const stripId = (item: unknown): unknown => {
+      if (item === null || typeof item !== 'object') return item;
+      const { id: _id, ...rest } = item as Record<string, unknown>;
+      return rest;
+    };
+    nodes[nodeId] = {
+      ...node,
+      ...(Array.isArray(node.content) ? { content: node.content.map(stripId) } : {}),
+      ...(Array.isArray(node.choices) ? { choices: node.choices.map(stripId) } : {}),
+    };
+  }
+  return { ...graph, nodes };
+}
+
+/**
  * SHA-256 hex of the canonical form of `storyGraph`. Returns a
  * lowercase 64-char string safe to persist in a VARCHAR(64) column
  * and to include verbatim in structured logs.
@@ -90,7 +125,9 @@ export function storyHash(storyGraph: unknown): string {
   if (storyGraph === null || storyGraph === undefined) {
     throw new Error('storyHash: refusing to hash null / undefined story graph');
   }
-  return createHash('sha256').update(canonicalize(storyGraph)).digest('hex');
+  return createHash('sha256')
+    .update(canonicalize(stripVolatileIds(storyGraph)))
+    .digest('hex');
 }
 
 /**

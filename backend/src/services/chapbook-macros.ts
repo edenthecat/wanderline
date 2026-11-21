@@ -71,7 +71,6 @@
  *     insert/modifier — {embed passage}, [JavaScript], etc.
  */
 
-import { randomUUID } from 'crypto';
 import { parseExpression } from '@wanderline/shared';
 import type {
   Choice,
@@ -88,6 +87,7 @@ import {
   escapeDoubleQuoted,
   declareVariableIfNew,
   extractLinks,
+  newBlockId,
   type DialectVariableState,
 } from './twee-content.js';
 
@@ -281,7 +281,7 @@ export function processChapbookPassageBody(
   for (const { name, value } of assignments) {
     declareVariableIfNew(name, value, state, evaluateExpr, warnings, lineNumber);
     content.push({
-      id: randomUUID(),
+      id: newBlockId(),
       kind: 'assignment',
       statement: { kind: 'assignment', name, operator: '=', value },
     });

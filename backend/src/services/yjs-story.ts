@@ -54,10 +54,23 @@ interface SerializableNode {
  * string under a plain Y.Map key — last-writer-wins, same as every
  * other structural field here — is the right fit. No Y.Text needed.
  */
+/** Read/write use the SAME non-empty-string predicate, so a block/
+ * choice's id round-trips identically regardless of which function
+ * last touched it — a truthy-vs-typeof mismatch between them would
+ * otherwise treat `id: ''` as present on write but absent on read
+ * (or vice versa). */
+function writeOptionalId(m: Y.Map<unknown>, id: string | undefined): void {
+  if (typeof id === 'string' && id.length > 0) m.set('id', id);
+}
+function readOptionalId(m: Y.Map<unknown>): { id: string } | Record<string, never> {
+  const id = m.get('id');
+  return typeof id === 'string' && id.length > 0 ? { id } : {};
+}
+
 function buildContentItem(item: ContentBlock): Y.Map<unknown> {
   const m = new Y.Map<unknown>();
   m.set('kind', item.kind);
-  if (item.id) m.set('id', item.id);
+  writeOptionalId(m, item.id);
   if (item.kind === 'assignment') {
     m.set('statement', JSON.stringify(item.statement));
     return m;
@@ -76,7 +89,7 @@ function buildContentItem(item: ContentBlock): Y.Map<unknown> {
 
 function buildChoiceItem(ch: Choice): Y.Map<unknown> {
   const m = new Y.Map<unknown>();
-  if (ch.id) m.set('id', ch.id);
+  writeOptionalId(m, ch.id);
   const yText = new Y.Text();
   yText.insert(0, ch.text);
   m.set('text', yText);
@@ -142,8 +155,10 @@ function readJsonField<T>(m: Y.Map<unknown>, key: string): T | undefined {
 }
 
 function readContentItem(m: Y.Map<unknown>): ContentBlock {
-  const id = m.get('id');
-  const idField = typeof id === 'string' ? { id } : {};
+  // Spread first, not last — a key spread after it would silently
+  // override `id` with no type error; spreading first means any
+  // later-added literal key in these objects wins instead.
+  const idField = readOptionalId(m);
   // `kind` is required on ContentBlock, but a pre-DEV-199 row never
   // wrote one — treat anything other than an explicit 'assignment' as
   // text, matching isTextBlock's own contract in types.ts.
@@ -152,17 +167,17 @@ function readContentItem(m: Y.Map<unknown>): ContentBlock {
     if (!statement) {
       throw new Error("Yjs content item has kind='assignment' but no parseable statement");
     }
-    return { kind: 'assignment', statement, ...idField };
+    return { ...idField, kind: 'assignment', statement };
   }
   const text = m.get('text');
   const textStr = text instanceof Y.Text ? text.toString() : String(text ?? '');
   const condition = readJsonField<Expression>(m, 'condition');
   return {
+    ...idField,
     kind: 'text',
     text: textStr,
     tags: readArrayOfStrings(m.get('tags') as Y.Array<string> | undefined),
     ...(condition !== undefined ? { condition } : {}),
-    ...idField,
   };
 }
 
@@ -170,15 +185,14 @@ function readChoiceItem(m: Y.Map<unknown>): Choice {
   const text = m.get('text');
   const textStr = text instanceof Y.Text ? text.toString() : String(text ?? '');
   const condition = readJsonField<Expression>(m, 'condition');
-  const id = m.get('id');
   return {
+    ...readOptionalId(m),
     text: textStr,
     target: String(m.get('target') ?? ''),
     sticky: Boolean(m.get('sticky')),
     fallback: Boolean(m.get('fallback')),
     tags: readArrayOfStrings(m.get('tags') as Y.Array<string> | undefined),
     ...(condition !== undefined ? { condition } : {}),
-    ...(typeof id === 'string' ? { id } : {}),
   };
 }
 
