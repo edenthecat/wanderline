@@ -255,6 +255,16 @@ function listVal(...names: string[]): ListValue {
   return evaluate(list(...names), {}) as ListValue;
 }
 
+/** The genuine empty-list literal `()` the parser produces — origin
+ * `''`, `allItems: []` — distinct from `list()` above, which is
+ * still tagged with kettleState's real origin/allItems despite
+ * having no active items. Needed to test that a union/difference
+ * against the TRUE origin-less empty literal doesn't lose the other
+ * operand's real origin. */
+function emptyList(): Expression {
+  return { kind: 'literal', value: { kind: 'list', origin: '', items: [], allItems: [] } };
+}
+
 describe('evaluate — LIST truthiness', () => {
   it('is truthy iff non-empty', () => {
     expect(truthy(listVal('cold'))).toBe(true);
@@ -289,6 +299,29 @@ describe('evaluate — LIST set operators (+/-)', () => {
       {},
     ) as ListValue;
     expect(noop.items.map((i) => i.name)).toEqual(['cold']);
+  });
+
+  it('union/difference against the true empty-list literal `()` keeps the OTHER operand’s real origin/allItems', () => {
+    const unionLeftEmpty = evaluate(
+      { kind: 'binary', operator: '+', left: emptyList(), right: list('cold') },
+      {},
+    ) as ListValue;
+    expect(unionLeftEmpty.origin).toBe('kettleState');
+    expect(unionLeftEmpty.allItems).toEqual(KETTLE_ALL);
+
+    const unionRightEmpty = evaluate(
+      { kind: 'binary', operator: '+', left: list('cold'), right: emptyList() },
+      {},
+    ) as ListValue;
+    expect(unionRightEmpty.origin).toBe('kettleState');
+    expect(unionRightEmpty.allItems).toEqual(KETTLE_ALL);
+
+    const differenceLeftEmpty = evaluate(
+      { kind: 'binary', operator: '-', left: emptyList(), right: list('cold') },
+      {},
+    ) as ListValue;
+    expect(differenceLeftEmpty.origin).toBe('kettleState');
+    expect(differenceLeftEmpty.allItems).toEqual(KETTLE_ALL);
   });
 
   it('* / % never apply to LIST values', () => {
@@ -387,15 +420,44 @@ describe('evaluate — LIST positional comparison', () => {
     ).toBe(false);
   });
 
-  it('never compares true against an empty list on either side', () => {
+  it('compares an empty list against a non-empty one asymmetrically, matching ink-engine', () => {
+    // Real Ink: a non-empty list is strictly greater than an empty
+    // one, and an empty list is strictly less than a non-empty one —
+    // NOT "always false when either side is empty".
+    const expected: Record<'<' | '<=' | '>' | '>=', { emptyFirst: boolean; emptySecond: boolean }> =
+      {
+        '<': { emptyFirst: true, emptySecond: false },
+        '<=': { emptyFirst: true, emptySecond: false },
+        '>': { emptyFirst: false, emptySecond: true },
+        '>=': { emptyFirst: false, emptySecond: true },
+      };
     for (const operator of ['<', '<=', '>', '>='] as const) {
       expect(evaluate({ kind: 'binary', operator, left: list(), right: list('cold') }, {})).toBe(
-        false,
+        expected[operator].emptyFirst,
       );
       expect(evaluate({ kind: 'binary', operator, left: list('cold'), right: list() }, {})).toBe(
-        false,
+        expected[operator].emptySecond,
       );
     }
+  });
+
+  it('>= / <= compare min-to-min AND max-to-max, not a cross min-to-max comparison', () => {
+    // a=[boiling,recently_boiled] (ordinals 1,2), b=[cold,boiling] (0,1):
+    // min(a)=1 >= min(b)=0 AND max(a)=2 >= max(b)=1 -> true.
+    const a = list('boiling', 'recently_boiled');
+    const b = list('cold', 'boiling');
+    expect(evaluate({ kind: 'binary', operator: '>=', left: a, right: b }, {})).toBe(true);
+    expect(evaluate({ kind: 'binary', operator: '<=', left: b, right: a }, {})).toBe(true);
+
+    // c=[boiling] (ordinal 1), d=[cold,recently_boiled] (0,2):
+    // min(c)=1 >= min(d)=0 (true) but max(c)=1 >= max(d)=2 is false,
+    // so the AND makes the whole comparison false — a naive cross
+    // comparison (min(c)=1 vs max(d)=2) would also say false here,
+    // so this case specifically exercises the max(c)>=max(d) half of
+    // the real formula, not just the min half.
+    const c = list('boiling');
+    const d = list('cold', 'recently_boiled');
+    expect(evaluate({ kind: 'binary', operator: '>=', left: c, right: d }, {})).toBe(false);
   });
 });
 
@@ -407,10 +469,16 @@ describe('evaluate — LIST query functions', () => {
     expect(evaluate({ kind: 'listFunction', name: 'LIST_COUNT', args: [list()] }, {})).toBe(0);
   });
 
-  it('LIST_VALUE returns the lowest active item’s ordinal', () => {
+  it('LIST_VALUE returns the highest active item’s ordinal', () => {
     expect(
       evaluate({ kind: 'listFunction', name: 'LIST_VALUE', args: [list('boiling')] }, {}),
     ).toBe(1);
+    expect(
+      evaluate(
+        { kind: 'listFunction', name: 'LIST_VALUE', args: [list('cold', 'recently_boiled')] },
+        {},
+      ),
+    ).toBe(2);
   });
 
   it('LIST_MIN/LIST_MAX return single-item LISTs, empty if the source is empty', () => {
@@ -449,12 +517,16 @@ describe('evaluate — LIST query functions', () => {
     expect(inverted.items.map((i) => i.name).sort()).toEqual(['boiling', 'recently_boiled']);
   });
 
-  it('LIST_RANGE returns every declared member within the ordinal bounds, by number or single-item list', () => {
+  it('LIST_RANGE filters the INPUT list’s own active items by ordinal bounds, not the origin’s full declared set', () => {
     const byNumber = evaluate(
       {
         kind: 'listFunction',
         name: 'LIST_RANGE',
-        args: [list('cold'), { kind: 'literal', value: 1 }, { kind: 'literal', value: 2 }],
+        args: [
+          list('cold', 'boiling', 'recently_boiled'),
+          { kind: 'literal', value: 1 },
+          { kind: 'literal', value: 2 },
+        ],
       },
       {},
     ) as ListValue;
@@ -464,11 +536,25 @@ describe('evaluate — LIST query functions', () => {
       {
         kind: 'listFunction',
         name: 'LIST_RANGE',
-        args: [list('cold'), list('boiling'), list('boiling')],
+        args: [list('boiling', 'recently_boiled'), list('boiling'), list('boiling')],
       },
       {},
     ) as ListValue;
     expect(byListBound.items.map((i) => i.name)).toEqual(['boiling']);
+
+    // A member active in the origin's full set but NOT active in the
+    // input list passed to LIST_RANGE must not appear in the result,
+    // even though it's within the ordinal bounds — proving this
+    // filters `items`, not `allItems`.
+    const excludesInactive = evaluate(
+      {
+        kind: 'listFunction',
+        name: 'LIST_RANGE',
+        args: [list('cold'), { kind: 'literal', value: 0 }, { kind: 'literal', value: 2 }],
+      },
+      {},
+    ) as ListValue;
+    expect(excludesInactive.items.map((i) => i.name)).toEqual(['cold']);
   });
 
   it('every LIST_* function rejects a non-LIST argument', () => {

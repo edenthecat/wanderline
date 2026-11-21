@@ -706,6 +706,21 @@ function parseVariableDeclarationLine(match: RegExpMatchArray, state: ParserStat
   const [, keyword, name, rhsRaw] = match;
   const isConst = keyword === 'CONST';
 
+  // A VAR/CONST sharing a name with an already-declared LIST's member
+  // would make every later bare reference to that name resolve as
+  // the list member (parsePrimary checks listMemberInfo first), not
+  // this declaration — permanently shadowing it with no warning.
+  const collidingMember = state.listMembers[name];
+  if (collidingMember) {
+    state.warnings.push({
+      type: 'syntax_error',
+      message: `${keyword} ${name} collides with a member of LIST ${collidingMember.origin}`,
+      lineNumber: state.lineNumber,
+      args: { name, keyword },
+    });
+    return;
+  }
+
   let initialValue: Expression;
   try {
     initialValue = parseExpression(rhsRaw.trim(), expressionContext(state));
@@ -777,6 +792,32 @@ function parseListDeclarationLine(match: RegExpMatchArray, state: ParserState): 
       state.warnings.push({
         type: 'syntax_error',
         message: `LIST ${name}: "${token}" is not a valid member name`,
+        lineNumber: state.lineNumber,
+        args: { name, member: token },
+      });
+      return;
+    }
+    // A member name that collides with an already-declared VAR/CONST,
+    // or with a member of a DIFFERENT already-declared LIST, would
+    // otherwise silently overwrite the earlier declaration's claim on
+    // that bare identifier in state.listMembers/variableValues — any
+    // later reference to the name would then resolve against the
+    // wrong origin with no warning (real Ink itself rejects this at
+    // compile time as a duplicate definition).
+    if (Object.hasOwn(state.variableValues, token)) {
+      state.warnings.push({
+        type: 'syntax_error',
+        message: `LIST ${name}: member "${token}" collides with an already-declared variable of the same name`,
+        lineNumber: state.lineNumber,
+        args: { name, member: token },
+      });
+      return;
+    }
+    const existingMember = state.listMembers[token];
+    if (existingMember && existingMember.origin !== name) {
+      state.warnings.push({
+        type: 'syntax_error',
+        message: `LIST ${name}: member "${token}" collides with a member of LIST ${existingMember.origin}`,
         lineNumber: state.lineNumber,
         args: { name, member: token },
       });

@@ -71,7 +71,7 @@
  *     insert/modifier — {embed passage}, [JavaScript], etc.
  */
 
-import { parseExpression } from '@wanderline/shared';
+import { parseExpression, expressionUsesListFeatures } from '@wanderline/shared';
 import type {
   Choice,
   ContentBlock,
@@ -145,6 +145,9 @@ export function translateChapbookExpression(source: string): string {
  * table (same choice Harlowe/SugarCube's renderers make).
  */
 export function renderChapbookExpression(expr: Expression): string {
+  if (expressionUsesListFeatures(expr)) {
+    throw new Error('Chapbook export does not support LIST expressions');
+  }
   switch (expr.kind) {
     case 'literal':
       if (typeof expr.value === 'string') {

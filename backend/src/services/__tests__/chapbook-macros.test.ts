@@ -111,6 +111,33 @@ describe('renderChapbookExpression', () => {
     const reparsed = parseExpression(translateChapbookExpression(cb));
     expect(reparsed).toEqual(original);
   });
+
+  // DEV-199 Phase 10: Ink's LIST type has no Chapbook equivalent.
+  describe('rejects any LIST-bearing expression', () => {
+    const listLiteral: Expression = {
+      kind: 'literal',
+      value: { kind: 'list', origin: 'kettleState', items: [], allItems: [] },
+    };
+
+    it('a bare LIST-valued literal', () => {
+      expect(() => renderChapbookExpression(listLiteral)).toThrow(/LIST/);
+    });
+
+    it('a has/hasnt binary expression', () => {
+      const hasExpr: Expression = {
+        kind: 'binary',
+        operator: 'has',
+        left: { kind: 'variable', name: 'kettleState' },
+        right: listLiteral,
+      };
+      expect(() => renderChapbookExpression(hasExpr)).toThrow(/LIST/);
+    });
+
+    it('a listFunction call', () => {
+      const call: Expression = { kind: 'listFunction', name: 'LIST_ALL', args: [listLiteral] };
+      expect(() => renderChapbookExpression(call)).toThrow(/LIST/);
+    });
+  });
 });
 
 describe('renderChapbookAssignment', () => {

@@ -1,4 +1,5 @@
 import { parseInk } from '../ink-parser.js';
+import { convertStoryGraphToInk } from '../ink-converter.js';
 import { isTextBlock } from '../../types.js';
 
 // Content blocks and choices now carry a randomUUID() `id` (DEV-199
@@ -1211,6 +1212,60 @@ No association with any real narrative.
       expect(
         result.validation.warnings.some((w) => w.message.includes('not a valid member name')),
       ).toBe(true);
+    });
+
+    it('warns and skips a LIST whose member name collides with an already-declared VAR', () => {
+      const source = '== start ==\nVAR cold = 5\nLIST kettleState = cold, boiling\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      // Only the VAR survives — the colliding LIST is rejected whole.
+      expect(result.variables).toEqual([
+        {
+          name: 'cold',
+          type: 'number',
+          isConst: false,
+          initialValue: { kind: 'literal', value: 5 },
+        },
+      ]);
+      expect(result.validation.warnings.some((w) => w.message.includes('collides with'))).toBe(
+        true,
+      );
+    });
+
+    it('warns and skips a VAR whose name collides with an already-declared LIST member', () => {
+      const source = '== start ==\nLIST kettleState = cold, boiling\nVAR cold = 5\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      // Only the LIST survives.
+      expect(result.variables).toHaveLength(1);
+      expect(result.variables?.[0].name).toBe('kettleState');
+      expect(result.validation.warnings.some((w) => w.message.includes('collides with'))).toBe(
+        true,
+      );
+    });
+
+    it('warns and skips a LIST whose member name collides with a different LIST’s member', () => {
+      const source = '== start ==\nLIST a = x, y\nLIST b = y, z\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.variables).toHaveLength(1);
+      expect(result.variables?.[0].name).toBe('a');
+      expect(
+        result.validation.warnings.some((w) => w.message.includes('collides with a member of')),
+      ).toBe(true);
+    });
+
+    it('a VAR that merely references an existing LIST member round-trips as a VAR, not a bogus second LIST declaration', () => {
+      const source = '== start ==\nLIST kettleState = cold, (boiling)\nVAR temp = cold\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      const tempDecl = result.variables?.find((v) => v.name === 'temp');
+      expect(tempDecl).toMatchObject({ name: 'temp', type: 'list' });
+
+      const ink = convertStoryGraphToInk(result);
+      expect(ink).toContain('LIST kettleState = cold, (boiling)');
+      expect(ink).toContain('VAR temp = cold');
+      expect(ink).not.toMatch(/LIST temp/);
+
+      // Round-trips back through the parser unchanged.
+      const reparsed = parseInk(ink, 'test-id');
+      expect(reparsed.variables?.find((v) => v.name === 'temp')).toEqual(tempDecl);
     });
   });
 });

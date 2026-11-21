@@ -343,9 +343,17 @@ class Parser {
   private listMemberLiteral(name: string): Expression {
     const info = this.listMemberInfo(name);
     if (!info) throw new ExpressionParseError(`'${name}' is not a known LIST member`);
-    const allItems = this.context.listDefinitions?.[info.origin] ?? [
-      { name, ordinal: info.ordinal },
-    ];
+    const allItems = this.context.listDefinitions?.[info.origin];
+    if (!allItems) {
+      // A real caller always populates listDefinitions alongside
+      // listMembers for every origin it registers — reaching here
+      // means the caller passed an inconsistent context. Fail loud
+      // rather than fabricating an incomplete allItems that would
+      // silently corrupt downstream LIST_ALL/LIST_INVERT/LIST_RANGE.
+      throw new ExpressionParseError(
+        `list member '${name}' is known but its origin LIST '${info.origin}' has no registered definition — inconsistent parse context`,
+      );
+    }
     return {
       kind: 'literal',
       value: {
@@ -449,7 +457,12 @@ class Parser {
       }
       this.expect('rparen', "to close list literal '('");
       const origin = items[0].info.origin;
-      const allItems = this.context.listDefinitions?.[origin] ?? [];
+      const allItems = this.context.listDefinitions?.[origin];
+      if (!allItems) {
+        throw new ExpressionParseError(
+          `list member '${items[0].name}' is known but its origin LIST '${origin}' has no registered definition — inconsistent parse context`,
+        );
+      }
       return {
         kind: 'literal',
         value: {

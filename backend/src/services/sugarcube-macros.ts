@@ -54,7 +54,7 @@
  *     arrays, custom macros, etc.
  */
 
-import { parseExpression, parseStatement } from '@wanderline/shared';
+import { parseExpression, parseStatement, expressionUsesListFeatures } from '@wanderline/shared';
 import type {
   ContentBlock,
   Choice,
@@ -160,6 +160,9 @@ export function translateSugarCubeExpression(source: string): string {
  * noisier output for not having to re-derive a precedence table.
  */
 export function renderSugarCubeExpression(expr: Expression): string {
+  if (expressionUsesListFeatures(expr)) {
+    throw new Error('SugarCube export does not support LIST expressions');
+  }
   switch (expr.kind) {
     case 'literal':
       if (typeof expr.value === 'string') {

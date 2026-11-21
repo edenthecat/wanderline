@@ -134,6 +134,33 @@ describe('renderSugarCubeExpression', () => {
     const reparsed = parseExpression(translateSugarCubeExpression(sc));
     expect(reparsed).toEqual(original);
   });
+
+  // DEV-199 Phase 10: Ink's LIST type has no SugarCube equivalent.
+  describe('rejects any LIST-bearing expression', () => {
+    const listLiteral: Expression = {
+      kind: 'literal',
+      value: { kind: 'list', origin: 'kettleState', items: [], allItems: [] },
+    };
+
+    it('a bare LIST-valued literal', () => {
+      expect(() => renderSugarCubeExpression(listLiteral)).toThrow(/LIST/);
+    });
+
+    it('a has/hasnt binary expression', () => {
+      const hasExpr: Expression = {
+        kind: 'binary',
+        operator: 'hasnt',
+        left: { kind: 'variable', name: 'kettleState' },
+        right: listLiteral,
+      };
+      expect(() => renderSugarCubeExpression(hasExpr)).toThrow(/LIST/);
+    });
+
+    it('a listFunction call', () => {
+      const call: Expression = { kind: 'listFunction', name: 'LIST_VALUE', args: [listLiteral] };
+      expect(() => renderSugarCubeExpression(call)).toThrow(/LIST/);
+    });
+  });
 });
 
 describe('renderSugarCubeAssignment', () => {

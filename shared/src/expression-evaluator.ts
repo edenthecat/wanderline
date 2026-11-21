@@ -40,6 +40,38 @@ export function truthy(value: VariableValue): boolean {
   return value.items.length > 0;
 }
 
+/**
+ * Does this expression tree use Ink's LIST type anywhere — a
+ * list-valued literal, a `has`/`hasnt` operator, or a LIST_* builtin
+ * call? Used by Twine dialect exporters (Harlowe/SugarCube/Chapbook
+ * have no LIST equivalent) to reject a LIST-bearing expression up
+ * front, rather than letting it slip through a `literal`/`binary`
+ * case that doesn't itself check for list values (e.g. `+`/`==`
+ * between two lists would otherwise mis-render as a plain
+ * string/object instead of being caught).
+ */
+export function expressionUsesListFeatures(expr: Expression): boolean {
+  switch (expr.kind) {
+    case 'literal':
+      return isListValue(expr.value);
+    case 'variable':
+      return false;
+    case 'unary':
+      return expressionUsesListFeatures(expr.operand);
+    case 'binary':
+      return (
+        expr.operator === 'has' ||
+        expr.operator === 'hasnt' ||
+        expressionUsesListFeatures(expr.left) ||
+        expressionUsesListFeatures(expr.right)
+      );
+    case 'logical':
+      return expressionUsesListFeatures(expr.left) || expressionUsesListFeatures(expr.right);
+    case 'listFunction':
+      return true;
+  }
+}
+
 /** De-duplicated by name — a union/difference result never carries
  * the same member twice, regardless of how many origins contributed
  * to it. */
@@ -49,12 +81,23 @@ function dedupeItems(items: ListItem[]): ListItem[] {
   return [...byName.values()];
 }
 
+/**
+ * The empty-list literal `()` carries origin `''`/`allItems: []`, so a
+ * union/difference against it must not blindly inherit the LEFT
+ * operand's origin/allItems when the left side is the empty one —
+ * take whichever operand actually has a real origin.
+ */
+function listOrigin(a: ListValue, b: ListValue): { origin: string; allItems: ListItem[] } {
+  return a.origin
+    ? { origin: a.origin, allItems: a.allItems }
+    : { origin: b.origin, allItems: b.allItems };
+}
+
 function listUnion(a: ListValue, b: ListValue): ListValue {
   return {
     kind: 'list',
-    origin: a.origin,
+    ...listOrigin(a, b),
     items: dedupeItems([...a.items, ...b.items]),
-    allItems: a.allItems,
   };
 }
 
@@ -62,9 +105,8 @@ function listDifference(a: ListValue, b: ListValue): ListValue {
   const removeNames = new Set(b.items.map((item) => item.name));
   return {
     kind: 'list',
-    origin: a.origin,
+    ...listOrigin(a, b),
     items: a.items.filter((i) => !removeNames.has(i.name)),
-    allItems: a.allItems,
   };
 }
 
@@ -81,30 +123,40 @@ function listHas(a: ListValue, b: ListValue): boolean {
 
 /**
  * Positional-set comparison (Ink's own LIST comparison semantics,
- * not a lexicographic/length comparison): `a < b` iff every item in
- * `a` sits before every item in `b` in their shared declaration
- * order — i.e. a's MAXIMUM ordinal is less than b's MINIMUM. `a > b`
- * is the mirror: a's minimum exceeds b's maximum. An empty list has
- * no max/min, so it never compares true either way — matching Ink's
- * own behavior rather than crashing on `Math.max()` of nothing.
+ * not a lexicographic/length comparison) — matches ink-engine's
+ * InkList.cs GreaterThan/GreaterThanOrEquals/LessThan/
+ * LessThanOrEquals exactly, including their asymmetric empty-list
+ * handling (an empty list compares as "smaller than anything" for
+ * strict `<`/`>`, but is never itself greater than / less than
+ * anything via the non-strict forms unless the other side is also
+ * empty):
+ *
+ *   a > b  : a non-empty, AND (b empty OR min(a) > max(b))
+ *   a >= b : a non-empty, AND (b empty OR (min(a)>=min(b) && max(a)>=max(b)))
+ *   a < b  : b non-empty, AND (a empty OR max(a) < min(b))
+ *   a <= b : b non-empty, AND (a empty OR (min(a)<=min(b) && max(a)<=max(b)))
  */
 function listCompare(operator: '<' | '<=' | '>' | '>=', a: ListValue, b: ListValue): boolean {
-  if (a.items.length === 0 || b.items.length === 0) return false;
-  const aOrdinals = a.items.map((item) => item.ordinal);
-  const bOrdinals = b.items.map((item) => item.ordinal);
-  const aMax = Math.max(...aOrdinals);
-  const aMin = Math.min(...aOrdinals);
-  const bMax = Math.max(...bOrdinals);
-  const bMin = Math.min(...bOrdinals);
+  const ordinalsOf = (list: ListValue) => list.items.map((item) => item.ordinal);
+  const minOf = (list: ListValue) => Math.min(...ordinalsOf(list));
+  const maxOf = (list: ListValue) => Math.max(...ordinalsOf(list));
   switch (operator) {
-    case '<':
-      return aMax < bMin;
-    case '<=':
-      return aMax <= bMin;
     case '>':
-      return aMin > bMax;
+      if (a.items.length === 0) return false;
+      if (b.items.length === 0) return true;
+      return minOf(a) > maxOf(b);
     case '>=':
-      return aMin >= bMax;
+      if (a.items.length === 0) return false;
+      if (b.items.length === 0) return true;
+      return minOf(a) >= minOf(b) && maxOf(a) >= maxOf(b);
+    case '<':
+      if (b.items.length === 0) return false;
+      if (a.items.length === 0) return true;
+      return maxOf(a) < minOf(b);
+    case '<=':
+      if (b.items.length === 0) return false;
+      if (a.items.length === 0) return true;
+      return minOf(a) <= minOf(b) && maxOf(a) <= maxOf(b);
   }
 }
 
@@ -242,8 +294,11 @@ function evaluateListFunction(name: ListFunctionName, args: VariableValue[]): Va
     case 'LIST_COUNT':
       return requireList(args[0], 'LIST_COUNT').items.length;
     case 'LIST_VALUE': {
+      // Ink's ValueOfList returns the MAXIMUM ordinal (its highest
+      // item), not the minimum — matches how a multi-item list's
+      // "value" is meant to read as "how far up the list we've got".
       const list = requireList(args[0], 'LIST_VALUE');
-      return list.items.length > 0 ? Math.min(...list.items.map((item) => item.ordinal)) : 0;
+      return list.items.length > 0 ? Math.max(...list.items.map((item) => item.ordinal)) : 0;
     }
     case 'LIST_MIN': {
       const list = requireList(args[0], 'LIST_MIN');
@@ -279,10 +334,13 @@ function evaluateListFunction(name: ListFunctionName, args: VariableValue[]): Va
       const list = requireList(args[0], 'LIST_RANGE');
       const min = listRangeBound(args[1], 'LIST_RANGE');
       const max = listRangeBound(args[2], 'LIST_RANGE');
+      // Ink's native ListWithSubRange filters the list PASSED IN (its
+      // own currently-active items), not the origin's full declared
+      // universe — LIST_ALL/LIST_INVERT are what expose `allItems`.
       return {
         kind: 'list',
         origin: list.origin,
-        items: list.allItems.filter((item) => item.ordinal >= min && item.ordinal <= max),
+        items: list.items.filter((item) => item.ordinal >= min && item.ordinal <= max),
         allItems: list.allItems,
       };
     }

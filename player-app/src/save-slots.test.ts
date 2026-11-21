@@ -192,5 +192,38 @@ describe('save-slots', () => {
       const slots = readSlotsWithMigration(STORY_ID, validIds);
       expect(slots.map((s) => s.id)).toEqual(['a']);
     });
+
+    it('round-trips a slot with a LIST-typed variable value (DEV-199 Phase 10)', () => {
+      const kettleState = {
+        kind: 'list' as const,
+        origin: 'kettleState',
+        items: [{ name: 'boiling', ordinal: 1 }],
+        allItems: [
+          { name: 'cold', ordinal: 0 },
+          { name: 'boiling', ordinal: 1 },
+          { name: 'recently_boiled', ordinal: 2 },
+        ],
+      };
+      const start: SaveSlot[] = [makeSlot({ variables: { kettleState } })];
+      writeSlots(STORY_ID, start);
+      expect(readSlotsWithMigration(STORY_ID, validIds)).toEqual(start);
+    });
+
+    it('rejects a slot whose LIST variable value is malformed', () => {
+      localStorage.setItem(
+        `wanderline_${STORY_ID}_slots`,
+        JSON.stringify([
+          makeSlot({ id: 'a' }),
+          {
+            ...makeSlot({ id: 'b' }),
+            variables: {
+              kettleState: { kind: 'list', origin: 'kettleState', items: 'not-an-array' },
+            },
+          },
+        ]),
+      );
+      const slots = readSlotsWithMigration(STORY_ID, validIds);
+      expect(slots.map((s) => s.id)).toEqual(['a']);
+    });
   });
 });

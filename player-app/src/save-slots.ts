@@ -9,7 +9,7 @@
 // readSlotsWithMigration() moves any such legacy payload into a fresh
 // autosave slot the first time it runs.
 
-import type { VariableValue } from '@wanderline/shared';
+import type { ListItem, VariableValue } from '@wanderline/shared';
 
 const STORAGE_PREFIX = 'wanderline_';
 export const AUTOSAVE_SLOT_ID = 'autosave';
@@ -73,13 +73,43 @@ function safeRemove(key: string): void {
   }
 }
 
+function isValidListItem(value: unknown): value is ListItem {
+  return (
+    !!value &&
+    typeof value === 'object' &&
+    typeof (value as ListItem).name === 'string' &&
+    typeof (value as ListItem).ordinal === 'number'
+  );
+}
+
+/** True for a well-formed LIST value snapshot (DEV-199 Phase 10) —
+ * since `VariableValue` includes `ListValue` alongside number/string/
+ * boolean, a save slot's variables snapshot can hold one. */
+function isValidListValue(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as { kind?: unknown; origin?: unknown; items?: unknown; allItems?: unknown };
+  return (
+    v.kind === 'list' &&
+    typeof v.origin === 'string' &&
+    Array.isArray(v.items) &&
+    v.items.every(isValidListItem) &&
+    Array.isArray(v.allItems) &&
+    v.allItems.every(isValidListItem)
+  );
+}
+
 /** True for a plain `{ name: VariableValue }` record — every value a
- * number, string, or boolean. Used to validate a slot's optional
- * `variables` snapshot without trusting localStorage's shape. */
+ * number, string, boolean, or well-formed LIST value. Used to
+ * validate a slot's optional `variables` snapshot without trusting
+ * localStorage's shape. */
 function isValidVariableValueRecord(value: unknown): value is Record<string, VariableValue> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   return Object.values(value).every(
-    (v) => typeof v === 'number' || typeof v === 'string' || typeof v === 'boolean',
+    (v) =>
+      typeof v === 'number' ||
+      typeof v === 'string' ||
+      typeof v === 'boolean' ||
+      isValidListValue(v),
   );
 }
 

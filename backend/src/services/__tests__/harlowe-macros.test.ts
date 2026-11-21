@@ -151,6 +151,46 @@ describe('renderHarloweExpression', () => {
     const reparsed = parseExpression(translateHarloweExpression(harlowe));
     expect(reparsed).toEqual(original);
   });
+
+  // DEV-199 Phase 10: Ink's LIST type has no Harlowe equivalent — a
+  // LIST-bearing expression must be rejected, not mis-rendered as
+  // `[object Object]` (a bare list literal) or invalid operator text
+  // (has/hasnt, or +/- between two lists).
+  describe('rejects any LIST-bearing expression', () => {
+    const listLiteral: Expression = {
+      kind: 'literal',
+      value: { kind: 'list', origin: 'kettleState', items: [], allItems: [] },
+    };
+
+    it('a bare LIST-valued literal', () => {
+      expect(() => renderHarloweExpression(listLiteral)).toThrow(/LIST/);
+    });
+
+    it('a has/hasnt binary expression', () => {
+      const hasExpr: Expression = {
+        kind: 'binary',
+        operator: 'has',
+        left: { kind: 'variable', name: 'kettleState' },
+        right: listLiteral,
+      };
+      expect(() => renderHarloweExpression(hasExpr)).toThrow(/LIST/);
+    });
+
+    it('a plain binary expression with a LIST-valued operand buried inside it', () => {
+      const nested: Expression = {
+        kind: 'binary',
+        operator: '==',
+        left: { kind: 'unary', operator: '!', operand: listLiteral },
+        right: lit(5),
+      };
+      expect(() => renderHarloweExpression(nested)).toThrow(/LIST/);
+    });
+
+    it('a listFunction call', () => {
+      const call: Expression = { kind: 'listFunction', name: 'LIST_COUNT', args: [listLiteral] };
+      expect(() => renderHarloweExpression(call)).toThrow(/LIST/);
+    });
+  });
 });
 
 describe('renderHarloweAssignment', () => {

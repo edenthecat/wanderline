@@ -38,7 +38,7 @@
  *     datamaps, etc.
  */
 
-import { parseExpression } from '@wanderline/shared';
+import { parseExpression, expressionUsesListFeatures } from '@wanderline/shared';
 import type {
   ContentBlock,
   Choice,
@@ -223,6 +223,14 @@ export function translateHarloweExpression(source: string): string {
  * output for not having to re-derive Harlowe's precedence table.
  */
 export function renderHarloweExpression(expr: Expression): string {
+  if (expressionUsesListFeatures(expr)) {
+    // Ink's LIST type (DEV-199 Phase 10) is scoped to Ink only —
+    // Harlowe has no equivalent. Checked up front (not just in the
+    // 'listFunction' case below) so a LIST-valued literal or a
+    // has/hasnt binary expression is rejected too, instead of
+    // mis-rendering as `[object Object]` or invalid operator text.
+    throw new Error('Harlowe export does not support LIST expressions');
+  }
   switch (expr.kind) {
     case 'literal':
       if (typeof expr.value === 'string') {

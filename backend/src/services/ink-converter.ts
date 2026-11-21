@@ -44,7 +44,22 @@ export function convertStoryGraphToInk(storyGraph: InkStoryGraph): string {
   // declaration order. Must come before any knot content, matching
   // Ink's own convention and what the parser expects on re-import.
   for (const decl of storyGraph.variables ?? []) {
-    if (decl.type === 'list') {
+    // A genuine `LIST name = ...` declaration's own value always has
+    // origin === its own name (parseListDeclarationLine sets this up
+    // that way). A plain VAR/CONST that merely evaluates to a list
+    // value — e.g. `VAR temp = cold` (a bare reference to another
+    // LIST's member) or `CONST allStates = LIST_ALL(kettleState)` —
+    // is type:'list' too, but its value's origin points at the OTHER
+    // list it came from, not at itself, and must round-trip as an
+    // ordinary VAR/CONST (falling through below), not be re-emitted
+    // as a second, bogus `LIST` declaration with no members of its
+    // own.
+    const isGenuineListDeclaration =
+      decl.type === 'list' &&
+      decl.initialValue.kind === 'literal' &&
+      isListValue(decl.initialValue.value) &&
+      decl.initialValue.value.origin === decl.name;
+    if (isGenuineListDeclaration) {
       // A LIST declares its FULL member set, with parens marking
       // which ones start active — this is NOT `printExpression` of
       // the initial value, which only carries the active subset, not

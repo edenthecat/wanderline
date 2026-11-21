@@ -12,6 +12,7 @@
  */
 
 import { randomUUID } from 'crypto';
+import { isListValue } from '../types.js';
 import type {
   Choice,
   ContentBlock,
@@ -129,9 +130,15 @@ export function declareVariableIfNew(
     });
     return;
   }
-  const type =
-    typeof value === 'number' ? 'number' : typeof value === 'boolean' ? 'bool' : 'string';
-  state.variables.push({ name, type, initialValue, isConst: false });
+  const type = isListValue(value)
+    ? 'list'
+    : typeof value === 'number'
+      ? 'number'
+      : typeof value === 'boolean'
+        ? 'bool'
+        : 'string';
+  const listMembers = isListValue(value) ? value.allItems.map((item) => item.name) : undefined;
+  state.variables.push({ name, type, initialValue, isConst: false, listMembers });
   state.values[name] = value;
 }
 
