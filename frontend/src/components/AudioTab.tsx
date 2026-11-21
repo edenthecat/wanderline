@@ -77,7 +77,7 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
       for (const v of nodeAssigns.ambience ?? []) ids.add(v.fileId);
       for (const v of nodeAssigns.choice1 ?? []) ids.add(v.fileId);
       for (const v of nodeAssigns.choice2 ?? []) ids.add(v.fileId);
-      for (const sfxId of nodeAssigns.sfx) ids.add(sfxId);
+      for (const v of nodeAssigns.sfx) ids.add(v.fileId);
     }
     return ids;
   }, [assignments]);
@@ -108,7 +108,7 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
       for (const v of a.ambience ?? []) push(v.fileId, nodeId, 'ambience', v.condition);
       for (const v of a.choice1 ?? []) push(v.fileId, nodeId, 'choice1', v.condition);
       for (const v of a.choice2 ?? []) push(v.fileId, nodeId, 'choice2', v.condition);
-      for (const sfxId of a.sfx) push(sfxId, nodeId, 'sfx');
+      for (const v of a.sfx) push(v.fileId, nodeId, 'sfx', v.condition);
     }
     // Sort each list for stable rendering across refetches.
     for (const list of map.values()) {
@@ -766,8 +766,13 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
                       });
                     }
                   }
-                  for (const sfxId of nodeAssign.sfx) {
-                    rows.push({ audioType: 'sfx', label: 'sfx', fileId: sfxId });
+                  for (const v of nodeAssign.sfx) {
+                    rows.push({
+                      audioType: 'sfx',
+                      label: v.condition ? 'sfx (conditioned)' : 'sfx',
+                      fileId: v.fileId,
+                      condition: v.condition,
+                    });
                   }
                   return rows.map((row, idx) => (
                     <tr key={`${nodeId}-${row.audioType}-${row.fileId}-${idx}`}>

@@ -175,7 +175,7 @@ describe('NodeAudioPanel', () => {
   });
 
   it('adds, replaces and removes sound effects', async () => {
-    const a = mount({ sfx: ['door'] });
+    const a = mount({ sfx: [{ fileId: 'door' }] });
     fireEvent.click(screen.getByRole('button', { name: 'Attach audio…' }));
     const add = screen.getByLabelText('Sound effect to add to hall') as HTMLSelectElement;
     // Already-attached effects can't be added twice.
@@ -188,11 +188,11 @@ describe('NodeAudioPanel', () => {
     await waitFor(() => expect(a.replace).toHaveBeenCalledWith('hall', 'sfx', 'door', 'bell'));
 
     fireEvent.click(screen.getByLabelText('Remove SFX 1 from hall'));
-    await waitFor(() => expect(a.clear).toHaveBeenCalledWith('hall', 'sfx', 'door'));
+    await waitFor(() => expect(a.clear).toHaveBeenCalledWith('hall', 'sfx', 'door', undefined));
   });
 
   it('times a sound effect in seconds and clears it back to the start', async () => {
-    const a = mount({ sfx: ['door'], sfxOffsets: { door: 1500 } });
+    const a = mount({ sfx: [{ fileId: 'door' }], sfxOffsets: { door: 1500 } });
     const input = screen.getByLabelText('When SFX 1 plays, in seconds') as HTMLInputElement;
     expect(input.value).toBe('1.5');
 
@@ -211,7 +211,7 @@ describe('NodeAudioPanel', () => {
       <NodeAudioPanel
         projectId="p1"
         nodeId="hall"
-        nodeAudio={{ sfx: ['door'], sfxOffsets: { door: 1500 } }}
+        nodeAudio={{ sfx: [{ fileId: 'door' }], sfxOffsets: { door: 1500 } }}
         audioFiles={FILES}
         actions={a}
       />,
@@ -225,7 +225,7 @@ describe('NodeAudioPanel', () => {
       <NodeAudioPanel
         projectId="p1"
         nodeId="hall"
-        nodeAudio={{ sfx: ['door'], sfxOffsets: { door: 3000 } }}
+        nodeAudio={{ sfx: [{ fileId: 'door' }], sfxOffsets: { door: 3000 } }}
         audioFiles={FILES}
         actions={a}
       />,
@@ -242,7 +242,7 @@ describe('NodeAudioPanel', () => {
     const a = actions();
     let release!: () => void;
     a.setSfxOffset.mockImplementationOnce(() => new Promise<void>((r) => (release = r)));
-    mount({ sfx: ['door', 'bell'] }, a);
+    mount({ sfx: [{ fileId: 'door' }, { fileId: 'bell' }] }, a);
     const first = screen.getByLabelText('When SFX 1 plays, in seconds');
     const second = screen.getByLabelText('When SFX 2 plays, in seconds');
     fireEvent.change(first, { target: { value: '1' } });
@@ -260,7 +260,7 @@ describe('NodeAudioPanel', () => {
     const a = actions();
     let releaseFirst!: () => void;
     a.setSfxOffset.mockImplementationOnce(() => new Promise<void>((r) => (releaseFirst = r)));
-    mount({ sfx: ['door'] }, a);
+    mount({ sfx: [{ fileId: 'door' }] }, a);
     const input = screen.getByLabelText('When SFX 1 plays, in seconds');
     fireEvent.change(input, { target: { value: '1' } });
     fireEvent.blur(input);
@@ -281,7 +281,7 @@ describe('NodeAudioPanel', () => {
     const a = actions();
     let release!: () => void;
     a.setSfxOffset.mockImplementationOnce(() => new Promise<void>((r) => (release = r)));
-    mount({ sfx: ['door'] }, a);
+    mount({ sfx: [{ fileId: 'door' }] }, a);
     const input = screen.getByLabelText('When SFX 1 plays, in seconds');
     fireEvent.change(input, { target: { value: '1' } });
     fireEvent.blur(input);
@@ -297,7 +297,7 @@ describe('NodeAudioPanel', () => {
   it('lets a timing that failed to save be sent again', async () => {
     const a = actions();
     a.setSfxOffset.mockRejectedValueOnce(new Error('offline'));
-    mount({ sfx: ['door'] }, a);
+    mount({ sfx: [{ fileId: 'door' }] }, a);
     const input = screen.getByLabelText('When SFX 1 plays, in seconds');
     fireEvent.change(input, { target: { value: '1' } });
     fireEvent.blur(input);
@@ -313,7 +313,7 @@ describe('NodeAudioPanel', () => {
     try {
       const a = actions();
       a.setSfxOffset.mockImplementationOnce(() => new Promise<void>(() => {}));
-      mount({ sfx: ['door'] }, a);
+      mount({ sfx: [{ fileId: 'door' }] }, a);
       const input = screen.getByLabelText('When SFX 1 plays, in seconds');
       fireEvent.change(input, { target: { value: '1' } });
       fireEvent.blur(input);
@@ -332,7 +332,7 @@ describe('NodeAudioPanel', () => {
     const a = actions();
     let fail!: (e: Error) => void;
     a.setSfxOffset.mockImplementationOnce(() => new Promise<void>((_, rej) => (fail = rej)));
-    mount({ sfx: ['door'] }, a);
+    mount({ sfx: [{ fileId: 'door' }] }, a);
     const input = screen.getByLabelText('When SFX 1 plays, in seconds');
     fireEvent.change(input, { target: { value: '1' } });
     fireEvent.blur(input);
@@ -350,21 +350,21 @@ describe('NodeAudioPanel', () => {
     const a = actions();
     let fail!: (e: Error) => void;
     a.setSfxOffset.mockImplementationOnce(() => new Promise<void>((_, rej) => (fail = rej)));
-    mount({ sfx: ['door'] }, a);
+    mount({ sfx: [{ fileId: 'door' }] }, a);
     const input = screen.getByLabelText('When SFX 1 plays, in seconds');
     fireEvent.change(input, { target: { value: '1' } });
     fireEvent.blur(input);
     fireEvent.click(screen.getByLabelText('Remove SFX 1 from hall'));
     await waitFor(() => expect(a.setSfxOffset).toHaveBeenCalled());
     fail(new Error('offline'));
-    await waitFor(() => expect(a.clear).toHaveBeenCalledWith('hall', 'sfx', 'door'));
+    await waitFor(() => expect(a.clear).toHaveBeenCalledWith('hall', 'sfx', 'door', undefined));
   });
 
   it('holds a replace until the effect’s timing has saved', async () => {
     const a = actions();
     let release!: () => void;
     a.setSfxOffset.mockImplementationOnce(() => new Promise<void>((r) => (release = r)));
-    mount({ sfx: ['door'] }, a);
+    mount({ sfx: [{ fileId: 'door' }] }, a);
     const input = screen.getByLabelText('When SFX 1 plays, in seconds');
     fireEvent.change(input, { target: { value: '1' } });
     fireEvent.blur(input);
@@ -394,7 +394,7 @@ describe('NodeAudioPanel', () => {
       <NodeAudioPanel
         projectId="p1"
         nodeId="hall"
-        nodeAudio={{ sfx: ['bell'] }}
+        nodeAudio={{ sfx: [{ fileId: 'bell' }] }}
         audioFiles={FILES}
         actions={a}
       />,
@@ -426,7 +426,7 @@ describe('NodeAudioPanel', () => {
       <NodeAudioPanel
         projectId="p1"
         nodeId="hall"
-        nodeAudio={{ sfx: ['door'], sfxOffsets: { door: ms } }}
+        nodeAudio={{ sfx: [{ fileId: 'door' }], sfxOffsets: { door: ms } }}
         audioFiles={FILES}
         actions={a}
       />
@@ -450,7 +450,7 @@ describe('NodeAudioPanel', () => {
       <NodeAudioPanel
         projectId="p1"
         nodeId="hall"
-        nodeAudio={{ sfx: ['door'], sfxOffsets: { door: ms } }}
+        nodeAudio={{ sfx: [{ fileId: 'door' }], sfxOffsets: { door: ms } }}
         audioFiles={FILES}
         actions={a}
       />
@@ -464,7 +464,7 @@ describe('NodeAudioPanel', () => {
   });
 
   it('refuses a timing it can’t read, and says why', async () => {
-    const a = mount({ sfx: ['door'], sfxOffsets: { door: 1500 } });
+    const a = mount({ sfx: [{ fileId: 'door' }], sfxOffsets: { door: 1500 } });
     const input = screen.getByLabelText('When SFX 1 plays, in seconds') as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'soon' } });
     fireEvent.blur(input);
@@ -503,7 +503,7 @@ describe('NodeAudioPanel', () => {
 
     it('does nothing if the author backs out', () => {
       vi.spyOn(window, 'confirm').mockReturnValue(false);
-      const a = mount({ sfx: ['door'] });
+      const a = mount({ sfx: [{ fileId: 'door' }] });
       upload('Upload a new take of SFX 1 for hall');
       expect(a.newTake).not.toHaveBeenCalled();
     });
@@ -563,7 +563,7 @@ describe('NodeAudioPanel', () => {
     });
 
     it('is offered for effects without ambience, and named for what it plays', () => {
-      mount({ voiceover: [{ fileId: 'vo1' }], sfx: ['door'] });
+      mount({ voiceover: [{ fileId: 'vo1' }], sfx: [{ fileId: 'door' }] });
       expect(screen.getByRole('button', { name: /Play with effects/ })).toBeTruthy();
     });
 
@@ -713,6 +713,63 @@ describe('NodeAudioPanel', () => {
           value: 'angry',
         }),
       );
+    });
+
+    // Regression: GET /assignments used to drop condition for sfx
+    // entirely, so a conditioned sfx row was indistinguishable from a
+    // plain one in the editor, and Remove always cleared the
+    // unconditioned row regardless of which one was clicked.
+    it('labels a conditioned sfx row with its condition, distinct from a plain one', () => {
+      mount(
+        {
+          sfx: [
+            { fileId: 'bell' },
+            { fileId: 'door', condition: { variable: 'mood', operator: '==', value: 'angry' } },
+          ],
+        },
+        actions(),
+        [MOOD],
+      );
+      expect(screen.getByText('SFX 1')).toBeTruthy();
+      expect(screen.getByText('SFX 2 — when mood == "angry"')).toBeTruthy();
+    });
+
+    it('clears a conditioned sfx row with its own condition, not the default', async () => {
+      const a = mount(
+        {
+          sfx: [
+            { fileId: 'bell' },
+            { fileId: 'door', condition: { variable: 'mood', operator: '==', value: 'angry' } },
+          ],
+        },
+        actions(),
+        [MOOD],
+      );
+      fireEvent.click(screen.getByLabelText('Remove SFX 2 — when mood == "angry" from hall'));
+      await waitFor(() =>
+        expect(a.clear).toHaveBeenCalledWith('hall', 'sfx', 'door', {
+          variable: 'mood',
+          operator: '==',
+          value: 'angry',
+        }),
+      );
+      expect(a.clear).not.toHaveBeenCalledWith('hall', 'sfx', 'bell', undefined);
+    });
+
+    // Regression: sfx timing is stored keyed by file id alone, so the
+    // same file used twice under different conditions would silently
+    // share one timing value — excluding already-used files avoids
+    // ever creating that state, matching the plain "Add sound effect"
+    // flow's existing exclude behavior.
+    it('does not offer an already-attached file when adding a conditioned sound effect', () => {
+      mount({ sfx: [{ fileId: 'door' }] }, actions(), [MOOD]);
+      fireEvent.click(screen.getByText('+ Add conditional sound effect…'));
+      fireEvent.change(screen.getByLabelText('Value'), { target: { value: 'angry' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Next: pick a file' }));
+      const picker = screen.getByLabelText(
+        'Sound effect to play when mood == "angry" on hall',
+      ) as HTMLSelectElement;
+      expect([...picker.options].map((o) => o.value)).not.toContain('door');
     });
   });
 });

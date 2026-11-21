@@ -275,7 +275,7 @@ export default function NodeAudioPanel({
     mix.play({
       voiceUrl: voiceoverDefault ? src(voiceoverDefault.fileId) : undefined,
       ambienceUrl: ambienceDefault ? src(ambienceDefault.fileId) : undefined,
-      sfx: sfx.map((id) => ({ url: src(id), offsetMs: offsets[id] })),
+      sfx: sfx.map((entry) => ({ url: src(entry.fileId), offsetMs: offsets[entry.fileId] })),
       voiceVolume: levels.voiceover / 100,
       ambienceVolume: levels.ambience / 100,
     });
@@ -419,18 +419,25 @@ export default function NodeAudioPanel({
               )}
             </li>
           ))}
-        {sfx.map((fileId, i) => {
-          const key = `sfx:${fileId}`;
+        {sfx.map((entry, i) => {
+          const fileId = entry.fileId;
+          // Index, not fileId — two sfx entries can reference the same
+          // file under different conditions (mirrors the single-slot
+          // variant rows above).
+          const key = `sfx:${i}`;
+          const sfxLabel = entry.condition
+            ? `SFX ${i + 1} — when ${describeCondition(entry.condition)}`
+            : `SFX ${i + 1}`;
           return (
             <li key={key} className="node-audio-row">
               <AuditionButton
                 id={key}
                 url={src(fileId)}
-                label={`SFX ${i + 1}`}
+                label={sfxLabel}
                 playingId={clip.playingId}
                 toggle={playClip}
               />
-              <span className="node-audio-label">SFX {i + 1}</span>
+              <span className="node-audio-label">{sfxLabel}</span>
               <span className="node-audio-file text-muted">{name(fileId)}</span>
               <span className="node-audio-actions">
                 {actions && (
@@ -448,12 +455,12 @@ export default function NodeAudioPanel({
                 )}
                 {rowActions(
                   key,
-                  `SFX ${i + 1}`,
+                  sfxLabel,
                   fileId,
                   () =>
                     void run(async () => {
                       await afterSaves(fileId, { requireSaved: false });
-                      await actions!.clear(nodeId, 'sfx', fileId);
+                      await actions!.clear(nodeId, 'sfx', fileId, entry.condition);
                     }),
                 )}
               </span>
@@ -461,7 +468,7 @@ export default function NodeAudioPanel({
                 <FilePicker
                   files={audioFiles}
                   category="sfx"
-                  exclude={sfx}
+                  exclude={sfx.map((s) => s.fileId)}
                   confirm="Use"
                   label={`Replacement for SFX ${i + 1} on ${nodeId}`}
                   busy={busy}
@@ -489,6 +496,7 @@ export default function NodeAudioPanel({
                 declaredVariables={declaredVariables}
                 audioFiles={audioFiles}
                 busy={busy}
+                exclude={sfx.map((s) => s.fileId)}
                 onSubmit={(condition, fileId) =>
                   void run(() => actions!.assign(nodeId, 'sfx', fileId, condition))
                 }
@@ -529,7 +537,7 @@ export default function NodeAudioPanel({
             <FilePicker
               files={audioFiles}
               category="sfx"
-              exclude={sfx}
+              exclude={sfx.map((s) => s.fileId)}
               confirm="Add"
               label={`Sound effect to add to ${nodeId}`}
               busy={busy}
@@ -596,6 +604,13 @@ function ConditionVariantBuilder({
   busy,
   onSubmit,
   onCancel,
+  // Single-value slots (voiceover/ambience/choice1/choice2) have at
+  // most one existing file per slot, so reusing it under a new
+  // condition is harmless — callers for those leave this empty. sfx
+  // passes every file already in use: its offset is stored keyed by
+  // file id alone, so two sfx rows sharing a file id (even under
+  // different conditions) would silently share one timing value.
+  exclude = [],
 }: {
   slotLabel: string;
   category: string;
@@ -605,6 +620,7 @@ function ConditionVariantBuilder({
   busy: boolean;
   onSubmit: (condition: SimpleCondition, fileId: string) => void;
   onCancel: () => void;
+  exclude?: string[];
 }) {
   const [variableName, setVariableName] = useState(declaredVariables[0]?.name ?? '');
   const variable = declaredVariables.find((v) => v.name === variableName);
@@ -645,7 +661,7 @@ function ConditionVariantBuilder({
         <FilePicker
           files={audioFiles}
           category={category}
-          exclude={[]}
+          exclude={exclude}
           confirm="Add"
           label={`${slotLabel} to play when ${describeCondition(condition)} on ${nodeId}`}
           busy={busy}

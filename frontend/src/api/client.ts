@@ -501,7 +501,7 @@ export interface AudioAssignments {
     ambience?: AudioAssignmentVariant[];
     choice1?: AudioAssignmentVariant[];
     choice2?: AudioAssignmentVariant[];
-    sfx: string[];
+    sfx: AudioAssignmentVariant[];
     /** When each sound effect plays, in ms, keyed by file id. Absent for
      * one that plays as the passage starts. */
     sfxOffsets?: Record<string, number>;

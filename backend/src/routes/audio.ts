@@ -815,7 +815,11 @@ export function createAudioRouter(pool: Pool): Router {
    *                       choice2: { type: string, format: uuid, nullable: true }
    *                       sfx:
    *                         type: array
-   *                         items: { type: string, format: uuid }
+   *                         items:
+   *                           type: object
+   *                           properties:
+   *                             fileId: { type: string, format: uuid }
+   *                             condition: { type: object, nullable: true }
    *                       sfxOffsets:
    *                         type: object
    *                         description: |
@@ -854,7 +858,7 @@ export function createAudioRouter(pool: Pool): Router {
           ambience?: AssignmentVariant[];
           choice1?: AssignmentVariant[];
           choice2?: AssignmentVariant[];
-          sfx: string[];
+          sfx: AssignmentVariant[];
           sfxOffsets?: Record<string, number>;
         }
       > = {};
@@ -865,7 +869,7 @@ export function createAudioRouter(pool: Pool): Router {
         const condition: SimpleCondition | undefined = row.condition ?? undefined;
         if (row.audio_type === 'sfx') {
           const node = assignments[row.node_id];
-          node.sfx.push(row.audio_file_id);
+          node.sfx.push({ fileId: row.audio_file_id, ...(condition ? { condition } : {}) });
           if (typeof row.offset_ms === 'number') {
             (node.sfxOffsets ??= {})[row.audio_file_id] = row.offset_ms;
           }

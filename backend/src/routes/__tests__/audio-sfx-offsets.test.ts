@@ -69,7 +69,7 @@ describe('GET /assignments', () => {
     const res = await request(app).get(`/api/projects/${PROJECT}/audio/assignments`);
     expect(res.status).toBe(200);
     expect(res.body.assignments.a).toEqual({
-      sfx: [FILE_A, FILE_B],
+      sfx: [{ fileId: FILE_A }, { fileId: FILE_B }],
       sfxOffsets: { [FILE_A]: 1200 },
       ambience: [{ fileId: FILE_B }],
     });
