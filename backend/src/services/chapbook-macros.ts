@@ -169,6 +169,13 @@ export function renderChapbookExpression(expr: Expression): string {
       const right = renderChapbookExpression(expr.right);
       return `(${left} ${expr.operator} ${right})`;
     }
+    case 'listFunction':
+      // Ink's LIST type (DEV-199 Phase 10) is scoped to Ink only —
+      // Chapbook has no equivalent, and nothing on this dialect's own
+      // parsing side ever produces this expression kind, so reaching
+      // here means a LIST-valued condition/assignment somehow made
+      // it into a Chapbook export, which has no correct rendering.
+      throw new Error(`Chapbook export does not support LIST expressions (${expr.name})`);
   }
 }
 

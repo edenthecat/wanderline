@@ -3,9 +3,11 @@ import {
   evaluate,
   execute,
   truthy,
+  isListValue,
   ExpressionEvaluationError,
   type Expression,
   type AssignmentStatement,
+  type ListValue,
 } from '@wanderline/shared';
 
 // Variable support (DEV-199), Phase 0: the pure evaluator both the
@@ -229,5 +231,261 @@ describe('execute — assignment statements', () => {
       value: { kind: 'binary', operator: '+', left: v('a'), right: v('b') },
     };
     expect(execute(stmt, { a: 2, b: 3, total: 0 })).toEqual({ a: 2, b: 3, total: 5 });
+  });
+});
+
+// DEV-199 Phase 10: Ink's LIST type. kettleState's declared order is
+// cold(0), boiling(1), recently_boiled(2) — every list() fixture
+// below reuses that origin/ordering so comparison/ordering tests
+// read against one consistent declaration, matching a real `LIST
+// kettleState = cold, (boiling), recently_boiled`.
+const KETTLE_ALL = [
+  { name: 'cold', ordinal: 0 },
+  { name: 'boiling', ordinal: 1 },
+  { name: 'recently_boiled', ordinal: 2 },
+];
+
+function list(...names: string[]): Expression {
+  const items = KETTLE_ALL.filter((i) => names.includes(i.name));
+  const value: ListValue = { kind: 'list', origin: 'kettleState', items, allItems: KETTLE_ALL };
+  return { kind: 'literal', value };
+}
+
+function listVal(...names: string[]): ListValue {
+  return evaluate(list(...names), {}) as ListValue;
+}
+
+describe('evaluate — LIST truthiness', () => {
+  it('is truthy iff non-empty', () => {
+    expect(truthy(listVal('cold'))).toBe(true);
+    expect(truthy(listVal())).toBe(false);
+  });
+});
+
+describe('evaluate — LIST set operators (+/-)', () => {
+  it('+= style union adds a member without duplicating an existing one', () => {
+    const result = evaluate(
+      { kind: 'binary', operator: '+', left: list('cold'), right: list('boiling') },
+      {},
+    ) as ListValue;
+    expect(result.items.map((i) => i.name).sort()).toEqual(['boiling', 'cold']);
+
+    const noDupe = evaluate(
+      { kind: 'binary', operator: '+', left: list('cold'), right: list('cold') },
+      {},
+    ) as ListValue;
+    expect(noDupe.items).toHaveLength(1);
+  });
+
+  it('-= style difference removes a member, no-op if absent', () => {
+    const result = evaluate(
+      { kind: 'binary', operator: '-', left: list('cold', 'boiling'), right: list('cold') },
+      {},
+    ) as ListValue;
+    expect(result.items.map((i) => i.name)).toEqual(['boiling']);
+
+    const noop = evaluate(
+      { kind: 'binary', operator: '-', left: list('cold'), right: list('boiling') },
+      {},
+    ) as ListValue;
+    expect(noop.items.map((i) => i.name)).toEqual(['cold']);
+  });
+
+  it('* / % never apply to LIST values', () => {
+    for (const operator of ['*', '/', '%'] as const) {
+      expect(() =>
+        evaluate({ kind: 'binary', operator, left: list('cold'), right: list('cold') }, {}),
+      ).toThrow(ExpressionEvaluationError);
+    }
+  });
+});
+
+describe('evaluate — LIST equality', () => {
+  it('== is exact-set equality, independent of how each side was built', () => {
+    expect(
+      evaluate(
+        {
+          kind: 'binary',
+          operator: '==',
+          left: list('cold', 'boiling'),
+          right: list('boiling', 'cold'),
+        },
+        {},
+      ),
+    ).toBe(true);
+    expect(
+      evaluate({ kind: 'binary', operator: '==', left: list('cold'), right: list('boiling') }, {}),
+    ).toBe(false);
+    expect(
+      evaluate({ kind: 'binary', operator: '!=', left: list('cold'), right: list('boiling') }, {}),
+    ).toBe(true);
+  });
+});
+
+describe('evaluate — LIST membership (has/hasnt)', () => {
+  it('has is true iff every item on the right is present on the left', () => {
+    expect(
+      evaluate(
+        { kind: 'binary', operator: 'has', left: list('cold', 'boiling'), right: list('cold') },
+        {},
+      ),
+    ).toBe(true);
+    expect(
+      evaluate(
+        { kind: 'binary', operator: 'has', left: list('cold'), right: list('cold', 'boiling') },
+        {},
+      ),
+    ).toBe(false);
+  });
+
+  it('hasnt is the negation of has', () => {
+    expect(
+      evaluate(
+        { kind: 'binary', operator: 'hasnt', left: list('cold'), right: list('boiling') },
+        {},
+      ),
+    ).toBe(true);
+  });
+});
+
+describe('evaluate — LIST positional comparison', () => {
+  // Ink's own semantics: a < b iff a's MAXIMUM ordinal is below b's
+  // MINIMUM — "every item in a precedes every item in b" — not a
+  // length or lexicographic comparison.
+  it('< / <= / > / >= compare by declared order, not set size', () => {
+    expect(
+      evaluate({ kind: 'binary', operator: '<', left: list('cold'), right: list('boiling') }, {}),
+    ).toBe(true);
+    expect(
+      evaluate(
+        {
+          kind: 'binary',
+          operator: '<',
+          left: list('cold', 'boiling'),
+          right: list('recently_boiled'),
+        },
+        {},
+      ),
+    ).toBe(true);
+    expect(
+      evaluate(
+        { kind: 'binary', operator: '>', left: list('recently_boiled'), right: list('cold') },
+        {},
+      ),
+    ).toBe(true);
+    expect(
+      evaluate(
+        { kind: 'binary', operator: '<=', left: list('boiling'), right: list('boiling') },
+        {},
+      ),
+    ).toBe(true);
+    expect(
+      evaluate(
+        { kind: 'binary', operator: '<', left: list('boiling'), right: list('boiling') },
+        {},
+      ),
+    ).toBe(false);
+  });
+
+  it('never compares true against an empty list on either side', () => {
+    for (const operator of ['<', '<=', '>', '>='] as const) {
+      expect(evaluate({ kind: 'binary', operator, left: list(), right: list('cold') }, {})).toBe(
+        false,
+      );
+      expect(evaluate({ kind: 'binary', operator, left: list('cold'), right: list() }, {})).toBe(
+        false,
+      );
+    }
+  });
+});
+
+describe('evaluate — LIST query functions', () => {
+  it('LIST_COUNT returns the number of active items', () => {
+    expect(
+      evaluate({ kind: 'listFunction', name: 'LIST_COUNT', args: [list('cold', 'boiling')] }, {}),
+    ).toBe(2);
+    expect(evaluate({ kind: 'listFunction', name: 'LIST_COUNT', args: [list()] }, {})).toBe(0);
+  });
+
+  it('LIST_VALUE returns the lowest active item’s ordinal', () => {
+    expect(
+      evaluate({ kind: 'listFunction', name: 'LIST_VALUE', args: [list('boiling')] }, {}),
+    ).toBe(1);
+  });
+
+  it('LIST_MIN/LIST_MAX return single-item LISTs, empty if the source is empty', () => {
+    const min = evaluate(
+      { kind: 'listFunction', name: 'LIST_MIN', args: [list('boiling', 'recently_boiled')] },
+      {},
+    ) as ListValue;
+    expect(min.items.map((i) => i.name)).toEqual(['boiling']);
+
+    const max = evaluate(
+      { kind: 'listFunction', name: 'LIST_MAX', args: [list('boiling', 'recently_boiled')] },
+      {},
+    ) as ListValue;
+    expect(max.items.map((i) => i.name)).toEqual(['recently_boiled']);
+
+    const emptyMin = evaluate(
+      { kind: 'listFunction', name: 'LIST_MIN', args: [list()] },
+      {},
+    ) as ListValue;
+    expect(emptyMin.items).toEqual([]);
+  });
+
+  it('LIST_ALL returns every declared member, active or not', () => {
+    const all = evaluate(
+      { kind: 'listFunction', name: 'LIST_ALL', args: [list('cold')] },
+      {},
+    ) as ListValue;
+    expect(all.items.map((i) => i.name).sort()).toEqual(['boiling', 'cold', 'recently_boiled']);
+  });
+
+  it('LIST_INVERT returns every declared member NOT currently active', () => {
+    const inverted = evaluate(
+      { kind: 'listFunction', name: 'LIST_INVERT', args: [list('cold')] },
+      {},
+    ) as ListValue;
+    expect(inverted.items.map((i) => i.name).sort()).toEqual(['boiling', 'recently_boiled']);
+  });
+
+  it('LIST_RANGE returns every declared member within the ordinal bounds, by number or single-item list', () => {
+    const byNumber = evaluate(
+      {
+        kind: 'listFunction',
+        name: 'LIST_RANGE',
+        args: [list('cold'), { kind: 'literal', value: 1 }, { kind: 'literal', value: 2 }],
+      },
+      {},
+    ) as ListValue;
+    expect(byNumber.items.map((i) => i.name).sort()).toEqual(['boiling', 'recently_boiled']);
+
+    const byListBound = evaluate(
+      {
+        kind: 'listFunction',
+        name: 'LIST_RANGE',
+        args: [list('cold'), list('boiling'), list('boiling')],
+      },
+      {},
+    ) as ListValue;
+    expect(byListBound.items.map((i) => i.name)).toEqual(['boiling']);
+  });
+
+  it('every LIST_* function rejects a non-LIST argument', () => {
+    expect(() =>
+      evaluate(
+        { kind: 'listFunction', name: 'LIST_COUNT', args: [{ kind: 'literal', value: 5 }] },
+        {},
+      ),
+    ).toThrow(ExpressionEvaluationError);
+  });
+});
+
+describe('isListValue', () => {
+  it('distinguishes a ListValue from every other VariableValue', () => {
+    expect(isListValue(listVal('cold'))).toBe(true);
+    expect(isListValue(5)).toBe(false);
+    expect(isListValue('cold')).toBe(false);
+    expect(isListValue(true)).toBe(false);
   });
 });

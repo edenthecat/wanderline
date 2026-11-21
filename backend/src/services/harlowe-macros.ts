@@ -247,6 +247,13 @@ export function renderHarloweExpression(expr: Expression): string {
       const right = renderHarloweExpression(expr.right);
       return `(${left}) ${expr.operator === '&&' ? 'and' : 'or'} (${right})`;
     }
+    case 'listFunction':
+      // Ink's LIST type (DEV-199 Phase 10) is scoped to Ink only —
+      // Harlowe has no equivalent, and nothing on this dialect's own
+      // parsing side ever produces this expression kind, so reaching
+      // here means a LIST-valued condition/assignment somehow made
+      // it into a Harlowe export, which has no correct rendering.
+      throw new Error(`Harlowe export does not support LIST expressions (${expr.name})`);
   }
 }
 

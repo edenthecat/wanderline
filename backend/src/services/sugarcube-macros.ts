@@ -182,6 +182,14 @@ export function renderSugarCubeExpression(expr: Expression): string {
       const right = renderSugarCubeExpression(expr.right);
       return `(${left} ${expr.operator} ${right})`;
     }
+    case 'listFunction':
+      // Ink's LIST type (DEV-199 Phase 10) is scoped to Ink only —
+      // SugarCube has no equivalent, and nothing on this dialect's
+      // own parsing side ever produces this expression kind, so
+      // reaching here means a LIST-valued condition/assignment
+      // somehow made it into a SugarCube export, which has no
+      // correct rendering.
+      throw new Error(`SugarCube export does not support LIST expressions (${expr.name})`);
   }
 }
 

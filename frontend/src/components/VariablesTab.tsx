@@ -35,6 +35,8 @@ function expressionReferencesVariable(expr: Expression, name: string): boolean {
         expressionReferencesVariable(expr.left, name) ||
         expressionReferencesVariable(expr.right, name)
       );
+    case 'listFunction':
+      return expr.args.some((arg) => expressionReferencesVariable(arg, name));
   }
 }
 

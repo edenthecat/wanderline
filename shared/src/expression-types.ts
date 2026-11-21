@@ -12,22 +12,86 @@
  * header for why.
  */
 
-export type VariableValue = number | string | boolean;
+/**
+ * One active member of a LIST value (Ink's `LIST` type — DEV-199
+ * Phase 10). `ordinal` is the member's position in its LIST
+ * declaration's member order — carried on the item itself, not
+ * looked up separately, so the evaluator stays pure (no access to
+ * variable declarations needed to compare or order list values).
+ */
+export interface ListItem {
+  name: string;
+  ordinal: number;
+}
 
-export type VariableType = 'number' | 'string' | 'bool';
+/**
+ * A LIST variable's value is a SUBSET of one LIST declaration's
+ * members (Ink supports mixing multiple origins in one list value;
+ * single-origin covers the overwhelming majority of real usage and
+ * is what's implemented here). `origin` is the declaring LIST's
+ * name, used only for round-tripping/display — set operations
+ * (union/difference/comparison) work on `items` directly.
+ */
+export interface ListValue {
+  kind: 'list';
+  origin: string;
+  /** Currently active members. */
+  items: ListItem[];
+  /**
+   * Every member the origin LIST declares, active or not — needed
+   * by the LIST_ALL/LIST_INVERT/LIST_RANGE query functions, which
+   * must know the full declared set rather than just what's
+   * currently active. Carried on every ListValue sharing this
+   * origin (redundant, but keeps the evaluator pure — no access to
+   * variable declarations needed to answer "what's possible").
+   */
+  allItems: ListItem[];
+}
 
-export type BinaryOperator = '+' | '-' | '*' | '/' | '%' | '==' | '!=' | '<' | '<=' | '>' | '>=';
+export type VariableValue = number | string | boolean | ListValue;
+
+export type VariableType = 'number' | 'string' | 'bool' | 'list';
+
+export type BinaryOperator =
+  | '+'
+  | '-'
+  | '*'
+  | '/'
+  | '%'
+  | '=='
+  | '!='
+  | '<'
+  | '<='
+  | '>'
+  | '>='
+  /** LIST membership test — Ink's `?`/`has`. */
+  | 'has'
+  /** LIST non-membership test — Ink's `!?`/`hasnt`. */
+  | 'hasnt';
 
 export type LogicalOperator = '&&' | '||';
 
 export type UnaryOperator = '-' | '!';
+
+/**
+ * A call to one of Ink's built-in LIST query functions (LIST_COUNT,
+ * LIST_MIN, LIST_MAX, LIST_ALL, LIST_RANGE, LIST_VALUE, LIST_INVERT
+ * — DEV-199 Phase 10). Deliberately narrower than a general function
+ * call: user-defined function knots are a separate, larger feature
+ * with no interpreter scaffolding yet (would need a call stack and
+ * mid-evaluation knot walk); this variant only ever resolves against
+ * the fixed set of builtins `evaluate` itself implements.
+ */
+export type ListFunctionName =
+  'LIST_COUNT' | 'LIST_MIN' | 'LIST_MAX' | 'LIST_ALL' | 'LIST_RANGE' | 'LIST_VALUE' | 'LIST_INVERT';
 
 export type Expression =
   | { kind: 'literal'; value: VariableValue }
   | { kind: 'variable'; name: string }
   | { kind: 'unary'; operator: UnaryOperator; operand: Expression }
   | { kind: 'binary'; operator: BinaryOperator; left: Expression; right: Expression }
-  | { kind: 'logical'; operator: LogicalOperator; left: Expression; right: Expression };
+  | { kind: 'logical'; operator: LogicalOperator; left: Expression; right: Expression }
+  | { kind: 'listFunction'; name: ListFunctionName; args: Expression[] };
 
 /**
  * `=` is a plain assignment; the compound forms are sugar for
@@ -51,6 +115,14 @@ export interface VariableDeclaration {
   type: VariableType;
   initialValue: Expression;
   isConst: boolean;
+  /**
+   * Only present when `type === 'list'`. Every member this LIST
+   * declares, in declaration order — the ORDER determines each
+   * member's ordinal (see {@link ListItem}), so it has to be kept
+   * here rather than derived from `initialValue`, which only holds
+   * the subset that starts active, not the full declared set.
+   */
+  listMembers?: string[];
 }
 
 /**

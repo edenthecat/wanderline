@@ -7,6 +7,7 @@ import {
   ExpressionParseError,
   evaluate,
   type Expression,
+  type ExpressionParseContext,
 } from '@wanderline/shared';
 
 // Variable support (DEV-199), Phase 0: parser/printer for the
@@ -191,4 +192,157 @@ describe('round-trip: parse -> print -> re-parse', () => {
     const printed = printStatement(ast);
     expect(parseStatement(printed)).toEqual(ast);
   });
+});
+
+// DEV-199 Phase 10: Ink's LIST type and the fixed LIST_* query
+// functions. `cold`/`boiling`/`recently_boiled` is kettleState's
+// declared member order throughout — ordinals below always match
+// that declaration, as a real LIST kettleState = cold, (boiling),
+// recently_boiled would produce.
+const KETTLE_ALL = [
+  { name: 'cold', ordinal: 0 },
+  { name: 'boiling', ordinal: 1 },
+  { name: 'recently_boiled', ordinal: 2 },
+];
+const KETTLE_CONTEXT: ExpressionParseContext = {
+  listMembers: Object.fromEntries(
+    KETTLE_ALL.map((item) => [item.name, { origin: 'kettleState', ordinal: item.ordinal }]),
+  ),
+  listDefinitions: { kettleState: KETTLE_ALL },
+};
+
+function roundTripList(source: string): void {
+  const ast = parseExpression(source, KETTLE_CONTEXT);
+  const printed = printExpression(ast);
+  const reparsed = parseExpression(printed, KETTLE_CONTEXT);
+  expect(reparsed).toEqual(ast);
+}
+
+describe('parseExpression — LIST literals', () => {
+  it('a bare member name is a single-item LIST literal, not a variable', () => {
+    expect(parseExpression('cold', KETTLE_CONTEXT)).toEqual({
+      kind: 'literal',
+      value: {
+        kind: 'list',
+        origin: 'kettleState',
+        items: [{ name: 'cold', ordinal: 0 }],
+        allItems: KETTLE_ALL,
+      },
+    });
+  });
+
+  it('an identifier NOT in context stays a plain variable reference', () => {
+    expect(parseExpression('cold')).toEqual({ kind: 'variable', name: 'cold' });
+    expect(parseExpression('gold', KETTLE_CONTEXT)).toEqual({ kind: 'variable', name: 'gold' });
+  });
+
+  it('a parenthesized comma list of members is a multi-item LIST literal', () => {
+    expect(parseExpression('(cold, boiling)', KETTLE_CONTEXT)).toEqual({
+      kind: 'literal',
+      value: {
+        kind: 'list',
+        origin: 'kettleState',
+        items: [
+          { name: 'cold', ordinal: 0 },
+          { name: 'boiling', ordinal: 1 },
+        ],
+        allItems: KETTLE_ALL,
+      },
+    });
+  });
+
+  it('() is an empty LIST literal', () => {
+    expect(parseExpression('()', KETTLE_CONTEXT)).toEqual({
+      kind: 'literal',
+      value: { kind: 'list', origin: '', items: [], allItems: [] },
+    });
+  });
+
+  it('a plain parenthesized sub-expression still parses as grouping, not a list', () => {
+    expect(parseExpression('(5)', KETTLE_CONTEXT)).toEqual({ kind: 'literal', value: 5 });
+    expect(parseExpression('(gold + 1)', KETTLE_CONTEXT)).toEqual({
+      kind: 'binary',
+      operator: '+',
+      left: { kind: 'variable', name: 'gold' },
+      right: { kind: 'literal', value: 1 },
+    });
+  });
+
+  it.each(['cold', '(cold, boiling)', '()'])('round-trips %s', (source) => {
+    roundTripList(source);
+  });
+});
+
+describe('parseExpression — LIST operators', () => {
+  it('+= and -= style union/difference', () => {
+    expect(parseExpression('kettleState + cold', KETTLE_CONTEXT)).toMatchObject({
+      kind: 'binary',
+      operator: '+',
+    });
+    roundTripList('kettleState - cold');
+  });
+
+  it('? and has both canonicalize to the "has" operator', () => {
+    const viaSymbol = parseExpression('kettleState ? cold', KETTLE_CONTEXT);
+    const viaWord = parseExpression('kettleState has cold', KETTLE_CONTEXT);
+    expect(viaSymbol).toEqual(viaWord);
+    expect(viaSymbol).toMatchObject({ kind: 'binary', operator: 'has' });
+  });
+
+  it('!? and hasnt both canonicalize to the "hasnt" operator', () => {
+    const viaSymbol = parseExpression('kettleState !? cold', KETTLE_CONTEXT);
+    const viaWord = parseExpression('kettleState hasnt cold', KETTLE_CONTEXT);
+    expect(viaSymbol).toEqual(viaWord);
+    expect(viaSymbol).toMatchObject({ kind: 'binary', operator: 'hasnt' });
+  });
+
+  it('positional comparison operators parse at the same tier as ==', () => {
+    expect(parseExpression('kettleState < boiling', KETTLE_CONTEXT)).toMatchObject({
+      kind: 'binary',
+      operator: '<',
+    });
+  });
+
+  it.each(['kettleState ? cold', 'kettleState has cold', 'kettleState hasnt boiling'])(
+    'round-trips %s to its canonical word form',
+    (source) => {
+      const ast = parseExpression(source, KETTLE_CONTEXT);
+      const printed = printExpression(ast);
+      expect(parseExpression(printed, KETTLE_CONTEXT)).toEqual(ast);
+    },
+  );
+});
+
+describe('parseExpression — LIST_* query functions', () => {
+  it('parses a recognized LIST_* call with its arguments', () => {
+    expect(parseExpression('LIST_COUNT(kettleState)', KETTLE_CONTEXT)).toEqual({
+      kind: 'listFunction',
+      name: 'LIST_COUNT',
+      args: [{ kind: 'variable', name: 'kettleState' }],
+    });
+  });
+
+  it('parses a multi-argument call (LIST_RANGE)', () => {
+    const ast = parseExpression('LIST_RANGE(kettleState, 1, 2)', KETTLE_CONTEXT);
+    expect(ast).toEqual({
+      kind: 'listFunction',
+      name: 'LIST_RANGE',
+      args: [
+        { kind: 'variable', name: 'kettleState' },
+        { kind: 'literal', value: 1 },
+        { kind: 'literal', value: 2 },
+      ],
+    });
+  });
+
+  it('rejects a call to an unrecognized function name', () => {
+    expect(() => parseExpression('myCustomFunc(1)')).toThrow(ExpressionParseError);
+  });
+
+  it.each(['LIST_COUNT(kettleState)', 'LIST_RANGE(kettleState, 1, 2)'])(
+    'round-trips %s',
+    (source) => {
+      roundTripList(source);
+    },
+  );
 });

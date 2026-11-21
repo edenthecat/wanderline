@@ -9,7 +9,7 @@ import { randomUUID } from 'crypto';
 import { captureSnapshot } from './projects-snapshots.js';
 import { invalidateRoom } from '../services/collab-server.js';
 import { audioTypeForChoice } from '../services/choice-audio.js';
-import { parseExpression, ExpressionParseError, evaluate } from '@wanderline/shared';
+import { parseExpression, ExpressionParseError, evaluate, isListValue } from '@wanderline/shared';
 import { isTextBlock, type VariableDeclaration, type VariableType } from '../types.js';
 
 function errorMessage(err: unknown): string {
@@ -1610,6 +1610,18 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
         } catch (err) {
           res.status(400).json({
             error: `Variable "${name}": could not determine a value — ${errorMessage(err)}`,
+          });
+          return;
+        }
+
+        // LIST declarations (DEV-199 Phase 10) need their own member
+        // universe declared alongside them, not just an initial-value
+        // expression — this generic scalar-variable route has no way
+        // to collect that, so it's authored via Ink source import
+        // instead, not here.
+        if (isListValue(value)) {
+          res.status(400).json({
+            error: `Variable "${name}": LIST variables aren't supported here yet — declare them in the Ink source instead.`,
           });
           return;
         }

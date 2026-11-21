@@ -9,12 +9,20 @@
  * `[if]`) is translated INTO this surface by each dialect's own parser
  * before it ever reaches here — this module has no dialect awareness.
  *
- * Deliberately NOT supported yet (not needed until Phase 10): Ink's
- * `LIST` values, function calls, and the `MOD`/`and`/`or`/`not`
- * word-form operators (Ink accepts both symbol and word forms for
- * logical operators; only the symbol forms `&&`/`||`/`!` are
- * recognized here — a dialect or Ink-source normalization step can
- * translate word-forms to symbol-forms before calling this parser).
+ * LIST literals/operators (DEV-199 Phase 10) need a bare identifier
+ * like `cold` to resolve as a list member reference rather than a
+ * plain variable — something the TEXT alone can't disambiguate, so
+ * `parseExpression`/`parseStatement` take an optional `context`
+ * naming the known list members. Every existing caller that omits it
+ * keeps treating every identifier as a plain variable, unchanged.
+ *
+ * Deliberately NOT supported yet (not needed until function-knots
+ * land): user-defined function calls (only the fixed LIST_* builtins
+ * parse as calls), and the `MOD`/`and`/`or`/`not` word-form operators
+ * (Ink accepts both symbol and word forms for logical operators;
+ * only the symbol forms `&&`/`||`/`!` are recognized here — a dialect
+ * or Ink-source normalization step can translate word-forms to
+ * symbol-forms before calling this parser).
  */
 
 import type {
@@ -22,6 +30,8 @@ import type {
   AssignmentStatement,
   BinaryOperator,
   Expression,
+  ListFunctionName,
+  ListItem,
   LogicalOperator,
   Statement,
   VariableValue,
@@ -29,17 +39,46 @@ import type {
 
 export class ExpressionParseError extends Error {}
 
+/** Every LIST_* builtin query function's name — a bare function-call
+ * name that isn't one of these is a parse error, since user-defined
+ * function calls don't parse yet (no function-knot interpreter
+ * exists to run them against). */
+const LIST_FUNCTION_NAMES: ReadonlySet<string> = new Set([
+  'LIST_COUNT',
+  'LIST_MIN',
+  'LIST_MAX',
+  'LIST_ALL',
+  'LIST_RANGE',
+  'LIST_VALUE',
+  'LIST_INVERT',
+]);
+
+/** Where a bare identifier should resolve as a LIST member reference
+ * instead of a plain variable — absent identifiers are always plain
+ * variables, so omitting `context` entirely preserves every existing
+ * non-LIST caller's behavior unchanged. */
+export interface ExpressionParseContext {
+  /** identifier -> which LIST declares it, and its ordinal position
+   * in that declaration's member order. */
+  listMembers?: Record<string, { origin: string; ordinal: number }>;
+  /** origin LIST name -> every member it declares, in declaration
+   * order — becomes a literal's `allItems` (see ListValue) without a
+   * second lookup structure at evaluation time. */
+  listDefinitions?: Record<string, ListItem[]>;
+}
+
 // === Tokenizer ===
 
-type TokenType = 'number' | 'string' | 'identifier' | 'operator' | 'lparen' | 'rparen' | 'eof';
+type TokenType =
+  'number' | 'string' | 'identifier' | 'operator' | 'lparen' | 'rparen' | 'comma' | 'eof';
 
 interface Token {
   type: TokenType;
   value: string;
 }
 
-const MULTI_CHAR_OPERATORS = ['&&', '||', '==', '!=', '<=', '>=', '+=', '-=', '*=', '/='];
-const SINGLE_CHAR_OPERATORS = ['+', '-', '*', '/', '%', '<', '>', '=', '!'];
+const MULTI_CHAR_OPERATORS = ['&&', '||', '==', '!=', '<=', '>=', '+=', '-=', '*=', '/=', '!?'];
+const SINGLE_CHAR_OPERATORS = ['+', '-', '*', '/', '%', '<', '>', '=', '!', '?'];
 
 function tokenize(source: string): Token[] {
   const tokens: Token[] = [];
@@ -57,6 +96,11 @@ function tokenize(source: string): Token[] {
     }
     if (ch === ')') {
       tokens.push({ type: 'rparen', value: ')' });
+      i++;
+      continue;
+    }
+    if (ch === ',') {
+      tokens.push({ type: 'comma', value: ',' });
       i++;
       continue;
     }
@@ -120,10 +164,17 @@ function tokenize(source: string): Token[] {
 
 class Parser {
   private pos = 0;
-  constructor(private readonly tokens: Token[]) {}
+  constructor(
+    private readonly tokens: Token[],
+    private readonly context: ExpressionParseContext = {},
+  ) {}
 
   private peek(): Token {
     return this.tokens[this.pos];
+  }
+
+  private peekAt(offset: number): Token {
+    return this.tokens[this.pos + offset] ?? this.tokens[this.tokens.length - 1];
   }
 
   private advance(): Token {
@@ -198,15 +249,41 @@ class Parser {
     return left;
   }
 
+  /** `?`/`has` and `!?`/`hasnt` — Ink's LIST membership tests — both
+   * canonicalize to one AST operator ('has'/'hasnt') regardless of
+   * which spelling the author used, so the printer doesn't need to
+   * remember which one was typed. `has`/`hasnt` are WORD forms (the
+   * tokenizer sees them as plain identifiers, not operators), so
+   * this checks the identifier's text rather than a token type. */
+  private matchListMembershipOperator(): 'has' | 'hasnt' | null {
+    const token = this.peek();
+    if (token.type === 'operator' && token.value === '?') return 'has';
+    if (token.type === 'operator' && token.value === '!?') return 'hasnt';
+    if (token.type === 'identifier' && token.value === 'has') return 'has';
+    if (token.type === 'identifier' && token.value === 'hasnt') return 'hasnt';
+    return null;
+  }
+
   private parseEquality(): Expression {
     let left = this.parseRelational();
-    while (
-      this.peek().type === 'operator' &&
-      (this.peek().value === '==' || this.peek().value === '!=')
-    ) {
-      const operator = this.advance().value as BinaryOperator;
-      const right = this.parseRelational();
-      left = { kind: 'binary', operator, left, right };
+    for (;;) {
+      if (
+        this.peek().type === 'operator' &&
+        (this.peek().value === '==' || this.peek().value === '!=')
+      ) {
+        const operator = this.advance().value as BinaryOperator;
+        const right = this.parseRelational();
+        left = { kind: 'binary', operator, left, right };
+        continue;
+      }
+      const membershipOp = this.matchListMembershipOperator();
+      if (membershipOp) {
+        this.advance();
+        const right = this.parseRelational();
+        left = { kind: 'binary', operator: membershipOp, left, right };
+        continue;
+      }
+      break;
     }
     return left;
   }
@@ -256,6 +333,30 @@ class Parser {
     return this.parsePrimary();
   }
 
+  /** A single bare identifier's list-member info, from `context`, or
+   * null when it isn't one (and should be parsed as a plain
+   * variable instead). */
+  private listMemberInfo(name: string): { origin: string; ordinal: number } | null {
+    return this.context.listMembers?.[name] ?? null;
+  }
+
+  private listMemberLiteral(name: string): Expression {
+    const info = this.listMemberInfo(name);
+    if (!info) throw new ExpressionParseError(`'${name}' is not a known LIST member`);
+    const allItems = this.context.listDefinitions?.[info.origin] ?? [
+      { name, ordinal: info.ordinal },
+    ];
+    return {
+      kind: 'literal',
+      value: {
+        kind: 'list',
+        origin: info.origin,
+        items: [{ name, ordinal: info.ordinal }],
+        allItems,
+      },
+    };
+  }
+
   private parsePrimary(): Expression {
     const token = this.peek();
     if (token.type === 'number') {
@@ -271,25 +372,106 @@ class Parser {
         this.advance();
         return { kind: 'literal', value: token.value === 'true' };
       }
+      // Function call: a bare name immediately followed by '(' — only
+      // the fixed LIST_* builtins are recognized (no user-defined
+      // function-knot interpreter exists yet to run anything else).
+      if (this.peekAt(1).type === 'lparen') {
+        return this.parseFunctionCall();
+      }
       this.advance();
+      if (this.listMemberInfo(token.value)) {
+        return this.listMemberLiteral(token.value);
+      }
       return { kind: 'variable', name: token.value };
     }
     if (token.type === 'lparen') {
-      this.advance();
-      const expr = this.parseLogicalOr();
-      this.expect('rparen', "to close '('");
-      return expr;
+      return this.parseParenthesized();
     }
     throw new ExpressionParseError(`Unexpected token '${token.value || '<eof>'}'`);
   }
+
+  private parseFunctionCall(): Expression {
+    const name = this.advance().value;
+    if (!LIST_FUNCTION_NAMES.has(name)) {
+      throw new ExpressionParseError(
+        `'${name}' is not a recognized function (only LIST_COUNT, LIST_MIN, LIST_MAX, LIST_ALL, LIST_RANGE, LIST_VALUE, LIST_INVERT are supported)`,
+      );
+    }
+    this.expect('lparen', `after function name '${name}'`);
+    const args: Expression[] = [];
+    if (this.peek().type !== 'rparen') {
+      args.push(this.parseLogicalOr());
+      while (this.peek().type === 'comma') {
+        this.advance();
+        args.push(this.parseLogicalOr());
+      }
+    }
+    this.expect('rparen', `to close call to '${name}'`);
+    return { kind: 'listFunction', name: name as ListFunctionName, args };
+  }
+
+  /**
+   * `(`, after ruling out a function call, is one of three things:
+   * an empty LIST literal `()`, a multi-member LIST literal
+   * `(member1, member2)`, or a plain parenthesized sub-expression.
+   * Disambiguated by looking at what's immediately inside: nothing
+   * (empty list), or a bare identifier that's a known list member
+   * AND is followed by a comma or the closing paren (unambiguously a
+   * list literal — a normal sub-expression starting with a list
+   * member would still need to continue with an operator, not a
+   * comma/close-paren, to mean anything else).
+   */
+  private parseParenthesized(): Expression {
+    this.advance(); // '('
+    if (this.peek().type === 'rparen') {
+      this.advance();
+      return { kind: 'literal', value: { kind: 'list', origin: '', items: [], allItems: [] } };
+    }
+    const first = this.peek();
+    const looksLikeListLiteral =
+      first.type === 'identifier' &&
+      this.listMemberInfo(first.value) !== null &&
+      (this.peekAt(1).type === 'comma' || this.peekAt(1).type === 'rparen');
+    if (looksLikeListLiteral) {
+      const items: { name: string; info: { origin: string; ordinal: number } }[] = [];
+      for (;;) {
+        const nameToken = this.expect('identifier', 'as a LIST member in a list literal');
+        const info = this.listMemberInfo(nameToken.value);
+        if (!info) {
+          throw new ExpressionParseError(`'${nameToken.value}' is not a known LIST member`);
+        }
+        items.push({ name: nameToken.value, info });
+        if (this.peek().type === 'comma') {
+          this.advance();
+          continue;
+        }
+        break;
+      }
+      this.expect('rparen', "to close list literal '('");
+      const origin = items[0].info.origin;
+      const allItems = this.context.listDefinitions?.[origin] ?? [];
+      return {
+        kind: 'literal',
+        value: {
+          kind: 'list',
+          origin,
+          items: items.map((i) => ({ name: i.name, ordinal: i.info.ordinal })),
+          allItems,
+        },
+      };
+    }
+    const expr = this.parseLogicalOr();
+    this.expect('rparen', "to close '('");
+    return expr;
+  }
 }
 
-export function parseExpression(source: string): Expression {
-  return new Parser(tokenize(source)).parseExpression();
+export function parseExpression(source: string, context?: ExpressionParseContext): Expression {
+  return new Parser(tokenize(source), context).parseExpression();
 }
 
-export function parseStatement(source: string): Statement {
-  return new Parser(tokenize(source)).parseStatement();
+export function parseStatement(source: string, context?: ExpressionParseContext): Statement {
+  return new Parser(tokenize(source), context).parseStatement();
 }
 
 // === Printer ===
@@ -303,6 +485,8 @@ export function parseStatement(source: string): Statement {
 const BINARY_PRECEDENCE: Record<BinaryOperator, number> = {
   '==': 3,
   '!=': 3,
+  has: 3,
+  hasnt: 3,
   '<': 4,
   '<=': 4,
   '>': 4,
@@ -322,15 +506,24 @@ const LOGICAL_PRECEDENCE: Record<LogicalOperator, number> = {
 function precedenceOf(expr: Expression): number {
   if (expr.kind === 'binary') return BINARY_PRECEDENCE[expr.operator];
   if (expr.kind === 'logical') return LOGICAL_PRECEDENCE[expr.operator];
-  // literal / variable / unary never need wrapping based on their own
-  // precedence — unary binds tighter than every binary/logical
-  // operator, and literal/variable are atomic.
+  // literal / variable / unary / listFunction never need wrapping
+  // based on their own precedence — unary binds tighter than every
+  // binary/logical operator, and the rest are atomic (a call's own
+  // parens already delimit it).
   return Infinity;
 }
 
 function printValue(value: VariableValue): string {
   if (typeof value === 'string') return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-  return String(value);
+  if (typeof value !== 'object') return String(value);
+  // ListValue: () for empty, a bare name for a single member, a
+  // parenthesized comma list for several — same forms the parser
+  // accepts back, in declaration order (not insertion order) so a
+  // round-trip is stable regardless of how the items were combined.
+  if (value.items.length === 0) return '()';
+  const sorted = [...value.items].sort((a, b) => a.ordinal - b.ordinal);
+  const names = sorted.map((item) => item.name);
+  return names.length === 1 ? names[0] : `(${names.join(', ')})`;
 }
 
 /**
@@ -382,6 +575,8 @@ export function printExpression(expr: Expression): string {
       const right = printChild(expr.right, precedence, true);
       return `${left} ${expr.operator} ${right}`;
     }
+    case 'listFunction':
+      return `${expr.name}(${expr.args.map((arg) => printExpression(arg)).join(', ')})`;
   }
 }
 
