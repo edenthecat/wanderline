@@ -1331,5 +1331,25 @@ No association with any real narrative.
         ),
       ).toBe(true);
     });
+
+    it('warns and skips a LIST whose own name is also one of its own members', () => {
+      const source = '== start ==\nLIST a = a, b\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.variables).toBeUndefined();
+      expect(
+        result.validation.warnings.some((w) =>
+          w.message.includes("cannot share the LIST's own name"),
+        ),
+      ).toBe(true);
+    });
+
+    it('warns and skips a LIST with a duplicate member within the same declaration', () => {
+      const source = '== start ==\nLIST a = x, x\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.variables).toBeUndefined();
+      expect(
+        result.validation.warnings.some((w) => w.message.includes('is declared more than once')),
+      ).toBe(true);
+    });
   });
 });

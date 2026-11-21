@@ -839,6 +839,36 @@ function parseListDeclarationLine(match: RegExpMatchArray, state: ParserState): 
       });
       return;
     }
+    // A member sharing the LIST's own name would register itself as
+    // both the LIST variable's name AND one of its own members —
+    // every later bare reference to it would resolve to the fixed
+    // single-item member literal instead of the LIST's actual
+    // current runtime value.
+    if (token === name) {
+      state.warnings.push({
+        type: 'syntax_error',
+        message: `LIST ${name}: member "${token}" cannot share the LIST's own name`,
+        lineNumber: state.lineNumber,
+        args: { name, member: token },
+      });
+      return;
+    }
+    // A duplicate member WITHIN this same declaration (`LIST a = x,
+    // x`) isn't caught by the checks below — those only see what's
+    // already registered in state from a PRIOR declaration, and this
+    // declaration's own earlier tokens aren't registered until the
+    // loop finishes. Without this, `allItems` ends up with two
+    // conflicting ordinals for the same name while listMembers only
+    // keeps the last, corrupting LIST_ALL/LIST_INVERT/LIST_RANGE.
+    if (allItems.some((item) => item.name === token)) {
+      state.warnings.push({
+        type: 'syntax_error',
+        message: `LIST ${name}: member "${token}" is declared more than once`,
+        lineNumber: state.lineNumber,
+        args: { name, member: token },
+      });
+      return;
+    }
     // A member name that collides with an already-declared VAR/CONST,
     // or with a member of a DIFFERENT already-declared LIST, would
     // otherwise silently overwrite the earlier declaration's claim on
