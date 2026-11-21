@@ -57,6 +57,7 @@ interface SerializableNode {
 function buildContentItem(item: ContentBlock): Y.Map<unknown> {
   const m = new Y.Map<unknown>();
   m.set('kind', item.kind);
+  if (item.id) m.set('id', item.id);
   if (item.kind === 'assignment') {
     m.set('statement', JSON.stringify(item.statement));
     return m;
@@ -75,6 +76,7 @@ function buildContentItem(item: ContentBlock): Y.Map<unknown> {
 
 function buildChoiceItem(ch: Choice): Y.Map<unknown> {
   const m = new Y.Map<unknown>();
+  if (ch.id) m.set('id', ch.id);
   const yText = new Y.Text();
   yText.insert(0, ch.text);
   m.set('text', yText);
@@ -140,6 +142,8 @@ function readJsonField<T>(m: Y.Map<unknown>, key: string): T | undefined {
 }
 
 function readContentItem(m: Y.Map<unknown>): ContentBlock {
+  const id = m.get('id');
+  const idField = typeof id === 'string' ? { id } : {};
   // `kind` is required on ContentBlock, but a pre-DEV-199 row never
   // wrote one — treat anything other than an explicit 'assignment' as
   // text, matching isTextBlock's own contract in types.ts.
@@ -148,7 +152,7 @@ function readContentItem(m: Y.Map<unknown>): ContentBlock {
     if (!statement) {
       throw new Error("Yjs content item has kind='assignment' but no parseable statement");
     }
-    return { kind: 'assignment', statement };
+    return { kind: 'assignment', statement, ...idField };
   }
   const text = m.get('text');
   const textStr = text instanceof Y.Text ? text.toString() : String(text ?? '');
@@ -158,6 +162,7 @@ function readContentItem(m: Y.Map<unknown>): ContentBlock {
     text: textStr,
     tags: readArrayOfStrings(m.get('tags') as Y.Array<string> | undefined),
     ...(condition !== undefined ? { condition } : {}),
+    ...idField,
   };
 }
 
@@ -165,6 +170,7 @@ function readChoiceItem(m: Y.Map<unknown>): Choice {
   const text = m.get('text');
   const textStr = text instanceof Y.Text ? text.toString() : String(text ?? '');
   const condition = readJsonField<Expression>(m, 'condition');
+  const id = m.get('id');
   return {
     text: textStr,
     target: String(m.get('target') ?? ''),
@@ -172,6 +178,7 @@ function readChoiceItem(m: Y.Map<unknown>): Choice {
     fallback: Boolean(m.get('fallback')),
     tags: readArrayOfStrings(m.get('tags') as Y.Array<string> | undefined),
     ...(condition !== undefined ? { condition } : {}),
+    ...(typeof id === 'string' ? { id } : {}),
   };
 }
 

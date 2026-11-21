@@ -917,15 +917,21 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
         storyGraph.nodes[nodeId].choices = [];
       }
 
+      // A fresh id, not whatever (if anything) the client sent — this
+      // is the one place a choice is newly created via REST rather
+      // than parsed from source, so it's the one place that needs to
+      // generate one.
+      const newChoice = { ...choice, id: randomUUID() };
+
       // Add the choice at specified index or at the end
       if (
         atIndex !== undefined &&
         atIndex >= 0 &&
         atIndex <= storyGraph.nodes[nodeId].choices.length
       ) {
-        storyGraph.nodes[nodeId].choices.splice(atIndex, 0, choice);
+        storyGraph.nodes[nodeId].choices.splice(atIndex, 0, newChoice);
       } else {
-        storyGraph.nodes[nodeId].choices.push(choice);
+        storyGraph.nodes[nodeId].choices.push(newChoice);
       }
 
       // Save updated story graph

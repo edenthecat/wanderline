@@ -79,11 +79,24 @@ export interface TextBlock {
   tags: string[];
   /** Ink's `{condition: text}` or a Twine dialect's hook condition (DEV-199 Phase 3/7-9). */
   condition?: Expression;
+  /**
+   * Stable identity for this block, independent of its array
+   * position — generated once at parse/create time, carried through
+   * every edit. Optional and absent on data parsed before this field
+   * existed; such a block just isn't addressable by id yet (same
+   * tolerance `isTextBlock` already has for absent `kind`). Exists so
+   * per-block audio (a future phase) can address a block that
+   * doesn't move when earlier content is edited, the way `node_id`
+   * addresses a node today.
+   */
+  id?: string;
 }
 
 export interface AssignmentBlock {
   kind: 'assignment';
   statement: Statement;
+  /** See {@link TextBlock.id}. */
+  id?: string;
 }
 
 /**

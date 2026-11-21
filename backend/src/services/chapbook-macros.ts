@@ -71,6 +71,7 @@
  *     insert/modifier — {embed passage}, [JavaScript], etc.
  */
 
+import { randomUUID } from 'crypto';
 import { parseExpression } from '@wanderline/shared';
 import type {
   Choice,
@@ -280,6 +281,7 @@ export function processChapbookPassageBody(
   for (const { name, value } of assignments) {
     declareVariableIfNew(name, value, state, evaluateExpr, warnings, lineNumber);
     content.push({
+      id: randomUUID(),
       kind: 'assignment',
       statement: { kind: 'assignment', name, operator: '=', value },
     });

@@ -1,6 +1,13 @@
 import { convertStoryGraphToInk } from '../ink-converter.js';
 import { parseInk } from '../ink-parser.js';
 
+// A round-trip re-parses from scratch, so the two sides' randomUUID()
+// `id`s (DEV-199 stable-id rollout) are never equal by construction —
+// strip them from both sides before comparing everything else.
+function stripIds<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value), (key, v) => (key === 'id' ? undefined : v));
+}
+
 describe('convertStoryGraphToInk', () => {
   it('should convert a simple knot to Ink format', () => {
     const result = convertStoryGraphToInk({
@@ -257,7 +264,9 @@ describe('convertStoryGraphToInk', () => {
       const emitted = convertStoryGraphToInk(first);
       const second = parseInk(emitted, 'test-id');
       expect(second.variables).toEqual(first.variables);
-      expect(second.nodes['start'].content).toEqual(first.nodes['start'].content);
+      expect(stripIds(second.nodes['start'].content)).toEqual(
+        stripIds(first.nodes['start'].content),
+      );
     });
   });
 
@@ -330,7 +339,9 @@ describe('convertStoryGraphToInk', () => {
       const first = parseInk(source, 'test-id');
       const emitted = convertStoryGraphToInk(first);
       const second = parseInk(emitted, 'test-id');
-      expect(second.nodes['start'].content).toEqual(first.nodes['start'].content);
+      expect(stripIds(second.nodes['start'].content)).toEqual(
+        stripIds(first.nodes['start'].content),
+      );
     });
   });
 
@@ -407,7 +418,9 @@ describe('convertStoryGraphToInk', () => {
       const first = parseInk(source, 'test-id');
       const emitted = convertStoryGraphToInk(first);
       const second = parseInk(emitted, 'test-id');
-      expect(second.nodes['start'].choices).toEqual(first.nodes['start'].choices);
+      expect(stripIds(second.nodes['start'].choices)).toEqual(
+        stripIds(first.nodes['start'].choices),
+      );
     });
   });
 });

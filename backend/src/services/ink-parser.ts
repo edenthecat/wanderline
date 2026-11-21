@@ -3,6 +3,7 @@
  * Parses .ink files into the Wanderline story graph format
  */
 
+import { randomUUID } from 'crypto';
 import { parseExpression, parseStatement, evaluate } from '@wanderline/shared';
 import type {
   StoryGraph,
@@ -591,6 +592,7 @@ function parseChoiceIntoNode(
   }
 
   const choice: Choice = {
+    id: randomUUID(),
     text: choiceText.trim(),
     target,
     sticky,
@@ -741,7 +743,7 @@ function parseAssignmentLine(trimmedLine: string, state: ParserState): void {
     createImplicitStartNode(state);
     currentNode = getCurrentNode(state);
   }
-  currentNode?.content.push({ kind: 'assignment', statement });
+  currentNode?.content.push({ id: randomUUID(), kind: 'assignment', statement });
 }
 
 /**
@@ -812,6 +814,7 @@ function addContentToNode(line: string, node: StoryNode, state?: ParserState): v
 
   if (finalText) {
     const content: TextContent = {
+      id: randomUUID(),
       kind: 'text',
       text: finalText,
       tags,

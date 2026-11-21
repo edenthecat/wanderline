@@ -11,6 +11,14 @@ function textOf(block: ContentBlock): string {
   return block.text;
 }
 
+// Content blocks and choices now carry a randomUUID() `id` (DEV-199
+// stable-id rollout) — strips it before comparing parser output
+// against a literal fixture, since the exact value is never what
+// these tests are checking.
+function stripIds<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value), (key, v) => (key === 'id' ? undefined : v));
+}
+
 // Twee 3 parser + emitter round-trip.
 
 describe('parseTwee — minimal', () => {
@@ -45,7 +53,7 @@ describe('parseTwee — minimal', () => {
 describe('parseTwee — link syntax', () => {
   it('parses [[Target]]', () => {
     const g = parseTwee(`:: Start\n[[Home]]\n\n:: Home\nDone.\n`);
-    expect(g.nodes['Start'].choices).toEqual([
+    expect(stripIds(g.nodes['Start'].choices)).toEqual([
       expect.objectContaining({ text: 'Home', target: 'Home' }),
     ]);
   });
@@ -321,7 +329,7 @@ describe('round-trip: parse → emit → parse', () => {
       expect(g2.startNode).toBe(g1.startNode);
       expect(Object.keys(g2.nodes).sort()).toEqual(Object.keys(g1.nodes).sort());
       for (const id of Object.keys(g1.nodes)) {
-        expect(g2.nodes[id].content).toEqual(g1.nodes[id].content);
+        expect(stripIds(g2.nodes[id].content)).toEqual(stripIds(g1.nodes[id].content));
         expect(g2.nodes[id].choices.map((c) => ({ text: c.text, target: c.target }))).toEqual(
           g1.nodes[id].choices.map((c) => ({ text: c.text, target: c.target })),
         );
@@ -772,7 +780,7 @@ describe('parseTwee — Harlowe macro support (DEV-199 Phase 7)', () => {
       { name: 'gold', type: 'number', initialValue: { kind: 'literal', value: 5 }, isConst: false },
     ]);
     const block = g.nodes['Start'].content.find((c) => c.kind === 'assignment');
-    expect(block).toEqual({
+    expect(stripIds(block)).toEqual({
       kind: 'assignment',
       statement: {
         kind: 'assignment',
@@ -843,7 +851,7 @@ describe('parseTwee — Harlowe macro support (DEV-199 Phase 7)', () => {
 
   it('parses (if: COND)[[[Link]]] (hook wrapping a link) as a conditional choice', () => {
     const g = parseTwee(harloweSrc('(if: $gold > 3)[[[Shop]]]'));
-    expect(g.nodes['Start'].choices).toEqual([
+    expect(stripIds(g.nodes['Start'].choices)).toEqual([
       {
         text: 'Shop',
         target: 'Shop',
@@ -873,7 +881,7 @@ describe('parseTwee — Harlowe macro support (DEV-199 Phase 7)', () => {
     // making it always-visible instead of leaving it inert.
     const g = parseTwee(harloweSrc('(if: $gold >> 3)[[[Shop]]]'));
     expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(true);
-    expect(g.nodes['Start'].choices).toEqual([]);
+    expect(stripIds(g.nodes['Start'].choices)).toEqual([]);
   });
 
   it('leaves an unsupported macro like (display:) as inert text', () => {
@@ -942,8 +950,12 @@ describe('Harlowe round-trip: parse → emit → parse (DEV-199 Phase 7)', () =>
     const first = parseTwee(src);
     const reparsed = parseTwee(emitTwee(first));
     expect(reparsed.variables).toEqual(first.variables);
-    expect(reparsed.nodes['Start'].content).toEqual(first.nodes['Start'].content);
-    expect(reparsed.nodes['Start'].choices).toEqual(first.nodes['Start'].choices);
+    expect(stripIds(reparsed.nodes['Start'].content)).toEqual(
+      stripIds(first.nodes['Start'].content),
+    );
+    expect(stripIds(reparsed.nodes['Start'].choices)).toEqual(
+      stripIds(first.nodes['Start'].choices),
+    );
   });
 });
 
@@ -957,7 +969,7 @@ describe('parseTwee — SugarCube macro support (DEV-199 Phase 8)', () => {
       { name: 'gold', type: 'number', initialValue: { kind: 'literal', value: 5 }, isConst: false },
     ]);
     const block = g.nodes['Start'].content.find((c) => c.kind === 'assignment');
-    expect(block).toEqual({
+    expect(stripIds(block)).toEqual({
       kind: 'assignment',
       statement: {
         kind: 'assignment',
@@ -986,7 +998,7 @@ describe('parseTwee — SugarCube macro support (DEV-199 Phase 8)', () => {
     const g = parseTwee(sugarcubeSrc('<<set $gold to 5>>\n<<set $gold += 10>>'));
     const assignments = g.nodes['Start'].content.filter((c) => c.kind === 'assignment');
     expect(assignments).toHaveLength(2);
-    expect(assignments[1]).toEqual({
+    expect(stripIds(assignments[1])).toEqual({
       kind: 'assignment',
       statement: {
         kind: 'assignment',
@@ -1042,7 +1054,7 @@ describe('parseTwee — SugarCube macro support (DEV-199 Phase 8)', () => {
 
   it('parses <<if>>[[Link]]<</if>> (wrapping a link) as a conditional choice', () => {
     const g = parseTwee(sugarcubeSrc('<<if $gold gt 3>>[[Shop]]<</if>>'));
-    expect(g.nodes['Start'].choices).toEqual([
+    expect(stripIds(g.nodes['Start'].choices)).toEqual([
       {
         text: 'Shop',
         target: 'Shop',
@@ -1097,7 +1109,7 @@ describe('parseTwee — SugarCube macro support (DEV-199 Phase 8)', () => {
   it('does NOT promote a wrapped link to an unconditional choice when its <<if>> condition fails to parse', () => {
     const g = parseTwee(sugarcubeSrc('<<if $gold is>>[[Shop]]<</if>>'));
     expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(true);
-    expect(g.nodes['Start'].choices).toEqual([]);
+    expect(stripIds(g.nodes['Start'].choices)).toEqual([]);
   });
 
   it('leaves an unsupported macro like <<print>> as inert text', () => {
@@ -1152,7 +1164,7 @@ describe('parseTwee — SugarCube macro support (DEV-199 Phase 8)', () => {
         '<<set $a to true>>\n<<set $b to true>>\n<<if $a>><<if $b>>[[Shop]]<</if>><</if>>',
       ),
     );
-    expect(g.nodes['Start'].choices).toEqual([
+    expect(stripIds(g.nodes['Start'].choices)).toEqual([
       {
         text: 'Shop',
         target: 'Shop',
@@ -1229,8 +1241,12 @@ describe('SugarCube round-trip: parse → emit → parse (DEV-199 Phase 8)', () 
     const first = parseTwee(src);
     const reparsed = parseTwee(emitTwee(first));
     expect(reparsed.variables).toEqual(first.variables);
-    expect(reparsed.nodes['Start'].content).toEqual(first.nodes['Start'].content);
-    expect(reparsed.nodes['Start'].choices).toEqual(first.nodes['Start'].choices);
+    expect(stripIds(reparsed.nodes['Start'].content)).toEqual(
+      stripIds(first.nodes['Start'].content),
+    );
+    expect(stripIds(reparsed.nodes['Start'].choices)).toEqual(
+      stripIds(first.nodes['Start'].choices),
+    );
   });
 
   it('preserves per-branch semantics of an if/elseif/else chain, even though it re-emits as independent <<if>> blocks', () => {
@@ -1244,7 +1260,9 @@ describe('SugarCube round-trip: parse → emit → parse (DEV-199 Phase 8)', () 
       `:: Start\n<<set $gold to 5>>\n<<if $gold gt 10>>Rich<<elseif $gold gt 0>>Some gold<<else>>Broke<</if>>\n`;
     const first = parseTwee(src);
     const reparsed = parseTwee(emitTwee(first));
-    expect(reparsed.nodes['Start'].content).toEqual(first.nodes['Start'].content);
+    expect(stripIds(reparsed.nodes['Start'].content)).toEqual(
+      stripIds(first.nodes['Start'].content),
+    );
   });
 });
 
@@ -1257,7 +1275,7 @@ describe('parseTwee — Chapbook macro support (DEV-199 Phase 9)', () => {
     expect(g.variables).toEqual([
       { name: 'gold', type: 'number', initialValue: { kind: 'literal', value: 5 }, isConst: false },
     ]);
-    expect(g.nodes['Start'].content[0]).toEqual({
+    expect(stripIds(g.nodes['Start'].content[0])).toEqual({
       kind: 'assignment',
       statement: {
         kind: 'assignment',
@@ -1358,7 +1376,7 @@ describe('parseTwee — Chapbook macro support (DEV-199 Phase 9)', () => {
 
   it('parses [if COND][[Link]] (wrapping a link) as a conditional choice', () => {
     const g = parseTwee(chapbookSrc('hasKey: true\n--\n[if hasKey]\n[[Shop]]\n\n[continue]'));
-    expect(g.nodes['Start'].choices).toEqual([
+    expect(stripIds(g.nodes['Start'].choices)).toEqual([
       {
         text: 'Shop',
         target: 'Shop',
@@ -1390,7 +1408,7 @@ describe('parseTwee — Chapbook macro support (DEV-199 Phase 9)', () => {
   it('does NOT promote a wrapped link to an unconditional choice when its [if] condition fails to parse', () => {
     const g = parseTwee(chapbookSrc('[if hasKey ===]\n[[Shop]]'));
     expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(true);
-    expect(g.nodes['Start'].choices).toEqual([]);
+    expect(stripIds(g.nodes['Start'].choices)).toEqual([]);
   });
 
   it('warns and leaves it inert when [else] has no preceding [if] in the passage', () => {
@@ -1452,7 +1470,11 @@ describe('Chapbook round-trip: parse → emit → parse (DEV-199 Phase 9)', () =
     const first = parseTwee(src);
     const reparsed = parseTwee(emitTwee(first));
     expect(reparsed.variables).toEqual(first.variables);
-    expect(reparsed.nodes['Start'].content).toEqual(first.nodes['Start'].content);
-    expect(reparsed.nodes['Start'].choices).toEqual(first.nodes['Start'].choices);
+    expect(stripIds(reparsed.nodes['Start'].content)).toEqual(
+      stripIds(first.nodes['Start'].content),
+    );
+    expect(stripIds(reparsed.nodes['Start'].choices)).toEqual(
+      stripIds(first.nodes['Start'].choices),
+    );
   });
 });

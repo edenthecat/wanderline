@@ -11,6 +11,7 @@
  * first place. Neither module imports the other; both import this.
  */
 
+import { randomUUID } from 'crypto';
 import type {
   Choice,
   ContentBlock,
@@ -182,6 +183,7 @@ function parseLinkInner(inner: string): Choice | null {
   }
   if (!target) return null;
   return {
+    id: randomUUID(),
     text: text || target,
     target,
     sticky: false,
@@ -220,6 +222,7 @@ export function bodyToContent(body: string): TextContent[] {
     .map((chunk) => chunk.trim())
     .filter(Boolean)
     .map((text): TextContent => ({
+      id: randomUUID(),
       // reverse the `\::` line-start escape the emitter
       // writes. Without this, a genuine `::` paragraph starts
       // gets a permanent leading backslash on every round-trip.

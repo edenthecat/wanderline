@@ -38,6 +38,7 @@
  *     datamaps, etc.
  */
 
+import { randomUUID } from 'crypto';
 import { parseExpression } from '@wanderline/shared';
 import type {
   ContentBlock,
@@ -424,7 +425,7 @@ export function processHarlowePassageBody(
       for (const { name, value } of assignments) {
         declareVariableIfNew(name, value, state, evaluateExpr, warnings, lineNumber, `$${name}`);
         const statement: Statement = { kind: 'assignment', name, operator: '=', value };
-        content.push({ kind: 'assignment', statement });
+        content.push({ id: randomUUID(), kind: 'assignment', statement });
       }
       cursor += call.end;
       continue;

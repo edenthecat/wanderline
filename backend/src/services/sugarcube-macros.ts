@@ -54,6 +54,7 @@
  *     arrays, custom macros, etc.
  */
 
+import { randomUUID } from 'crypto';
 import { parseExpression, parseStatement } from '@wanderline/shared';
 import type {
   ContentBlock,
@@ -425,7 +426,7 @@ export function processSugarCubePassageBody(
             lineNumber,
           });
         }
-        content.push({ kind: 'assignment', statement });
+        content.push({ id: randomUUID(), kind: 'assignment', statement });
       } catch (err) {
         warnings.push({
           type: 'syntax_error',

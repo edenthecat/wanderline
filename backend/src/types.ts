@@ -127,6 +127,9 @@ export interface Choice {
    */
   condition?: Expression | null;
   tags: string[];
+  /** See {@link TextBlock.id} in expression-types.ts — same stable-
+   * identity contract, independent of this choice's array position. */
+  id?: string;
 }
 
 export interface AudioAssignment {

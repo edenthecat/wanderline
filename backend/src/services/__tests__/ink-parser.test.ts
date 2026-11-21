@@ -1,6 +1,14 @@
 import { parseInk } from '../ink-parser.js';
 import { isTextBlock } from '../../types.js';
 
+// Content blocks and choices now carry a randomUUID() `id` (DEV-199
+// stable-id rollout) — strips it before comparing parser output
+// against a literal fixture, since the exact value is never what
+// these tests are checking.
+function stripIds<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value), (key, v) => (key === 'id' ? undefined : v));
+}
+
 describe('Ink Parser', () => {
   describe('Knot Detection', () => {
     it('should parse knots with === syntax', () => {
@@ -813,7 +821,7 @@ No association with any real narrative.
       const source = '== start ==\nBefore.\n~ gold = gold + 10\nAfter.\n-> END\n';
       const result = parseInk(source, 'test-id');
       const content = result.nodes['start'].content;
-      expect(content).toEqual([
+      expect(stripIds(content)).toEqual([
         { kind: 'text', text: 'Before.', tags: [] },
         {
           kind: 'assignment',
@@ -837,7 +845,7 @@ No association with any real narrative.
       const source = '== start ==\n~ gold += 10\n';
       const result = parseInk(source, 'test-id');
       const [block] = result.nodes['start'].content;
-      expect(block).toEqual({
+      expect(stripIds(block)).toEqual({
         kind: 'assignment',
         statement: {
           kind: 'assignment',
@@ -852,7 +860,7 @@ No association with any real narrative.
       const source = '~ gold = 0\nHi.\n';
       const result = parseInk(source, 'test-id');
       const content = result.nodes[result.startNode].content;
-      expect(content[0]).toEqual({
+      expect(stripIds(content[0])).toEqual({
         kind: 'assignment',
         statement: {
           kind: 'assignment',
@@ -861,7 +869,7 @@ No association with any real narrative.
           value: { kind: 'literal', value: 0 },
         },
       });
-      expect(content[1]).toEqual({ kind: 'text', text: 'Hi.', tags: [] });
+      expect(stripIds(content[1])).toEqual({ kind: 'text', text: 'Hi.', tags: [] });
     });
 
     it('falls back to literal text and warns on a `~` line it does not understand yet (e.g. `~ return x`)', () => {
@@ -893,7 +901,7 @@ No association with any real narrative.
       // stories that never use it.
       const source = '== start ==\nJust narration.\n-> END\n';
       const result = parseInk(source, 'test-id');
-      expect(result.nodes['start'].content).toEqual([
+      expect(stripIds(result.nodes['start'].content)).toEqual([
         { kind: 'text', text: 'Just narration.', tags: [] },
       ]);
     });
@@ -903,7 +911,7 @@ No association with any real narrative.
     it('parses a `{condition: text}` line into a TextBlock with its condition', () => {
       const source = '== start ==\n{gold > 10: You have plenty of gold.}\n';
       const result = parseInk(source, 'test-id');
-      expect(result.nodes['start'].content).toEqual([
+      expect(stripIds(result.nodes['start'].content)).toEqual([
         {
           kind: 'text',
           text: 'You have plenty of gold.',
@@ -922,7 +930,7 @@ No association with any real narrative.
       const source =
         '== start ==\nAlways shown.\n{seen_market: You remember the market.}\nAlso always shown.\n';
       const result = parseInk(source, 'test-id');
-      expect(result.nodes['start'].content).toEqual([
+      expect(stripIds(result.nodes['start'].content)).toEqual([
         { kind: 'text', text: 'Always shown.', tags: [] },
         {
           kind: 'text',
@@ -937,7 +945,7 @@ No association with any real narrative.
     it('preserves a trailing tag on a conditional line', () => {
       const source = '== start ==\n{gold > 10: Rich.} # narrator:smug\n';
       const result = parseInk(source, 'test-id');
-      expect(result.nodes['start'].content).toEqual([
+      expect(stripIds(result.nodes['start'].content)).toEqual([
         {
           kind: 'text',
           text: 'Rich.',
@@ -957,7 +965,7 @@ No association with any real narrative.
       const result = parseInk(source, 'test-id');
       const startNode = result.nodes['start'];
       expect(startNode.divert).toBe('next');
-      expect(startNode.content).toEqual([
+      expect(stripIds(startNode.content)).toEqual([
         {
           kind: 'text',
           text: 'Onward.',
@@ -976,7 +984,7 @@ No association with any real narrative.
       const source = '== start ==\n{seen_market && gold > 10: Rich and well-travelled.}\n';
       const result = parseInk(source, 'test-id');
       const [block] = result.nodes['start'].content;
-      expect(block).toEqual({
+      expect(stripIds(block)).toEqual({
         kind: 'text',
         text: 'Rich and well-travelled.',
         tags: [],
@@ -1016,7 +1024,9 @@ No association with any real narrative.
       // it did before this phase: inert literal text, no condition.
       const source = '== start ==\n{a|b}\n';
       const result = parseInk(source, 'test-id');
-      expect(result.nodes['start'].content).toEqual([{ kind: 'text', text: '{a|b}', tags: [] }]);
+      expect(stripIds(result.nodes['start'].content)).toEqual([
+        { kind: 'text', text: '{a|b}', tags: [] },
+      ]);
     });
   });
 
