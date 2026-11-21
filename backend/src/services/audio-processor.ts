@@ -41,6 +41,9 @@ export function collectUsedAudioFilenames(
     for (const slot of ['voiceover', 'ambience', 'choice1', 'choice2'] as const) {
       for (const variant of node.audio?.[slot] ?? []) usedFilenames.add(variant.file);
     }
+    for (const variants of Object.values(node.audio?.choices ?? {})) {
+      for (const variant of variants) usedFilenames.add(variant.file);
+    }
     for (const fx of node.audio?.sfx ?? []) usedFilenames.add(fx.file);
   }
 

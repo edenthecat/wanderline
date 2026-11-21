@@ -12,6 +12,7 @@ import { buildMatchTables, matchAudioFile } from '../services/audio-matcher.js';
 import { UPLOAD_DIR } from '../config.js';
 import { uploadPath } from '../services/upload-path.js';
 import { flushDeferredAudioDeletions } from '../services/deferred-audio-deletions.js';
+import { isChoiceAudioType, choiceIdFromAudioType } from '../services/choice-audio.js';
 import type { SimpleCondition } from '@wanderline/shared';
 
 const execFileAsync = promisify(execFile);
@@ -858,6 +859,11 @@ export function createAudioRouter(pool: Pool): Router {
           ambience?: AssignmentVariant[];
           choice1?: AssignmentVariant[];
           choice2?: AssignmentVariant[];
+          /** A choice's own cue, keyed by the choice's stable id —
+           * addresses correctly under reordering, unlike choice1/
+           * choice2's ordinal slots, which this coexists with rather
+           * than replaces (a choice with no id yet still uses those). */
+          choices?: Record<string, AssignmentVariant[]>;
           sfx: AssignmentVariant[];
           sfxOffsets?: Record<string, number>;
         }
@@ -873,6 +879,13 @@ export function createAudioRouter(pool: Pool): Router {
           if (typeof row.offset_ms === 'number') {
             (node.sfxOffsets ??= {})[row.audio_file_id] = row.offset_ms;
           }
+        } else if (isChoiceAudioType(row.audio_type)) {
+          const node = assignments[row.node_id];
+          const choiceId = choiceIdFromAudioType(row.audio_type);
+          ((node.choices ??= {})[choiceId] ??= []).push({
+            fileId: row.audio_file_id,
+            ...(condition ? { condition } : {}),
+          });
         } else {
           const node = assignments[row.node_id];
           const slot = row.audio_type as 'voiceover' | 'ambience' | 'choice1' | 'choice2';
@@ -981,10 +994,13 @@ export function createAudioRouter(pool: Pool): Router {
       }
       const conditionJson = condition ? JSON.stringify(condition) : null;
 
-      if (!['voiceover', 'ambience', 'sfx', 'choice1', 'choice2'].includes(audioType)) {
-        res
-          .status(400)
-          .json({ error: 'audioType must be voiceover, ambience, sfx, choice1, or choice2' });
+      if (
+        !['voiceover', 'ambience', 'sfx', 'choice1', 'choice2'].includes(audioType) &&
+        !isChoiceAudioType(audioType)
+      ) {
+        res.status(400).json({
+          error: 'audioType must be voiceover, ambience, sfx, choice1, choice2, or choice:<id>',
+        });
         return;
       }
 
@@ -1330,9 +1346,12 @@ export function createAudioRouter(pool: Pool): Router {
         });
         return;
       }
-      if (!['voiceover', 'ambience', 'sfx', 'choice1', 'choice2'].includes(op.audioType)) {
+      if (
+        !['voiceover', 'ambience', 'sfx', 'choice1', 'choice2'].includes(op.audioType) &&
+        !isChoiceAudioType(op.audioType)
+      ) {
         res.status(400).json({
-          error: `audioType must be voiceover/ambience/sfx/choice1/choice2; got "${op.audioType}"`,
+          error: `audioType must be voiceover/ambience/sfx/choice1/choice2/choice:<id>; got "${op.audioType}"`,
         });
         return;
       }

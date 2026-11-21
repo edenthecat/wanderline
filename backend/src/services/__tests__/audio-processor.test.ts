@@ -61,6 +61,28 @@ describe('collectUsedAudioFilenames', () => {
     expect(result).toEqual(new Set(['c1.mp3', 'c2.mp3']));
   });
 
+  // Per-choice audio addressed by the choice's own stable id
+  // (DEV-199 stable-id rollout) — coexists with choice1/choice2
+  // without either affecting the other's filename collection.
+  it('should collect per-choice-id audio filenames', () => {
+    const storyData = makeStoryData({
+      nodes: {
+        start: {
+          id: 'start',
+          type: 'knot',
+          content: [],
+          choices: [],
+          divert: null,
+          tags: [],
+          audio: { choices: { abc: [{ file: 'cue1.mp3' }], xyz: [{ file: 'cue2.mp3' }] } },
+        },
+      },
+    });
+
+    const result = collectUsedAudioFilenames(storyData, {}, {}, []);
+    expect(result).toEqual(new Set(['cue1.mp3', 'cue2.mp3']));
+  });
+
   it('should collect indicator audio from settings', () => {
     const storyData = makeStoryData();
     const settings = {

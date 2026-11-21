@@ -98,6 +98,12 @@ interface StoryNode {
   choices: {
     text: string;
     target: string;
+    // Stable id (DEV-199 stable-id rollout) — absent on data parsed
+    // before the rollout. Used to resolve this choice's own audio
+    // cue (node.audio.choices[id]) independent of its position in
+    // this array, so a reorder can't misattribute audio to the wrong
+    // choice the way the ordinal choice1/choice2 slots could.
+    id?: string;
     // Not yet acted on — gating choice visibility on this is Phase 4.
     // Carried through now so the manifest shape doesn't need to
     // change again when that phase lands.
@@ -116,6 +122,11 @@ interface StoryNode {
     ambience?: AudioVariant[];
     choice1?: AudioVariant[];
     choice2?: AudioVariant[];
+    // A choice's own cue, keyed by the choice's stable id — addresses
+    // correctly under reordering, unlike choice1/choice2's ordinal
+    // slots. A choice with no id (data from before the stable-id
+    // rollout) can only ever use those ordinal slots.
+    choices?: Record<string, AudioVariant[]>;
     sfx?: PassageSfx[];
   };
   metadata?: {
@@ -521,6 +532,37 @@ function preloadKey(prefix: string, nodeId: string, index: number): string {
 }
 
 /**
+ * The audio candidates for a choice occupying the first (position 0)
+ * or second (position 1) slot in the read-aloud cue sequence. A
+ * choice with a stable id (DEV-199 stable-id rollout) is addressed
+ * by that id only — no fallback to the ordinal choice1/choice2
+ * fields, which may belong to a DIFFERENT choice if this story's
+ * choices have ever been reordered. A choice with no id (data from
+ * before the rollout) has no other way to carry audio, so it still
+ * uses those fields.
+ *
+ * Takes the choice and the node's audio separately (not a node)
+ * because callers disagree on WHICH choice array position 0/1
+ * means: preloading walks the manifest's raw, unfiltered
+ * `node.choices`, while actual playback needs the currently VISIBLE
+ * (condition-filtered) choices — passing a node would silently pick
+ * the wrong one for one of the two callers.
+ */
+export function choiceCueVariants(
+  choice: StoryNode['choices'][number] | undefined,
+  audio: StoryNode['audio'] | undefined,
+  position: 0 | 1,
+): AudioVariant[] {
+  if (!choice) return [];
+  // No fallback once a choice has an id — even "no cue of its own" is
+  // a real answer, not "check the ordinal slot instead." Falling
+  // through would silently inherit whatever's at that ordinal slot,
+  // which may belong to a different choice entirely.
+  if (choice.id) return audio?.choices?.[choice.id] ?? [];
+  return (position === 0 ? audio?.choice1 : audio?.choice2) ?? [];
+}
+
+/**
  * A passage's ambience bed and sound effects as cache entries. Keyed by
  * URL, not node: the same bed or effect is usually shared by several
  * passages, and one cached copy serves them all. The keys match what
@@ -920,13 +962,13 @@ export default function App() {
           url: story.audioBaseUrl + variant.file,
         });
       }
-      for (const [i, variant] of (node?.audio?.choice1 ?? []).entries()) {
+      for (const [i, variant] of choiceCueVariants(node?.choices?.[0], node?.audio, 0).entries()) {
         criticalFiles.push({
           key: preloadKey('c1_', nodeId, i),
           url: story.audioBaseUrl + variant.file,
         });
       }
-      for (const [i, variant] of (node?.audio?.choice2 ?? []).entries()) {
+      for (const [i, variant] of choiceCueVariants(node?.choices?.[1], node?.audio, 1).entries()) {
         criticalFiles.push({
           key: preloadKey('c2_', nodeId, i),
           url: story.audioBaseUrl + variant.file,
@@ -962,12 +1004,12 @@ export default function App() {
         if (!criticalKeys.has(key))
           backgroundFiles.push({ key, url: story.audioBaseUrl + variant.file });
       }
-      for (const [i, variant] of (node.audio?.choice1 ?? []).entries()) {
+      for (const [i, variant] of choiceCueVariants(node.choices?.[0], node.audio, 0).entries()) {
         const key = preloadKey('c1_', nodeId, i);
         if (!criticalKeys.has(key))
           backgroundFiles.push({ key, url: story.audioBaseUrl + variant.file });
       }
-      for (const [i, variant] of (node.audio?.choice2 ?? []).entries()) {
+      for (const [i, variant] of choiceCueVariants(node.choices?.[1], node.audio, 1).entries()) {
         const key = preloadKey('c2_', nodeId, i);
         if (!criticalKeys.has(key))
           backgroundFiles.push({ key, url: story.audioBaseUrl + variant.file });
@@ -1364,11 +1406,19 @@ export default function App() {
           const key = preloadKey('vo_', nearbyId, i);
           if (!isCached(key)) preloadAudio(story.audioBaseUrl + variant.file, key);
         }
-        for (const [i, variant] of (node?.audio?.choice1 ?? []).entries()) {
+        for (const [i, variant] of choiceCueVariants(
+          node?.choices?.[0],
+          node?.audio,
+          0,
+        ).entries()) {
           const key = preloadKey('c1_', nearbyId, i);
           if (!isCached(key)) preloadAudio(story.audioBaseUrl + variant.file, key);
         }
-        for (const [i, variant] of (node?.audio?.choice2 ?? []).entries()) {
+        for (const [i, variant] of choiceCueVariants(
+          node?.choices?.[1],
+          node?.audio,
+          1,
+        ).entries()) {
           const key = preloadKey('c2_', nearbyId, i);
           if (!isCached(key)) preloadAudio(story.audioBaseUrl + variant.file, key);
         }
@@ -1659,13 +1709,18 @@ export default function App() {
       choice2IndicatorRef.current.volume = indicatorVol;
     }
 
-    // Use cached choice audio elements
-    const choice1File = resolveAudioVariant(currentNode?.audio?.choice1, variables);
+    // Use cached choice audio elements — resolved against the
+    // currently VISIBLE choices (condition-filtered), not the raw
+    // manifest array, since that's what actually occupies the first/
+    // second slot in the cue sequence a listener hears.
+    const choice1Variants = choiceCueVariants(visibleChoicesRef.current[0], currentNode?.audio, 0);
+    const choice1File = resolveAudioVariant(choice1Variants, variables);
     if (choice1File) {
       const url = story.audioBaseUrl + choice1File;
       choice1AudioRef.current = getCachedAudio('c1_' + currentNodeId, url);
     }
-    const choice2File = resolveAudioVariant(currentNode?.audio?.choice2, variables);
+    const choice2Variants = choiceCueVariants(visibleChoicesRef.current[1], currentNode?.audio, 1);
+    const choice2File = resolveAudioVariant(choice2Variants, variables);
     if (choice2File) {
       const url = story.audioBaseUrl + choice2File;
       choice2AudioRef.current = getCachedAudio('c2_' + currentNodeId, url);

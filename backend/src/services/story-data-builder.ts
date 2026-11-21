@@ -1,6 +1,7 @@
 import { Pool } from 'pg';
 import type { ContentBlock, Choice, VariableDeclaration } from '../types.js';
 import type { SimpleCondition } from '@wanderline/shared';
+import { isChoiceAudioType, choiceIdFromAudioType } from './choice-audio.js';
 
 /**
  * Pick the title the player renders. Prefer the story-graph
@@ -66,6 +67,11 @@ export interface StoryDataNodeAudio {
   ambience?: AudioVariant[];
   choice1?: AudioVariant[];
   choice2?: AudioVariant[];
+  /** A choice's own cue, keyed by the choice's stable id — addresses
+   * correctly under reordering, unlike choice1/choice2's ordinal
+   * slots, which this coexists with rather than replaces (a choice
+   * with no id yet still only ever uses those). */
+  choices?: Record<string, AudioVariant[]>;
   sfx?: StoryDataSfx[];
 }
 
@@ -135,6 +141,7 @@ export function collectNodeAudio(
       ambience: PendingVariant[];
       choice1: PendingVariant[];
       choice2: PendingVariant[];
+      choices: Record<string, PendingVariant[]>;
       sfx: PendingSfx[];
     }
   > = {};
@@ -146,10 +153,20 @@ export function collectNodeAudio(
       ambience: [],
       choice1: [],
       choice2: [],
+      choices: {},
       sfx: [],
     });
     const condition = row.condition ?? undefined;
     const created_at = row.created_at ?? '';
+    if (isChoiceAudioType(row.audio_type)) {
+      const choiceId = choiceIdFromAudioType(row.audio_type);
+      (node.choices[choiceId] ??= []).push({
+        file,
+        ...(condition ? { condition } : {}),
+        created_at,
+      });
+      continue;
+    }
     switch (row.audio_type) {
       case 'voiceover':
       case 'ambience':
@@ -177,6 +194,15 @@ export function collectNodeAudio(
     for (const slot of ['voiceover', 'ambience', 'choice1', 'choice2'] as const) {
       if (node[slot].length > 0) {
         audio[slot] = node[slot].sort(compareSingleSlotVariants).map(stripCreatedAt);
+      }
+    }
+    const choiceIds = Object.keys(node.choices);
+    if (choiceIds.length > 0) {
+      audio.choices = {};
+      for (const choiceId of choiceIds) {
+        audio.choices[choiceId] = node.choices[choiceId]
+          .sort(compareSingleSlotVariants)
+          .map(stripCreatedAt);
       }
     }
     if (node.sfx.length > 0) {

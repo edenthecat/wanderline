@@ -212,5 +212,44 @@ describe('collectNodeAudio', () => {
         },
       ]);
     });
+
+    // Per-choice audio addressed by the choice's own stable id
+    // (DEV-199 stable-id rollout), encoded as audio_type =
+    // `choice:<id>` — coexists with choice1/choice2 without either
+    // affecting the other.
+    it('groups choice:<id> rows under `choices`, keyed by id, separate from choice1/choice2', () => {
+      const audio = collectNodeAudio(
+        [
+          { node_id: 'a', audio_type: 'choice1', audio_file_id: 'f1' },
+          { node_id: 'a', audio_type: 'choice:abc', audio_file_id: 'f2' },
+          { node_id: 'a', audio_type: 'choice:xyz', audio_file_id: 'f3' },
+        ],
+        fileMap,
+      );
+      expect(audio.a.choice1).toEqual([{ file: 'vo.mp3' }]);
+      expect(audio.a.choices).toEqual({
+        abc: [{ file: 'rain.mp3' }],
+        xyz: [{ file: 'door.mp3' }],
+      });
+    });
+
+    it('orders conditioned-first-then-default for a choice:<id> slot, same as the single-value slots', () => {
+      const audio = collectNodeAudio(
+        [
+          { node_id: 'a', audio_type: 'choice:abc', audio_file_id: 'f1' },
+          {
+            node_id: 'a',
+            audio_type: 'choice:abc',
+            audio_file_id: 'f2',
+            condition: { variable: 'mood', operator: '==', value: 'angry' },
+          },
+        ],
+        fileMap,
+      );
+      expect(audio.a.choices?.abc).toEqual([
+        { file: 'rain.mp3', condition: { variable: 'mood', operator: '==', value: 'angry' } },
+        { file: 'vo.mp3' },
+      ]);
+    });
   });
 });

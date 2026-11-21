@@ -39,6 +39,9 @@ export interface OrderableNode {
     ambience?: Array<{ file: string }>;
     choice1?: Array<{ file: string }>;
     choice2?: Array<{ file: string }>;
+    // A choice's own cue, keyed by the choice's stable id (DEV-199
+    // stable-id rollout) — coexists with choice1/choice2.
+    choices?: Record<string, Array<{ file: string }>>;
     sfx?: Array<{ file: string }>;
   };
 }
@@ -126,6 +129,9 @@ export function orderAudioUrlsForDownload(story: OrderableStory | null): string[
     for (const v of audio.voiceover ?? []) urls.add(base + v.file);
     for (const v of audio.choice1 ?? []) urls.add(base + v.file);
     for (const v of audio.choice2 ?? []) urls.add(base + v.file);
+    for (const variants of Object.values(audio.choices ?? {})) {
+      for (const v of variants) urls.add(base + v.file);
+    }
     for (const v of audio.ambience ?? []) urls.add(base + v.file);
     for (const fx of audio.sfx ?? []) urls.add(base + fx.file);
   }
