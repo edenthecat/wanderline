@@ -57,7 +57,11 @@ const METADATA_SIGNAL = 'metadata';
 const AUDIO_ASSIGNMENTS_SIGNAL = 'audio-assignments';
 const CHOICE_TEXT_SAVE_DEBOUNCE_MS = 800;
 
-export type NodeAudioSlot = 'voiceover' | 'ambience' | 'choice1' | 'choice2' | 'sfx';
+/** `choice:<id>` addresses a specific choice's own cue by its stable
+ * id (DEV-199 stable-id rollout) — coexists with the older ordinal
+ * choice1/choice2 slots rather than replacing them. */
+export type NodeAudioSlot =
+  'voiceover' | 'ambience' | 'choice1' | 'choice2' | 'sfx' | `choice:${string}`;
 
 export interface NodeAudioActions {
   /** Attach a file to an empty slot (or add a sound effect). `condition`

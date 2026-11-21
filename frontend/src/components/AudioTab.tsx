@@ -31,7 +31,12 @@ const AUDIO_ASSIGNMENTS_SIGNAL = 'audio-assignments';
 
 const CATEGORIES = ['voiceover', 'choice', 'indicator', 'ambience', 'sfx', 'music'] as const;
 const AUDIO_TYPES = ['voiceover', 'choice1', 'choice2', 'ambience', 'sfx'] as const;
-type AudioType = (typeof AUDIO_TYPES)[number];
+// `choice:<id>` addresses a specific choice's own cue by its stable
+// id (DEV-199 stable-id rollout) — not offered in the manual-assign
+// dropdown below (it has no node context to list that node's
+// choices from), but usagesByFileId still needs to recognize it so
+// "used in" / "swap everywhere" account for it correctly.
+type AudioType = (typeof AUDIO_TYPES)[number] | `choice:${string}`;
 type FilterMode = 'all' | 'assigned' | 'unassigned';
 
 interface Props {
@@ -77,6 +82,9 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
       for (const v of nodeAssigns.ambience ?? []) ids.add(v.fileId);
       for (const v of nodeAssigns.choice1 ?? []) ids.add(v.fileId);
       for (const v of nodeAssigns.choice2 ?? []) ids.add(v.fileId);
+      for (const variants of Object.values(nodeAssigns.choices ?? {})) {
+        for (const v of variants) ids.add(v.fileId);
+      }
       for (const v of nodeAssigns.sfx) ids.add(v.fileId);
     }
     return ids;
@@ -108,6 +116,9 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
       for (const v of a.ambience ?? []) push(v.fileId, nodeId, 'ambience', v.condition);
       for (const v of a.choice1 ?? []) push(v.fileId, nodeId, 'choice1', v.condition);
       for (const v of a.choice2 ?? []) push(v.fileId, nodeId, 'choice2', v.condition);
+      for (const [choiceId, variants] of Object.entries(a.choices ?? {})) {
+        for (const v of variants) push(v.fileId, nodeId, `choice:${choiceId}`, v.condition);
+      }
       for (const v of a.sfx) push(v.fileId, nodeId, 'sfx', v.condition);
     }
     // Sort each list for stable rendering across refetches.
@@ -761,6 +772,16 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
                       rows.push({
                         audioType: slotType,
                         label: v.condition ? `${slotType} (conditioned)` : slotType,
+                        fileId: v.fileId,
+                        condition: v.condition,
+                      });
+                    }
+                  }
+                  for (const [choiceId, variants] of Object.entries(nodeAssign.choices ?? {})) {
+                    for (const v of variants) {
+                      rows.push({
+                        audioType: `choice:${choiceId}`,
+                        label: v.condition ? 'choice cue (conditioned)' : 'choice cue',
                         fileId: v.fileId,
                         condition: v.condition,
                       });

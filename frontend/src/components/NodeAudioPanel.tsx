@@ -62,12 +62,42 @@ const SAVE_WAIT_CAP_MS = 10_000;
  * .flac and friends only for them to be refused. */
 export const TAKE_FORMATS = '.mp3,.wav,.ogg,.webm,audio/mpeg,audio/wav,audio/ogg,audio/webm';
 
-const SLOTS: { key: SingleSlot; label: string; category: string }[] = [
+type SlotDescriptor = { key: SingleSlot; label: string; category: string };
+
+const FIXED_SLOTS: SlotDescriptor[] = [
   { key: 'voiceover', label: 'Voiceover', category: 'voiceover' },
   { key: 'ambience', label: 'Ambience', category: 'ambience' },
-  { key: 'choice1', label: 'Choice 1 cue', category: 'choice' },
-  { key: 'choice2', label: 'Choice 2 cue', category: 'choice' },
 ];
+
+/**
+ * The two choice-cue slots — same positions (first/second) the
+ * player's read-aloud sequence always had, but addressed by that
+ * choice's own stable id when it has one (DEV-199 stable-id
+ * rollout) rather than the fragile 'choice1'/'choice2' ordinal keys,
+ * which silently misattribute if choices are ever reordered. A
+ * choice with no id (data from before the rollout) still only has
+ * those ordinal keys to use.
+ */
+function choiceCueSlots(choices: { id?: string; text: string }[]): SlotDescriptor[] {
+  return choices.slice(0, 2).map((choice, i) => ({
+    key: choice.id ? (`choice:${choice.id}` as const) : i === 0 ? 'choice1' : 'choice2',
+    label: `Choice ${i + 1} cue`,
+    category: 'choice',
+  }));
+}
+
+/** Resolves a slot descriptor's variants, whether it's a fixed
+ * property on AudioAssignments[nodeId] or a choice addressed by id
+ * (looked up in the `choices` map instead). */
+function variantsForSlot(
+  nodeAudio: AudioAssignments[string] | undefined,
+  key: SingleSlot,
+): AudioAssignmentVariant[] | undefined {
+  if (key.startsWith('choice:')) {
+    return nodeAudio?.choices?.[key.slice('choice:'.length)];
+  }
+  return nodeAudio?.[key as 'voiceover' | 'ambience' | 'choice1' | 'choice2'];
+}
 
 interface Props {
   projectId: string;
@@ -84,6 +114,12 @@ interface Props {
    * conditional variant" affordance doesn't render — there's nothing
    * to condition on yet. */
   declaredVariables?: VariableDeclaration[];
+  /** This node's own choices, for addressing the first/second
+   * choice-cue slot by that choice's stable id rather than its
+   * ordinal position. Absent or empty: both cue slots fall back to
+   * the legacy 'choice1'/'choice2' keys, same as before this field
+   * existed. */
+  choices?: { id?: string; text: string }[];
 }
 
 /** Seconds as the author types them; '' means "as the passage starts". */
@@ -117,6 +153,7 @@ export default function NodeAudioPanel({
   actions,
   levels = { voiceover: 100, ambience: 50 },
   declaredVariables = [],
+  choices = [],
 }: Props) {
   const clip = useAudition();
   const mix = useMixAudition();
@@ -129,15 +166,22 @@ export default function NodeAudioPanel({
   // Which slot's "add a conditional variant" builder is open.
   const [addingConditionFor, setAddingConditionFor] = useState<NodeAudioSlot | null>(null);
 
+  // Cheap to recompute every render (at most 2 entries) — not worth
+  // a useMemo dependency on an array prop the parent likely passes a
+  // fresh reference for anyway.
+  const SLOTS = [...FIXED_SLOTS, ...choiceCueSlots(choices)];
+
   const sfx = nodeAudio?.sfx ?? [];
   const offsets = nodeAudio?.sfxOffsets ?? {};
-  const attachedSlots = SLOTS.filter((s) => (nodeAudio?.[s.key]?.length ?? 0) > 0);
+  const attachedSlots = SLOTS.filter((s) => (variantsForSlot(nodeAudio, s.key)?.length ?? 0) > 0);
   // Not the complement of attachedSlots any more: a slot can have
   // conditioned-only variants (no default yet) and still need the
   // simple "Attach audio…" flow to add the default/fallback — that's
   // the ONLY in-panel way to add one, since the conditional-variant
   // builder always requires a condition.
-  const slotsWithoutDefault = SLOTS.filter((s) => !defaultVariant(nodeAudio?.[s.key]));
+  const slotsWithoutDefault = SLOTS.filter(
+    (s) => !defaultVariant(variantsForSlot(nodeAudio, s.key)),
+  );
   const hasAnything = attachedSlots.length > 0 || sfx.length > 0;
   const canEdit = !!actions && audioFiles.length > 0;
   const canAddCondition = canEdit && declaredVariables.length > 0;
@@ -344,7 +388,7 @@ export default function NodeAudioPanel({
       )}
       <ul className="node-audio-list">
         {attachedSlots.map((slot) => {
-          const variants = nodeAudio![slot.key]!;
+          const variants = variantsForSlot(nodeAudio, slot.key)!;
           return variants.map((variant, variantIndex) => {
             const fileId = variant.fileId;
             // Distinct from other variants of the same slot/file by

@@ -68,6 +68,7 @@ function mount(
   nodeAudio: Parameters<typeof NodeAudioPanel>[0]['nodeAudio'],
   a = actions(),
   declaredVariables: VariableDeclaration[] = [],
+  choices: Parameters<typeof NodeAudioPanel>[0]['choices'] = [],
 ) {
   render(
     <NodeAudioPanel
@@ -77,6 +78,7 @@ function mount(
       audioFiles={FILES}
       actions={a}
       declaredVariables={declaredVariables}
+      choices={choices}
     />,
   );
   return a;
@@ -771,5 +773,70 @@ describe('NodeAudioPanel', () => {
       ) as HTMLSelectElement;
       expect([...picker.options].map((o) => o.value)).not.toContain('door');
     });
+  });
+});
+
+// Per-choice audio addressed by the choice's own stable id (DEV-199
+// stable-id rollout) — generalizes the old fixed "Choice 1 cue" /
+// "Choice 2 cue" ordinal slots into slots anchored to an actual
+// choice, so a cue can't silently end up on the wrong choice after a
+// reorder.
+describe('per-choice audio cues', () => {
+  it('offers no choice-cue row when the node has no choices', () => {
+    mount({ sfx: [] }, actions(), [], []);
+    fireEvent.click(screen.getByRole('button', { name: 'Attach audio…' }));
+    expect(screen.queryByText('Choice 1 cue')).toBeNull();
+  });
+
+  it('addresses the first choice by its own id, not the ordinal slot, when it has one', async () => {
+    const a = mount({ sfx: [] }, actions(), [], [{ text: 'Go', target: 'b', id: 'choice-abc' }]);
+    fireEvent.click(screen.getByRole('button', { name: 'Attach audio…' }));
+    fireEvent.change(screen.getByLabelText('Choice 1 cue to attach to hall'), {
+      target: { value: 'vo1' },
+    });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Attach' })[SLOT_INDEX.choice1]);
+    await waitFor(() => expect(a.assign).toHaveBeenCalledWith('hall', 'choice:choice-abc', 'vo1'));
+  });
+
+  it('falls back to the ordinal choice1 slot when the choice has no id', async () => {
+    const a = mount({ sfx: [] }, actions(), [], [{ text: 'Go', target: 'b' }]);
+    fireEvent.click(screen.getByRole('button', { name: 'Attach audio…' }));
+    fireEvent.change(screen.getByLabelText('Choice 1 cue to attach to hall'), {
+      target: { value: 'vo1' },
+    });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Attach' })[SLOT_INDEX.choice1]);
+    await waitFor(() => expect(a.assign).toHaveBeenCalledWith('hall', 'choice1', 'vo1'));
+  });
+
+  it('renders an attached per-choice-id cue and clears it by that same id, not the ordinal slot', async () => {
+    const a = mount(
+      { choices: { 'choice-abc': [{ fileId: 'vo1' }] }, sfx: [] },
+      actions(),
+      [],
+      [{ text: 'Go', target: 'b', id: 'choice-abc' }],
+    );
+    expect(screen.getByText('Choice 1 cue')).toBeTruthy();
+    fireEvent.click(screen.getByLabelText('Remove choice 1 cue from hall'));
+    await waitFor(() =>
+      expect(a.clear).toHaveBeenCalledWith('hall', 'choice:choice-abc', 'vo1', undefined),
+    );
+  });
+
+  it('shows "Choice 2 cue" for the second choice, addressed by ITS id', async () => {
+    const a = mount(
+      { sfx: [] },
+      actions(),
+      [],
+      [
+        { text: 'First', target: 'b', id: 'first-id' },
+        { text: 'Second', target: 'c', id: 'second-id' },
+      ],
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Attach audio…' }));
+    fireEvent.change(screen.getByLabelText('Choice 2 cue to attach to hall'), {
+      target: { value: 'vo1' },
+    });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Attach' })[SLOT_INDEX.choice2]);
+    await waitFor(() => expect(a.assign).toHaveBeenCalledWith('hall', 'choice:second-id', 'vo1'));
   });
 });

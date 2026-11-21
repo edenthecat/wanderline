@@ -11,7 +11,14 @@ vi.mock('../CollabContentTextarea', () => ({ default: () => null }));
 
 const baseProps = {
   nodeId: 'her',
-  node: { content: [{ kind: 'text', text: 'Hi.', tags: [] }], choices: [], divert: null, tags: [] },
+  node: {
+    content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+    // No id — exercises the legacy choice1/choice2 fallback the
+    // audio fixtures below address directly.
+    choices: [{ text: 'Go on', target: 'next' }],
+    divert: null,
+    tags: [],
+  },
   metadataLoaded: true,
   nodeIdSet: new Set(['her']),
   nodeIdOptions: null,

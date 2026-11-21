@@ -655,6 +655,7 @@ export default function NodeDetail({
         declaredVariables={variables}
         actions={audioActions}
         levels={audioLevels}
+        choices={node.choices}
       />
       {reachableFrom && reachableFrom.length > 0 && (
         <div className="node-reachable-from">

@@ -501,6 +501,9 @@ export interface AudioAssignments {
     ambience?: AudioAssignmentVariant[];
     choice1?: AudioAssignmentVariant[];
     choice2?: AudioAssignmentVariant[];
+    /** A choice's own cue, keyed by the choice's stable id — coexists
+     * with choice1/choice2 rather than replacing them. */
+    choices?: Record<string, AudioAssignmentVariant[]>;
     sfx: AudioAssignmentVariant[];
     /** When each sound effect plays, in ms, keyed by file id. Absent for
      * one that plays as the passage starts. */
