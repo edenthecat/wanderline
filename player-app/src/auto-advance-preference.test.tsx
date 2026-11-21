@@ -62,7 +62,7 @@ function storyWith(settings: Record<string, unknown>) {
         ],
         divert: null,
         tags: [],
-        audio: { voiceover: 'start.mp3' },
+        audio: { voiceover: [{ file: 'start.mp3' }] },
       },
       left: {
         id: 'left',

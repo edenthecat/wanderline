@@ -1,7 +1,7 @@
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import NodeAudioPanel, { formatOffsetSeconds, parseOffsetSeconds } from '../NodeAudioPanel';
-import type { AudioFile } from '../../api/client';
+import type { AudioFile, VariableDeclaration } from '../../api/client';
 import type { NodeAudioActions } from '../../hooks/useNodeEditor';
 
 // The node panel's audio section. It used to be play-only: attaching or
@@ -64,7 +64,11 @@ function actions(): NodeAudioActions & { [k: string]: ReturnType<typeof vi.fn> }
   } as never;
 }
 
-function mount(nodeAudio: Parameters<typeof NodeAudioPanel>[0]['nodeAudio'], a = actions()) {
+function mount(
+  nodeAudio: Parameters<typeof NodeAudioPanel>[0]['nodeAudio'],
+  a = actions(),
+  declaredVariables: VariableDeclaration[] = [],
+) {
   render(
     <NodeAudioPanel
       projectId="p1"
@@ -72,6 +76,7 @@ function mount(nodeAudio: Parameters<typeof NodeAudioPanel>[0]['nodeAudio'], a =
       nodeAudio={nodeAudio}
       audioFiles={FILES}
       actions={a}
+      declaredVariables={declaredVariables}
     />,
   );
   return a;
@@ -133,7 +138,7 @@ describe('NodeAudioPanel', () => {
   // Arrowing through a closed <select> changes its value on Windows and
   // Linux; that alone must never swap a take.
   it('does nothing until the choice is confirmed', () => {
-    const a = mount({ voiceover: 'vo1', sfx: [] });
+    const a = mount({ voiceover: [{ fileId: 'vo1' }], sfx: [] });
     fireEvent.click(screen.getByRole('button', { name: 'Replace' }));
     fireEvent.change(screen.getByLabelText('Replacement voiceover for hall'), {
       target: { value: 'vo2' },
@@ -152,7 +157,7 @@ describe('NodeAudioPanel', () => {
   });
 
   it('swaps an attached file for another', async () => {
-    const a = mount({ voiceover: 'vo1', sfx: [] });
+    const a = mount({ voiceover: [{ fileId: 'vo1' }], sfx: [] });
     fireEvent.click(screen.getByRole('button', { name: 'Replace' }));
     const select = screen.getByLabelText('Replacement voiceover for hall') as HTMLSelectElement;
     // The current file isn't offered as its own replacement.
@@ -162,9 +167,11 @@ describe('NodeAudioPanel', () => {
   });
 
   it('clears a slot', async () => {
-    const a = mount({ ambience: 'rain', sfx: [] });
+    const a = mount({ ambience: [{ fileId: 'rain' }], sfx: [] });
     fireEvent.click(screen.getByLabelText('Remove ambience from hall'));
-    await waitFor(() => expect(a.clear).toHaveBeenCalledWith('hall', 'ambience', 'rain'));
+    await waitFor(() =>
+      expect(a.clear).toHaveBeenCalledWith('hall', 'ambience', 'rain', undefined),
+    );
   });
 
   it('adds, replaces and removes sound effects', async () => {
@@ -398,7 +405,11 @@ describe('NodeAudioPanel', () => {
 
   it('stops a mix whose audio a peer has taken away', () => {
     const { rerender } = render(
-      <NodeAudioPanel projectId="p1" nodeId="hall" nodeAudio={{ ambience: 'rain', sfx: [] }} />,
+      <NodeAudioPanel
+        projectId="p1"
+        nodeId="hall"
+        nodeAudio={{ ambience: [{ fileId: 'rain' }], sfx: [] }}
+      />,
     );
     fireEvent.click(screen.getByRole('button', { name: /Play with ambience/ }));
     const bed = FakeAudio.made.find((x) => x.src.endsWith('/rain'))!;
@@ -465,7 +476,7 @@ describe('NodeAudioPanel', () => {
   it('shows what went wrong when a change fails', async () => {
     const a = actions();
     a.clear.mockRejectedValue(new Error('Assignment not found'));
-    mount({ ambience: 'rain', sfx: [] }, a);
+    mount({ ambience: [{ fileId: 'rain' }], sfx: [] }, a);
     fireEvent.click(screen.getByLabelText('Remove ambience from hall'));
     expect((await screen.findByRole('alert')).textContent).toBe('Assignment not found');
   });
@@ -483,7 +494,7 @@ describe('NodeAudioPanel', () => {
 
     it('uploads over the file once the author confirms', async () => {
       const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
-      const a = mount({ voiceover: 'vo1', sfx: [] });
+      const a = mount({ voiceover: [{ fileId: 'vo1' }], sfx: [] });
       const file = upload('Upload a new take of voiceover for hall');
       // The prompt names what's being replaced and warns it's everywhere.
       expect(confirm.mock.calls[0][0]).toMatch(/vo1\.mp3.*take-2\.mp3.*Every passage/);
@@ -505,7 +516,7 @@ describe('NodeAudioPanel', () => {
       <NodeAudioPanel
         projectId="p1"
         nodeId="hall"
-        nodeAudio={{ ambience: 'rain', sfx: [] }}
+        nodeAudio={{ ambience: [{ fileId: 'rain' }], sfx: [] }}
         audioFiles={[{ ...file('rain', 'ambience'), filename: 'abc.mp3' } as AudioFile]}
       />,
     );
@@ -515,7 +526,11 @@ describe('NodeAudioPanel', () => {
 
   it('is play-only without actions', () => {
     render(
-      <NodeAudioPanel projectId="p1" nodeId="hall" nodeAudio={{ voiceover: 'vo1', sfx: [] }} />,
+      <NodeAudioPanel
+        projectId="p1"
+        nodeId="hall"
+        nodeAudio={{ voiceover: [{ fileId: 'vo1' }], sfx: [] }}
+      />,
     );
     expect(screen.getByLabelText('Play Voiceover')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Replace|Attach|Remove/ })).toBeNull();
@@ -529,7 +544,7 @@ describe('NodeAudioPanel', () => {
         <NodeAudioPanel
           projectId="p1"
           nodeId="hall"
-          nodeAudio={{ voiceover: 'vo1', ambience: 'rain', sfx: [] }}
+          nodeAudio={{ voiceover: [{ fileId: 'vo1' }], ambience: [{ fileId: 'rain' }], sfx: [] }}
           audioFiles={FILES}
           levels={{ voiceover: 80, ambience: 40 }}
         />,
@@ -548,13 +563,99 @@ describe('NodeAudioPanel', () => {
     });
 
     it('is offered for effects without ambience, and named for what it plays', () => {
-      mount({ voiceover: 'vo1', sfx: ['door'] });
+      mount({ voiceover: [{ fileId: 'vo1' }], sfx: ['door'] });
       expect(screen.getByRole('button', { name: /Play with effects/ })).toBeTruthy();
     });
 
     it('isn’t offered when there’s nothing to mix', () => {
-      mount({ voiceover: 'vo1', sfx: [] });
+      mount({ voiceover: [{ fileId: 'vo1' }], sfx: [] });
       expect(screen.queryByRole('button', { name: /Play with/ })).toBeNull();
+    });
+  });
+
+  describe('variable-conditioned variants', () => {
+    const MOOD: VariableDeclaration = {
+      name: 'mood',
+      type: 'string',
+      initialValue: { kind: 'literal', value: 'cheerful' },
+      isConst: false,
+    };
+    const HAS_KEY: VariableDeclaration = {
+      name: 'hasKey',
+      type: 'bool',
+      initialValue: { kind: 'literal', value: false },
+      isConst: false,
+    };
+
+    it('does not offer "add a conditional variant" when no variables are declared', () => {
+      mount({ sfx: [] }, actions(), []);
+      expect(screen.queryByText(/Add conditional variant/)).toBeNull();
+    });
+
+    it('builds a condition, then picks a file, then assigns with that condition', async () => {
+      const a = mount({ sfx: [] }, actions(), [MOOD]);
+      fireEvent.click(screen.getAllByText('+ Add conditional variant…')[SLOT_INDEX.voiceover]);
+
+      fireEvent.change(screen.getByLabelText('Comparison operator'), { target: { value: '==' } });
+      fireEvent.change(screen.getByLabelText('Value'), { target: { value: 'angry' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Next: pick a file' }));
+
+      expect(screen.getByText('when mood == "angry", play')).toBeTruthy();
+      choose('Voiceover to play when mood == "angry" on hall', 'vo1', 'Add');
+
+      await waitFor(() =>
+        expect(a.assign).toHaveBeenCalledWith('hall', 'voiceover', 'vo1', {
+          variable: 'mood',
+          operator: '==',
+          value: 'angry',
+        }),
+      );
+    });
+
+    it('offers only equality for a string/bool variable, and a true/false dropdown for bool', () => {
+      mount({ sfx: [] }, actions(), [HAS_KEY]);
+      fireEvent.click(screen.getAllByText('+ Add conditional variant…')[SLOT_INDEX.voiceover]);
+
+      const operatorSelect = screen.getByLabelText('Comparison operator') as HTMLSelectElement;
+      expect([...operatorSelect.options].map((o) => o.value)).toEqual(['==', '!=']);
+
+      const valueSelect = screen.getByLabelText('Value') as HTMLSelectElement;
+      expect([...valueSelect.options].map((o) => o.value)).toEqual(['', 'true', 'false']);
+    });
+
+    it('offers every comparison operator for a number variable', () => {
+      mount({ sfx: [] }, actions(), [
+        {
+          name: 'gold',
+          type: 'number',
+          initialValue: { kind: 'literal', value: 0 },
+          isConst: false,
+        },
+      ]);
+      fireEvent.click(screen.getAllByText('+ Add conditional variant…')[SLOT_INDEX.voiceover]);
+      const operatorSelect = screen.getByLabelText('Comparison operator') as HTMLSelectElement;
+      expect([...operatorSelect.options].map((o) => o.value)).toEqual([
+        '==',
+        '!=',
+        '<',
+        '<=',
+        '>',
+        '>=',
+      ]);
+    });
+
+    it('labels a conditioned variant’s row with its condition', () => {
+      mount(
+        {
+          voiceover: [
+            { fileId: 'vo1', condition: { variable: 'mood', operator: '==', value: 'angry' } },
+          ],
+          sfx: [],
+        },
+        actions(),
+        [MOOD],
+      );
+      expect(screen.getByText('Voiceover — when mood == "angry"')).toBeTruthy();
     });
   });
 });

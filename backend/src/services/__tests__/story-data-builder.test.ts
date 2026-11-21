@@ -79,7 +79,9 @@ describe('collectNodeAudio', () => {
       ],
       fileMap,
     );
-    expect(audio).toEqual({ a: { voiceover: 'vo.mp3', ambience: 'rain.mp3' } });
+    expect(audio).toEqual({
+      a: { voiceover: [{ file: 'vo.mp3' }], ambience: [{ file: 'rain.mp3' }] },
+    });
   });
 
   // SFX were assignable in the editor but never made it past this point,
@@ -116,7 +118,7 @@ describe('collectNodeAudio', () => {
       ],
       fileMap,
     );
-    expect(audio).toEqual({ b: { ambience: 'rain.mp3' } });
+    expect(audio).toEqual({ b: { ambience: [{ file: 'rain.mp3' }] } });
   });
 
   it('ignores a negative or non-finite offset rather than emitting it', () => {
@@ -125,5 +127,90 @@ describe('collectNodeAudio', () => {
       fileMap,
     );
     expect(audio.a.sfx).toEqual([{ file: 'door.mp3' }]);
+  });
+
+  describe('variable-conditioned variants', () => {
+    it('orders a conditioned candidate before the unconditioned default', () => {
+      const audio = collectNodeAudio(
+        [
+          { node_id: 'a', audio_type: 'voiceover', audio_file_id: 'f1', created_at: '2026-01-01' },
+          {
+            node_id: 'a',
+            audio_type: 'voiceover',
+            audio_file_id: 'f2',
+            condition: { variable: 'mood', operator: '==', value: 'angry' },
+            created_at: '2026-01-02',
+          },
+        ],
+        fileMap,
+      );
+      expect(audio.a.voiceover).toEqual([
+        { file: 'rain.mp3', condition: { variable: 'mood', operator: '==', value: 'angry' } },
+        { file: 'vo.mp3' },
+      ]);
+    });
+
+    it('orders multiple conditioned candidates by created_at, regardless of row order', () => {
+      const audio = collectNodeAudio(
+        [
+          {
+            node_id: 'a',
+            audio_type: 'voiceover',
+            audio_file_id: 'f2',
+            condition: { variable: 'mood', operator: '==', value: 'angry' },
+            created_at: '2026-01-05',
+          },
+          {
+            node_id: 'a',
+            audio_type: 'voiceover',
+            audio_file_id: 'f3',
+            condition: { variable: 'mood', operator: '==', value: 'sad' },
+            created_at: '2026-01-02',
+          },
+        ],
+        fileMap,
+      );
+      expect(audio.a.voiceover?.map((v) => v.file)).toEqual(['door.mp3', 'rain.mp3']);
+    });
+
+    it('leaves out a conditioned candidate whose file no longer resolves, same as the default case', () => {
+      const audio = collectNodeAudio(
+        [
+          {
+            node_id: 'a',
+            audio_type: 'voiceover',
+            audio_file_id: 'gone',
+            condition: { variable: 'mood', operator: '==', value: 'angry' },
+          },
+          { node_id: 'a', audio_type: 'voiceover', audio_file_id: 'f1' },
+        ],
+        fileMap,
+      );
+      expect(audio.a.voiceover).toEqual([{ file: 'vo.mp3' }]);
+    });
+
+    it('does not let a condition affect sfx ordering — sfx entries are independent, not mutually exclusive', () => {
+      const audio = collectNodeAudio(
+        [
+          {
+            node_id: 'a',
+            audio_type: 'sfx',
+            audio_file_id: 'f3',
+            offset_ms: 500,
+            condition: { variable: 'scary', operator: '==', value: true },
+          },
+          { node_id: 'a', audio_type: 'sfx', audio_file_id: 'f1', offset_ms: 100 },
+        ],
+        fileMap,
+      );
+      expect(audio.a.sfx).toEqual([
+        { file: 'vo.mp3', offsetMs: 100 },
+        {
+          file: 'door.mp3',
+          offsetMs: 500,
+          condition: { variable: 'scary', operator: '==', value: true },
+        },
+      ]);
+    });
   });
 });

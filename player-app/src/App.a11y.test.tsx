@@ -64,7 +64,7 @@ const divertOnlyStory = {
       choices: [],
       divert: 'onward',
       tags: [],
-      audio: { voiceover: 'start.mp3' },
+      audio: { voiceover: [{ file: 'start.mp3' }] },
     },
     onward: {
       id: 'onward',
@@ -94,7 +94,7 @@ const threeChoiceStory = {
       ],
       divert: null,
       tags: [],
-      audio: { voiceover: 'start.mp3' },
+      audio: { voiceover: [{ file: 'start.mp3' }] },
     },
     left: {
       id: 'left',
@@ -139,7 +139,7 @@ const echoStory = {
       ],
       divert: null,
       tags: [],
-      audio: { voiceover: 'a.mp3' },
+      audio: { voiceover: [{ file: 'a.mp3' }] },
     },
     hubB: {
       id: 'hubB',
@@ -151,7 +151,7 @@ const echoStory = {
       ],
       divert: null,
       tags: [],
-      audio: { voiceover: 'b.mp3' },
+      audio: { voiceover: [{ file: 'b.mp3' }] },
     },
     done: {
       id: 'done',
@@ -182,7 +182,7 @@ const loopStory = {
       ],
       divert: null,
       tags: [],
-      audio: { voiceover: 'loop.mp3' },
+      audio: { voiceover: [{ file: 'loop.mp3' }] },
     },
     done: {
       id: 'done',
@@ -217,7 +217,7 @@ const stickyStory = {
       ],
       divert: null,
       tags: [],
-      audio: { voiceover: 'one.mp3' },
+      audio: { voiceover: [{ file: 'one.mp3' }] },
     },
     two: {
       id: 'two',
@@ -229,7 +229,7 @@ const stickyStory = {
       ],
       divert: null,
       tags: [],
-      audio: { voiceover: 'two.mp3' },
+      audio: { voiceover: [{ file: 'two.mp3' }] },
     },
     done: {
       id: 'done',

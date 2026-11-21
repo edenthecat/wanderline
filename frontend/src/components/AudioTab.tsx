@@ -72,10 +72,10 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
   const assignedFileIds = useMemo(() => {
     const ids = new Set<string>();
     for (const nodeAssigns of Object.values(assignments)) {
-      if (nodeAssigns.voiceover) ids.add(nodeAssigns.voiceover);
-      if (nodeAssigns.ambience) ids.add(nodeAssigns.ambience);
-      if (nodeAssigns.choice1) ids.add(nodeAssigns.choice1);
-      if (nodeAssigns.choice2) ids.add(nodeAssigns.choice2);
+      for (const v of nodeAssigns.voiceover ?? []) ids.add(v.fileId);
+      for (const v of nodeAssigns.ambience ?? []) ids.add(v.fileId);
+      for (const v of nodeAssigns.choice1 ?? []) ids.add(v.fileId);
+      for (const v of nodeAssigns.choice2 ?? []) ids.add(v.fileId);
       for (const sfxId of nodeAssigns.sfx) ids.add(sfxId);
     }
     return ids;
@@ -95,10 +95,10 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
       else map.set(fileId, [{ nodeId, audioType }]);
     };
     for (const [nodeId, a] of Object.entries(assignments)) {
-      if (a.voiceover) push(a.voiceover, nodeId, 'voiceover');
-      if (a.ambience) push(a.ambience, nodeId, 'ambience');
-      if (a.choice1) push(a.choice1, nodeId, 'choice1');
-      if (a.choice2) push(a.choice2, nodeId, 'choice2');
+      for (const v of a.voiceover ?? []) push(v.fileId, nodeId, 'voiceover');
+      for (const v of a.ambience ?? []) push(v.fileId, nodeId, 'ambience');
+      for (const v of a.choice1 ?? []) push(v.fileId, nodeId, 'choice1');
+      for (const v of a.choice2 ?? []) push(v.fileId, nodeId, 'choice2');
       for (const sfxId of a.sfx) push(sfxId, nodeId, 'sfx');
     }
     // Sort each list for stable rendering across refetches.
@@ -728,14 +728,18 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
               <tbody>
                 {nodesWithAssignments.map(([nodeId, nodeAssign]) => {
                   const rows: { type: string; fileId: string }[] = [];
-                  if (nodeAssign.voiceover)
-                    rows.push({ type: 'voiceover', fileId: nodeAssign.voiceover });
-                  if (nodeAssign.choice1)
-                    rows.push({ type: 'choice1', fileId: nodeAssign.choice1 });
-                  if (nodeAssign.choice2)
-                    rows.push({ type: 'choice2', fileId: nodeAssign.choice2 });
-                  if (nodeAssign.ambience)
-                    rows.push({ type: 'ambience', fileId: nodeAssign.ambience });
+                  // A slot can hold several variants now (one default +
+                  // any number of variable-conditioned ones) — each gets
+                  // its own row, labelled so a conditioned variant isn't
+                  // silently indistinguishable from the default.
+                  for (const slotType of ['voiceover', 'choice1', 'choice2', 'ambience'] as const) {
+                    for (const v of nodeAssign[slotType] ?? []) {
+                      rows.push({
+                        type: v.condition ? `${slotType} (conditioned)` : slotType,
+                        fileId: v.fileId,
+                      });
+                    }
+                  }
                   for (const sfxId of nodeAssign.sfx) rows.push({ type: 'sfx', fileId: sfxId });
                   return rows.map((row, idx) => (
                     <tr key={`${nodeId}-${row.type}-${row.fileId}`}>

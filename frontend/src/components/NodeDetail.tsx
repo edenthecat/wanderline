@@ -17,6 +17,7 @@ import {
   type Character,
   type NodeFlag,
   type NodeMetadata,
+  type VariableDeclaration,
 } from '../api/client';
 import { FLAG_REASON_LABELS } from './flagLabels';
 import NodeAudioPanel from './NodeAudioPanel';
@@ -119,6 +120,11 @@ export interface NodeDetailProps {
   audioActions?: NodeAudioActions;
   /** Default levels (0-100) for auditioning the passage's mix. */
   audioLevels?: { voiceover: number; ambience: number };
+  /** The project's declared story variables, for building a
+   * variable-conditioned audio variant (DEV-199 follow-on) — only
+   * variables already parsed from source can be picked; declaring a
+   * brand-new one is a separate, not-yet-built feature. */
+  variables?: VariableDeclaration[];
   /** Click a "Reachable from" entry to jump the canvas / list to it. */
   onJumpToNode?: (nodeId: string) => void;
   /**: shared Y.Doc for this project (null until connected).
@@ -158,6 +164,7 @@ export default function NodeDetail({
   audioFiles,
   audioActions,
   audioLevels,
+  variables,
   reachableFrom,
   onJumpToNode,
   yDoc,
@@ -613,6 +620,7 @@ export default function NodeDetail({
         nodeAudio={nodeAudio}
         audioNames={audioNames}
         audioFiles={audioFiles}
+        declaredVariables={variables}
         actions={audioActions}
         levels={audioLevels}
       />

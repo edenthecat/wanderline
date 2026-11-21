@@ -14,13 +14,46 @@
 // Windows/Linux) can't swap a take by accident.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { audioFileUrl, type AudioAssignments, type AudioFile } from '../api/client';
+import {
+  audioFileUrl,
+  type AudioAssignments,
+  type AudioAssignmentVariant,
+  type AudioFile,
+  type ComparisonOperator,
+  type SimpleCondition,
+  type VariableDeclaration,
+  type VariableValue,
+} from '../api/client';
 import { useAudition } from '../hooks/useAudition';
 import { useMixAudition } from '../hooks/useMixAudition';
 import type { NodeAudioActions, NodeAudioSlot } from '../hooks/useNodeEditor';
 import AuditionButton from './AuditionButton';
 
 type SingleSlot = Exclude<NodeAudioSlot, 'sfx'>;
+
+/** A short, human-readable summary of a condition, for labelling a
+ * conditioned variant's row — e.g. "mood == angry". */
+function describeCondition(condition: SimpleCondition): string {
+  const value =
+    typeof condition.value === 'string' ? `"${condition.value}"` : String(condition.value);
+  return `${condition.variable} ${condition.operator} ${value}`;
+}
+
+const COMPARISON_OPERATORS: { value: ComparisonOperator; label: string }[] = [
+  { value: '==', label: '=' },
+  { value: '!=', label: '≠' },
+  { value: '<', label: '<' },
+  { value: '<=', label: '≤' },
+  { value: '>', label: '>' },
+  { value: '>=', label: '≥' },
+];
+
+/** Operators that make sense for a variable's declared type — a
+ * string/bool only ever supports equality; ordering operators on a
+ * string would be legal (lexicographic) but confusing to offer here. */
+function operatorsFor(type: VariableDeclaration['type']): ComparisonOperator[] {
+  return type === 'number' ? ['==', '!=', '<', '<=', '>', '>='] : ['==', '!='];
+}
 
 /** How long a replace or remove waits for that effect's timing to save. */
 const SAVE_WAIT_CAP_MS = 10_000;
@@ -46,6 +79,11 @@ interface Props {
   actions?: NodeAudioActions;
   /** Default levels (0-100) for the mix audition. */
   levels?: { voiceover: number; ambience: number };
+  /** The project's declared story variables, for building a
+   * variable-conditioned audio variant. Absent or empty: the "add a
+   * conditional variant" affordance doesn't render — there's nothing
+   * to condition on yet. */
+  declaredVariables?: VariableDeclaration[];
 }
 
 /** Seconds as the author types them; '' means "as the passage starts". */
@@ -62,6 +100,14 @@ export function formatOffsetSeconds(ms: number | undefined): string {
   return String(Number((ms / 1000).toFixed(3)));
 }
 
+/** The slot's unconditioned/fallback variant, if any — what plays
+ * when no conditioned variant's condition currently matches. Used
+ * for the mix-audition preview, which previews a static mix rather
+ * than simulating live variable state. */
+function defaultVariant(variants?: AudioAssignmentVariant[]): AudioAssignmentVariant | undefined {
+  return variants?.find((v) => !v.condition);
+}
+
 export default function NodeAudioPanel({
   projectId,
   nodeId,
@@ -70,22 +116,28 @@ export default function NodeAudioPanel({
   audioFiles = [],
   actions,
   levels = { voiceover: 100, ambience: 50 },
+  declaredVariables = [],
 }: Props) {
   const clip = useAudition();
   const mix = useMixAudition();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Which row's picker is open: a slot key, 'sfx:<fileId>' or 'add-sfx'.
+  // Which row's picker is open: a slot key, `${slotKey}:cond` (the new-
+  // conditional-variant picker), 'sfx:<fileId>' or 'add-sfx'.
   const [picking, setPicking] = useState<string | null>(null);
   const [showEmpty, setShowEmpty] = useState(false);
+  // Which slot's "add a conditional variant" builder is open.
+  const [addingConditionFor, setAddingConditionFor] = useState<SingleSlot | null>(null);
 
   const sfx = nodeAudio?.sfx ?? [];
   const offsets = nodeAudio?.sfxOffsets ?? {};
-  const attachedSlots = SLOTS.filter((s) => nodeAudio?.[s.key]);
-  const emptySlots = SLOTS.filter((s) => !nodeAudio?.[s.key]);
+  const attachedSlots = SLOTS.filter((s) => (nodeAudio?.[s.key]?.length ?? 0) > 0);
+  const emptySlots = SLOTS.filter((s) => (nodeAudio?.[s.key]?.length ?? 0) === 0);
   const hasAnything = attachedSlots.length > 0 || sfx.length > 0;
   const canEdit = !!actions && audioFiles.length > 0;
-  const canMix = !!nodeAudio?.ambience || sfx.length > 0;
+  const canAddCondition = canEdit && declaredVariables.length > 0;
+  const ambienceDefault = defaultVariant(nodeAudio?.ambience);
+  const canMix = !!ambienceDefault || sfx.length > 0;
 
   // A peer's change can take away what the mix was playing, and with it
   // the Stop button; don't leave a bed looping with no way to stop it.
@@ -204,10 +256,14 @@ export default function NodeAudioPanel({
       return;
     }
     clip.stop();
+    // Previews the DEFAULT variant for a conditioned slot — a static
+    // preview, not a live simulation of which variable-conditioned
+    // candidate would actually play.
+    const voiceoverDefault = defaultVariant(nodeAudio?.voiceover);
     // Synchronously, inside the click: see useMixAudition.
     mix.play({
-      voiceUrl: nodeAudio?.voiceover ? src(nodeAudio.voiceover) : undefined,
-      ambienceUrl: nodeAudio?.ambience ? src(nodeAudio.ambience) : undefined,
+      voiceUrl: voiceoverDefault ? src(voiceoverDefault.fileId) : undefined,
+      ambienceUrl: ambienceDefault ? src(ambienceDefault.fileId) : undefined,
       sfx: sfx.map((id) => ({ url: src(id), offsetMs: offsets[id] })),
       voiceVolume: levels.voiceover / 100,
       ambienceVolume: levels.ambience / 100,
@@ -264,7 +320,7 @@ export default function NodeAudioPanel({
           >
             {mix.playing
               ? '■ Stop mix'
-              : nodeAudio?.ambience
+              : ambienceDefault
                 ? '▶ Play with ambience'
                 : '▶ Play with effects'}
           </button>
@@ -277,41 +333,81 @@ export default function NodeAudioPanel({
       )}
       <ul className="node-audio-list">
         {attachedSlots.map((slot) => {
-          const fileId = nodeAudio![slot.key]!;
-          return (
-            <li key={slot.key} className="node-audio-row">
-              <AuditionButton
-                id={`${slot.key}:${fileId}`}
-                url={src(fileId)}
-                label={slot.label}
-                playingId={clip.playingId}
-                toggle={playClip}
-              />
-              <span className="node-audio-label">{slot.label}</span>
-              <span className="node-audio-file text-muted">{name(fileId)}</span>
-              <span className="node-audio-actions">
-                {rowActions(
-                  slot.key,
-                  slot.label.toLowerCase(),
-                  fileId,
-                  () => void run(() => actions!.clear(nodeId, slot.key, fileId)),
-                )}
-              </span>
-              {picking === slot.key && actions && (
-                <FilePicker
-                  files={audioFiles}
-                  category={slot.category}
-                  exclude={[fileId]}
-                  confirm="Use"
-                  label={`Replacement ${slot.label.toLowerCase()} for ${nodeId}`}
-                  busy={busy}
-                  onPick={(to) => void run(() => actions.replace(nodeId, slot.key, fileId, to))}
-                  onCancel={() => setPicking(null)}
+          const variants = nodeAudio![slot.key]!;
+          return variants.map((variant, variantIndex) => {
+            const fileId = variant.fileId;
+            // Distinct from other variants of the same slot/file by
+            // index — two conditioned variants could reference the
+            // same file under different conditions.
+            const rowKey = `${slot.key}:${variantIndex}`;
+            const variantLabel = variant.condition
+              ? `${slot.label} — when ${describeCondition(variant.condition)}`
+              : slot.label;
+            return (
+              <li key={rowKey} className="node-audio-row">
+                <AuditionButton
+                  id={`${rowKey}:${fileId}`}
+                  url={src(fileId)}
+                  label={variantLabel}
+                  playingId={clip.playingId}
+                  toggle={playClip}
                 />
+                <span className="node-audio-label">{variantLabel}</span>
+                <span className="node-audio-file text-muted">{name(fileId)}</span>
+                <span className="node-audio-actions">
+                  {rowActions(
+                    rowKey,
+                    variantLabel.toLowerCase(),
+                    fileId,
+                    () =>
+                      void run(() => actions!.clear(nodeId, slot.key, fileId, variant.condition)),
+                  )}
+                </span>
+                {picking === rowKey && actions && (
+                  <FilePicker
+                    files={audioFiles}
+                    category={slot.category}
+                    exclude={[fileId]}
+                    confirm="Use"
+                    label={`Replacement ${variantLabel.toLowerCase()} for ${nodeId}`}
+                    busy={busy}
+                    onPick={(to) => void run(() => actions.replace(nodeId, slot.key, fileId, to))}
+                    onCancel={() => setPicking(null)}
+                  />
+                )}
+              </li>
+            );
+          });
+        })}
+        {canAddCondition &&
+          SLOTS.map((slot) => (
+            <li key={`add-condition-${slot.key}`} className="node-audio-row">
+              <span className="audition-btn-spacer" aria-hidden="true" />
+              <span className="node-audio-label text-muted">{slot.label}</span>
+              {addingConditionFor === slot.key ? (
+                <ConditionVariantBuilder
+                  slotLabel={slot.label}
+                  category={slot.category}
+                  nodeId={nodeId}
+                  declaredVariables={declaredVariables}
+                  audioFiles={audioFiles}
+                  busy={busy}
+                  onSubmit={(condition, fileId) =>
+                    void run(() => actions!.assign(nodeId, slot.key, fileId, condition))
+                  }
+                  onCancel={() => setAddingConditionFor(null)}
+                />
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-ghost"
+                  onClick={() => setAddingConditionFor(slot.key)}
+                >
+                  + Add conditional variant…
+                </button>
               )}
             </li>
-          );
-        })}
+          ))}
         {sfx.map((fileId, i) => {
           const key = `sfx:${fileId}`;
           return (
@@ -425,6 +521,175 @@ export default function NodeAudioPanel({
         </button>
       )}
     </div>
+  );
+}
+
+/** A declared variable's value as the author types it, parsed against
+ * its declared type. Returns 'invalid' for a number field that isn't
+ * a number — a string/bool field can't be invalid (bool is a
+ * dropdown, string accepts anything). */
+function parseConditionValue(
+  text: string,
+  type: VariableDeclaration['type'],
+): VariableValue | 'invalid' {
+  if (type === 'bool') return text === 'true';
+  if (type === 'number') {
+    const n = Number(text);
+    return text.trim() !== '' && Number.isFinite(n) ? n : 'invalid';
+  }
+  return text;
+}
+
+/**
+ * Builds one new variable-conditioned audio variant: pick a declared
+ * variable, an operator (narrowed to what makes sense for that
+ * variable's type), a value, then the file to play when the
+ * condition holds. Calling onSubmit is the caller's job to turn into
+ * an actual assign() — this component only builds the condition +
+ * picks the file.
+ */
+function ConditionVariantBuilder({
+  slotLabel,
+  category,
+  nodeId,
+  declaredVariables,
+  audioFiles,
+  busy,
+  onSubmit,
+  onCancel,
+}: {
+  slotLabel: string;
+  category: string;
+  nodeId: string;
+  declaredVariables: VariableDeclaration[];
+  audioFiles: AudioFile[];
+  busy: boolean;
+  onSubmit: (condition: SimpleCondition, fileId: string) => void;
+  onCancel: () => void;
+}) {
+  const [variableName, setVariableName] = useState(declaredVariables[0]?.name ?? '');
+  const variable = declaredVariables.find((v) => v.name === variableName);
+  const operators = variable ? operatorsFor(variable.type) : [];
+  const [operator, setOperator] = useState<ComparisonOperator>(operators[0] ?? '==');
+  const [valueText, setValueText] = useState('');
+  const [valueError, setValueError] = useState(false);
+  const [condition, setCondition] = useState<SimpleCondition | null>(null);
+
+  // Picking a different variable resets the operator to a valid one
+  // for its type, and clears the value (a leftover "angry" typed for
+  // a string variable makes no sense once gold's type is selected).
+  const onVariableChange = (name: string) => {
+    setVariableName(name);
+    const next = declaredVariables.find((v) => v.name === name);
+    setOperator((next ? operatorsFor(next.type) : [])[0] ?? '==');
+    setValueText('');
+    setValueError(false);
+  };
+
+  if (declaredVariables.length === 0) return null;
+
+  const confirmCondition = () => {
+    if (!variable) return;
+    const value = parseConditionValue(valueText, variable.type);
+    if (value === 'invalid') {
+      setValueError(true);
+      return;
+    }
+    setValueError(false);
+    setCondition({ variable: variable.name, operator, value });
+  };
+
+  if (condition) {
+    return (
+      <span className="node-audio-picker-row">
+        <span className="text-sm text-muted">when {describeCondition(condition)}, play</span>
+        <FilePicker
+          files={audioFiles}
+          category={category}
+          exclude={[]}
+          confirm="Add"
+          label={`${slotLabel} to play when ${describeCondition(condition)} on ${nodeId}`}
+          busy={busy}
+          onPick={(fileId) => onSubmit(condition, fileId)}
+          onCancel={() => setCondition(null)}
+        />
+      </span>
+    );
+  }
+
+  return (
+    <span className="node-audio-picker-row">
+      <select
+        className="select select-inline"
+        value={variableName}
+        aria-label={`Variable to condition ${slotLabel} on`}
+        onChange={(e) => onVariableChange(e.target.value)}
+      >
+        {declaredVariables.map((v) => (
+          <option key={v.name} value={v.name}>
+            {v.name}
+          </option>
+        ))}
+      </select>
+      <select
+        className="select select-inline"
+        value={operator}
+        aria-label="Comparison operator"
+        onChange={(e) => setOperator(e.target.value as ComparisonOperator)}
+      >
+        {operators.map((op) => {
+          const found = COMPARISON_OPERATORS.find((o) => o.value === op);
+          return (
+            <option key={op} value={op}>
+              {found?.label ?? op}
+            </option>
+          );
+        })}
+      </select>
+      {variable?.type === 'bool' ? (
+        <select
+          className="select select-inline"
+          value={valueText}
+          aria-label="Value"
+          onChange={(e) => setValueText(e.target.value)}
+        >
+          <option value="">Choose…</option>
+          <option value="true">true</option>
+          <option value="false">false</option>
+        </select>
+      ) : (
+        <input
+          type={variable?.type === 'number' ? 'number' : 'text'}
+          className="input input-inline"
+          value={valueText}
+          placeholder="value"
+          aria-label="Value"
+          onChange={(e) => {
+            setValueText(e.target.value);
+            setValueError(false);
+          }}
+        />
+      )}
+      <button
+        type="button"
+        className="btn btn-sm"
+        aria-disabled={busy || !valueText}
+        onClick={() => {
+          if (busy || !valueText) return;
+          confirmCondition();
+        }}
+      >
+        Next: pick a file
+      </button>
+      <button type="button" className="btn btn-sm btn-ghost" onClick={onCancel}>
+        Cancel
+      </button>
+      {valueError && (
+        <span className="text-sm text-error">
+          {variable?.type === 'number' ? 'Enter a number.' : 'Enter a value.'}
+        </span>
+      )}
+    </span>
   );
 }
 

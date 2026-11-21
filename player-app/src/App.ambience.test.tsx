@@ -118,7 +118,7 @@ describe('preloading', () => {
         'start',
         'The beginning.',
         {
-          ambience: 'rain.mp3',
+          ambience: [{ file: 'rain.mp3' }],
           sfx: [{ file: 'door.mp3' }],
         },
         ON,
@@ -134,7 +134,10 @@ describe('preloading', () => {
 
 describe('ambience', () => {
   it('stays quiet on the instructions screen and starts with the story', async () => {
-    load({ start: node('start', 'The beginning.', { ambience: 'rain.mp3' }, ON), later });
+    load({
+      start: node('start', 'The beginning.', { ambience: [{ file: 'rain.mp3' }] }, ON),
+      later,
+    });
     await screen.findByLabelText('Start the story');
     expect(sounding('rain.mp3')).toHaveLength(0);
 
@@ -149,10 +152,10 @@ describe('ambience', () => {
 
   it('carries one bed across passages that share it', async () => {
     load({
-      start: node('start', 'The beginning.', { ambience: 'rain.mp3' }, [
+      start: node('start', 'The beginning.', { ambience: [{ file: 'rain.mp3' }] }, [
         { text: 'On', target: 'second' },
       ]),
-      second: node('second', 'The middle.', { ambience: 'rain.mp3' }, ON),
+      second: node('second', 'The middle.', { ambience: [{ file: 'rain.mp3' }] }, ON),
       later,
     });
     await start();
@@ -167,10 +170,10 @@ describe('ambience', () => {
 
   it('crossfades into the next passage’s bed, and out on a passage with none', async () => {
     load({
-      start: node('start', 'The beginning.', { ambience: 'rain.mp3' }, [
+      start: node('start', 'The beginning.', { ambience: [{ file: 'rain.mp3' }] }, [
         { text: 'On', target: 'second' },
       ]),
-      second: node('second', 'The middle.', { ambience: 'wind.mp3' }, [
+      second: node('second', 'The middle.', { ambience: [{ file: 'wind.mp3' }] }, [
         { text: 'On', target: 'third' },
       ]),
       third: node('third', 'The end.', undefined),
@@ -191,7 +194,10 @@ describe('ambience', () => {
   });
 
   it('follows the listener’s ambience slider', async () => {
-    load({ start: node('start', 'The beginning.', { ambience: 'rain.mp3' }, ON), later });
+    load({
+      start: node('start', 'The beginning.', { ambience: [{ file: 'rain.mp3' }] }, ON),
+      later,
+    });
     fireEvent.change(await screen.findByLabelText(/^Ambience and sound effects volume/), {
       target: { value: '20' },
     });
@@ -207,7 +213,10 @@ describe('ambience', () => {
       audioBaseUrl: './audio/',
       startNode: 'start',
       settings: { ambienceVolume: 80 },
-      nodes: { start: node('start', 'The beginning.', { ambience: 'rain.mp3' }, ON), later },
+      nodes: {
+        start: node('start', 'The beginning.', { ambience: [{ file: 'rain.mp3' }] }, ON),
+        later,
+      },
     };
     render(<App />);
     await start();
@@ -222,7 +231,10 @@ describe('ambience at the end of the story', () => {
   // "The End" for as long as the page is open.
   it('keeps the bed under the final narration, then fades it out', async () => {
     load({
-      start: node('start', 'The beginning.', { voiceover: 'end.mp3', ambience: 'rain.mp3' }),
+      start: node('start', 'The beginning.', {
+        voiceover: [{ file: 'end.mp3' }],
+        ambience: [{ file: 'rain.mp3' }],
+      }),
     });
     await start();
     await screen.findByLabelText('Pause narration');
@@ -236,10 +248,10 @@ describe('ambience at the end of the story', () => {
 
   it('stops on a final passage with no narration', async () => {
     load({
-      start: node('start', 'The beginning.', { ambience: 'rain.mp3' }, [
+      start: node('start', 'The beginning.', { ambience: [{ file: 'rain.mp3' }] }, [
         { text: 'On', target: 'last' },
       ]),
-      last: node('last', 'The last words.', { ambience: 'rain.mp3' }),
+      last: node('last', 'The last words.', { ambience: [{ file: 'rain.mp3' }] }),
     });
     await start();
     await wait(AMBIENCE_FADE_MS);
@@ -256,11 +268,11 @@ describe('ambience after an ending is left behind', () => {
   // screen. Picking one of those is a story in progress again.
   it('comes back when the listener picks another way on', async () => {
     load({
-      start: node('start', 'The beginning.', { ambience: 'rain.mp3' }, [
+      start: node('start', 'The beginning.', { ambience: [{ file: 'rain.mp3' }] }, [
         { text: 'Leave', target: 'END' },
         { text: 'Stay', target: 'stay' },
       ]),
-      stay: node('stay', 'You stay.', { ambience: 'rain.mp3' }, ON),
+      stay: node('stay', 'You stay.', { ambience: [{ file: 'rain.mp3' }] }, ON),
       later,
     });
     await start();
@@ -277,7 +289,7 @@ describe('ambience after an ending is left behind', () => {
 
   it('comes back when r restarts from the end screen', async () => {
     load({
-      start: node('start', 'The beginning.', { ambience: 'rain.mp3' }, [
+      start: node('start', 'The beginning.', { ambience: [{ file: 'rain.mp3' }] }, [
         { text: 'Leave', target: 'END' },
       ]),
     });
@@ -297,7 +309,7 @@ describe('sound effects', () => {
   it('on a narrated passage: plays unset ones as it starts and timed ones on the narration’s clock', async () => {
     load({
       start: node('start', 'The beginning.', {
-        voiceover: 'start.mp3',
+        voiceover: [{ file: 'start.mp3' }],
         sfx: [{ file: 'door.mp3' }, { file: 'bell.mp3', offsetMs: 2000 }],
       }),
     });
@@ -331,7 +343,7 @@ describe('sound effects', () => {
           'start',
           'The beginning.',
           {
-            voiceover: 'start.mp3',
+            voiceover: [{ file: 'start.mp3' }],
             sfx: [{ file: 'door.mp3' }, { file: 'bell.mp3', offsetMs: 0 }],
           },
           ON,
@@ -358,7 +370,7 @@ describe('sound effects', () => {
         ...node(
           'start',
           'The beginning.',
-          { voiceover: 'start.mp3', sfx: [{ file: 'door.mp3' }] },
+          { voiceover: [{ file: 'start.mp3' }], sfx: [{ file: 'door.mp3' }] },
           ON,
         ),
         metadata: { delayBeforeMs: 3000 },
@@ -387,10 +399,10 @@ describe('sound effects', () => {
       start: node(
         'start',
         'The beginning.',
-        { voiceover: 'start.mp3', sfx: [{ file: 'door.mp3' }] },
+        { voiceover: [{ file: 'start.mp3' }], sfx: [{ file: 'door.mp3' }] },
         [{ text: 'On', target: 'second' }],
       ),
-      second: node('second', 'The middle.', { voiceover: 'second.mp3' }, ON),
+      second: node('second', 'The middle.', { voiceover: [{ file: 'second.mp3' }] }, ON),
       later,
     });
     await start();
@@ -448,7 +460,7 @@ describe('sound effects', () => {
       start: node(
         'start',
         'The beginning.',
-        { voiceover: 'start.mp3', sfx: [{ file: 'door.mp3' }] },
+        { voiceover: [{ file: 'start.mp3' }], sfx: [{ file: 'door.mp3' }] },
         ON,
       ),
       later,
@@ -480,7 +492,7 @@ describe('sound effects', () => {
         'start',
         'The beginning.',
         {
-          voiceover: 'start.mp3',
+          voiceover: [{ file: 'start.mp3' }],
           sfx: [{ file: 'door.mp3' }, { file: 'bell.mp3', offsetMs: 1000 }],
         },
         ON,
@@ -519,7 +531,7 @@ describe('sound effects', () => {
       start: node(
         'start',
         'The beginning.',
-        { voiceover: 'start.mp3', sfx: [{ file: 'bell.mp3', offsetMs: 60_000 }] },
+        { voiceover: [{ file: 'start.mp3' }], sfx: [{ file: 'bell.mp3', offsetMs: 60_000 }] },
         ON,
       ),
       later,

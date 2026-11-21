@@ -24,7 +24,7 @@ describe('collectUsedAudioFilenames', () => {
           choices: [],
           divert: null,
           tags: [],
-          audio: { voiceover: 'vo1.mp3' },
+          audio: { voiceover: [{ file: 'vo1.mp3' }] },
         },
         next: {
           id: 'next',
@@ -33,7 +33,7 @@ describe('collectUsedAudioFilenames', () => {
           choices: [],
           divert: null,
           tags: [],
-          audio: { voiceover: 'vo2.mp3', ambience: 'amb1.mp3' },
+          audio: { voiceover: [{ file: 'vo2.mp3' }], ambience: [{ file: 'amb1.mp3' }] },
         },
       },
     });
@@ -52,7 +52,7 @@ describe('collectUsedAudioFilenames', () => {
           choices: [],
           divert: null,
           tags: [],
-          audio: { choice1: 'c1.mp3', choice2: 'c2.mp3' },
+          audio: { choice1: [{ file: 'c1.mp3' }], choice2: [{ file: 'c2.mp3' }] },
         },
       },
     });
@@ -124,7 +124,7 @@ describe('collectUsedAudioFilenames', () => {
           choices: [],
           divert: null,
           tags: [],
-          audio: { voiceover: 'shared.mp3' },
+          audio: { voiceover: [{ file: 'shared.mp3' }] },
         },
       },
     });

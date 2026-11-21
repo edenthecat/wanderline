@@ -5,6 +5,7 @@ import { useAudioCache } from './useAudioCache';
 import { orderAudioUrlsForDownload } from './audio-download-order';
 import { useAmbience } from './useAmbience';
 import { isUntimed, takeDueSfx, takeUntimedSfx, sfxOffset, type PassageSfx } from './passage-sfx';
+import { resolveAudioVariant, allAudioVariantFiles, type AudioVariant } from './audio-variants';
 import OfflineControls from './OfflineControls';
 import { styles } from './styles';
 import {
@@ -31,6 +32,7 @@ import {
   sanitizeChoiceAudioDelayMs,
   isTextBlock,
   evaluate,
+  evaluateSimpleCondition,
   execute,
   truthy,
   type ContentBlock,
@@ -104,10 +106,16 @@ interface StoryNode {
   divert: string | null;
   tags: string[];
   audio?: {
-    voiceover?: string;
-    ambience?: string;
-    choice1?: string;
-    choice2?: string;
+    // Each single-value slot is a LIST of candidates, not a single
+    // filename — several can coexist, each gated by an optional
+    // variable condition; resolveAudioVariant (audio-variants.ts)
+    // picks the one that actually plays. sfx entries are similarly
+    // each independently gated (see PassageSfx.condition), not
+    // mutually exclusive alternatives.
+    voiceover?: AudioVariant[];
+    ambience?: AudioVariant[];
+    choice1?: AudioVariant[];
+    choice2?: AudioVariant[];
     sfx?: PassageSfx[];
   };
   metadata?: {
@@ -497,6 +505,22 @@ function clampVolume(level: number): number {
 }
 
 /**
+ * Cache key for preloading one candidate of a voiceover/choice1/
+ * choice2 slot. The FIRST candidate (index 0) shares the plain
+ * `prefix+nodeId` key that actual playback (getCachedAudio in
+ * playVoiceover) always uses for that slot — for the overwhelmingly
+ * common single-candidate slot, this means preloading IS populating
+ * the exact cache entry playback will read, same sharing the old
+ * single-file code got for free. Only additional candidates (index
+ * 1+) get their own suffixed key, since reusing the plain key for
+ * them would make preloadAudio's "already loaded under this key"
+ * short-circuit silently skip loading everything past the first.
+ */
+function preloadKey(prefix: string, nodeId: string, index: number): string {
+  return index === 0 ? prefix + nodeId : `${prefix}${nodeId}_${index}`;
+}
+
+/**
  * A passage's ambience bed and sound effects as cache entries. Keyed by
  * URL, not node: the same bed or effect is usually shared by several
  * passages, and one cached copy serves them all. The keys match what
@@ -507,8 +531,12 @@ function passageExtras(
   audioBaseUrl: string,
 ): Array<{ key: string; url: string }> {
   const extras: Array<{ key: string; url: string }> = [];
-  if (node?.audio?.ambience) {
-    const url = audioBaseUrl + node.audio.ambience;
+  // Every candidate ambience bed is cache-warmed, not just whichever
+  // one the live variable state would currently pick — same "preload
+  // everything, decide at play time" simplification used everywhere
+  // else audio variants are preloaded.
+  for (const file of allAudioVariantFiles(node?.audio?.ambience)) {
+    const url = audioBaseUrl + file;
     extras.push({ key: 'amb_' + url, url });
   }
   for (const fx of node?.audio?.sfx ?? []) {
@@ -884,14 +912,25 @@ export default function App() {
     ];
     for (const nodeId of nearbyNodeIds) {
       const node = story.nodes[nodeId];
-      if (node?.audio?.voiceover) {
-        criticalFiles.push({ key: 'vo_' + nodeId, url: story.audioBaseUrl + node.audio.voiceover });
+      // Every candidate for each slot is preloaded — see preloadKey's
+      // doc comment for why only the first shares playback's key.
+      for (const [i, variant] of (node?.audio?.voiceover ?? []).entries()) {
+        criticalFiles.push({
+          key: preloadKey('vo_', nodeId, i),
+          url: story.audioBaseUrl + variant.file,
+        });
       }
-      if (node?.audio?.choice1) {
-        criticalFiles.push({ key: 'c1_' + nodeId, url: story.audioBaseUrl + node.audio.choice1 });
+      for (const [i, variant] of (node?.audio?.choice1 ?? []).entries()) {
+        criticalFiles.push({
+          key: preloadKey('c1_', nodeId, i),
+          url: story.audioBaseUrl + variant.file,
+        });
       }
-      if (node?.audio?.choice2) {
-        criticalFiles.push({ key: 'c2_' + nodeId, url: story.audioBaseUrl + node.audio.choice2 });
+      for (const [i, variant] of (node?.audio?.choice2 ?? []).entries()) {
+        criticalFiles.push({
+          key: preloadKey('c2_', nodeId, i),
+          url: story.audioBaseUrl + variant.file,
+        });
       }
       // The bed and effects start with the passage, alongside its
       // narration, so they're wanted as early.
@@ -918,17 +957,20 @@ export default function App() {
 
     // Remaining nodes
     for (const [nodeId, node] of Object.entries(story.nodes)) {
-      if (node.audio?.voiceover && !criticalKeys.has('vo_' + nodeId)) {
-        backgroundFiles.push({
-          key: 'vo_' + nodeId,
-          url: story.audioBaseUrl + node.audio.voiceover,
-        });
+      for (const [i, variant] of (node.audio?.voiceover ?? []).entries()) {
+        const key = preloadKey('vo_', nodeId, i);
+        if (!criticalKeys.has(key))
+          backgroundFiles.push({ key, url: story.audioBaseUrl + variant.file });
       }
-      if (node.audio?.choice1 && !criticalKeys.has('c1_' + nodeId)) {
-        backgroundFiles.push({ key: 'c1_' + nodeId, url: story.audioBaseUrl + node.audio.choice1 });
+      for (const [i, variant] of (node.audio?.choice1 ?? []).entries()) {
+        const key = preloadKey('c1_', nodeId, i);
+        if (!criticalKeys.has(key))
+          backgroundFiles.push({ key, url: story.audioBaseUrl + variant.file });
       }
-      if (node.audio?.choice2 && !criticalKeys.has('c2_' + nodeId)) {
-        backgroundFiles.push({ key: 'c2_' + nodeId, url: story.audioBaseUrl + node.audio.choice2 });
+      for (const [i, variant] of (node.audio?.choice2 ?? []).entries()) {
+        const key = preloadKey('c2_', nodeId, i);
+        if (!criticalKeys.has(key))
+          backgroundFiles.push({ key, url: story.audioBaseUrl + variant.file });
       }
       for (const extra of passageExtras(node, story.audioBaseUrl)) {
         if (!criticalKeys.has(extra.key)) {
@@ -1124,6 +1166,16 @@ export default function App() {
     [currentNode, variables],
   );
 
+  // Which voiceover candidate (if any) actually resolves against live
+  // variable state — used by render to decide whether to show the
+  // play button/progress bar at all. A node whose only candidates are
+  // conditioned and currently all false has no EFFECTIVE voiceover,
+  // same as having none declared.
+  const resolvedVoiceoverFile = useMemo(
+    () => resolveAudioVariant(currentNode?.audio?.voiceover, variables),
+    [currentNode, variables],
+  );
+
   // Every audio URL referenced by the story — used by the
   // "Download for offline" button to ask the service worker to
   // precache them in one pass. Deduped because background music
@@ -1307,23 +1359,18 @@ export default function App() {
       const nearbyNodeIds = getReachableNodes(nodeId, story.nodes, 2);
       for (const nearbyId of nearbyNodeIds) {
         const node = story.nodes[nearbyId];
-        if (node?.audio?.voiceover) {
-          const key = 'vo_' + nearbyId;
-          if (!isCached(key)) {
-            preloadAudio(story.audioBaseUrl + node.audio.voiceover, key);
-          }
+        // See preloadKey's doc comment for the key scheme.
+        for (const [i, variant] of (node?.audio?.voiceover ?? []).entries()) {
+          const key = preloadKey('vo_', nearbyId, i);
+          if (!isCached(key)) preloadAudio(story.audioBaseUrl + variant.file, key);
         }
-        if (node?.audio?.choice1) {
-          const key = 'c1_' + nearbyId;
-          if (!isCached(key)) {
-            preloadAudio(story.audioBaseUrl + node.audio.choice1, key);
-          }
+        for (const [i, variant] of (node?.audio?.choice1 ?? []).entries()) {
+          const key = preloadKey('c1_', nearbyId, i);
+          if (!isCached(key)) preloadAudio(story.audioBaseUrl + variant.file, key);
         }
-        if (node?.audio?.choice2) {
-          const key = 'c2_' + nearbyId;
-          if (!isCached(key)) {
-            preloadAudio(story.audioBaseUrl + node.audio.choice2, key);
-          }
+        for (const [i, variant] of (node?.audio?.choice2 ?? []).entries()) {
+          const key = preloadKey('c2_', nearbyId, i);
+          if (!isCached(key)) preloadAudio(story.audioBaseUrl + variant.file, key);
         }
         for (const { key, url } of passageExtras(node, story.audioBaseUrl)) {
           if (!isCached(key)) preloadAudio(url, key);
@@ -1444,6 +1491,11 @@ export default function App() {
     (sfx: PassageSfx[], indices: number[]) => {
       if (!story) return;
       for (const i of indices) {
+        // Unlike voiceover/ambience/choice1/choice2 (exactly one
+        // candidate wins), each sfx entry is independently gated —
+        // a false condition just means THIS effect doesn't fire this
+        // visit, with no bearing on any other effect in the list.
+        if (sfx[i].condition && !evaluateSimpleCondition(sfx[i].condition, variables)) continue;
         const url = story.audioBaseUrl + sfx[i].file;
         const el = getCachedAudio('sfx_' + url, url);
         el.loop = false;
@@ -1453,7 +1505,7 @@ export default function App() {
         el.play().catch(() => {});
       }
     },
-    [story, getCachedAudio],
+    [story, getCachedAudio, variables],
   );
 
   // Fire whichever of this passage's sound effects are due at
@@ -1477,7 +1529,14 @@ export default function App() {
   );
 
   const playVoiceover = useCallback(() => {
-    if (!story || !currentNode?.audio?.voiceover || !currentNodeId) return;
+    const voiceoverFile = resolveAudioVariant(currentNode?.audio?.voiceover, variables);
+    // currentNode's own nullability check is explicit here (not just
+    // implied by voiceoverFile's truthiness) so the rest of this
+    // function narrows correctly — resolveAudioVariant is an opaque
+    // function call now, not a direct property access TS can trace
+    // back to currentNode.audio's definedness the way the old inline
+    // `!currentNode?.audio?.voiceover` check let it.
+    if (!story || !currentNode || !voiceoverFile || !currentNodeId) return;
     // A call held from an earlier passage (startStory's delayed start, say)
     // must not start that passage's audio or effects on this one.
     if (currentNodeIdRef.current !== currentNodeId) return;
@@ -1601,18 +1660,20 @@ export default function App() {
     }
 
     // Use cached choice audio elements
-    if (currentNode.audio?.choice1) {
-      const url = story.audioBaseUrl + currentNode.audio.choice1;
+    const choice1File = resolveAudioVariant(currentNode?.audio?.choice1, variables);
+    if (choice1File) {
+      const url = story.audioBaseUrl + choice1File;
       choice1AudioRef.current = getCachedAudio('c1_' + currentNodeId, url);
     }
-    if (currentNode.audio?.choice2) {
-      const url = story.audioBaseUrl + currentNode.audio.choice2;
+    const choice2File = resolveAudioVariant(currentNode?.audio?.choice2, variables);
+    if (choice2File) {
+      const url = story.audioBaseUrl + choice2File;
       choice2AudioRef.current = getCachedAudio('c2_' + currentNodeId, url);
     }
 
     // Stale callbacks are handled by isStale() above, which covers both
     // the captured node id and the playback epoch.
-    const audioUrl = story.audioBaseUrl + currentNode.audio.voiceover;
+    const audioUrl = story.audioBaseUrl + voiceoverFile;
     // Use cached voiceover audio if available
     const audio = getCachedAudio('vo_' + currentNodeId, audioUrl);
     audio.volume = voiceoverVolume / 100;
@@ -1824,8 +1885,7 @@ export default function App() {
       }
 
       // Max retries reached - show error
-      const filename = currentNode.audio?.voiceover || 'unknown';
-      console.error('[wanderline] audio load error', { file: filename, url: audioUrl });
+      console.error('[wanderline] audio load error', { file: voiceoverFile, url: audioUrl });
       setAudioError('Audio could not be loaded - check your connection');
       setRetryingAudio(false);
       setPlayerState('ready');
@@ -1965,7 +2025,7 @@ export default function App() {
       (!currentNode?.audio?.voiceover || playerState === 'ended' || !!audioError));
   const ambienceFile =
     story && isAuthenticated && !showInstructions && !storyOver
-      ? currentNode?.audio?.ambience
+      ? resolveAudioVariant(currentNode?.audio?.ambience, variables)
       : undefined;
   const getAmbienceElement = useCallback(
     (url: string) => getCachedAudio('amb_' + url, url),
@@ -2000,13 +2060,29 @@ export default function App() {
   // this without replaying them.
   useEffect(() => {
     if (!story || !currentNode || !isAuthenticated || showInstructions) return;
-    if (!currentNode.audio?.voiceover || !currentNode.audio.sfx?.length) return;
+    // Resolved, not just present: a node whose only voiceover
+    // candidates are conditioned and none currently match has NO
+    // effective voiceover, so this passage behaves as voiceover-less
+    // (the sibling effect below), same as if it had none at all.
+    if (
+      !resolveAudioVariant(currentNode.audio?.voiceover, variables) ||
+      !currentNode.audio?.sfx?.length
+    )
+      return;
     const visit = currentNode.id + '#' + passageEntryRef.current;
     if (voicedSfxVisitRef.current === visit) return;
     voicedSfxVisitRef.current = visit;
     sfxPlayedRef.current = new Set();
     playUntimedSfx(currentNode.audio.sfx);
-  }, [story, currentNode, isAuthenticated, showInstructions, passageEntry, playUntimedSfx]);
+  }, [
+    story,
+    currentNode,
+    isAuthenticated,
+    showInstructions,
+    passageEntry,
+    playUntimedSfx,
+    variables,
+  ]);
 
   // Sound effects on a passage with no narration. There's no voiceover
   // clock to follow, so each one's offset counts from arriving. With
@@ -2021,7 +2097,9 @@ export default function App() {
   const sfxVisitElapsedRef = useRef(0);
   useEffect(() => {
     if (!story || !currentNode || !isAuthenticated || showInstructions) return;
-    if (currentNode.audio?.voiceover) return;
+    // Resolved, not just present — see the matching comment on the
+    // sibling effect above.
+    if (resolveAudioVariant(currentNode.audio?.voiceover, variables)) return;
     const sfx = currentNode.audio?.sfx;
     if (!sfx?.length) return;
     const visit = currentNode.id + '#' + passageEntry;
@@ -2048,7 +2126,7 @@ export default function App() {
         sfxVisitElapsedRef.current = alreadyElapsed + (Date.now() - startedAt);
       }
     };
-  }, [story, currentNode, isAuthenticated, showInstructions, playDueSfx, passageEntry]);
+  }, [story, currentNode, isAuthenticated, showInstructions, playDueSfx, passageEntry, variables]);
 
   // Voiceover-less auto-advance: when the current node has no audio
   // there's no `audio.onended` to hook into, so the auto-advance path
@@ -2056,7 +2134,10 @@ export default function App() {
   // silent transition nodes (a pure divert) with timing fields too.
   useEffect(() => {
     if (!story || !currentNode || !isAuthenticated || showInstructions) return;
-    if (currentNode.audio?.voiceover) return; // handled by playVoiceover's audio.onended
+    // Resolved, not just present — see the matching comment on the
+    // sfx effects above; an effectively voiceover-less node (every
+    // candidate conditioned out) has no onended to hook into either.
+    if (resolveAudioVariant(currentNode.audio?.voiceover, variables)) return; // handled by playVoiceover's audio.onended
     const target = autoAdvanceTarget(currentNode, { autoAdvance }, story.nodes, variables);
     if (!target) return;
     // Compose: pre-roll → (no audio, so hold at least long enough to
@@ -3367,7 +3448,7 @@ export default function App() {
             used to be trapped inside the audio-only condition, so a
             text-only passage — or one whose audio failed, which is
             exactly when someone wants to retreat — had no way back. */}
-        {(history.length > 0 || (currentNode.audio?.voiceover && !audioError && !audioSkipped)) && (
+        {(history.length > 0 || (resolvedVoiceoverFile && !audioError && !audioSkipped)) && (
           <div style={styles.player} role="group" aria-label="Playback controls" lang="en">
             {/* goBack was reachable only by Backspace or a headphone
                 button, so on a phone — the primary way this is listened
@@ -3387,7 +3468,7 @@ export default function App() {
                 <span aria-hidden="true">&#8592;</span>
               </button>
             )}
-            {currentNode.audio?.voiceover && !audioError && !audioSkipped && (
+            {resolvedVoiceoverFile && !audioError && !audioSkipped && (
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -3407,7 +3488,7 @@ export default function App() {
                 </span>
               </button>
             )}
-            {currentNode.audio?.voiceover &&
+            {resolvedVoiceoverFile &&
               !audioError &&
               !audioSkipped &&
               story.settings?.showProgressBar !== false && (
@@ -3564,10 +3645,10 @@ export default function App() {
                   audioRetryCountRef.current = 0;
                   resumingRef.current = true;
                   setShowConnectionIssue(false);
-                  if (currentNodeId && currentNode?.audio?.voiceover) {
+                  if (currentNodeId && resolvedVoiceoverFile) {
                     retryFailedAudio(
                       'vo_' + currentNodeId,
-                      story.audioBaseUrl + currentNode.audio.voiceover,
+                      story.audioBaseUrl + resolvedVoiceoverFile,
                     );
                   }
                   playVoiceover();

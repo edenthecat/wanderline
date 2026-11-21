@@ -44,6 +44,7 @@ import {
   type NodeFlag,
   type NodeMetadata,
   type StoryGraph,
+  type SimpleCondition,
 } from '../api/client';
 import { bumpLiveSignal, useLiveSignal } from './useLiveSignal';
 
@@ -57,17 +58,32 @@ const CHOICE_TEXT_SAVE_DEBOUNCE_MS = 800;
 export type NodeAudioSlot = 'voiceover' | 'ambience' | 'choice1' | 'choice2' | 'sfx';
 
 export interface NodeAudioActions {
-  /** Attach a file to an empty slot (or add a sound effect). */
-  assign: (nodeId: string, slot: NodeAudioSlot, fileId: string) => Promise<void>;
-  /** Swap one attached file for another, keeping a sound effect's timing. */
+  /** Attach a file to an empty slot (or add a sound effect). `condition`
+   * gates it on a story variable's value — omit for the slot's default/
+   * fallback variant; a different condition adds a new variant alongside
+   * whatever's already there rather than replacing it. */
+  assign: (
+    nodeId: string,
+    slot: NodeAudioSlot,
+    fileId: string,
+    condition?: SimpleCondition,
+  ) => Promise<void>;
+  /** Swap one attached file for another, keeping a sound effect's timing
+   * (and whatever condition that specific row already had). */
   replace: (
     nodeId: string,
     slot: NodeAudioSlot,
     fromFileId: string,
     toFileId: string,
   ) => Promise<void>;
-  /** Detach a file. */
-  clear: (nodeId: string, slot: NodeAudioSlot, fileId: string) => Promise<void>;
+  /** Detach a file. `condition` targets that specific conditioned
+   * variant; omit to target the default/unconditioned one. */
+  clear: (
+    nodeId: string,
+    slot: NodeAudioSlot,
+    fileId: string,
+    condition?: SimpleCondition,
+  ) => Promise<void>;
   /** When a sound effect plays, in ms; null for as the passage starts. */
   setSfxOffset: (nodeId: string, fileId: string, offsetMs: number | null) => Promise<void>;
   /** Upload a new take over a file, everywhere it's used. */
@@ -281,19 +297,25 @@ export function useNodeEditor({
       }
     };
     return {
-      // The panel only offers Attach on a slot it saw empty.
-      assign: (nodeId, slot, fileId) =>
-        run(() => assignAudio(projectId, nodeId, slot, fileId, undefined, slot !== 'sfx')),
+      // The panel only offers Attach on a slot it saw empty (for the
+      // default variant) or a fresh condition (for a conditioned one),
+      // so expectEmpty is safe for both — it checks the SAME condition,
+      // not the whole slot.
+      assign: (nodeId, slot, fileId, condition) =>
+        run(() =>
+          assignAudio(projectId, nodeId, slot, fileId, undefined, slot !== 'sfx', condition),
+        ),
       // The reassign endpoint swaps atomically and keeps a sound effect's
-      // timing; assign would drop it.
+      // timing (and whatever condition that row already had); assign
+      // would drop both.
       replace: (nodeId, slot, fromFileId, toFileId) =>
         run(() =>
           bulkReassignAudio(projectId, [{ nodeId, audioType: slot, fromFileId, toFileId }]),
         ),
       // Always name the file the author saw: if a peer has swapped this
       // slot in the meantime, clearing must not remove their new take.
-      clear: (nodeId, slot, fileId) =>
-        run(() => removeAudioAssignment(projectId, nodeId, slot, fileId)),
+      clear: (nodeId, slot, fileId, condition) =>
+        run(() => removeAudioAssignment(projectId, nodeId, slot, fileId, condition)),
       setSfxOffset: (nodeId, fileId, offsetMs) =>
         run(() => setSfxOffset(projectId, nodeId, fileId, offsetMs)),
       newTake: (fileId, file) => run(() => replaceAudioTake(projectId, fileId, file)),

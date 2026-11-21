@@ -63,7 +63,7 @@ function makeStory(withAudio = true) {
         choices: [{ text: 'Onward', target: 'second' }],
         divert: null,
         tags: [],
-        ...(withAudio ? { audio: { voiceover: 'start.mp3' } } : {}),
+        ...(withAudio ? { audio: { voiceover: [{ file: 'start.mp3' }] } } : {}),
       },
       second: {
         id: 'second',
@@ -72,7 +72,7 @@ function makeStory(withAudio = true) {
         choices: [],
         divert: null,
         tags: [],
-        ...(withAudio ? { audio: { voiceover: 'second.mp3' } } : {}),
+        ...(withAudio ? { audio: { voiceover: [{ file: 'second.mp3' }] } } : {}),
       },
     },
   };

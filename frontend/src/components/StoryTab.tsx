@@ -769,6 +769,7 @@ export default function StoryTab({
                     audioFiles={audioFiles}
                     audioActions={audioActions}
                     audioLevels={audioLevels}
+                    variables={storyGraph?.variables}
                     characters={characters}
                     metadataLoaded={metadataLoaded}
                     nodeIdSet={nodeIdSet}
@@ -897,6 +898,7 @@ export default function StoryTab({
                           audioFiles={audioFiles}
                           audioActions={audioActions}
                           audioLevels={audioLevels}
+                          variables={storyGraph?.variables}
                           characters={characters}
                           metadataLoaded={metadataLoaded}
                           nodeIdSet={nodeIdSet}
@@ -960,6 +962,7 @@ export default function StoryTab({
                               audioFiles={audioFiles}
                               audioActions={audioActions}
                               audioLevels={audioLevels}
+                              variables={storyGraph?.variables}
                               characters={characters}
                               metadataLoaded={metadataLoaded}
                               nodeIdSet={nodeIdSet}

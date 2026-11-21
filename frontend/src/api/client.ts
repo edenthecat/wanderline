@@ -5,8 +5,22 @@
 // Type-only cycle (normalizeStoryGraph imports StoryGraph from here),
 // erased at build, so there is no runtime import cycle.
 import { normalizeStoryGraph } from '../lib/normalizeStoryGraph';
-import type { ContentBlock, Expression, VariableDeclaration } from '@wanderline/shared';
-export type { ContentBlock, Expression, VariableDeclaration };
+import type {
+  ContentBlock,
+  Expression,
+  VariableDeclaration,
+  VariableValue,
+  SimpleCondition,
+  ComparisonOperator,
+} from '@wanderline/shared';
+export type {
+  ContentBlock,
+  Expression,
+  VariableDeclaration,
+  VariableValue,
+  SimpleCondition,
+  ComparisonOperator,
+};
 
 const API_BASE = '/api';
 
@@ -464,14 +478,25 @@ export interface AudioAssignmentRaw {
   original_name: string;
   mime_type: string;
   created_at: string;
+  /** Gates this variant on a story variable's value; null/absent for
+   * the slot's default/fallback variant (DEV-199 follow-on). */
+  condition?: SimpleCondition | null;
+}
+
+/** One candidate file for a slot — a slot can hold several, each
+ * gated by an optional condition (DEV-199 follow-on: variable-
+ * conditioned audio). `condition` absent means the default variant. */
+export interface AudioAssignmentVariant {
+  fileId: string;
+  condition?: SimpleCondition;
 }
 
 export interface AudioAssignments {
   [nodeId: string]: {
-    voiceover?: string;
-    ambience?: string;
-    choice1?: string;
-    choice2?: string;
+    voiceover?: AudioAssignmentVariant[];
+    ambience?: AudioAssignmentVariant[];
+    choice1?: AudioAssignmentVariant[];
+    choice2?: AudioAssignmentVariant[];
     sfx: string[];
     /** When each sound effect plays, in ms, keyed by file id. Absent for
      * one that plays as the passage starts. */
@@ -494,10 +519,14 @@ export function assignAudio(
   /** Refuse (409) rather than replace if the slot has been filled since
    * the caller last looked. */
   expectEmpty?: boolean,
+  /** Gates this variant on a story variable's value. Omit for the
+   * slot's default/fallback variant — a different condition adds a
+   * new variant alongside it rather than replacing it. */
+  condition?: SimpleCondition,
 ): Promise<{ assignment: AudioAssignmentRaw }> {
   return request(`/projects/${projectId}/audio/assignments`, {
     method: 'POST',
-    body: JSON.stringify({ nodeId, audioType, audioFileId, offsetMs, expectEmpty }),
+    body: JSON.stringify({ nodeId, audioType, audioFileId, offsetMs, expectEmpty, condition }),
   });
 }
 
@@ -520,12 +549,18 @@ export function removeAudioAssignment(
   nodeId: string,
   audioType: string,
   audioFileId?: string,
+  /** Targets that specific conditioned variant; omit to target the
+   * default/unconditioned variant (not every variant in the slot). */
+  condition?: SimpleCondition,
 ): Promise<{ success: boolean }> {
-  const params = audioFileId ? `?audioFileId=${encodeURIComponent(audioFileId)}` : '';
+  const params = new URLSearchParams();
+  if (audioFileId) params.set('audioFileId', audioFileId);
+  if (condition) params.set('condition', JSON.stringify(condition));
+  const query = params.size > 0 ? `?${params.toString()}` : '';
   // Node ids are free text (a Twee passage can be "Left/Right" or "What
   // now?"), so they have to be encoded to land on the right route.
   return request(
-    `/projects/${projectId}/audio/assignments/${encodeURIComponent(nodeId)}/${encodeURIComponent(audioType)}${params}`,
+    `/projects/${projectId}/audio/assignments/${encodeURIComponent(nodeId)}/${encodeURIComponent(audioType)}${query}`,
     { method: 'DELETE' },
   );
 }

@@ -1308,6 +1308,7 @@ function GraphTabInner({
               audioFiles={editor.audioFiles}
               audioActions={editor.audioActions}
               audioLevels={editor.audioLevels}
+              variables={storyGraph?.variables}
               flags={editor.flagsByNode[selectedNodeId]}
               onFlagsChanged={editor.refreshFlags}
               characters={editor.characters}

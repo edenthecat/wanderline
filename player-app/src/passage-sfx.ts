@@ -1,3 +1,5 @@
+import type { SimpleCondition } from '@wanderline/shared';
+
 // When a passage's sound effects fire.
 //
 // A sound effect with no offset plays as the passage starts, whether or
@@ -11,6 +13,13 @@
 export interface PassageSfx {
   file: string;
   offsetMs?: number;
+  /** Variable-conditioned sfx: unlike voiceover/ambience/choice1/
+   * choice2 (exactly one candidate wins), each sfx entry is
+   * independently gated — present and false means this effect simply
+   * doesn't fire this visit; it has no bearing on timing/ordering,
+   * which these pure helpers don't touch (App.tsx filters by
+   * condition before calling into this file). */
+  condition?: SimpleCondition;
 }
 
 /** Offset to fire at; an unset, negative or non-finite offset means the start. */
