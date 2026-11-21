@@ -12,7 +12,11 @@ import { buildMatchTables, matchAudioFile } from '../services/audio-matcher.js';
 import { UPLOAD_DIR } from '../config.js';
 import { uploadPath } from '../services/upload-path.js';
 import { flushDeferredAudioDeletions } from '../services/deferred-audio-deletions.js';
-import { isChoiceAudioType, choiceIdFromAudioType } from '../services/choice-audio.js';
+import {
+  isChoiceAudioType,
+  choiceIdFromAudioType,
+  isValidAudioType,
+} from '../services/choice-audio.js';
 import type { SimpleCondition } from '@wanderline/shared';
 
 const execFileAsync = promisify(execFile);
@@ -994,10 +998,7 @@ export function createAudioRouter(pool: Pool): Router {
       }
       const conditionJson = condition ? JSON.stringify(condition) : null;
 
-      if (
-        !['voiceover', 'ambience', 'sfx', 'choice1', 'choice2'].includes(audioType) &&
-        !isChoiceAudioType(audioType)
-      ) {
+      if (!isValidAudioType(audioType)) {
         res.status(400).json({
           error: 'audioType must be voiceover, ambience, sfx, choice1, choice2, or choice:<id>',
         });
@@ -1346,10 +1347,7 @@ export function createAudioRouter(pool: Pool): Router {
         });
         return;
       }
-      if (
-        !['voiceover', 'ambience', 'sfx', 'choice1', 'choice2'].includes(op.audioType) &&
-        !isChoiceAudioType(op.audioType)
-      ) {
+      if (!isValidAudioType(op.audioType)) {
         res.status(400).json({
           error: `audioType must be voiceover/ambience/sfx/choice1/choice2/choice:<id>; got "${op.audioType}"`,
         });

@@ -78,7 +78,7 @@ export interface NodeDetailProps {
   nodeId: string;
   node: {
     content: ContentBlock[];
-    choices: { text: string; target: string; condition?: Expression | null }[];
+    choices: { text: string; target: string; condition?: Expression | null; id?: string }[];
     divert: string | null;
     tags: string[];
     audio?: Record<string, unknown>;

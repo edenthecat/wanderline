@@ -808,6 +808,24 @@ describe('per-choice audio cues', () => {
     await waitFor(() => expect(a.assign).toHaveBeenCalledWith('hall', 'choice1', 'vo1'));
   });
 
+  // Regression: a choice's id is minted fresh by randomUUID() on
+  // every parse — NOT stable across a re-upload of the same source.
+  // A choice that now HAS an id but has a pre-existing cue under the
+  // ordinal slot (attached before its current id existed) must keep
+  // showing — and keep being editable by — that ordinal data, not
+  // silently hide it behind an empty id-addressed slot.
+  it('still shows and edits a pre-existing ordinal cue for a choice that now has an id', async () => {
+    const a = mount(
+      { choice1: [{ fileId: 'vo1' }], sfx: [] },
+      actions(),
+      [],
+      [{ text: 'Go', target: 'b', id: 'choice-abc' }],
+    );
+    expect(screen.getByText('Choice 1 cue')).toBeTruthy();
+    fireEvent.click(screen.getByLabelText('Remove choice 1 cue from hall'));
+    await waitFor(() => expect(a.clear).toHaveBeenCalledWith('hall', 'choice1', 'vo1', undefined));
+  });
+
   it('renders an attached per-choice-id cue and clears it by that same id, not the ordinal slot', async () => {
     const a = mount(
       { choices: { 'choice-abc': [{ fileId: 'vo1' }] }, sfx: [] },

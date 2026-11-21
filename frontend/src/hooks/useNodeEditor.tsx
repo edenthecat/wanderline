@@ -590,12 +590,19 @@ export function useNodeEditor({
         await deleteChoice(projectId, nodeId, choiceIndex);
         setEditorError(null);
         onStoryUpdated();
+        // Deleting a choice with a stable id also deletes its
+        // choice:<id> audio assignment server-side (orphaned
+        // otherwise, DEV-199 per-choice audio) — tell this tab's own
+        // audio view and any peer tab to refetch so neither keeps
+        // showing/offering to manage a row that's already gone.
+        bumpLiveSignal(yDoc ?? null, AUDIO_ASSIGNMENTS_SIGNAL);
+        setAudioReloadKey((k) => k + 1);
       } catch (err) {
         setEditorError(err instanceof Error ? err.message : 'Failed to remove choice');
         throw err;
       }
     },
-    [projectId, onStoryUpdated],
+    [projectId, onStoryUpdated, yDoc],
   );
 
   const handleSwapChoices = useCallback(

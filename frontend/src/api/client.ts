@@ -205,6 +205,12 @@ export interface StoryNode {
     fallback: boolean;
     tags: string[];
     condition?: Expression | null;
+    /** Stable id (DEV-199 stable-id rollout) — absent on data parsed
+     * before the rollout. NodeAudioPanel's per-choice-cue addressing
+     * depends on this surviving every point that builds or passes
+     * through a choice object; losing it here would silently fall
+     * every choice back to the fragile ordinal choice1/choice2 keys. */
+    id?: string;
   }[];
   divert: string | null;
   tags: string[];

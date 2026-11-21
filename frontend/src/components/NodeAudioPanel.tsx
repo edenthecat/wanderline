@@ -71,19 +71,37 @@ const FIXED_SLOTS: SlotDescriptor[] = [
 
 /**
  * The two choice-cue slots — same positions (first/second) the
- * player's read-aloud sequence always had, but addressed by that
- * choice's own stable id when it has one (DEV-199 stable-id
- * rollout) rather than the fragile 'choice1'/'choice2' ordinal keys,
- * which silently misattribute if choices are ever reordered. A
- * choice with no id (data from before the rollout) still only has
- * those ordinal keys to use.
+ * player's read-aloud sequence always had. `slot.key` resolves to
+ * wherever this choice's audio ACTUALLY lives right now, so Remove/
+ * Replace always target a row that exists:
+ *
+ *  - No id on the choice (data from before the stable-id rollout):
+ *    always the ordinal key — there's no other option.
+ *  - Id, with something already attached under that id: the id key.
+ *  - Id, with nothing under the id but a pre-existing ordinal cue:
+ *    the ORDINAL key, even though the choice has an id. A choice's
+ *    id is minted fresh by randomUUID() on every parse — NOT stable
+ *    across a full source re-upload — so an author's cue attached
+ *    before this choice's current id existed has to keep showing up
+ *    (and keep playing: see choiceCueVariants in player-app/src/
+ *    App.tsx) until it's explicitly re-attached under the new id.
+ *  - Id, with nothing attached anywhere yet: the id key, so a brand
+ *    new attach is addressed by id going forward rather than
+ *    perpetuating the ordinal scheme for a story that never had it.
  */
-function choiceCueSlots(choices: { id?: string; text: string }[]): SlotDescriptor[] {
-  return choices.slice(0, 2).map((choice, i) => ({
-    key: choice.id ? (`choice:${choice.id}` as const) : i === 0 ? 'choice1' : 'choice2',
-    label: `Choice ${i + 1} cue`,
-    category: 'choice',
-  }));
+function choiceCueSlots(
+  choices: { id?: string; text: string }[],
+  nodeAudio: AudioAssignments[string] | undefined,
+): SlotDescriptor[] {
+  return choices.slice(0, 2).map((choice, i) => {
+    const ordinal = i === 0 ? 'choice1' : 'choice2';
+    const label = `Choice ${i + 1} cue`;
+    if (!choice.id) return { key: ordinal, label, category: 'choice' };
+    const hasOwnId = (nodeAudio?.choices?.[choice.id]?.length ?? 0) > 0;
+    const hasOrdinal = (nodeAudio?.[ordinal]?.length ?? 0) > 0;
+    const key = !hasOwnId && hasOrdinal ? ordinal : (`choice:${choice.id}` as const);
+    return { key, label, category: 'choice' };
+  });
 }
 
 /** Resolves a slot descriptor's variants, whether it's a fixed
@@ -169,7 +187,7 @@ export default function NodeAudioPanel({
   // Cheap to recompute every render (at most 2 entries) — not worth
   // a useMemo dependency on an array prop the parent likely passes a
   // fresh reference for anyway.
-  const SLOTS = [...FIXED_SLOTS, ...choiceCueSlots(choices)];
+  const SLOTS = [...FIXED_SLOTS, ...choiceCueSlots(choices, nodeAudio)];
 
   const sfx = nodeAudio?.sfx ?? [];
   const offsets = nodeAudio?.sfxOffsets ?? {};

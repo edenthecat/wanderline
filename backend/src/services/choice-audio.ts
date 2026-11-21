@@ -27,3 +27,12 @@ export function choiceIdFromAudioType(audioType: string): string {
 export function audioTypeForChoice(choiceId: string): string {
   return CHOICE_AUDIO_PREFIX + choiceId;
 }
+
+const FIXED_AUDIO_TYPES = new Set(['voiceover', 'ambience', 'sfx', 'choice1', 'choice2']);
+
+/** Every audioType routes/audio.ts accepts: the five fixed slots, or
+ * `choice:<id>`. One shared check so POST /assignments and bulk-
+ * reassign's validation can't silently drift apart from each other. */
+export function isValidAudioType(audioType: string): boolean {
+  return FIXED_AUDIO_TYPES.has(audioType) || isChoiceAudioType(audioType);
+}

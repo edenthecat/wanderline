@@ -492,7 +492,13 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
   );
 
   const nodesWithAssignments = Object.entries(assignments).filter(
-    ([, a]) => a.voiceover || a.ambience || a.choice1 || a.choice2 || a.sfx.length > 0,
+    ([, a]) =>
+      a.voiceover ||
+      a.ambience ||
+      a.choice1 ||
+      a.choice2 ||
+      (a.choices && Object.keys(a.choices).length > 0) ||
+      a.sfx.length > 0,
   );
 
   return (

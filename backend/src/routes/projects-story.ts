@@ -8,6 +8,7 @@ import { emitInk } from '../services/ink-converter.js';
 import { randomUUID } from 'crypto';
 import { captureSnapshot } from './projects-snapshots.js';
 import { invalidateRoom } from '../services/collab-server.js';
+import { audioTypeForChoice } from '../services/choice-audio.js';
 import { parseExpression, ExpressionParseError, evaluate } from '@wanderline/shared';
 import { isTextBlock, type VariableDeclaration, type VariableType } from '../types.js';
 
@@ -731,7 +732,7 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
       }
 
       // Remove the choice
-      storyGraph.nodes[nodeId].choices.splice(choiceIndex, 1);
+      const [removedChoice] = storyGraph.nodes[nodeId].choices.splice(choiceIndex, 1);
 
       // Save updated story graph
       await pool.query(
@@ -746,6 +747,20 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
 
       // Update project timestamp
       await pool.query('UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1', [id]);
+
+      // A choice-id-addressed cue (DEV-199 per-choice audio) is
+      // otherwise orphaned forever — nothing else ever re-parents or
+      // garbage-collects it, since its id dies with the choice.
+      // Ordinal choice1/choice2 rows are deliberately left as-is:
+      // they belong to a POSITION, not this specific choice, and the
+      // remaining choices just shift into their slots as before.
+      if (removedChoice?.id) {
+        await pool.query(
+          `DELETE FROM node_audio_assignments
+           WHERE project_id = $1 AND node_id = $2 AND audio_type = $3`,
+          [id, nodeId, audioTypeForChoice(removedChoice.id)],
+        );
+      }
 
       // Structural change to the choices array — the in-memory
       // Y.Doc still has the pre-delete `choices` Y.Array, and its

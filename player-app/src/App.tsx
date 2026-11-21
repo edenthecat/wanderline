@@ -554,11 +554,19 @@ export function choiceCueVariants(
   position: 0 | 1,
 ): AudioVariant[] {
   if (!choice) return [];
-  // No fallback once a choice has an id — even "no cue of its own" is
-  // a real answer, not "check the ordinal slot instead." Falling
-  // through would silently inherit whatever's at that ordinal slot,
-  // which may belong to a different choice entirely.
-  if (choice.id) return audio?.choices?.[choice.id] ?? [];
+  // A choice's id is minted fresh by randomUUID() on every parse —
+  // NOT stable across a full source re-upload, only across in-place
+  // edits (REST patches, collab) to an already-loaded graph. An
+  // author's existing choice1/choice2 cue, attached before this
+  // choice ever had an id (or before its most recent re-upload),
+  // would otherwise silently stop playing the moment that source is
+  // next re-parsed — a guaranteed regression for every pre-existing
+  // cue, traded for only an occasional, narrower risk: the ordinal
+  // slot holding a DIFFERENT choice's stale audio after a reorder,
+  // and only until this choice gets its own id-addressed cue. That
+  // trade is the right one.
+  const byId = choice.id ? audio?.choices?.[choice.id] : undefined;
+  if (byId && byId.length > 0) return byId;
   return (position === 0 ? audio?.choice1 : audio?.choice2) ?? [];
 }
 
@@ -956,6 +964,19 @@ export default function App() {
       const node = story.nodes[nodeId];
       // Every candidate for each slot is preloaded — see preloadKey's
       // doc comment for why only the first shares playback's key.
+      //
+      // Known gap: this walks node.choices in RAW manifest order,
+      // while actual playback resolves against the condition-
+      // FILTERED visibleChoices order (see the playback-site call
+      // below). If a conditionally-hidden choice sits ahead of an
+      // id-addressed one, this preloads the wrong choice's cue under
+      // this key — never plays wrong audio (getCachedAudio's URL-
+      // mismatch guard refuses the stale entry and builds a fresh
+      // one) but stalls/rebuffers instead of having warmed the right
+      // file. Narrow enough (needs conditional choice-hiding AND
+      // per-choice-id audio on the same node) not to be worth
+      // preloading every choice's cue regardless of position to
+      // close entirely.
       for (const [i, variant] of (node?.audio?.voiceover ?? []).entries()) {
         criticalFiles.push({
           key: preloadKey('vo_', nodeId, i),

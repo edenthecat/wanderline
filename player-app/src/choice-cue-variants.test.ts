@@ -2,16 +2,21 @@ import { describe, expect, it } from 'vitest';
 import { choiceCueVariants } from './App';
 
 // A choice's own audio cue, addressed by the choice's stable id
-// (DEV-199 stable-id rollout) — must take priority over the ordinal
-// choice1/choice2 fields, which may belong to a DIFFERENT choice if
-// a story's choices have ever been reordered. A choice with no id
-// (data from before the rollout) has no other way to carry audio.
+// (DEV-199 stable-id rollout) — takes priority over the ordinal
+// choice1/choice2 fields when it has one. Falls back to the ordinal
+// field when there's nothing under the id, because ids are minted
+// fresh by randomUUID() on every parse — NOT stable across a full
+// source re-upload — so an author's pre-existing choice1/choice2 cue
+// must keep working after their next re-upload gives this choice a
+// (new) id, even though that trades away perfect reorder-safety for
+// the narrower in-between window before the choice gets its own
+// id-addressed cue.
 
 describe('choiceCueVariants', () => {
-  it('resolves by the choice’s own id when present, ignoring a stale ordinal field', () => {
+  it('resolves by the choice’s own id when present, over the ordinal field', () => {
     const choice = { text: 'Go', target: 'next', id: 'choice-on' };
     const audio = {
-      choice1: [{ file: 'wrong-cue.mp3' }],
+      choice1: [{ file: 'old-cue.mp3' }],
       choices: { 'choice-on': [{ file: 'right-cue.mp3' }] },
     };
     expect(choiceCueVariants(choice, audio, 0)).toEqual([{ file: 'right-cue.mp3' }]);
@@ -29,13 +34,16 @@ describe('choiceCueVariants', () => {
     expect(choiceCueVariants(choice, audio, 1)).toEqual([{ file: 'n2.mp3' }]);
   });
 
-  it('returns no candidates for an id’d choice with nothing attached, even if an ordinal field exists', () => {
-    // This is the whole point of addressing by id: a choice with an
-    // id is NEVER allowed to pick up audio meant for a different
-    // choice via the position-based fallback.
+  // Regression: an id is freshly randomUUID()'d on every parse, so a
+  // re-upload of unchanged Ink/Twee source gives every choice a NEW
+  // id — if a choice with no cue of its own id never fell back to
+  // the ordinal field, every pre-existing choice1/choice2 cue in
+  // every story would silently stop playing the next time its source
+  // is re-uploaded.
+  it('falls back to the ordinal field even when the choice has an id, if nothing is attached under that id', () => {
     const choice = { text: 'Go', target: 'next', id: 'choice-on' };
-    const audio = { choice1: [{ file: 'belongs-to-someone-else.mp3' }] };
-    expect(choiceCueVariants(choice, audio, 0)).toEqual([]);
+    const audio = { choice1: [{ file: 'pre-existing-cue.mp3' }] };
+    expect(choiceCueVariants(choice, audio, 0)).toEqual([{ file: 'pre-existing-cue.mp3' }]);
   });
 
   it('returns an empty array when there is no choice at that position', () => {
