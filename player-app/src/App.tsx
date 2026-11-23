@@ -35,6 +35,8 @@ import {
   evaluateSimpleCondition,
   execute,
   truthy,
+  createFunctionCaller,
+  type CallFunctionHandler,
   type ContentBlock,
   type Expression,
   type VariableDeclaration,
@@ -143,6 +145,14 @@ interface StoryNode {
     choice2TimestampMs?: number;
     theme?: string;
   };
+  /**
+   * Function-knot parameter names (DEV-199 Phase 10b), present only
+   * on a node tagged `internal:function` — see
+   * shared/src/types.ts's `StoryNode.params`. Read by
+   * `storyFunctionCaller` below to run a `{myFunc(x)}` call during
+   * real playback.
+   */
+  params?: string[];
 }
 
 interface StoryData {
@@ -354,9 +364,17 @@ export function autoAdvanceTarget(
   // hidden has exactly one real way forward, same as if it had been
   // authored with just the one.
   variables: Record<string, VariableValue> = {},
+  // Function-knot calls (DEV-199 Phase 10b): a choice's condition can
+  // contain one (`{double(x) > 8}`), so this needs the same handler
+  // every other condition/assignment evaluation does. Optional and
+  // last — every existing caller that omits it keeps working exactly
+  // as before (and simply can't gate on a call-bearing condition).
+  callFunction?: CallFunctionHandler,
 ): string | null {
   if (settings?.autoAdvance !== true || !node) return null;
-  const choices = (node.choices ?? []).filter((c) => conditionAllows(c.condition, variables));
+  const choices = (node.choices ?? []).filter((c) =>
+    conditionAllows(c.condition, variables, callFunction),
+  );
   if (choices.length === 1) return choices[0]?.target ?? null;
   if (choices.length === 0 && node.divert) return node.divert;
   if (choices.length === 0 && nodes && node.id) return fallThroughTarget(node.id, node, nodes);
@@ -371,14 +389,23 @@ export function autoAdvanceTarget(
  * authored) is treated as false — hidden, not shown-with-a-crash and
  * not shown-unconditionally, the same tolerant-degradation choice as
  * applyNodeAssignments above.
+ *
+ * `callFunction` (DEV-199 Phase 10b) is optional and passed through
+ * to `evaluate` unchanged — see expression-evaluator.ts's header for
+ * why a condition that calls a function PURELY for a side effect
+ * won't have that side effect persist through this path (a documented
+ * limitation, not a bug): this function only ever returns a boolean,
+ * so there's nowhere to hand back a mutated variable store even if it
+ * computed one internally.
  */
 export function conditionAllows(
   condition: Expression | null | undefined,
   variables: Record<string, VariableValue>,
+  callFunction?: CallFunctionHandler,
 ): boolean {
   if (!condition) return true;
   try {
-    return truthy(evaluate(condition, variables));
+    return truthy(evaluate(condition, variables, callFunction));
   } catch {
     return false;
   }
@@ -393,12 +420,13 @@ export function nodeText(
     metadata?: { transcript?: string | null };
   },
   variables: Record<string, VariableValue> = {},
+  callFunction?: CallFunctionHandler,
 ): string {
   const transcript = node.metadata?.transcript?.trim();
   if (transcript) return transcript;
   return node.content
     .filter(isTextBlock)
-    .filter((c) => conditionAllows(c.condition, variables))
+    .filter((c) => conditionAllows(c.condition, variables, callFunction))
     .map((c) => c.text)
     .join(' ')
     .trim();
@@ -416,14 +444,21 @@ export function nodeText(
  * A declaration whose initializer fails to evaluate (should not
  * happen for a graph the backend already validated) is skipped
  * rather than crashing playback.
+ *
+ * `callFunction` (DEV-199 Phase 10b): real Ink doesn't allow a VAR's
+ * initializer to call a function anyway (it must be a compile-time
+ * constant expression), so this is really only here for signature
+ * symmetry with the other variable-store helpers below — threaded
+ * through regardless, in case that ever changes.
  */
 export function initialVariableValues(
   declarations: VariableDeclaration[] | undefined,
+  callFunction?: CallFunctionHandler,
 ): Record<string, VariableValue> {
   const values: Record<string, VariableValue> = {};
   for (const decl of declarations ?? []) {
     try {
-      values[decl.name] = evaluate(decl.initialValue, values);
+      values[decl.name] = evaluate(decl.initialValue, values, callFunction);
     } catch {
       // Skip — leaves the name undefined, same as it would be for a
       // story with no VAR line for it at all.
@@ -438,17 +473,24 @@ export function initialVariableValues(
  * that fails (e.g. a compound-assign to a name that was never
  * declared) is skipped rather than crashing playback — the same
  * tolerant-degradation choice as initialVariableValues above.
+ *
+ * `callFunction` (DEV-199 Phase 10b) is threaded through to `execute`
+ * — unlike `conditionAllows`, a mutation a function call makes to an
+ * outer-scope/global variable DOES persist here, since `execute`
+ * already returns the full resulting store (see
+ * expression-evaluator.ts's `execute`/`evaluateWithEffects`).
  */
 export function applyNodeAssignments(
   node: { content: ContentBlock[] } | undefined,
   variables: Record<string, VariableValue>,
+  callFunction?: CallFunctionHandler,
 ): Record<string, VariableValue> {
   if (!node) return variables;
   let next = variables;
   for (const item of node.content) {
     if (item.kind !== 'assignment') continue;
     try {
-      next = execute(item.statement, next);
+      next = execute(item.statement, next, callFunction);
     } catch {
       // Skip this statement; keep applying the rest of the node's.
     }
@@ -462,12 +504,43 @@ export function applyNodeAssignments(
  * "entered" through navigateToNode (it's set directly, both on first
  * load and on restart), so nothing else ever applies them.
  */
-export function freshStartVariables(story: {
-  variables?: VariableDeclaration[];
-  startNode: string;
-  nodes: Record<string, { content: ContentBlock[] }>;
-}): Record<string, VariableValue> {
-  return applyNodeAssignments(story.nodes[story.startNode], initialVariableValues(story.variables));
+export function freshStartVariables(
+  story: {
+    variables?: VariableDeclaration[];
+    startNode: string;
+    nodes: Record<string, { content: ContentBlock[] }>;
+  },
+  callFunction?: CallFunctionHandler,
+): Record<string, VariableValue> {
+  return applyNodeAssignments(
+    story.nodes[story.startNode],
+    initialVariableValues(story.variables, callFunction),
+    callFunction,
+  );
+}
+
+/**
+ * Builds the `callFunction` handler real playback needs to run a
+ * `{myFunc(x)}` call during an actual game session — the one piece
+ * that must behave IDENTICALLY to backend validation (see
+ * function-interpreter.ts's header), so it's built from the SAME
+ * `createFunctionCaller` shared helper, just pointed at THIS player's
+ * own node shape (a function-knot is any node tagged
+ * `internal:function`, same tag ink-parser.ts sets).
+ *
+ * Exported for testing; `App` itself builds one via `useMemo` keyed
+ * on `story` so every evaluate/execute call site in a single
+ * playthrough shares one caller instance (and so its recursion-depth
+ * guard's state is scoped to that story, not recreated per call).
+ */
+export function storyFunctionCaller(nodes: Record<string, StoryNode>): CallFunctionHandler {
+  return createFunctionCaller({
+    getFunction: (name) => {
+      const node = nodes[name];
+      if (!node || !node.tags.includes('internal:function')) return undefined;
+      return { params: node.params, content: node.content };
+    },
+  });
 }
 
 // Silent-reading pace used only as an auto-advance floor, not a
@@ -599,6 +672,15 @@ function passageExtras(
 export default function App() {
   const offline = useOfflineSupport();
   const [story, setStory] = useState<StoryData | null>(null);
+  // Function-knot calls (DEV-199 Phase 10b): one caller per loaded
+  // story, shared by every evaluate/execute call site below (same
+  // instance, not rebuilt per call) — see storyFunctionCaller's doc
+  // comment for why this needs to be the SAME handler the whole
+  // playthrough uses.
+  const callFunction = useMemo(
+    () => (story ? storyFunctionCaller(story.nodes) : undefined),
+    [story],
+  );
   const [currentNodeId, setCurrentNodeId] = useState<string | null>(null);
   // DEV-199 Phase 2. Seeded in the load effect (fresh start or
   // restored from a save slot); mutated by navigateToNode as the
@@ -835,10 +917,13 @@ export default function App() {
           // falling back to the story's bare declared defaults is a
           // known, documented degrade for that migration case (there's
           // no recorded history of intermediate nodes to replay).
-          setVariables(autosave.variables ?? initialVariableValues(data.variables));
+          setVariables(
+            autosave.variables ??
+              initialVariableValues(data.variables, storyFunctionCaller(data.nodes)),
+          );
         } else {
           setCurrentNodeId(data.startNode);
-          setVariables(freshStartVariables(data));
+          setVariables(freshStartVariables(data, storyFunctionCaller(data.nodes)));
         }
 
         // Volume resolution order: per-device localStorage override
@@ -1225,8 +1310,11 @@ export default function App() {
   // conditionally-hidden choice is consistently invisible everywhere,
   // not just in the rendered list.
   const visibleChoices = useMemo(
-    () => (currentNode?.choices ?? []).filter((c) => conditionAllows(c.condition, variables)),
-    [currentNode, variables],
+    () =>
+      (currentNode?.choices ?? []).filter((c) =>
+        conditionAllows(c.condition, variables, callFunction),
+      ),
+    [currentNode, variables, callFunction],
   );
 
   // Which voiceover candidate (if any) actually resolves against live
@@ -1410,7 +1498,7 @@ export default function App() {
       // 2) — computed here, not via a setVariables updater, so the
       // exact resulting snapshot can be saved alongside nodeId/history
       // in the same call rather than racing a second render.
-      const nextVariables = applyNodeAssignments(story.nodes[nodeId], variables);
+      const nextVariables = applyNodeAssignments(story.nodes[nodeId], variables, callFunction);
       setVariables(nextVariables);
       saveProgress(nodeId, newHistory, nextVariables);
       // Store nodeId for autoplay - the effect will pick this up
@@ -1453,6 +1541,7 @@ export default function App() {
       currentNodeId,
       history,
       variables,
+      callFunction,
       saveProgress,
       getReachableNodes,
       preloadAudio,
@@ -1856,6 +1945,7 @@ export default function App() {
             { autoAdvance: autoAdvanceRef.current },
             story.nodes,
             variables,
+            callFunction,
           );
           if (onward) {
             // Same hold as the no-cue branch below, so two passages
@@ -1881,6 +1971,7 @@ export default function App() {
           { autoAdvance: autoAdvanceRef.current },
           story.nodes,
           variables,
+          callFunction,
         )
       ) {
         const target = autoAdvanceTarget(
@@ -1888,6 +1979,7 @@ export default function App() {
           { autoAdvance: autoAdvanceRef.current },
           story.nodes,
           variables,
+          callFunction,
         )!;
         // Total post-audio hold = the per-node delayAfterMs (a generic
         // "wait after audio finishes" hint) plus the dedicated
@@ -2036,6 +2128,7 @@ export default function App() {
     userIndicatorVolume,
     playDueSfx,
     playUntimedSfx,
+    callFunction,
   ]);
 
   const skipAudio = useCallback(() => {
@@ -2213,13 +2306,19 @@ export default function App() {
     // sfx effects above; an effectively voiceover-less node (every
     // candidate conditioned out) has no onended to hook into either.
     if (resolveAudioVariant(currentNode.audio?.voiceover, variables)) return; // handled by playVoiceover's audio.onended
-    const target = autoAdvanceTarget(currentNode, { autoAdvance }, story.nodes, variables);
+    const target = autoAdvanceTarget(
+      currentNode,
+      { autoAdvance },
+      story.nodes,
+      variables,
+      callFunction,
+    );
     if (!target) return;
     // Compose: pre-roll → (no audio, so hold at least long enough to
     // read it) → post-audio hold → onward.
     const holdMs = Math.max(
       currentNode.metadata?.autoAdvanceDelayMs ?? 2000,
-      readingFloorMs(nodeText(currentNode, variables)),
+      readingFloorMs(nodeText(currentNode, variables, callFunction)),
     );
     const totalDelay =
       (currentNode.metadata?.delayBeforeMs ?? 0) +
@@ -2248,6 +2347,7 @@ export default function App() {
     autoAdvance,
     passageEntry,
     variables,
+    callFunction,
   ]);
 
   // Debounce showing connection issues to avoid flashing for quick retries
@@ -2290,7 +2390,7 @@ export default function App() {
       setSaveSlots([]);
       setCurrentNodeId(story.startNode);
       setHistory([]);
-      setVariables(freshStartVariables(story));
+      setVariables(freshStartVariables(story, callFunction));
       // DEV-199 Phase 4: a stale index from wherever the listener was
       // before could point past the start node's visible-choice count
       // (which now varies with runtime state, not just the story's
@@ -2309,7 +2409,7 @@ export default function App() {
       setPlayerState('ready');
       pendingAutoplayNodeIdRef.current = null;
     }
-  }, [story, saveSlots, resetProgress, stopPassagePlayback]);
+  }, [story, saveSlots, resetProgress, stopPassagePlayback, callFunction]);
 
   // — save slot management. These operate against the slot
   // array in state, then persist via writeSlots(). They're stable
@@ -2333,7 +2433,7 @@ export default function App() {
       // Restore as-is, same reasoning as the autosave-resume path in
       // the load effect: the snapshot already reflects this node's
       // own assignments having run once, when it was first saved.
-      setVariables(slot.variables ?? initialVariableValues(story.variables));
+      setVariables(slot.variables ?? initialVariableValues(story.variables, callFunction));
       // DEV-199 Phase 4: see restart()'s identical comment — a stale
       // index could point past the loaded node's visible-choice count.
       setSelectedChoice(0);
@@ -2349,7 +2449,7 @@ export default function App() {
       setShowSettings(false);
       setShowInstructions(false);
     },
-    [story, saveSlots, resetProgress, stopPassagePlayback],
+    [story, saveSlots, resetProgress, stopPassagePlayback, callFunction],
   );
 
   const saveCurrentToNewSlot = useCallback(
@@ -2626,7 +2726,7 @@ export default function App() {
             setHistory([]);
             setSelectedChoice(0);
             setCurrentNodeId(story.startNode);
-            setVariables(freshStartVariables(story));
+            setVariables(freshStartVariables(story, callFunction));
           }
           break;
         case 'Escape':
@@ -2665,6 +2765,7 @@ export default function App() {
     resetProgress,
     stopPassagePlayback,
     visibleChoices,
+    callFunction,
   ]);
 
   // MediaSession + keydown fallback + metadata /
@@ -2694,8 +2795,8 @@ export default function App() {
 
   // The passage as text, for the screen-reader-only announcement below.
   const passageText = useMemo(
-    () => (currentNode ? nodeText(currentNode, variables) : ''),
-    [currentNode, variables],
+    () => (currentNode ? nodeText(currentNode, variables, callFunction) : ''),
+    [currentNode, variables, callFunction],
   );
 
   // Screen readers announce MUTATIONS to a live region they have
@@ -3497,7 +3598,7 @@ export default function App() {
                 // for the spoken/SR-only variant.
                 currentNode.content
                   .filter(isTextBlock)
-                  .filter((c) => conditionAllows(c.condition, variables))
+                  .filter((c) => conditionAllows(c.condition, variables, callFunction))
                   .map((c, i) => (
                     <p key={i} style={styles.text}>
                       {c.text}
