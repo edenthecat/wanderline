@@ -38,7 +38,11 @@
  *     datamaps, etc.
  */
 
-import { parseExpression, expressionUsesListFeatures } from '@wanderline/shared';
+import {
+  parseExpression,
+  expressionUsesListFeatures,
+  expressionUsesFunctionCalls,
+} from '@wanderline/shared';
 import type {
   ContentBlock,
   Choice,
@@ -235,6 +239,11 @@ export function renderHarloweExpression(
     // mis-rendering as `[object Object]` or invalid operator text.
     throw new Error('Harlowe export does not support LIST expressions');
   }
+  if (expressionUsesFunctionCalls(expr)) {
+    // Function-knot calls (DEV-199 Phase 10b) are Ink-only — Harlowe
+    // has no concept of a callable knot at all.
+    throw new Error('Harlowe export does not support function calls');
+  }
   switch (expr.kind) {
     case 'literal':
       if (typeof expr.value === 'string') {
@@ -266,6 +275,11 @@ export function renderHarloweExpression(
       // here means a LIST-valued condition/assignment somehow made
       // it into a Harlowe export, which has no correct rendering.
       throw new Error(`Harlowe export does not support LIST expressions (${expr.name})`);
+    case 'call':
+      // Already rejected up front by expressionUsesFunctionCalls
+      // above — unreachable in practice, kept only so this switch
+      // stays exhaustive over Expression's `kind`.
+      throw new Error(`Harlowe export does not support function calls (${expr.name})`);
   }
 }
 
@@ -282,6 +296,14 @@ export function renderHarloweAssignment(
   statement: Statement,
   listVariableNames?: ReadonlySet<string>,
 ): string {
+  if (statement.kind === 'return') {
+    // `~ return` only ever appears inside a function-knot's own
+    // content (DEV-199 Phase 10b) — Harlowe has no concept of a
+    // callable knot at all, so a return statement reaching here
+    // means a function-knot's content somehow made it into a Harlowe
+    // export, which has no correct rendering.
+    throw new Error('Harlowe export does not support return statements');
+  }
   const target = `$${statement.name}`;
   if (statement.operator === '=') {
     return `(set: ${target} to ${renderHarloweExpression(statement.value, listVariableNames)})`;

@@ -54,7 +54,12 @@
  *     arrays, custom macros, etc.
  */
 
-import { parseExpression, parseStatement, expressionUsesListFeatures } from '@wanderline/shared';
+import {
+  parseExpression,
+  parseStatement,
+  expressionUsesListFeatures,
+  expressionUsesFunctionCalls,
+} from '@wanderline/shared';
 import type {
   ContentBlock,
   Choice,
@@ -166,6 +171,11 @@ export function renderSugarCubeExpression(
   if (expressionUsesListFeatures(expr, listVariableNames)) {
     throw new Error('SugarCube export does not support LIST expressions');
   }
+  if (expressionUsesFunctionCalls(expr)) {
+    // Function-knot calls (DEV-199 Phase 10b) are Ink-only — SugarCube
+    // has no concept of a callable knot at all.
+    throw new Error('SugarCube export does not support function calls');
+  }
   switch (expr.kind) {
     case 'literal':
       if (typeof expr.value === 'string') {
@@ -196,6 +206,11 @@ export function renderSugarCubeExpression(
       // somehow made it into a SugarCube export, which has no
       // correct rendering.
       throw new Error(`SugarCube export does not support LIST expressions (${expr.name})`);
+    case 'call':
+      // Already rejected up front by expressionUsesFunctionCalls
+      // above — unreachable in practice, kept only so this switch
+      // stays exhaustive over Expression's `kind`.
+      throw new Error(`SugarCube export does not support function calls (${expr.name})`);
   }
 }
 
@@ -210,6 +225,11 @@ export function renderSugarCubeAssignment(
   statement: Statement,
   listVariableNames?: ReadonlySet<string>,
 ): string {
+  if (statement.kind === 'return') {
+    // See renderHarloweAssignment's identical guard — SugarCube has
+    // no function-knot equivalent either.
+    throw new Error('SugarCube export does not support return statements');
+  }
   return `<<set $${statement.name} ${statement.operator} ${renderSugarCubeExpression(
     statement.value,
     listVariableNames,
@@ -419,6 +439,16 @@ export function processSugarCubePassageBody(
       const translated = translateSugarCubeExpression(tag.argsText);
       try {
         const statement = parseStatement(translated);
+        if (statement.kind === 'return') {
+          // `return` is only meaningful inside a function-knot
+          // (DEV-199 Phase 10b) — SugarCube has no such concept, so
+          // `<<set return>>`/`<<set return = x>>` (an author
+          // literally naming a variable `return`, or a stray typo)
+          // is rejected the same way an unparseable RHS already is,
+          // rather than silently producing a bogus ReturnStatement
+          // content block.
+          throw new Error("'return' is not a valid <<set>> target");
+        }
         if (statement.operator === '=') {
           declareVariableIfNew(
             statement.name,

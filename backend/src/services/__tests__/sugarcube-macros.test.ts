@@ -161,6 +161,19 @@ describe('renderSugarCubeExpression', () => {
       expect(() => renderSugarCubeExpression(call)).toThrow(/LIST/);
     });
   });
+
+  // DEV-199 Phase 10b: function-knot calls are Ink-only — SugarCube
+  // has no concept of a callable knot at all.
+  describe('rejects a function-call expression', () => {
+    it('a bare call', () => {
+      const call: Expression = {
+        kind: 'call',
+        name: 'double',
+        args: [{ kind: 'literal', value: 5 }],
+      };
+      expect(() => renderSugarCubeExpression(call)).toThrow(/function call/);
+    });
+  });
 });
 
 describe('renderSugarCubeAssignment', () => {
@@ -182,5 +195,10 @@ describe('renderSugarCubeAssignment', () => {
       value: { kind: 'literal', value: 10 },
     };
     expect(renderSugarCubeAssignment(stmt)).toBe('<<set $gold += 10>>');
+  });
+
+  it('rejects a return statement (DEV-199 Phase 10b) — SugarCube has no function-knot equivalent', () => {
+    const stmt: Statement = { kind: 'return', value: { kind: 'literal', value: 5 } };
+    expect(() => renderSugarCubeAssignment(stmt)).toThrow(/return/);
   });
 });

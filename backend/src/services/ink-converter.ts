@@ -18,6 +18,9 @@ interface InkStoryGraph {
       choices: { text: string; target: string; condition?: Expression | null }[];
       divert: string | null;
       tags: string[];
+      /** See shared/src/types.ts's `StoryNode.params` (DEV-199 Phase
+       * 10b / function-knots). */
+      params?: string[];
     }
   >;
   startNode: string;
@@ -148,7 +151,17 @@ export function convertStoryGraphToInk(storyGraph: InkStoryGraph): string {
     // `=== The Kitchen ===`.
     if (node.type === 'knot') {
       lines.push('');
-      lines.push(`=== ${inkId(node.id)} ===`);
+      // Function-knots (DEV-199 Phase 10b): re-emit the `function`
+      // keyword and parameter list so a round-trip through
+      // parseInk stays a function-knot, not a plain one that
+      // happens to share its name — see ink-parser.ts's parseKnot,
+      // which is what sets `internal:function` + `params` in the
+      // first place.
+      if (node.tags.includes('internal:function')) {
+        lines.push(`=== function ${inkId(node.id)}(${(node.params ?? []).join(', ')}) ===`);
+      } else {
+        lines.push(`=== ${inkId(node.id)} ===`);
+      }
     } else if (node.type === 'stitch') {
       const sanitisedFull = inkId(node.id);
       const parent = getParentKnot(node.id);
@@ -165,8 +178,15 @@ export function convertStoryGraphToInk(storyGraph: InkStoryGraph): string {
       lines.push(`= ${stitchName}`);
     }
 
-    // Write node-level tags
+    // Write node-level tags. `internal:function` is skipped — it's
+    // bookkeeping ink-parser.ts's own `isFunction` flag re-derives
+    // from the `function` keyword re-emitted on the header line
+    // above, not an author-visible tag; re-emitting it as `# ...`
+    // would have it come back as a SECOND, duplicate tag on the next
+    // parse (the header line already re-adds it), growing by one
+    // every round-trip.
     for (const tag of node.tags) {
+      if (tag === 'internal:function') continue;
       lines.push(`# ${tag}`);
     }
 

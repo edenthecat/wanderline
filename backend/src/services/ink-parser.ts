@@ -53,6 +53,12 @@ interface ParserState {
   // literal, not an undeclared-variable reference.
   listMembers: Record<string, { origin: string; ordinal: number }>;
   listDefinitions: Record<string, ListItem[]>;
+  // Function-knots (DEV-199 Phase 10b): every `=== function name(...) ===`
+  // name in the file, collected by a prepass BEFORE the main line
+  // loop runs (see collectKnownFunctions) — a call can textually
+  // precede its own knot's declaration, so this can't be built up
+  // incrementally the way listMembers/variableValues are.
+  knownFunctions: Set<string>;
 }
 
 const IMPLICIT_START_NODE = '_intro';
@@ -75,9 +81,11 @@ export function parseInk(source: string, storyId: string, title?: string): Story
     variableValues: {},
     listMembers: {},
     listDefinitions: {},
+    knownFunctions: new Set(),
   };
 
   const lines = source.split('\n');
+  state.knownFunctions = collectKnownFunctions(lines);
 
   // First pass: check if there's content before the first knot
   let hasContentBeforeFirstKnot = false;
@@ -130,6 +138,15 @@ export function parseInk(source: string, storyId: string, title?: string): Story
   // down the file, so this can't be decided while parsing.
   resolveBareStitchTargets(nodes);
 
+  // Function-knot call arity (DEV-199 Phase 10b). Has to be a second
+  // pass for the same reason as resolveBareStitchTargets: a call can
+  // reference a function-knot declared LATER in the file, whose
+  // param count isn't known until that knot's own node has been
+  // built. An undeclared-function-NAME call is already caught at
+  // parse time (parseFunctionCall only lets a known name become a
+  // `call` node at all) — this only checks argument COUNT.
+  validateFunctionCallArity(nodes, state.variables, state.warnings);
+
   // Determine start node
   const startNode = findStartNode(nodes);
 
@@ -153,7 +170,8 @@ export function parseInk(source: string, storyId: string, title?: string): Story
 //     still want to create a node so subsequent content doesn't leak
 //     onto the previous knot)
 //   - name (\w+)
-//   - optional `()` for function-knots, with optional arg list
+//   - optional `(params)` for function-knots, params captured raw
+//     (DEV-199 Phase 10b — see parseFunctionParams)
 //   - optional 0-3 trailing `=`
 //   - optional trailing whitespace
 // Trailing `# tag` / `// comment` are stripped from the line before
@@ -162,7 +180,9 @@ export function parseInk(source: string, storyId: string, title?: string): Story
 // Capture groups:
 //   1: "function " keyword if present (function knot)
 //   2: knot name
-//   3: trailing tag block (everything from the first `#` to EOL, if any)
+//   3: raw parameter list text (without the parens), if any `(...)`
+//      was present at all — "" for `foo()`, undefined for bare `foo`
+//   4: trailing tag block (everything from the first `#` to EOL, if any)
 // Ink's spec allows ANY number of `=` ≥ 2 on a knot declaration —
 // authors routinely write `==== name ====` or `========= name ==`
 // as visual separators. Our previous {2,3} bound silently dropped
@@ -171,10 +191,34 @@ export function parseInk(source: string, storyId: string, title?: string): Story
 // project upload had `==== name ===` on a knot header far into
 // the .ink source, and every reference to that knot logged as
 // missing).
-const KNOT_DECL_RE = /^={2,}\s*(function\s+)?(\w+)\s*(?:\([^)]*\))?\s*={0,}\s*(#.*)?$/;
+const KNOT_DECL_RE = /^={2,}\s*(function\s+)?(\w+)\s*(?:\(([^)]*)\))?\s*={0,}\s*(#.*)?$/;
 
 function isKnotDeclaration(trimmed: string): boolean {
   return KNOT_DECL_RE.test(stripLineComment(trimmed).trimEnd());
+}
+
+/**
+ * First pass (DEV-199 Phase 10b): every `=== function name(...) ===`
+ * name in the file, BEFORE any line-by-line parsing happens — a call
+ * inside an earlier knot's condition/assignment can reference a
+ * function declared later in the file, so `knownFunctions` can't be
+ * built incrementally the way listMembers/variableValues are (see
+ * ParserState's doc comment). Mirrors the existing
+ * "hasContentBeforeFirstKnot" prepass's shape: a lightweight,
+ * read-only scan over the same raw lines the main loop will walk
+ * again.
+ */
+function collectKnownFunctions(lines: string[]): Set<string> {
+  const names = new Set<string>();
+  for (const line of lines) {
+    const trimmed = stripLineComment(line).trim();
+    if (!trimmed) continue;
+    const match = trimmed.match(KNOT_DECL_RE);
+    if (match && match[1]) {
+      names.add(match[2]);
+    }
+  }
+  return names;
 }
 
 // VAR/CONST declaration (DEV-199 Phase 1). Ink declares these at
@@ -196,7 +240,11 @@ const LIST_DECL_RE = /^LIST\s+(\w+)\s*=\s*(.+)$/;
  * only has what's been declared so far, not what comes later). */
 function expressionContext(state: ParserState | undefined): ExpressionParseContext {
   if (!state) return {};
-  return { listMembers: state.listMembers, listDefinitions: state.listDefinitions };
+  return {
+    listMembers: state.listMembers,
+    listDefinitions: state.listDefinitions,
+    knownFunctions: state.knownFunctions,
+  };
 }
 
 /**
@@ -285,8 +333,8 @@ function parseLine(line: string, state: ParserState, allLines: string[], lineInd
   const knotMatch = trimmed.match(KNOT_DECL_RE);
   if (knotMatch) {
     const isFunction = !!knotMatch[1];
-    const trailingTags = knotMatch[3] ? extractTags(knotMatch[3]).tags : [];
-    parseKnot(knotMatch[2], state, isFunction, trailingTags);
+    const trailingTags = knotMatch[4] ? extractTags(knotMatch[4]).tags : [];
+    parseKnot(knotMatch[2], state, isFunction, trailingTags, knotMatch[3]);
     return;
   }
 
@@ -417,17 +465,64 @@ function handleDivert(target: string, state: ParserState): void {
 }
 
 /**
+ * Parse a parameter list raw-captured from a function-knot's
+ * declaration line (DEV-199 Phase 10b — `=== function foo(x, ref y) ===`
+ * captures `rawParams = "x, ref y"`). `ref` parameters (Ink's
+ * by-reference params) are explicitly NOT supported by the
+ * interpreter (see function-interpreter.ts's header) — the `ref`
+ * keyword is stripped here and a warning is pushed so the author
+ * knows it's being treated as an ordinary by-value parameter instead
+ * of silently doing the wrong thing.
+ */
+function parseFunctionParams(rawParams: string, name: string, state: ParserState): string[] {
+  const tokens = rawParams
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean);
+  const params: string[] = [];
+  for (const token of tokens) {
+    const refMatch = token.match(/^ref\s+(\w+)$/);
+    const paramName = refMatch ? refMatch[1] : token;
+    if (refMatch) {
+      state.warnings.push({
+        type: 'syntax_error',
+        message: `Function '${name}': 'ref' parameters are not supported — '${paramName}' will be treated as a plain (by-value) parameter`,
+        lineNumber: state.lineNumber,
+        args: { name, param: paramName },
+      });
+    }
+    if (!/^[A-Za-z_]\w*$/.test(paramName)) {
+      state.warnings.push({
+        type: 'syntax_error',
+        message: `Function '${name}': "${token}" is not a valid parameter name`,
+        lineNumber: state.lineNumber,
+        args: { name, param: token },
+      });
+      continue;
+    }
+    params.push(paramName);
+  }
+  return params;
+}
+
+/**
  * Parse a knot declaration. `isFunction` flips on for `=== function
  * foo() ===`; we still create a node (so subsequent content lands on
  * the function knot and not on the previous knot) but tag it
  * `internal:function` so consumers can filter it from author-facing
- * UI (cause #3).
+ * UI (cause #3). `rawParams` (DEV-199 Phase 10b) is the function's
+ * captured `(...)` parameter list text, if any was present at all —
+ * only meaningful (and only stored on the node) when `isFunction` is
+ * true; a plain knot's own `(...)` (if present at all — real Ink
+ * doesn't allow one, but nothing enforced that before this phase
+ * either) continues to be silently discarded, unchanged.
  */
 function parseKnot(
   name: string,
   state: ParserState,
   isFunction = false,
   extraTags: string[] = [],
+  rawParams?: string,
 ): void {
   state.currentKnot = name;
   state.currentStitch = null;
@@ -443,6 +538,9 @@ function parseKnot(
     return;
   }
 
+  const params =
+    isFunction && rawParams !== undefined ? parseFunctionParams(rawParams, name, state) : undefined;
+
   const node: StoryNode = {
     id: name,
     type: 'knot',
@@ -452,6 +550,7 @@ function parseKnot(
     divert: null,
     tags: [...(isFunction ? ['internal:function'] : []), ...extraTags],
     lineNumber: state.lineNumber,
+    ...(params !== undefined ? { params } : {}),
   };
 
   state.nodes.set(name, node);
@@ -1117,6 +1216,112 @@ function extractTitle(source: string): string | null {
 }
 
 /**
+ * Walk an Expression tree, invoking `visit` on every `call` node
+ * found anywhere in it (including nested inside another call's own
+ * arguments, e.g. `f(g(x))` visits both `f` and `g`).
+ */
+function forEachCallExpression(
+  expr: Expression,
+  visit: (call: Expression & { kind: 'call' }) => void,
+): void {
+  switch (expr.kind) {
+    case 'literal':
+    case 'variable':
+      return;
+    case 'unary':
+      forEachCallExpression(expr.operand, visit);
+      return;
+    case 'binary':
+    case 'logical':
+      forEachCallExpression(expr.left, visit);
+      forEachCallExpression(expr.right, visit);
+      return;
+    case 'listFunction':
+      expr.args.forEach((arg) => forEachCallExpression(arg, visit));
+      return;
+    case 'call':
+      visit(expr);
+      expr.args.forEach((arg) => forEachCallExpression(arg, visit));
+      return;
+  }
+}
+
+/**
+ * Every Statement's own value expression(s), as a convenience for the
+ * arity walk below — an AssignmentStatement has exactly one
+ * (`.value`), a ReturnStatement has zero or one (`.value?`).
+ */
+function statementExpressions(stmt: Statement): Expression[] {
+  if (stmt.kind === 'return') {
+    return stmt.value ? [stmt.value] : [];
+  }
+  return [stmt.value];
+}
+
+/**
+ * Function-knot call arity check (DEV-199 Phase 10b): every `call`
+ * expression anywhere in the graph (choice conditions, conditional
+ * text, in-content assignments/returns, VAR/CONST initial values)
+ * must supply exactly as many arguments as its target function-knot
+ * declares parameters. A mismatch is reported as a warning — matching
+ * this parser's "warn and skip, don't crash the whole parse"
+ * convention — rather than thrown, since the call expression itself
+ * already parsed successfully and the rest of the graph is still
+ * usable.
+ */
+function validateFunctionCallArity(
+  nodes: Record<string, StoryNode>,
+  variables: VariableDeclaration[],
+  warnings: ValidationMessage[],
+): void {
+  const paramCounts = new Map<string, number>();
+  for (const node of Object.values(nodes)) {
+    if (node.tags.includes('internal:function')) {
+      paramCounts.set(node.id, node.params?.length ?? 0);
+    }
+  }
+  if (paramCounts.size === 0) return;
+
+  const checkExpr = (expr: Expression, nodeId: string | undefined, lineNumber: number): void => {
+    forEachCallExpression(expr, (call) => {
+      const expected = paramCounts.get(call.name);
+      // undefined means "not a function-knot" (e.g. a LIST_* builtin
+      // can't reach here — those parse as 'listFunction', not
+      // 'call' — so this should only ever be a real function-knot
+      // name; checked defensively anyway).
+      if (expected === undefined) return;
+      if (call.args.length !== expected) {
+        warnings.push({
+          type: 'syntax_error',
+          message: `Call to function '${call.name}' passes ${call.args.length} argument(s), but it declares ${expected}`,
+          nodeId,
+          lineNumber,
+          args: { name: call.name, expected, actual: call.args.length },
+        });
+      }
+    });
+  };
+
+  for (const node of Object.values(nodes)) {
+    for (const block of node.content) {
+      if (block.kind === 'assignment') {
+        statementExpressions(block.statement).forEach((e) =>
+          checkExpr(e, node.id, node.lineNumber),
+        );
+      } else if (block.condition) {
+        checkExpr(block.condition, node.id, node.lineNumber);
+      }
+    }
+    for (const choice of node.choices) {
+      if (choice.condition) checkExpr(choice.condition, node.id, node.lineNumber);
+    }
+  }
+  for (const decl of variables) {
+    checkExpr(decl.initialValue, undefined, 0);
+  }
+}
+
+/**
  * Validate the story graph
  */
 function validateGraph(
@@ -1186,6 +1391,12 @@ function validateGraph(
     if (!reachable.has(nodeId)) {
       // Don't warn about stitches - they're reachable from their parent knot
       if (!nodeId.includes('.')) {
+        // Don't warn about a function-knot either (DEV-199 Phase
+        // 10b): it's never entered via a divert/choice at all —
+        // only ever invoked as an EXPRESSION call ({myFunc(x)}) — so
+        // "unreachable from the start" would fire on every single
+        // one, which isn't a real authoring problem.
+        if (nodes[nodeId].tags.includes('internal:function')) return;
         warnings.push({
           type: 'unreachable_node',
           message: `Node "${nodeId}" is not reachable from the start`,
@@ -1219,6 +1430,28 @@ function validateGraph(
         nodeId: node.id,
         lineNumber: node.lineNumber,
         args: { nodeName: node.id, nodeKind: node.type ?? 'knot' },
+      });
+    }
+  });
+
+  // A function-knot's content must be a flat sequence of plain
+  // assignment/return statements — diverts and choices inside one
+  // are real Ink syntax (a tail-exit divert, or even a full weave)
+  // that this implementation's function-interpreter.ts explicitly
+  // does NOT support (see that module's header). Rather than
+  // silently ignore a divert/choice that was parsed onto the node but
+  // will never actually be followed when the function is CALLED
+  // (only when entered as plain knot content), warn so the author
+  // knows it won't do what it looks like it does.
+  Object.values(nodes).forEach((node) => {
+    if (!node.tags.includes('internal:function')) return;
+    if (node.choices.length > 0 || node.divert) {
+      warnings.push({
+        type: 'syntax_error',
+        message: `Function '${node.id}' contains a choice or divert — function-knots only support plain assignment/return statements; a divert/choice is ignored when the function is called as an expression`,
+        nodeId: node.id,
+        lineNumber: node.lineNumber,
+        args: { nodeName: node.id },
       });
     }
   });

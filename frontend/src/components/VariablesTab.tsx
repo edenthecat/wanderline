@@ -36,6 +36,7 @@ function expressionReferencesVariable(expr: Expression, name: string): boolean {
         expressionReferencesVariable(expr.right, name)
       );
     case 'listFunction':
+    case 'call':
       return expr.args.some((arg) => expressionReferencesVariable(arg, name));
   }
 }
