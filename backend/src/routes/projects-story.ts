@@ -9,6 +9,7 @@ import { randomUUID } from 'crypto';
 import { captureSnapshot } from './projects-snapshots.js';
 import { invalidateRoom } from '../services/collab-server.js';
 import { audioTypeForChoice } from '../services/choice-audio.js';
+import { reconcileChoiceIds } from '../services/reconcile-choice-ids.js';
 import {
   parseExpression,
   ExpressionParseError,
@@ -88,12 +89,17 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
       const storyId = randomUUID();
       const storyGraph = parseInk(source, storyId);
 
-      // Auto-capture the previous state before we overwrite it.
-      // Skipped if the project has no story yet (first-time upload).
-      const existing = await pool.query('SELECT 1 FROM project_stories WHERE project_id = $1', [
-        id,
-      ]);
+      // Fetched up front (not just a `SELECT 1` existence check) so
+      // reconcileChoiceIds below can carry forward each choice's
+      // stable id — without it, a re-upload mints a fresh randomUUID()
+      // for every choice and any per-choice audio (addressed by that
+      // id) silently disappears, even for byte-identical source.
+      const existing = await pool.query(
+        'SELECT story_graph FROM project_stories WHERE project_id = $1',
+        [id],
+      );
       if (existing.rows.length > 0) {
+        reconcileChoiceIds(existing.rows[0].story_graph, storyGraph);
         try {
           await captureSnapshot({
             pool,
@@ -239,6 +245,17 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
       const storyId = randomUUID();
       const storyGraph = parseInkJson(jsonContent, storyId);
 
+      // See the /ink route's own comment — without this, a
+      // re-upload mints a fresh id for every choice and any
+      // per-choice audio silently disappears.
+      const existing = await pool.query(
+        'SELECT story_graph FROM project_stories WHERE project_id = $1',
+        [id],
+      );
+      if (existing.rows.length > 0) {
+        reconcileChoiceIds(existing.rows[0].story_graph, storyGraph);
+      }
+
       // compiled Ink JSON has no editable source, but
       // authoring is still Ink-flavoured — set source_language='ink'
       // and clear twee_source so the vocab + editor pick the Ink
@@ -358,11 +375,14 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
       }
 
       // mirror the /ink route's auto-snapshot behaviour so
-      // switching between formats leaves a rollback point.
-      const existing = await pool.query('SELECT 1 FROM project_stories WHERE project_id = $1', [
-        id,
-      ]);
+      // switching between formats leaves a rollback point, and its
+      // choice-id reconciliation so per-choice audio survives too.
+      const existing = await pool.query(
+        'SELECT story_graph FROM project_stories WHERE project_id = $1',
+        [id],
+      );
       if (existing.rows.length > 0) {
+        reconcileChoiceIds(existing.rows[0].story_graph, storyGraph);
         try {
           await captureSnapshot({
             pool,
