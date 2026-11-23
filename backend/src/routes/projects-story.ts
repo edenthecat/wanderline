@@ -9,7 +9,13 @@ import { randomUUID } from 'crypto';
 import { captureSnapshot } from './projects-snapshots.js';
 import { invalidateRoom } from '../services/collab-server.js';
 import { audioTypeForChoice } from '../services/choice-audio.js';
-import { parseExpression, ExpressionParseError, evaluate, isListValue } from '@wanderline/shared';
+import {
+  parseExpression,
+  ExpressionParseError,
+  evaluate,
+  isListValue,
+  buildListExpressionContext,
+} from '@wanderline/shared';
 import { isTextBlock, type VariableDeclaration, type VariableType } from '../types.js';
 
 function errorMessage(err: unknown): string {
@@ -1400,10 +1406,31 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
         return;
       }
 
+      const storyResult = await pool.query(
+        `SELECT story_graph FROM project_stories WHERE project_id = $1`,
+        [id],
+      );
+      if (storyResult.rows.length === 0 || !storyResult.rows[0].story_graph) {
+        res.status(404).json({ error: 'Story not found' });
+        return;
+      }
+
+      const storyGraph = storyResult.rows[0].story_graph;
+
       let parsedCondition = null;
       if (condition !== null && condition.trim().length > 0) {
         try {
-          parsedCondition = parseExpression(condition);
+          // The fetched story_graph's own LIST declarations, not an
+          // empty context — without this, a condition referencing a
+          // LIST member (`kettleState has cold`) reparses `cold` as
+          // an undeclared PLAIN variable instead of a list-member
+          // literal, which then throws at evaluation time and makes
+          // the gated choice/content disappear; a multi-member
+          // literal like `(cold, boiling)` fails to parse at all.
+          parsedCondition = parseExpression(
+            condition,
+            buildListExpressionContext(storyGraph.variables),
+          );
         } catch (err) {
           res.status(400).json({
             error:
@@ -1415,16 +1442,6 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
         }
       }
 
-      const storyResult = await pool.query(
-        `SELECT story_graph FROM project_stories WHERE project_id = $1`,
-        [id],
-      );
-      if (storyResult.rows.length === 0 || !storyResult.rows[0].story_graph) {
-        res.status(404).json({ error: 'Story not found' });
-        return;
-      }
-
-      const storyGraph = storyResult.rows[0].story_graph;
       // `Object.hasOwn` first, not a truthy check on the indexed
       // value directly: `nodeId` is attacker-controlled, and a plain
       // object's `['__proto__']` lookup resolves to Object.prototype
@@ -1487,10 +1504,26 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
         return;
       }
 
+      const storyResult = await pool.query(
+        `SELECT story_graph FROM project_stories WHERE project_id = $1`,
+        [id],
+      );
+      if (storyResult.rows.length === 0 || !storyResult.rows[0].story_graph) {
+        res.status(404).json({ error: 'Story not found' });
+        return;
+      }
+
+      const storyGraph = storyResult.rows[0].story_graph;
+
       let parsedCondition;
       if (condition !== null && condition.trim().length > 0) {
         try {
-          parsedCondition = parseExpression(condition);
+          // See the sibling `/choice/condition` route for why this
+          // needs the fetched story_graph's own LIST context.
+          parsedCondition = parseExpression(
+            condition,
+            buildListExpressionContext(storyGraph.variables),
+          );
         } catch (err) {
           res.status(400).json({
             error:
@@ -1502,16 +1535,6 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
         }
       }
 
-      const storyResult = await pool.query(
-        `SELECT story_graph FROM project_stories WHERE project_id = $1`,
-        [id],
-      );
-      if (storyResult.rows.length === 0 || !storyResult.rows[0].story_graph) {
-        res.status(404).json({ error: 'Story not found' });
-        return;
-      }
-
-      const storyGraph = storyResult.rows[0].story_graph;
       // See the sibling `/choice/condition` route for why this is
       // `Object.hasOwn` rather than a truthy check on the indexed
       // value — `nodeId` is attacker-controlled and `['__proto__']`
@@ -1571,6 +1594,32 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
         return;
       }
 
+      // Fetched up front (not just before the final write) so the
+      // project's EXISTING LIST declarations can be validated against
+      // and preserved below — this route has no UI/schema for
+      // authoring a LIST's member universe, so it only ever edits the
+      // SCALAR subset of `variables`; a LIST declared via Ink upload
+      // must survive a scalar-only save untouched instead of being
+      // silently dropped (the previous behavior: this route always
+      // wrote `nextVariables` as the COMPLETE replacement array, so
+      // VariablesTab round-tripping an existing LIST's `printExpression`
+      // output back through this scalar-only parser either failed
+      // outright (a multi-member literal isn't valid syntax with no
+      // LIST context) or silently mis-typed it — found in review).
+      const storyResult = await pool.query(
+        `SELECT story_graph FROM project_stories WHERE project_id = $1`,
+        [id],
+      );
+      if (storyResult.rows.length === 0 || !storyResult.rows[0].story_graph) {
+        res.status(404).json({ error: 'Story not found' });
+        return;
+      }
+      const storyGraph = storyResult.rows[0].story_graph;
+      const existingListDeclarations: VariableDeclaration[] = (storyGraph.variables ?? []).filter(
+        (v: VariableDeclaration) => v.type === 'list',
+      );
+      const existingListNames = new Set(existingListDeclarations.map((v) => v.name));
+
       const seenNames = new Set<string>();
       // Object.create(null), not {} — a declared name of `__proto__`
       // would otherwise hit Object.prototype's accessor instead of
@@ -1597,6 +1646,12 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
         }
         if (seenNames.has(name)) {
           res.status(400).json({ error: `Variable ${i + 1}: duplicate name "${name}"` });
+          return;
+        }
+        if (existingListNames.has(name)) {
+          res.status(400).json({
+            error: `Variable ${i + 1}: "${name}" is already declared as a LIST — rename this variable or edit the LIST via the Ink source.`,
+          });
           return;
         }
         seenNames.add(name);
@@ -1644,17 +1699,12 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
         nextVariables.push({ name, type, initialValue: expr, isConst });
       }
 
-      const storyResult = await pool.query(
-        `SELECT story_graph FROM project_stories WHERE project_id = $1`,
-        [id],
-      );
-      if (storyResult.rows.length === 0 || !storyResult.rows[0].story_graph) {
-        res.status(404).json({ error: 'Story not found' });
-        return;
-      }
-
-      const storyGraph = storyResult.rows[0].story_graph;
-      storyGraph.variables = nextVariables;
+      // LIST declarations first (preserving their own relative
+      // order), then the scalar set this request submitted — a LIST
+      // must textually precede anything that could reference one of
+      // its members, same ordering ink-converter.ts's own VAR/CONST/
+      // LIST preamble emission already relies on.
+      storyGraph.variables = [...existingListDeclarations, ...nextVariables];
 
       await pool.query(
         `UPDATE project_stories

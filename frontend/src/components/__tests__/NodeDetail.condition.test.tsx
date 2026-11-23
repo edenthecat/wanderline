@@ -146,6 +146,42 @@ describe('NodeDetail — text block condition', () => {
   });
 });
 
+// A LIST member reference only resolves correctly if NodeDetail
+// threads the project's LIST declarations into ConditionEditor's own
+// validation parse — without it, a multi-member literal like
+// `(cold, boiling)` doesn't parse as a list literal at all (it's not
+// valid syntax for a plain sub-expression either), so a real LIST
+// condition gets rejected by client-side validation that never even
+// reaches the server (found in review).
+describe('NodeDetail — LIST-aware condition validation', () => {
+  const kettleStateVariable = {
+    name: 'kettleState',
+    type: 'list' as const,
+    isConst: false,
+    listMembers: ['cold', 'boiling'],
+    initialValue: {
+      kind: 'literal' as const,
+      value: { kind: 'list' as const, origin: 'kettleState', items: [], allItems: [] },
+    },
+  };
+
+  it('accepts a multi-member LIST literal condition instead of rejecting it as invalid syntax', async () => {
+    const onChoiceConditionEdit = vi.fn().mockResolvedValue(undefined);
+    render(<NodeDetail {...props({ onChoiceConditionEdit, variables: [kettleStateVariable] })} />);
+
+    fireEvent.click(screen.getByText('+ Condition'));
+    fireEvent.change(screen.getByLabelText('Choice 1 condition on her'), {
+      target: { value: 'kettleState == (cold, boiling)' },
+    });
+    fireEvent.click(screen.getByText('Save'));
+
+    await waitFor(() => {
+      expect(onChoiceConditionEdit).toHaveBeenCalledWith(0, 'kettleState == (cold, boiling)');
+    });
+    expect(screen.queryByText(/is not a known LIST member|Invalid condition/)).toBeNull();
+  });
+});
+
 describe('NodeDetail — assignment block preview', () => {
   it('renders a read-only preview of the statement', () => {
     render(

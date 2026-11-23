@@ -196,4 +196,71 @@ describe('VariablesTab', () => {
     expect(screen.getByText(/Can't delete "base" — doubled still references it/)).toBeTruthy();
     confirmSpy.mockRestore();
   });
+
+  // Regression: this tab has no member-list input for a LIST, so
+  // editing/creating a SCALAR must never round-trip an existing
+  // LIST's printed active-subset text back through the scalar-only
+  // save route — that text isn't valid syntax to re-parse without
+  // the project's LIST context, which this route doesn't have
+  // (found in review). The server now preserves an existing LIST
+  // regardless of what's submitted, so the fix here is specifically
+  // that THIS tab must stop re-submitting it at all.
+  describe('LIST declarations', () => {
+    const kettleState = {
+      name: 'kettleState',
+      type: 'list' as const,
+      isConst: false,
+      listMembers: ['cold', 'boiling'],
+      initialValue: {
+        kind: 'literal' as const,
+        value: {
+          kind: 'list' as const,
+          origin: 'kettleState',
+          items: [{ name: 'cold', ordinal: 0 }],
+          allItems: [
+            { name: 'cold', ordinal: 0 },
+            { name: 'boiling', ordinal: 1 },
+          ],
+        },
+      },
+    };
+
+    it('renders a LIST read-only, with no Edit/Delete affordance', () => {
+      render(<VariablesTab projectId="p1" storyGraph={graph([kettleState])} />);
+      expect(screen.getByText('kettleState')).toBeTruthy();
+      expect(screen.getByText('LIST')).toBeTruthy();
+      expect(screen.getByText('Declared in Ink source — edit there')).toBeTruthy();
+      expect(screen.queryByText('Edit')).toBeNull();
+      expect(screen.queryByText('Delete')).toBeNull();
+    });
+
+    it('creating a scalar alongside an existing LIST never includes the LIST in the submitted payload', async () => {
+      mockUpdateVariables.mockResolvedValue({
+        success: true,
+        story_graph: graph([
+          kettleState,
+          {
+            name: 'gold',
+            type: 'number',
+            initialValue: { kind: 'literal', value: 10 },
+            isConst: false,
+          },
+        ]),
+      });
+      render(<VariablesTab projectId="p1" storyGraph={graph([kettleState])} />);
+
+      fireEvent.click(screen.getByText('New variable'));
+      fireEvent.change(screen.getByPlaceholderText('gold'), { target: { value: 'gold' } });
+      fireEvent.change(screen.getByPlaceholderText('10, "Alex", or true'), {
+        target: { value: '10' },
+      });
+      fireEvent.click(screen.getByText('Create variable'));
+
+      await waitFor(() => {
+        expect(mockUpdateVariables).toHaveBeenCalledWith('p1', [
+          { name: 'gold', initialValue: '10', isConst: false },
+        ]);
+      });
+    });
+  });
 });

@@ -26,7 +26,14 @@
  * it doesn't start a new passage on re-parse; we prepend `\`.
  */
 
-import type { StoryGraph, StoryNode, Choice, ContentBlock, TweeDialect } from '../types.js';
+import type {
+  StoryGraph,
+  StoryNode,
+  Choice,
+  ContentBlock,
+  TweeDialect,
+  Statement,
+} from '../types.js';
 import { renderHarloweExpression, renderHarloweAssignment } from './harlowe-macros.js';
 import { renderSugarCubeExpression, renderSugarCubeAssignment } from './sugarcube-macros.js';
 import { renderChapbookExpression, renderChapbookAssignment } from './chapbook-macros.js';
@@ -211,6 +218,13 @@ function emitContent(
   node: StoryNode,
   dialect: TweeDialect | undefined,
   listVariableNames: ReadonlySet<string>,
+  // Chapbook has no separate global "run before the story starts"
+  // passage the way Harlowe/SugarCube have StoryInit — its vars
+  // persist across passages once set, so a story-level variable's
+  // initializer (declared in VariablesTab, not by any in-content `~`/
+  // assignment block) is injected into the START node's own vars
+  // section instead. Empty/omitted for every other node.
+  graphInitLines: string[] = [],
 ): string {
   const paragraphs = node.content
     .map((c) => emitContentBlock(c, dialect, listVariableNames))
@@ -238,10 +252,18 @@ function emitContent(
     // Chapbook's vars section is a whole-passage block at the very
     // TOP, not an inline macro — hoist every assignment block here
     // (emitContentBlock already returned null for them above) rather
-    // than interleaving them with the displayed text.
-    const varsLines = node.content
-      .filter((c) => c.kind === 'assignment')
-      .map((c) => renderChapbookAssignment(c.statement, listVariableNames));
+    // than interleaving them with the displayed text. Story-level
+    // initializers (graphInitLines, start node only) come FIRST, so
+    // an in-content assignment on this same passage still overrides
+    // them, matching the declaration-then-later-reassignment order
+    // every other dialect/Ink gets from StoryInit running before any
+    // passage content.
+    const varsLines = [
+      ...graphInitLines,
+      ...node.content
+        .filter((c) => c.kind === 'assignment')
+        .map((c) => renderChapbookAssignment(c.statement, listVariableNames)),
+    ];
     if (varsLines.length > 0) {
       return `${varsLines.join('\n')}\n--${body ? `\n${body}` : ''}`;
     }
@@ -266,6 +288,30 @@ export function emitTwee(graph: StoryGraph): string {
   const listVariableNames = new Set(
     (graph.variables ?? []).filter((v) => v.type === 'list').map((v) => v.name),
   );
+
+  // A scalar variable declared in graph.variables (e.g. authored via
+  // VariablesTab, with no corresponding in-content `~`/assignment
+  // block anywhere) has no dialect-side source of truth to initialize
+  // it from — a resolved-dialect export would otherwise include
+  // conditions referencing it with NOTHING that ever sets it. Render
+  // each one through the dialect's own assignment syntax so the
+  // exported file is self-contained (found in review).
+  const scalarVariables = (graph.variables ?? []).filter((v) => v.type !== 'list');
+  const dialect = graph.twee?.dialect;
+  const scalarInitStatements = scalarVariables.map((v): Statement => ({
+    kind: 'assignment',
+    name: v.name,
+    operator: '=',
+    value: v.initialValue,
+  }));
+  const scalarInitLines =
+    dialect === 'harlowe'
+      ? scalarInitStatements.map((s) => renderHarloweAssignment(s, listVariableNames))
+      : dialect === 'sugarcube'
+        ? scalarInitStatements.map((s) => renderSugarCubeAssignment(s, listVariableNames))
+        : dialect === 'chapbook'
+          ? scalarInitStatements.map((s) => renderChapbookAssignment(s, listVariableNames))
+          : [];
 
   if (graph.title && graph.title !== 'Untitled') {
     blocks.push(emitPassage('StoryTitle', [], graph.title));
@@ -296,14 +342,24 @@ export function emitTwee(graph: StoryGraph): string {
 
   // re-emit special-passage bodies (StoryInit / PassageHeader
   // / PassageFooter / etc.) so authoring wrappers survive a graph
-  // mutation. Sorted for determinism.
-  if (graph.twee?.specials) {
-    const specialNames = Object.keys(graph.twee.specials).sort();
-    for (const name of specialNames) {
-      const body = graph.twee.specials[name];
-      if (typeof body === 'string' && body.length > 0) {
-        blocks.push(emitPassage(name, [], body));
-      }
+  // mutation. Sorted for determinism. Harlowe/SugarCube's StoryInit
+  // runs before any passage, same ordering guarantee Ink's VAR
+  // preamble and Chapbook's start-node vars section get — the
+  // scalar-variable initializers computed above are prepended here
+  // (ahead of whatever StoryInit body the upload carried, if any) so
+  // they're never shadowed by it.
+  const specialNames = new Set(Object.keys(graph.twee?.specials ?? {}));
+  const needsSynthesizedStoryInit =
+    (dialect === 'harlowe' || dialect === 'sugarcube') && scalarInitLines.length > 0;
+  if (needsSynthesizedStoryInit) specialNames.add('StoryInit');
+  for (const name of [...specialNames].sort()) {
+    const uploadedBody = graph.twee?.specials?.[name];
+    const body =
+      name === 'StoryInit' && needsSynthesizedStoryInit
+        ? [scalarInitLines.join('\n'), uploadedBody].filter(Boolean).join('\n')
+        : uploadedBody;
+    if (typeof body === 'string' && body.length > 0) {
+      blocks.push(emitPassage(name, [], body));
     }
   }
 
@@ -320,11 +376,29 @@ export function emitTwee(graph: StoryGraph): string {
 
   for (const id of orderedIds) {
     const node = graph.nodes[id];
+    // Chapbook has no StoryInit equivalent — its scalar-variable
+    // initializers (computed above) go into the START node's own
+    // vars section instead, so they're set before anything the
+    // player sees. Skip any variable the start node ALREADY assigns
+    // in its own content: emitContent would otherwise hoist that
+    // assignment block into the same vars section too, duplicating
+    // the line (and, on re-import, the content array itself gaining
+    // a second assignment block for the same variable).
+    const graphInitLines =
+      dialect === 'chapbook' && id === graph.startNode
+        ? scalarVariables
+            .map((v, i) => ({ name: v.name, line: scalarInitLines[i] }))
+            .filter(
+              ({ name }) =>
+                !node.content.some((c) => c.kind === 'assignment' && c.statement.name === name),
+            )
+            .map(({ line }) => line)
+        : [];
     blocks.push(
       emitPassage(
         id,
         node.tags,
-        emitContent(node, graph.twee?.dialect, listVariableNames),
+        emitContent(node, dialect, listVariableNames, graphInitLines),
         node.metadata,
       ),
     );

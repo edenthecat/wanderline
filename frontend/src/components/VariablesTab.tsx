@@ -95,12 +95,24 @@ export default function VariablesTab({ projectId, storyGraph, onStoryUpdated }: 
     }
   }
 
+  // This tab only ever authors/edits SCALAR variables — a LIST's
+  // member universe has no input here and can only be declared via
+  // Ink source (see the module doc comment). Every PATCH payload
+  // below must exclude existing LIST declarations: printExpression
+  // of a LIST's active subset isn't valid syntax to re-parse without
+  // the project's LIST context (which this scalar-only route doesn't
+  // have), so round-tripping one through `toEditable` would corrupt
+  // or outright reject the save (found in review). The server
+  // preserves any existing LIST declaration regardless of what this
+  // tab submits, so simply omitting it here is sufficient.
+  const scalarVariables = variables.filter((v) => v.type !== 'list');
+
   async function handleCreate(e: FormEvent) {
     e.preventDefault();
     const name = newName.trim();
     if (!name || !newValue.trim()) return;
     const next = [
-      ...variables.map(toEditable),
+      ...scalarVariables.map(toEditable),
       { name, initialValue: newValue, isConst: newIsConst },
     ];
     const ok = await save(next);
@@ -120,7 +132,7 @@ export default function VariablesTab({ projectId, storyGraph, onStoryUpdated }: 
 
   async function handleUpdate(name: string) {
     if (!editValue.trim()) return;
-    const next = variables.map((v) =>
+    const next = scalarVariables.map((v) =>
       v.name === name ? { name, initialValue: editValue, isConst: editIsConst } : toEditable(v),
     );
     const ok = await save(next);
@@ -128,7 +140,7 @@ export default function VariablesTab({ projectId, storyGraph, onStoryUpdated }: 
   }
 
   async function handleDelete(name: string) {
-    const dependents = variables.filter(
+    const dependents = scalarVariables.filter(
       (v) => v.name !== name && expressionReferencesVariable(v.initialValue, name),
     );
     if (dependents.length > 0) {
@@ -143,7 +155,7 @@ export default function VariablesTab({ projectId, storyGraph, onStoryUpdated }: 
       !confirm(`Delete variable "${name}"? Any condition still referencing it will stop matching.`)
     )
       return;
-    const next = variables.filter((v) => v.name !== name).map(toEditable);
+    const next = scalarVariables.filter((v) => v.name !== name).map(toEditable);
     await save(next);
   }
 
@@ -239,6 +251,22 @@ export default function VariablesTab({ projectId, storyGraph, onStoryUpdated }: 
                       Cancel
                     </button>
                   </div>
+                </div>
+              ) : v.type === 'list' ? (
+                // Read-only: this tab has no member-list input, and
+                // Edit/Delete here would round-trip printExpression's
+                // active-subset text back through the scalar-only
+                // save route with no LIST context, corrupting or
+                // losing the declaration (found in review).
+                <div className="character-row">
+                  <span className="character-name">{v.name}</span>
+                  <span className="badge badge-gray">LIST</span>
+                  <span className="text-muted">
+                    = {v.listMembers?.join(', ') ?? printExpression(v.initialValue)}
+                  </span>
+                  <span className="text-muted character-list-readonly-note">
+                    Declared in Ink source — edit there
+                  </span>
                 </div>
               ) : (
                 <div className="character-row">

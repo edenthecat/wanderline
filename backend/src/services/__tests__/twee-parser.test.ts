@@ -1530,3 +1530,96 @@ describe('Chapbook round-trip: parse → emit → parse (DEV-199 Phase 9)', () =
     );
   });
 });
+
+// A scalar variable authored via VariablesTab (graph.variables) has
+// no corresponding in-content assignment block for any dialect
+// emitter to discover — before this fix, a resolved-dialect export
+// would include a condition referencing it with NOTHING anywhere in
+// the exported file that ever sets it (found in review).
+describe('emitTwee — initializes a VariablesTab-only scalar variable with no assignment block', () => {
+  function graphWithUninitializedVariable(dialect: 'harlowe' | 'sugarcube' | 'chapbook') {
+    return {
+      id: 's1',
+      title: 'Untitled',
+      nodes: {
+        Start: {
+          id: 'Start',
+          type: 'knot' as const,
+          parent: null,
+          content: [] as ContentBlock[],
+          choices: [
+            {
+              text: 'Go',
+              target: 'Start',
+              sticky: false,
+              fallback: false,
+              tags: [],
+              condition: {
+                kind: 'binary' as const,
+                operator: '>' as const,
+                left: { kind: 'variable' as const, name: 'gold' },
+                right: { kind: 'literal' as const, value: 3 },
+              },
+            },
+          ],
+          divert: null,
+          tags: [],
+          lineNumber: 1,
+        },
+      },
+      startNode: 'Start',
+      validation: { valid: true, errors: [], warnings: [] },
+      variables: [
+        {
+          name: 'gold',
+          type: 'number' as const,
+          isConst: false,
+          initialValue: { kind: 'literal' as const, value: 5 },
+        },
+      ],
+      twee: { dialect },
+    };
+  }
+
+  it('Harlowe: emits (set: $gold to 5) into StoryInit', () => {
+    const out = emitTwee(graphWithUninitializedVariable('harlowe'));
+    expect(out).toContain(':: StoryInit');
+    expect(out).toContain('(set: $gold to 5)');
+  });
+
+  it('SugarCube: emits <<set $gold = 5>> into StoryInit', () => {
+    const out = emitTwee(graphWithUninitializedVariable('sugarcube'));
+    expect(out).toContain(':: StoryInit');
+    expect(out).toContain('<<set $gold = 5>>');
+  });
+
+  it('Chapbook: emits gold: 5 into the start node’s own vars section', () => {
+    const out = emitTwee(graphWithUninitializedVariable('chapbook'));
+    expect(out).toContain('gold: 5');
+    // No separate StoryInit passage — Chapbook has no such special
+    // passage, so the start node's own vars section is the only
+    // place this can go.
+    expect(out).not.toContain(':: StoryInit');
+  });
+
+  it('Chapbook: does not duplicate the variable when the start node already assigns it itself', () => {
+    const g = graphWithUninitializedVariable('chapbook');
+    g.nodes.Start.content = [
+      {
+        id: 'b1',
+        kind: 'assignment' as const,
+        statement: {
+          kind: 'assignment' as const,
+          name: 'gold',
+          operator: '=' as const,
+          value: { kind: 'literal' as const, value: 7 },
+        },
+      },
+    ];
+    const out = emitTwee(g);
+    // Only the node's own assignment (7), not a second synthesized
+    // one (5) from graph.variables.
+    expect(out.match(/gold:/g)).toHaveLength(1);
+    expect(out).toContain('gold: 7');
+  });
+});

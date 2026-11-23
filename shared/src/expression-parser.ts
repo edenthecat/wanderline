@@ -34,6 +34,7 @@ import type {
   ListItem,
   LogicalOperator,
   Statement,
+  VariableDeclaration,
   VariableValue,
 } from './expression-types.js';
 
@@ -65,6 +66,37 @@ export interface ExpressionParseContext {
    * order — becomes a literal's `allItems` (see ListValue) without a
    * second lookup structure at evaluation time. */
   listDefinitions?: Record<string, ListItem[]>;
+}
+
+/**
+ * Build the `ExpressionParseContext` every editing surface needs to
+ * re-parse a printed condition/assignment without losing its LIST
+ * members back to plain (undeclared) variable references.
+ *
+ * `ink-parser.ts` builds this incrementally while walking the
+ * source, one declaration at a time (see its own `expressionContext`
+ * helper) — this is the equivalent for a caller that only has the
+ * already-parsed `StoryGraph.variables` array to work from (the
+ * backend's condition-editing routes, and any frontend UI that edits
+ * a condition/assignment against the project's current declarations)
+ * and needs the SAME member/origin lookups parseExpression requires
+ * to resolve a bare `cold` as a list-member literal instead of an
+ * undeclared variable.
+ */
+export function buildListExpressionContext(
+  variables: readonly VariableDeclaration[] | undefined,
+): ExpressionParseContext {
+  const listMembers: Record<string, { origin: string; ordinal: number }> = {};
+  const listDefinitions: Record<string, ListItem[]> = {};
+  for (const decl of variables ?? []) {
+    if (decl.type !== 'list' || !decl.listMembers) continue;
+    const allItems: ListItem[] = decl.listMembers.map((name, ordinal) => ({ name, ordinal }));
+    listDefinitions[decl.name] = allItems;
+    for (const item of allItems) {
+      listMembers[item.name] = { origin: decl.name, ordinal: item.ordinal };
+    }
+  }
+  return { listMembers, listDefinitions };
 }
 
 // === Tokenizer ===

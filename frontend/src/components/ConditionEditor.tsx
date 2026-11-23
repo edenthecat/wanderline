@@ -13,15 +13,26 @@ import {
   printExpression,
   ExpressionParseError,
   type Expression,
+  type ExpressionParseContext,
 } from '../api/client';
 
 interface Props {
   value: Expression | null | undefined;
   onSave: (conditionText: string | null) => Promise<void>;
   ariaLabel: string;
+  /** The project's LIST declarations, as `buildListExpressionContext`
+   * builds them from `graph.variables` — without this, a condition
+   * referencing a LIST member (`kettleState has cold`) reparses
+   * `cold` as a plain undeclared variable instead of a list-member
+   * literal, which throws at evaluation time and silently hides
+   * whatever this condition gates. The server re-validates with the
+   * SAME context on save, so this is purely about giving the author
+   * accurate inline feedback instead of a false "invalid condition"
+   * (or a false "looks fine") here. */
+  listContext?: ExpressionParseContext;
 }
 
-export default function ConditionEditor({ value, onSave, ariaLabel }: Props) {
+export default function ConditionEditor({ value, onSave, ariaLabel, listContext }: Props) {
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(() => (value ? printExpression(value) : ''));
   const [error, setError] = useState<string | null>(null);
@@ -37,7 +48,7 @@ export default function ConditionEditor({ value, onSave, ariaLabel }: Props) {
     const trimmed = text.trim();
     if (trimmed.length > 0) {
       try {
-        parseExpression(trimmed);
+        parseExpression(trimmed, listContext);
       } catch (err) {
         setError(err instanceof ExpressionParseError ? err.message : 'Invalid condition');
         return;

@@ -7,7 +7,15 @@
 // detail rail render the same component (so authors get the same
 // editing affordances regardless of where they jumped in from).
 
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from 'react';
 import * as Y from 'yjs';
 import {
   isTextBlock,
@@ -18,6 +26,7 @@ import {
 import {
   type AudioAssignments,
   type AudioFile,
+  buildListExpressionContext,
   resolveNodeFlag,
   type Character,
   type NodeFlag,
@@ -183,6 +192,12 @@ export default function NodeDetail({
   yDoc,
   yDocReady,
 }: NodeDetailProps) {
+  // Built once per `variables` change, not per ConditionEditor
+  // instance — both the choice and content-block condition editors
+  // below need the same LIST-member lookups to re-parse a printed
+  // condition without losing it back to a plain variable reference.
+  const listContext = useMemo(() => buildListExpressionContext(variables), [variables]);
+
   // Postgres column is nullable, so coerce null → '' for the editor.
   const savedTranscript = metadata?.transcript ?? '';
   const [transcript, setTranscript] = useState(savedTranscript);
@@ -396,6 +411,7 @@ export default function NodeDetail({
                     value={c.condition}
                     onSave={(text) => onContentConditionEdit(i, text)}
                     ariaLabel={`Content line ${i + 1} condition on ${nodeId}`}
+                    listContext={listContext}
                   />
                 )}
               </div>
@@ -576,6 +592,7 @@ export default function NodeDetail({
                   value={ch.condition}
                   onSave={(text) => onChoiceConditionEdit(i, text)}
                   ariaLabel={`Choice ${i + 1} condition on ${nodeId}`}
+                  listContext={listContext}
                 />
               )}
               {(onSwapChoices || onDeleteChoice) && (

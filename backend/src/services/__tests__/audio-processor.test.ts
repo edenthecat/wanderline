@@ -199,3 +199,47 @@ describe('sound effects in a build', () => {
     expect(story.nodes.start.audio!.sfx).toBeUndefined();
   });
 });
+
+// Per-choice-id cues (`audio.choices[choiceId]`) went through the
+// same WAV→MP3 build pipeline as every other slot, but
+// updateStoryDataFilenames never touched them — a converted cue kept
+// pointing at the now-absent WAV filename, so it 404'd during
+// exported playback (found in review).
+describe('per-choice-id audio cues in a build', () => {
+  function storyWithChoiceCues(choices: Record<string, { file: string }[]>) {
+    return makeStoryData({
+      nodes: {
+        start: {
+          id: 'start',
+          type: 'knot',
+          content: [],
+          choices: [],
+          divert: null,
+          tags: [],
+          audio: { choices },
+        },
+      },
+    });
+  }
+
+  it('follows a WAV-to-MP3 rename for a per-choice-id cue', () => {
+    const story = storyWithChoiceCues({ abc: [{ file: 'cue.wav' }] });
+    updateStoryDataFilenames(story, { 'cue.wav': 'cue.mp3' }, new Set(['cue.mp3']));
+    expect(story.nodes.start.audio!.choices).toEqual({ abc: [{ file: 'cue.mp3' }] });
+  });
+
+  it('drops a choice id whose cue file is missing from the build, keeping the rest', () => {
+    const story = storyWithChoiceCues({
+      abc: [{ file: 'gone.mp3' }],
+      xyz: [{ file: 'kept.mp3' }],
+    });
+    updateStoryDataFilenames(story, {}, new Set(['kept.mp3']));
+    expect(story.nodes.start.audio!.choices).toEqual({ xyz: [{ file: 'kept.mp3' }] });
+  });
+
+  it('removes the whole choices map once every id drops out', () => {
+    const story = storyWithChoiceCues({ abc: [{ file: 'gone.mp3' }] });
+    updateStoryDataFilenames(story, {}, new Set());
+    expect(story.nodes.start.audio!.choices).toBeUndefined();
+  });
+});

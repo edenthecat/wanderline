@@ -266,6 +266,28 @@ export function updateStoryDataFilenames(
       for (const slot of ['voiceover', 'ambience', 'choice1', 'choice2'] as const) {
         updateOrRemoveAudioVariants(node.audio, slot, filenameMapping, availableFiles);
       }
+      // Per-choice-id cues (`audio.choices[choiceId]`) are a map of
+      // slots, not a single slot — same rename-or-drop per id, and
+      // drop the id entirely once its own variant list empties out,
+      // same as `voiceover`/`ambience`/`choice1`/`choice2` above.
+      // Missed here, a WAV cue converted to MP3 during the build
+      // left `choices[id]` still pointing at the absent WAV filename,
+      // so the cue 404s during exported playback.
+      if (node.audio.choices) {
+        for (const choiceId of Object.keys(node.audio.choices)) {
+          const updated = node.audio.choices[choiceId]
+            .map((variant) => ({ ...variant, file: filenameMapping[variant.file] || variant.file }))
+            .filter((variant) => availableFiles.has(variant.file));
+          if (updated.length === 0) {
+            delete node.audio.choices[choiceId];
+          } else {
+            node.audio.choices[choiceId] = updated;
+          }
+        }
+        if (Object.keys(node.audio.choices).length === 0) {
+          delete node.audio.choices;
+        }
+      }
       // Same rename-or-drop as the single slots: a WAV converted to MP3
       // is renamed, and a file missing from the build is dropped rather
       // than left for the player to 404 on.

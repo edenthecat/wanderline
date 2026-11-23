@@ -8,23 +8,30 @@ import { normalizeStoryGraph } from '../lib/normalizeStoryGraph';
 import type {
   ContentBlock,
   Expression,
+  ExpressionParseContext,
   VariableDeclaration,
   VariableType,
   VariableValue,
   SimpleCondition,
   ComparisonOperator,
 } from '@wanderline/shared';
-import { parseExpression, printExpression, ExpressionParseError } from '@wanderline/shared';
+import {
+  parseExpression,
+  printExpression,
+  ExpressionParseError,
+  buildListExpressionContext,
+} from '@wanderline/shared';
 export type {
   ContentBlock,
   Expression,
+  ExpressionParseContext,
   VariableDeclaration,
   VariableType,
   VariableValue,
   SimpleCondition,
   ComparisonOperator,
 };
-export { parseExpression, printExpression, ExpressionParseError };
+export { parseExpression, printExpression, ExpressionParseError, buildListExpressionContext };
 
 const API_BASE = '/api';
 

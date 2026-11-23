@@ -52,13 +52,14 @@ function makeApp(storyGraph: unknown) {
   return { app, query };
 }
 
-function graph(nodes: Record<string, unknown>) {
+function graph(nodes: Record<string, unknown>, variables?: unknown[]) {
   return {
     id: 'g1',
     title: 'T',
     startNode: Object.keys(nodes)[0],
     nodes,
     validation: { valid: true, errors: [], warnings: [] },
+    ...(variables ? { variables } : {}),
   };
 }
 
@@ -135,6 +136,94 @@ describe('PATCH /:id/story/choice/condition', () => {
     // then write `.choices[0].condition` onto it, corrupting every
     // plain object in the process.
     expect(Object.prototype).not.toHaveProperty('choices');
+  });
+
+  it('parses a LIST-member condition against the story graph’s own LIST declarations', async () => {
+    const kettleState = {
+      name: 'kettleState',
+      type: 'list',
+      isConst: false,
+      listMembers: ['cold', 'boiling', 'recently_boiled'],
+      initialValue: {
+        kind: 'literal',
+        value: {
+          kind: 'list',
+          origin: 'kettleState',
+          items: [{ name: 'cold', ordinal: 0 }],
+          allItems: [
+            { name: 'cold', ordinal: 0 },
+            { name: 'boiling', ordinal: 1 },
+            { name: 'recently_boiled', ordinal: 2 },
+          ],
+        },
+      },
+    };
+    const { app } = makeApp(
+      graph({ a: { id: 'a', content: [], choices: [{ text: 'go', target: 'b' }], tags: [] } }, [
+        kettleState,
+      ]),
+    );
+    const res = await request(app)
+      .patch('/api/projects/p1/story/choice/condition')
+      .send({ nodeId: 'a', choiceIndex: 0, condition: 'kettleState has boiling' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.story_graph.nodes.a.choices[0].condition).toEqual({
+      kind: 'binary',
+      operator: 'has',
+      left: { kind: 'variable', name: 'kettleState' },
+      right: {
+        kind: 'literal',
+        value: {
+          kind: 'list',
+          origin: 'kettleState',
+          items: [{ name: 'boiling', ordinal: 1 }],
+          allItems: [
+            { name: 'cold', ordinal: 0 },
+            { name: 'boiling', ordinal: 1 },
+            { name: 'recently_boiled', ordinal: 2 },
+          ],
+        },
+      },
+    });
+  });
+
+  it('parses a multi-member LIST literal condition, which fails outright without list context', async () => {
+    const kettleState = {
+      name: 'kettleState',
+      type: 'list',
+      isConst: false,
+      listMembers: ['cold', 'boiling'],
+      initialValue: {
+        kind: 'literal',
+        value: { kind: 'list', origin: 'kettleState', items: [], allItems: [] },
+      },
+    };
+    const { app } = makeApp(
+      graph({ a: { id: 'a', content: [], choices: [{ text: 'go', target: 'b' }], tags: [] } }, [
+        kettleState,
+      ]),
+    );
+    const res = await request(app)
+      .patch('/api/projects/p1/story/choice/condition')
+      .send({ nodeId: 'a', choiceIndex: 0, condition: 'kettleState == (cold, boiling)' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.story_graph.nodes.a.choices[0].condition.right).toEqual({
+      kind: 'literal',
+      value: {
+        kind: 'list',
+        origin: 'kettleState',
+        items: [
+          { name: 'cold', ordinal: 0 },
+          { name: 'boiling', ordinal: 1 },
+        ],
+        allItems: [
+          { name: 'cold', ordinal: 0 },
+          { name: 'boiling', ordinal: 1 },
+        ],
+      },
+    });
   });
 });
 
@@ -220,6 +309,49 @@ describe('PATCH /:id/story/node/content/condition', () => {
 
     expect(res.status).toBe(404);
     expect(Object.prototype).not.toHaveProperty('content');
+  });
+
+  it('parses a LIST-member condition against the story graph’s own LIST declarations', async () => {
+    const kettleState = {
+      name: 'kettleState',
+      type: 'list',
+      isConst: false,
+      listMembers: ['cold', 'boiling'],
+      initialValue: {
+        kind: 'literal',
+        value: { kind: 'list', origin: 'kettleState', items: [], allItems: [] },
+      },
+    };
+    const { app } = makeApp(
+      graph(
+        {
+          a: { id: 'a', content: [{ kind: 'text', text: 'hi', tags: [] }], choices: [], tags: [] },
+        },
+        [kettleState],
+      ),
+    );
+    const res = await request(app)
+      .patch('/api/projects/p1/story/node/content/condition')
+      .send({ nodeId: 'a', contentIndex: 0, condition: 'kettleState hasnt cold' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.story_graph.nodes.a.content[0].condition).toEqual({
+      kind: 'binary',
+      operator: 'hasnt',
+      left: { kind: 'variable', name: 'kettleState' },
+      right: {
+        kind: 'literal',
+        value: {
+          kind: 'list',
+          origin: 'kettleState',
+          items: [{ name: 'cold', ordinal: 0 }],
+          allItems: [
+            { name: 'cold', ordinal: 0 },
+            { name: 'boiling', ordinal: 1 },
+          ],
+        },
+      },
+    });
   });
 });
 
@@ -347,6 +479,86 @@ describe('PATCH /:id/story/variables', () => {
       operator: '+',
       left: { kind: 'variable', name: '__proto__' },
       right: { kind: 'literal', value: 1 },
+    });
+  });
+
+  // This route has no UI/schema for authoring a LIST's member
+  // universe — VariablesTab only ever submits the project's SCALAR
+  // variables. Before this fix, the route always wrote `variables`
+  // as the complete replacement array, so an existing Ink-declared
+  // LIST was silently dropped (or, if the client round-tripped its
+  // printed form back through this scalar-only parser with no LIST
+  // context, rejected outright) on every scalar-only save (found in
+  // review).
+  describe('preserves existing LIST declarations untouched', () => {
+    const kettleState = {
+      name: 'kettleState',
+      type: 'list',
+      isConst: false,
+      listMembers: ['cold', 'boiling'],
+      initialValue: {
+        kind: 'literal',
+        value: {
+          kind: 'list',
+          origin: 'kettleState',
+          items: [{ name: 'cold', ordinal: 0 }],
+          allItems: [
+            { name: 'cold', ordinal: 0 },
+            { name: 'boiling', ordinal: 1 },
+          ],
+        },
+      },
+    };
+
+    it('keeps the LIST when the submitted array only contains scalars', async () => {
+      const { app } = makeApp(
+        graph({ a: { id: 'a', content: [], choices: [], tags: [] } }, [kettleState]),
+      );
+      const res = await request(app)
+        .patch('/api/projects/p1/story/variables')
+        .send({ variables: [{ name: 'gold', initialValue: '10', isConst: false }] });
+
+      expect(res.status).toBe(200);
+      expect(res.body.story_graph.variables).toEqual([
+        kettleState,
+        {
+          name: 'gold',
+          type: 'number',
+          initialValue: { kind: 'literal', value: 10 },
+          isConst: false,
+        },
+      ]);
+    });
+
+    it('keeps the LIST untouched across repeated scalar edits (create, then edit)', async () => {
+      const { app } = makeApp(
+        graph({ a: { id: 'a', content: [], choices: [], tags: [] } }, [kettleState]),
+      );
+      await request(app)
+        .patch('/api/projects/p1/story/variables')
+        .send({ variables: [{ name: 'gold', initialValue: '10', isConst: false }] });
+      const res = await request(app)
+        .patch('/api/projects/p1/story/variables')
+        .send({ variables: [{ name: 'gold', initialValue: '20', isConst: false }] });
+
+      expect(res.status).toBe(200);
+      expect(res.body.story_graph.variables[0]).toEqual(kettleState);
+      expect(res.body.story_graph.variables[1].initialValue).toEqual({
+        kind: 'literal',
+        value: 20,
+      });
+    });
+
+    it('rejects a new scalar whose name collides with an existing LIST', async () => {
+      const { app } = makeApp(
+        graph({ a: { id: 'a', content: [], choices: [], tags: [] } }, [kettleState]),
+      );
+      const res = await request(app)
+        .patch('/api/projects/p1/story/variables')
+        .send({ variables: [{ name: 'kettleState', initialValue: '5', isConst: false }] });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/already declared as a LIST/);
     });
   });
 });
