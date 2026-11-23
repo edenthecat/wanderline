@@ -1,11 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import {
   evaluate,
+  evaluateWithEffects,
   execute,
   truthy,
   isListValue,
   expressionUsesListFeatures,
+  expressionUsesFunctionCalls,
   ExpressionEvaluationError,
+  type CallFunctionHandler,
   type Expression,
   type AssignmentStatement,
   type ListValue,
@@ -631,5 +634,160 @@ describe('expressionUsesListFeatures', () => {
       right: { kind: 'literal', value: 5 },
     };
     expect(expressionUsesListFeatures(expr)).toBe(false);
+  });
+
+  it('a call expression is only flagged via a LIST-bearing argument', () => {
+    const plainCall: Expression = {
+      kind: 'call',
+      name: 'double',
+      args: [{ kind: 'variable', name: 'x' }],
+    };
+    expect(expressionUsesListFeatures(plainCall)).toBe(false);
+    const listArgCall: Expression = { kind: 'call', name: 'f', args: [list('cold')] };
+    expect(expressionUsesListFeatures(listArgCall)).toBe(true);
+  });
+});
+
+describe('expressionUsesFunctionCalls', () => {
+  it('a plain expression tree is never flagged', () => {
+    const expr: Expression = {
+      kind: 'binary',
+      operator: '+',
+      left: { kind: 'variable', name: 'gold' },
+      right: { kind: 'literal', value: 5 },
+    };
+    expect(expressionUsesFunctionCalls(expr)).toBe(false);
+  });
+
+  it('a bare call is flagged', () => {
+    expect(expressionUsesFunctionCalls({ kind: 'call', name: 'double', args: [] })).toBe(true);
+  });
+
+  it('a call buried inside a binary/logical/unary subtree is flagged', () => {
+    const buried: Expression = {
+      kind: 'logical',
+      operator: '&&',
+      left: { kind: 'unary', operator: '!', operand: { kind: 'call', name: 'f', args: [] } },
+      right: { kind: 'literal', value: true },
+    };
+    expect(expressionUsesFunctionCalls(buried)).toBe(true);
+  });
+
+  it('a call nested inside a LIST_* builtin argument is flagged', () => {
+    expect(
+      expressionUsesFunctionCalls({
+        kind: 'listFunction',
+        name: 'LIST_COUNT',
+        args: [{ kind: 'call', name: 'f', args: [] }],
+      }),
+    ).toBe(true);
+  });
+});
+
+// Function-knot calls (DEV-199 Phase 10b): `evaluate`/`execute` need
+// an explicit `callFunction` handler to run a `call` expression at
+// all — see expression-evaluator.ts's header for why this can't just
+// be baked into the pure evaluator. These tests exercise the handler
+// CONTRACT in isolation (a hand-rolled stub), not the real
+// function-interpreter.ts implementation — that has its own test
+// file.
+describe('evaluate/execute — function calls', () => {
+  function stubDouble(): CallFunctionHandler {
+    return (name, args, variables) => {
+      if (name !== 'double') throw new ExpressionEvaluationError(`unknown: ${name}`);
+      const n = args[0];
+      if (typeof n !== 'number') throw new ExpressionEvaluationError('double expects a number');
+      return { value: n * 2, variables };
+    };
+  }
+
+  it('throws a clear error when no callFunction handler is provided', () => {
+    const expr: Expression = {
+      kind: 'call',
+      name: 'double',
+      args: [{ kind: 'literal', value: 5 }],
+    };
+    expect(() => evaluate(expr, {})).toThrow(ExpressionEvaluationError);
+    expect(() => evaluate(expr, {})).toThrow(/callFunction/);
+  });
+
+  it('evaluates a call when a handler is provided', () => {
+    const expr: Expression = {
+      kind: 'call',
+      name: 'double',
+      args: [{ kind: 'literal', value: 5 }],
+    };
+    expect(evaluate(expr, {}, stubDouble())).toBe(10);
+  });
+
+  it('evaluates a call used inside a larger expression', () => {
+    const expr: Expression = {
+      kind: 'binary',
+      operator: '>',
+      left: { kind: 'call', name: 'double', args: [{ kind: 'literal', value: 5 }] },
+      right: { kind: 'literal', value: 8 },
+    };
+    expect(evaluate(expr, {}, stubDouble())).toBe(true);
+  });
+
+  it('evaluates nested calls', () => {
+    const inner: Expression = {
+      kind: 'call',
+      name: 'double',
+      args: [{ kind: 'literal', value: 2 }],
+    };
+    const outer: Expression = { kind: 'call', name: 'double', args: [inner] };
+    expect(evaluate(outer, {}, stubDouble())).toBe(8);
+  });
+
+  it('evaluateWithEffects reports the variable store a call mutated', () => {
+    const mutate: CallFunctionHandler = (_name, _args, variables) => ({
+      value: 0,
+      variables: { ...variables, sideEffect: 'touched' },
+    });
+    const expr: Expression = { kind: 'call', name: 'f', args: [] };
+    const result = evaluateWithEffects(expr, { gold: 1 }, mutate);
+    expect(result.value).toBe(0);
+    expect(result.variables).toEqual({ gold: 1, sideEffect: 'touched' });
+  });
+
+  it('plain evaluate drops a call side effect (documented limitation)', () => {
+    const mutate: CallFunctionHandler = (_name, _args, variables) => ({
+      value: 0,
+      variables: { ...variables, sideEffect: 'touched' },
+    });
+    const outerVariables = { gold: 1 };
+    evaluate({ kind: 'call', name: 'f', args: [] }, outerVariables, mutate);
+    // The caller's own object is untouched — evaluate never mutates
+    // its input, and (being `evaluate`, not `evaluateWithEffects`)
+    // the mutated store it computed internally isn't handed back.
+    expect(outerVariables).toEqual({ gold: 1 });
+  });
+
+  it('execute on an assignment propagates a call side effect into the result', () => {
+    const mutate: CallFunctionHandler = (_name, _args, variables) => ({
+      value: 42,
+      variables: { ...variables, sideEffect: 'touched' },
+    });
+    const stmt: AssignmentStatement = {
+      kind: 'assignment',
+      name: 'gold',
+      operator: '=',
+      value: { kind: 'call', name: 'f', args: [] },
+    };
+    const result = execute(stmt, { gold: 1 }, mutate);
+    expect(result).toEqual({ gold: 42, sideEffect: 'touched' });
+  });
+
+  it('execute is a no-op for a bare return statement', () => {
+    const variables = { gold: 1 };
+    expect(execute({ kind: 'return' }, variables)).toBe(variables);
+  });
+
+  it('execute is a no-op for a return statement with a value', () => {
+    const variables = { gold: 1 };
+    expect(execute({ kind: 'return', value: { kind: 'literal', value: 5 } }, variables)).toBe(
+      variables,
+    );
   });
 });

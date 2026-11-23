@@ -43,6 +43,16 @@ export interface StoryNode {
   lineNumber: number;
   /** Audio assignments (populated by editor) */
   audio?: AudioAssignment;
+  /**
+   * Parameter names for a function-knot (`=== function foo(x, y) ===`
+   * — DEV-199 Phase 10b / function-knots), in declaration order. Only
+   * present on a node tagged `internal:function`; absent (not `[]`)
+   * on every other node, same optionality convention as
+   * `VariableDeclaration.listMembers`. `ref` parameters are not
+   * supported (see ink-parser.ts's header) — every name here is a
+   * plain by-value parameter regardless of how the author wrote it.
+   */
+  params?: string[];
 }
 
 export type NodeType = 'knot' | 'stitch' | 'gather';

@@ -85,13 +85,31 @@ export type UnaryOperator = '-' | '!';
 export type ListFunctionName =
   'LIST_COUNT' | 'LIST_MIN' | 'LIST_MAX' | 'LIST_ALL' | 'LIST_RANGE' | 'LIST_VALUE' | 'LIST_INVERT';
 
+/**
+ * A call to a user-defined Ink function-knot (`=== function foo(x) ===`
+ * — DEV-199 Phase 10b / function-knots). Unlike `listFunction`, `name`
+ * is NOT drawn from a fixed set `evaluate` itself knows how to run —
+ * it names a knot elsewhere in the story graph, which the pure
+ * evaluator has no knowledge of (see this file's header and
+ * expression-evaluator.ts's `CallFunctionHandler`). Evaluating one
+ * requires a caller-supplied `callFunction` callback; parsing one
+ * requires the parser's `context.knownFunctions` to already know the
+ * name is a real function-knot (see expression-parser.ts).
+ */
+export interface CallExpression {
+  kind: 'call';
+  name: string;
+  args: Expression[];
+}
+
 export type Expression =
   | { kind: 'literal'; value: VariableValue }
   | { kind: 'variable'; name: string }
   | { kind: 'unary'; operator: UnaryOperator; operand: Expression }
   | { kind: 'binary'; operator: BinaryOperator; left: Expression; right: Expression }
   | { kind: 'logical'; operator: LogicalOperator; left: Expression; right: Expression }
-  | { kind: 'listFunction'; name: ListFunctionName; args: Expression[] };
+  | { kind: 'listFunction'; name: ListFunctionName; args: Expression[] }
+  | CallExpression;
 
 /**
  * `=` is a plain assignment; the compound forms are sugar for
@@ -108,7 +126,23 @@ export interface AssignmentStatement {
   value: Expression;
 }
 
-export type Statement = AssignmentStatement;
+/**
+ * `~ return EXPR` or bare `~ return` inside a function-knot's content
+ * (function-knots — DEV-199 Phase 10b). `value` is omitted for the
+ * bare form — a function that exists purely for its side effects
+ * (mutating an outer-scope/global variable) doesn't need one. Only
+ * meaningful inside a function-knot's own content; a plain knot's
+ * content walker (applyNodeAssignments in the player, the content
+ * emitter in ink-converter.ts) treats one as a no-op rather than
+ * crashing, since nothing about the Statement type itself restricts
+ * where a ReturnStatement can appear.
+ */
+export interface ReturnStatement {
+  kind: 'return';
+  value?: Expression;
+}
+
+export type Statement = AssignmentStatement | ReturnStatement;
 
 export interface VariableDeclaration {
   name: string;
