@@ -738,6 +738,17 @@ function ConditionVariantBuilder({
     );
   }
 
+  // A string variable's empty value ("") is a legitimate, distinct
+  // condition (e.g. `name == ""` — before the player has entered a
+  // name). Only bool/number genuinely need a non-empty selection
+  // first — their empty state (the <select>'s "Choose…" placeholder,
+  // or an untyped <input type=number>) means "nothing chosen yet"
+  // with no valid empty-but-real value of their own. Gating on
+  // `!valueText` unconditionally made a string condition against ""
+  // impossible to ever submit through this UI (found in review).
+  const needsNonEmptyValue = variable?.type === 'bool' || variable?.type === 'number';
+  const nextButtonBlocked = busy || (needsNonEmptyValue && !valueText);
+
   return (
     <span className="node-audio-picker-row">
       <select
@@ -794,9 +805,9 @@ function ConditionVariantBuilder({
       <button
         type="button"
         className="btn btn-sm"
-        aria-disabled={busy || !valueText}
+        aria-disabled={nextButtonBlocked}
         onClick={() => {
-          if (busy || !valueText) return;
+          if (nextButtonBlocked) return;
           confirmCondition();
         }}
       >

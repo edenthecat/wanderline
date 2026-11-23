@@ -735,6 +735,29 @@ describe('NodeAudioPanel', () => {
       expect(screen.getAllByText('+ Add conditional variant…')[SLOT_INDEX.voiceover]).toBeTruthy();
     });
 
+    // Regression (found in review): a string variable's empty value
+    // ("") is a legitimate condition (e.g. before the player has
+    // entered a name) — the "Next" button was unconditionally
+    // disabled whenever the value field was empty, which made this
+    // condition impossible to ever submit.
+    it('allows a string condition against the empty value', async () => {
+      const a = mount({ sfx: [] }, actions(), [MOOD]);
+      fireEvent.click(screen.getAllByText('+ Add conditional variant…')[SLOT_INDEX.voiceover]);
+      // Leave the value field empty — don't type anything.
+      const nextButton = screen.getByRole('button', { name: 'Next: pick a file' });
+      expect(nextButton).not.toHaveAttribute('aria-disabled', 'true');
+      fireEvent.click(nextButton);
+      choose('Voiceover to play when mood == "" on hall', 'vo1', 'Add');
+
+      await waitFor(() =>
+        expect(a.assign).toHaveBeenCalledWith('hall', 'voiceover', 'vo1', {
+          variable: 'mood',
+          operator: '==',
+          value: '',
+        }),
+      );
+    });
+
     // Regression: a slot with only conditioned variants (no default
     // yet) used to be excluded from "Attach audio…" entirely, with no
     // in-panel way to add the fallback afterward.

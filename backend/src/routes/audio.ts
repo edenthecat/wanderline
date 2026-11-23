@@ -856,6 +856,15 @@ export function createAudioRouter(pool: Pool): Router {
         fileId: string;
         condition?: SimpleCondition;
       }
+      // Null-prototype at both levels, same reasoning as
+      // collectNodeAudio in story-data-builder.ts: `row.node_id` is a
+      // knot/stitch identifier and `choiceId` comes straight out of
+      // `audio_type`'s `choice:<id>` encoding — both author-
+      // controlled text that can legally be `__proto__`. On an
+      // ordinary `{}`, that reads the INHERITED Object.prototype
+      // (truthy, so the `!assignments[...]`/`??=` guards below never
+      // fire) and the next `.push`/property access throws, crashing
+      // this whole endpoint for the project until the row is deleted.
       const assignments: Record<
         string,
         {
@@ -871,7 +880,7 @@ export function createAudioRouter(pool: Pool): Router {
           sfx: AssignmentVariant[];
           sfxOffsets?: Record<string, number>;
         }
-      > = {};
+      > = Object.create(null);
       for (const row of result.rows) {
         if (!assignments[row.node_id]) {
           assignments[row.node_id] = { sfx: [] };
@@ -886,7 +895,9 @@ export function createAudioRouter(pool: Pool): Router {
         } else if (isChoiceAudioType(row.audio_type)) {
           const node = assignments[row.node_id];
           const choiceId = choiceIdFromAudioType(row.audio_type);
-          ((node.choices ??= {})[choiceId] ??= []).push({
+          ((node.choices ??= Object.create(null) as Record<string, AssignmentVariant[]>)[
+            choiceId
+          ] ??= []).push({
             fileId: row.audio_file_id,
             ...(condition ? { condition } : {}),
           });

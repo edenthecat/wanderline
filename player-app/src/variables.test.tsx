@@ -45,6 +45,49 @@ describe('initialVariableValues', () => {
       ]),
     ).toEqual({ ok: 1 });
   });
+
+  // Regression (found in review): a plain `{}` let a declared name of
+  // `__proto__` hit Object.prototype's accessor instead of being
+  // stored as a real own property, so a later declaration reading it
+  // back (`VAR x = __proto__`) saw the inherited Object.prototype
+  // object instead of the declared value.
+  it('treats __proto__ as an ordinary variable name', () => {
+    expect(
+      initialVariableValues([
+        {
+          name: '__proto__',
+          type: 'number',
+          initialValue: { kind: 'literal', value: 5 },
+          isConst: false,
+        },
+        {
+          name: 'x',
+          type: 'number',
+          initialValue: {
+            kind: 'binary',
+            operator: '+',
+            left: { kind: 'variable', name: '__proto__' },
+            right: { kind: 'literal', value: 1 },
+          },
+          isConst: false,
+        },
+      ]),
+      // Computed key: `{ __proto__: 5 }` (the literal, non-computed
+      // form) would set this object's OWN prototype to 5 — ignored,
+      // since 5 isn't an object — rather than creating a `__proto__`
+      // own property, which isn't what this fixture needs to assert.
+    ).toEqual({ ['__proto__']: 5, x: 6 });
+    expect(
+      initialVariableValues([
+        {
+          name: '__proto__',
+          type: 'number',
+          initialValue: { kind: 'literal', value: 5 },
+          isConst: false,
+        },
+      ]),
+    ).toHaveProperty('__proto__', 5);
+  });
 });
 
 describe('applyNodeAssignments', () => {

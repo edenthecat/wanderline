@@ -386,7 +386,18 @@ export { conditionAllows, nodeText } from './node-text';
 export function initialVariableValues(
   declarations: VariableDeclaration[] | undefined,
 ): Record<string, VariableValue> {
-  const values: Record<string, VariableValue> = {};
+  // Null-prototype, same reasoning as ink-parser.ts's ParserState —
+  // `decl.name` comes from an author's Ink/Twee declaration and can
+  // legally be `__proto__`. On an ordinary `{}`, `values['__proto__']
+  // = ...` doesn't create an own property — it invokes
+  // Object.prototype's `__proto__` setter instead, either silently
+  // dropping a primitive value or, for a LIST value, corrupting this
+  // object's own prototype chain. Every LATER reference to an
+  // undeclared variable whose name collides with a real
+  // Object.prototype member (toString/constructor/valueOf/
+  // hasOwnProperty) would also silently resolve to that built-in
+  // instead of throwing "Undefined variable" as intended.
+  const values: Record<string, VariableValue> = Object.create(null);
   for (const decl of declarations ?? []) {
     try {
       values[decl.name] = evaluate(decl.initialValue, values);

@@ -131,6 +131,32 @@ describe('storyHash', () => {
     expect(storyHash(graphA)).not.toBe(storyHash(graphB));
   });
 
+  // Regression (found in review): a Twee passage can legally be
+  // named `__proto__` (twee-parser.ts's own `nodes` map already
+  // guards against this exact name). stripVolatileIds built its
+  // stripped-nodes record as a plain `{}`, so writing a node keyed
+  // `__proto__` silently dropped it instead of creating an own
+  // property — two graphs differing only in that node's content
+  // hashed IDENTICALLY, wrongly treating a real change as a no-op.
+  it('does not silently drop a node literally named __proto__', () => {
+    // Computed key: the literal `{ __proto__: value }` form would set
+    // this object's OWN PROTOTYPE to `value` (since it's an object)
+    // instead of creating an own property — `graph.nodes` would then
+    // have ZERO own enumerable properties, which defeats this test's
+    // whole point rather than exercising it.
+    const graphA = {
+      nodes: {
+        ['__proto__']: { id: '__proto__', content: [{ kind: 'text', text: 'A', tags: [] }] },
+      },
+    };
+    const graphB = {
+      nodes: {
+        ['__proto__']: { id: '__proto__', content: [{ kind: 'text', text: 'B', tags: [] }] },
+      },
+    };
+    expect(storyHash(graphA)).not.toBe(storyHash(graphB));
+  });
+
   it('throws on null / undefined so an empty story cannot silently collide', () => {
     // Without this guard, canonicalize(null) returns "null" and
     // storyHash(null) = sha256("null") — a real, stable value that

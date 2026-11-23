@@ -663,17 +663,26 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
       }
 
       const storyGraph = storyResult.rows[0].story_graph;
-      const node = storyGraph.nodes[nodeId];
-      if (!node) {
+      // See `/choice/condition`'s own comment for why this is
+      // `Object.hasOwn` rather than a truthy check on the indexed
+      // value — `nodeId` is attacker-controlled and `['__proto__']`
+      // resolves to Object.prototype itself on a plain object.
+      if (!Object.hasOwn(storyGraph.nodes, nodeId)) {
         res.status(404).json({ error: 'Node not found' });
         return;
       }
+      const node = storyGraph.nodes[nodeId];
       if (!node.content || contentIndex >= node.content.length) {
         res.status(400).json({ error: 'Content index out of range' });
         return;
       }
+      const block = node.content[contentIndex];
+      if (!isTextBlock(block)) {
+        res.status(400).json({ error: 'Cannot set text on an assignment block' });
+        return;
+      }
 
-      node.content[contentIndex].text = newText;
+      block.text = newText;
 
       await pool.query(
         `UPDATE project_stories

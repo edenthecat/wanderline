@@ -85,7 +85,16 @@ function stripVolatileIds(storyGraph: unknown): unknown {
   if (storyGraph === null || typeof storyGraph !== 'object') return storyGraph;
   const graph = storyGraph as { nodes?: Record<string, unknown> };
   if (!graph.nodes || typeof graph.nodes !== 'object') return storyGraph;
-  const nodes: Record<string, unknown> = {};
+  // Null-prototype — `nodeId` is a Twee passage name or Ink knot/
+  // stitch identifier, and a Twee passage literally named `__proto__`
+  // is exactly the case twee-parser.ts's own `nodes` map already
+  // guards against for the same reason. On an ordinary `{}`,
+  // `nodes['__proto__'] = ...` doesn't create an own property — it
+  // silently drops the node from the canonicalized form, so two
+  // graphs that differ only in that node's content hash IDENTICALLY,
+  // and the build-dedup system wrongly treats a real change as a
+  // no-op.
+  const nodes: Record<string, unknown> = Object.create(null);
   for (const [nodeId, rawNode] of Object.entries(graph.nodes)) {
     if (rawNode === null || typeof rawNode !== 'object') {
       nodes[nodeId] = rawNode;

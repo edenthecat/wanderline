@@ -129,6 +129,32 @@ describe('GET /assignments groups choice:<id> rows under `choices`', () => {
     const res = await request(app).get(`/api/projects/${PROJECT}/audio/assignments`);
     expect(Object.keys(res.body.assignments.a.choices)).toEqual(['c1', 'c2']);
   });
+
+  // Regression (found in review): `nodeId`/`choiceId` come straight
+  // from Ink/Twee identifiers and can legally be `__proto__`. On a
+  // plain `{}`, that read the inherited Object.prototype object
+  // instead of undefined, so the `!assignments[...]`/`??=` guards
+  // never ran and the next property access/`.push` threw, crashing
+  // this whole endpoint for the project.
+  it('does not crash on a node id or choice id literally named __proto__', async () => {
+    const { app } = makeApp(async () => ({
+      rows: [
+        {
+          node_id: '__proto__',
+          audio_type: audioTypeForChoice('__proto__'),
+          audio_file_id: FILE_A,
+          condition: null,
+        },
+      ],
+    }));
+    const res = await request(app).get(`/api/projects/${PROJECT}/audio/assignments`);
+    expect(res.status).toBe(200);
+    expect(Object.prototype).not.toHaveProperty('choices');
+    expect(res.body.assignments).toHaveProperty('__proto__');
+    expect(res.body.assignments['__proto__'].choices).toEqual({
+      ['__proto__']: [{ fileId: FILE_A }],
+    });
+  });
 });
 
 describe('bulk-reassign with a choice:<id> audioType', () => {

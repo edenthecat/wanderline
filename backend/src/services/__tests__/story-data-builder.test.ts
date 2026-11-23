@@ -251,5 +251,37 @@ describe('collectNodeAudio', () => {
         { file: 'vo.mp3' },
       ]);
     });
+
+    // Regression (found in review): `choiceId`/`nodeId` come straight
+    // from Ink/Twee identifiers and can legally be `__proto__`. On a
+    // plain `{}`, `node.choices['__proto__']` (or `byNode['__proto__']`)
+    // reads the inherited Object.prototype object instead of
+    // undefined, so `??= []` never ran and the next `.push` threw
+    // trying to call a method Object.prototype doesn't have.
+    it('does not crash on a choice id or node id literally named __proto__', () => {
+      expect(() =>
+        collectNodeAudio(
+          [
+            { node_id: '__proto__', audio_type: 'choice:__proto__', audio_file_id: 'f1' },
+            { node_id: '__proto__', audio_type: 'choice:__proto__', audio_file_id: 'f2' },
+          ],
+          fileMap,
+        ),
+      ).not.toThrow();
+
+      const audio = collectNodeAudio(
+        [{ node_id: '__proto__', audio_type: 'choice:__proto__', audio_file_id: 'f1' }],
+        fileMap,
+      );
+      // Object.prototype itself must come out unscathed.
+      expect(Object.prototype).not.toHaveProperty('choices');
+      expect(audio).toHaveProperty('__proto__');
+      // Computed keys: the literal `{ __proto__: value }` form would
+      // set this object's/choices' OWN prototype rather than create
+      // an own property (since the value is an object, unlike the
+      // earlier number-valued __proto__ fixtures elsewhere) — not
+      // what this assertion means to check.
+      expect(audio['__proto__']).toEqual({ choices: { ['__proto__']: [{ file: 'vo.mp3' }] } });
+    });
   });
 });

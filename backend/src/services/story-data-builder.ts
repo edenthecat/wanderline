@@ -134,6 +134,16 @@ export function collectNodeAudio(
   rows: AssignmentRow[],
   fileMap: Record<string, string>,
 ): Record<string, StoryDataNodeAudio> {
+  // Null-prototype at both levels: `row.node_id` is an Ink/Twee knot
+  // or stitch identifier, and `choiceId` (below) comes straight out
+  // of `audio_type`'s `choice:<id>` encoding — both are author-
+  // controlled text that can legally be `__proto__`. On an ordinary
+  // `{}`, `byNode['__proto__']` (or `node.choices['__proto__']`)
+  // reads the INHERITED Object.prototype object (truthy, so `??=`
+  // skips assigning a fresh one) and the next `.push(...)` throws
+  // trying to call a method Object.prototype doesn't have — a single
+  // crafted row crashes every build/preview/export for the whole
+  // project until it's manually deleted from the DB.
   const byNode: Record<
     string,
     {
@@ -144,7 +154,7 @@ export function collectNodeAudio(
       choices: Record<string, PendingVariant[]>;
       sfx: PendingSfx[];
     }
-  > = {};
+  > = Object.create(null);
   for (const row of rows) {
     const file = fileMap[row.audio_file_id];
     if (!file) continue;
@@ -153,7 +163,7 @@ export function collectNodeAudio(
       ambience: [],
       choice1: [],
       choice2: [],
-      choices: {},
+      choices: Object.create(null) as Record<string, PendingVariant[]>,
       sfx: [],
     });
     const condition = row.condition ?? undefined;
@@ -188,7 +198,10 @@ export function collectNodeAudio(
       }
     }
   }
-  const result: Record<string, StoryDataNodeAudio> = {};
+  // Same null-prototype reasoning as `byNode`/`node.choices` above —
+  // `nodeId` and `choiceId` are both still author-controlled text at
+  // this point.
+  const result: Record<string, StoryDataNodeAudio> = Object.create(null);
   for (const [nodeId, node] of Object.entries(byNode)) {
     const audio: StoryDataNodeAudio = {};
     for (const slot of ['voiceover', 'ambience', 'choice1', 'choice2'] as const) {
@@ -198,7 +211,7 @@ export function collectNodeAudio(
     }
     const choiceIds = Object.keys(node.choices);
     if (choiceIds.length > 0) {
-      audio.choices = {};
+      audio.choices = Object.create(null) as Record<string, AudioVariant[]>;
       for (const choiceId of choiceIds) {
         audio.choices[choiceId] = node.choices[choiceId]
           .sort(compareSingleSlotVariants)
