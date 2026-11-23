@@ -75,12 +75,18 @@ export interface NodeAudioActions {
     condition?: SimpleCondition,
   ) => Promise<void>;
   /** Swap one attached file for another, keeping a sound effect's timing
-   * (and whatever condition that specific row already had). */
+   * (and whatever condition that specific row already had). `condition`
+   * scopes the swap to that ONE variant — any caller that already knows
+   * which variant it's replacing (the same value it passes to `clear`)
+   * should pass it here too, or the swap silently applies to every
+   * variant of the slot sharing `fromFileId`, not just the one the user
+   * picked. */
   replace: (
     nodeId: string,
     slot: NodeAudioSlot,
     fromFileId: string,
     toFileId: string,
+    condition?: SimpleCondition | null,
   ) => Promise<void>;
   /** Detach a file. `condition` targets that specific conditioned
    * variant; omit to target the default/unconditioned one. */
@@ -328,10 +334,20 @@ export function useNodeEditor({
         ),
       // The reassign endpoint swaps atomically and keeps a sound effect's
       // timing (and whatever condition that row already had); assign
-      // would drop both.
-      replace: (nodeId, slot, fromFileId, toFileId) =>
+      // would drop both. `condition` (including explicit `null`) scopes
+      // the op to that one variant; genuinely omitting the argument
+      // (undefined) keeps the old "every variant of this slot" behavior.
+      replace: (nodeId, slot, fromFileId, toFileId, condition) =>
         run(() =>
-          bulkReassignAudio(projectId, [{ nodeId, audioType: slot, fromFileId, toFileId }]),
+          bulkReassignAudio(projectId, [
+            {
+              nodeId,
+              audioType: slot,
+              fromFileId,
+              toFileId,
+              ...(condition !== undefined ? { condition } : {}),
+            },
+          ]),
         ),
       // Always name the file the author saw: if a peer has swapped this
       // slot in the meantime, clearing must not remove their new take.

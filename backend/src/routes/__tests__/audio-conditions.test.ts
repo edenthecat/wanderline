@@ -300,4 +300,113 @@ describe('POST /assignments/bulk-reassign carries a row condition forward', () =
       'ON CONFLICT (project_id, node_id, audio_type, audio_file_id) WHERE condition IS NULL',
     );
   });
+
+  // Regression (found in review): "Replace" on one variant of a slot
+  // silently replaced EVERY variant sharing fromFileId at that slot,
+  // since the DELETE matched on (node, type, fromFileId) alone with
+  // no way to name which row. The op's `condition` key — its mere
+  // PRESENCE, not just its value — now scopes the DELETE to one row.
+  it('scopes the DELETE to one condition when the op names one', async () => {
+    const calls: { sql: string; params: unknown[] }[] = [];
+    const condition = { variable: 'scary', operator: '==', value: true };
+    const { app } = makeApp(
+      async () => ({ rows: [] }),
+      async (sql, params = []) => {
+        calls.push({ sql, params });
+        if (sql.includes('SELECT id FROM audio_files')) return { rows: [{ id: FILE_B }] };
+        if (sql.includes('DELETE FROM node_audio_assignments')) {
+          return { rows: [{ id: 'row', offset_ms: null, condition }] };
+        }
+        if (sql.includes('INSERT INTO node_audio_assignments')) return { rows: [{ id: 'new' }] };
+        return { rows: [] };
+      },
+    );
+    const res = await request(app)
+      .post(`/api/projects/${PROJECT}/audio/assignments/bulk-reassign`)
+      .send({
+        ops: [
+          { nodeId: 'a', audioType: 'ambience', fromFileId: FILE_A, toFileId: FILE_B, condition },
+        ],
+      });
+    expect(res.status).toBe(200);
+    const del = calls.find((c) => c.sql.includes('DELETE FROM node_audio_assignments'))!;
+    expect(del.sql).toContain('AND condition IS NOT DISTINCT FROM $5::jsonb');
+    expect(del.params).toEqual([PROJECT, 'a', 'ambience', FILE_A, JSON.stringify(condition)]);
+  });
+
+  it('scopes the DELETE to the default variant when the op explicitly names condition: null', async () => {
+    const calls: { sql: string; params: unknown[] }[] = [];
+    const { app } = makeApp(
+      async () => ({ rows: [] }),
+      async (sql, params = []) => {
+        calls.push({ sql, params });
+        if (sql.includes('SELECT id FROM audio_files')) return { rows: [{ id: FILE_B }] };
+        if (sql.includes('DELETE FROM node_audio_assignments')) {
+          return { rows: [{ id: 'row', offset_ms: null, condition: null }] };
+        }
+        if (sql.includes('INSERT INTO node_audio_assignments')) return { rows: [{ id: 'new' }] };
+        return { rows: [] };
+      },
+    );
+    const res = await request(app)
+      .post(`/api/projects/${PROJECT}/audio/assignments/bulk-reassign`)
+      .send({
+        ops: [
+          {
+            nodeId: 'a',
+            audioType: 'ambience',
+            fromFileId: FILE_A,
+            toFileId: FILE_B,
+            condition: null,
+          },
+        ],
+      });
+    expect(res.status).toBe(200);
+    const del = calls.find((c) => c.sql.includes('DELETE FROM node_audio_assignments'))!;
+    expect(del.sql).toContain('AND condition IS NOT DISTINCT FROM $5::jsonb');
+    expect(del.params).toEqual([PROJECT, 'a', 'ambience', FILE_A, null]);
+  });
+
+  it('omitting condition entirely still matches every variant of the slot (swap everywhere)', async () => {
+    const calls: { sql: string; params: unknown[] }[] = [];
+    const { app } = makeApp(
+      async () => ({ rows: [] }),
+      async (sql, params = []) => {
+        calls.push({ sql, params });
+        if (sql.includes('SELECT id FROM audio_files')) return { rows: [{ id: FILE_B }] };
+        if (sql.includes('DELETE FROM node_audio_assignments')) {
+          return { rows: [{ id: 'row', offset_ms: null, condition: null }] };
+        }
+        if (sql.includes('INSERT INTO node_audio_assignments')) return { rows: [{ id: 'new' }] };
+        return { rows: [] };
+      },
+    );
+    const res = await request(app)
+      .post(`/api/projects/${PROJECT}/audio/assignments/bulk-reassign`)
+      .send({
+        ops: [{ nodeId: 'a', audioType: 'ambience', fromFileId: FILE_A, toFileId: FILE_B }],
+      });
+    expect(res.status).toBe(200);
+    const del = calls.find((c) => c.sql.includes('DELETE FROM node_audio_assignments'))!;
+    expect(del.sql).not.toContain('condition IS NOT DISTINCT FROM');
+    expect(del.params).toEqual([PROJECT, 'a', 'ambience', FILE_A]);
+  });
+
+  it('rejects a malformed condition on an op', async () => {
+    const { app } = makeApp(async () => ({ rows: [] }));
+    const res = await request(app)
+      .post(`/api/projects/${PROJECT}/audio/assignments/bulk-reassign`)
+      .send({
+        ops: [
+          {
+            nodeId: 'a',
+            audioType: 'ambience',
+            fromFileId: FILE_A,
+            toFileId: FILE_B,
+            condition: { variable: '', operator: '==', value: true },
+          },
+        ],
+      });
+    expect(res.status).toBe(400);
+  });
 });

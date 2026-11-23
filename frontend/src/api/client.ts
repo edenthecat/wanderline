@@ -590,6 +590,16 @@ export interface BulkReassignOp {
   audioType: string;
   fromFileId: string;
   toFileId: string;
+  /** Scope this op to ONE SPECIFIC variant of the slot — omit the
+   * field entirely to swap EVERY variant at (nodeId, audioType,
+   * fromFileId) regardless of condition (the "swap everywhere"
+   * behavior); pass the variant's own `condition` (or explicit
+   * `null` for the default/unconditioned variant) to replace only
+   * that one row, leaving any other condition sharing the same file
+   * at this slot untouched. The field's PRESENCE is what the server
+   * checks, not just its value, so `condition: null` and "omitted"
+   * are deliberately NOT the same thing here. */
+  condition?: SimpleCondition | null;
 }
 
 /** Atomically re-point every (nodeId, audioType, fromFileId) assignment

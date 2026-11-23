@@ -165,7 +165,9 @@ describe('NodeAudioPanel', () => {
     // The current file isn't offered as its own replacement.
     expect([...select.options].map((o) => o.value)).not.toContain('vo1');
     choose('Replacement voiceover for hall', 'vo2', 'Use');
-    await waitFor(() => expect(a.replace).toHaveBeenCalledWith('hall', 'voiceover', 'vo1', 'vo2'));
+    await waitFor(() =>
+      expect(a.replace).toHaveBeenCalledWith('hall', 'voiceover', 'vo1', 'vo2', null),
+    );
   });
 
   it('clears a slot', async () => {
@@ -187,7 +189,9 @@ describe('NodeAudioPanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Replace' }));
     choose('Replacement for SFX 1 on hall', 'bell', 'Use');
-    await waitFor(() => expect(a.replace).toHaveBeenCalledWith('hall', 'sfx', 'door', 'bell'));
+    await waitFor(() =>
+      expect(a.replace).toHaveBeenCalledWith('hall', 'sfx', 'door', 'bell', null),
+    );
 
     fireEvent.click(screen.getByLabelText('Remove SFX 1 from hall'));
     await waitFor(() => expect(a.clear).toHaveBeenCalledWith('hall', 'sfx', 'door', undefined));
@@ -322,7 +326,9 @@ describe('NodeAudioPanel', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Replace' }));
       choose('Replacement for SFX 1 on hall', 'bell', 'Use');
       await vi.advanceTimersByTimeAsync(10_000);
-      await waitFor(() => expect(a.replace).toHaveBeenCalledWith('hall', 'sfx', 'door', 'bell'));
+      await waitFor(() =>
+        expect(a.replace).toHaveBeenCalledWith('hall', 'sfx', 'door', 'bell', null),
+      );
     } finally {
       vi.useRealTimers();
     }
@@ -375,7 +381,9 @@ describe('NodeAudioPanel', () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(a.replace).not.toHaveBeenCalled();
     release();
-    await waitFor(() => expect(a.replace).toHaveBeenCalledWith('hall', 'sfx', 'door', 'bell'));
+    await waitFor(() =>
+      expect(a.replace).toHaveBeenCalledWith('hall', 'sfx', 'door', 'bell', null),
+    );
   });
 
   it('disarms the picker once its choice has been added', async () => {
@@ -658,6 +666,57 @@ describe('NodeAudioPanel', () => {
         [MOOD],
       );
       expect(screen.getByText('Voiceover — when mood == "angry"')).toBeTruthy();
+    });
+
+    // Regression (found in review): replacing one of two variants that
+    // share the same file on the same slot must scope to THAT variant's
+    // own condition, or the backend's bulk-reassign (which otherwise
+    // swaps every variant of the slot sharing fromFileId) would also
+    // replace the sibling variant despite the UI targeting only this row.
+    it('passes this row’s own condition to replace, not the default/unscoped case', async () => {
+      const a = mount(
+        {
+          voiceover: [
+            { fileId: 'vo1' },
+            { fileId: 'vo1', condition: { variable: 'mood', operator: '==', value: 'angry' } },
+          ],
+          sfx: [],
+        },
+        actions(),
+        [MOOD],
+      );
+      const replaceButtons = screen.getAllByRole('button', { name: 'Replace' });
+      // Row 0 is the default/unconditioned variant.
+      fireEvent.click(replaceButtons[0]);
+      choose('Replacement voiceover for hall', 'vo2', 'Use');
+      await waitFor(() =>
+        expect(a.replace).toHaveBeenCalledWith('hall', 'voiceover', 'vo1', 'vo2', null),
+      );
+    });
+
+    it('passes the conditioned variant’s own condition to replace, not null', async () => {
+      const a = mount(
+        {
+          voiceover: [
+            { fileId: 'vo1' },
+            { fileId: 'vo1', condition: { variable: 'mood', operator: '==', value: 'angry' } },
+          ],
+          sfx: [],
+        },
+        actions(),
+        [MOOD],
+      );
+      const replaceButtons = screen.getAllByRole('button', { name: 'Replace' });
+      // Row 1 is the conditioned variant.
+      fireEvent.click(replaceButtons[1]);
+      choose('Replacement voiceover — when mood == "angry" for hall', 'vo2', 'Use');
+      await waitFor(() =>
+        expect(a.replace).toHaveBeenCalledWith('hall', 'voiceover', 'vo1', 'vo2', {
+          variable: 'mood',
+          operator: '==',
+          value: 'angry',
+        }),
+      );
     });
 
     // Regression: onSubmit succeeding used to leave the builder open

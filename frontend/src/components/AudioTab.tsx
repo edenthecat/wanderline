@@ -387,7 +387,14 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
   // controlled (the previous uncontrolled `e.target.value = ''` reset
   // raced the success/failure handler and silently swallowed errors).
   const [replaceTargetByUsage, setReplaceTargetByUsage] = useState<Record<string, string>>({});
-  const usageKey = (nodeId: string, audioType: AudioType) => `${nodeId}#${audioType}`;
+  // Keyed by condition too, not just (nodeId, audioType) — the same
+  // slot can hold several variants of the SAME file under different
+  // conditions (DEV-199 follow-on), and omitting condition here meant
+  // two such usage rows collided on the same React key AND the same
+  // "Replace with" dropdown state, so picking a replacement for one
+  // row's selection showed up in the other (found in review).
+  const usageKey = (nodeId: string, audioType: AudioType, condition?: SimpleCondition) =>
+    `${nodeId}#${audioType}#${JSON.stringify(condition ?? null)}`;
 
   // Apply a batch of (from → to) swaps atomically on the backend. Used
   // by both the "Replace this one" per-row dropdown and the "Swap
@@ -429,12 +436,23 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
     if (!toFileId || toFileId === fromFileId) return;
     const usages = usagesByFileId.get(fromFileId) ?? [];
     if (usages.length === 0) return;
-    const ops: BulkReassignOp[] = usages.map((u) => ({
-      nodeId: u.nodeId,
-      audioType: u.audioType,
-      fromFileId,
-      toFileId,
-    }));
+    // One op per (nodeId, audioType) — NOT one per usage row. The
+    // backend's bulk-reassign already swaps EVERY row matching
+    // (node, type, fromFileId) regardless of condition in a single
+    // op (see its own comment). `usagesByFileId` lists one entry per
+    // condition variant, so the same file reused under two
+    // conditions on one slot produced two IDENTICAL ops here before
+    // this fix: the first op's DELETE already removed both rows, so
+    // the second (duplicate) op's DELETE matched nothing and rolled
+    // back the ENTIRE batch (found in review).
+    const seen = new Set<string>();
+    const ops: BulkReassignOp[] = [];
+    for (const u of usages) {
+      const key = `${u.nodeId}#${u.audioType}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      ops.push({ nodeId: u.nodeId, audioType: u.audioType, fromFileId, toFileId });
+    }
     await handleBulkReassign(ops, fromFileId);
     setSwapTargetByFileId((prev) => {
       const next = { ...prev };
@@ -448,9 +466,20 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
     nodeId: string,
     audioType: AudioType,
     toFileId: string,
+    condition?: SimpleCondition,
   ) {
     if (!toFileId || toFileId === fromFileId) return;
-    await handleBulkReassign([{ nodeId, audioType, fromFileId, toFileId }], fromFileId);
+    // Scoped to this ONE variant (condition explicit, including
+    // `null` for the default one) — without it, the same file reused
+    // under a different condition on this exact slot would also get
+    // swapped, despite the UI targeting only this row (found in
+    // review, same root cause as handleSwapEverywhere's duplicate-op
+    // bug above: the backend swaps every condition variant of a slot
+    // unless told which one).
+    await handleBulkReassign(
+      [{ nodeId, audioType, fromFileId, toFileId, condition: condition ?? null }],
+      fromFileId,
+    );
   }
 
   function formatSize(bytes: number): string {
@@ -1046,7 +1075,7 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
                                       </thead>
                                       <tbody>
                                         {usages.map((u) => (
-                                          <tr key={`${u.nodeId}#${u.audioType}`}>
+                                          <tr key={usageKey(u.nodeId, u.audioType, u.condition)}>
                                             <td className="node-name">{u.nodeId}</td>
                                             <td>
                                               <span className="badge badge-gray">
@@ -1058,12 +1087,16 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
                                                 className="select select-inline"
                                                 value={
                                                   replaceTargetByUsage[
-                                                    usageKey(u.nodeId, u.audioType)
+                                                    usageKey(u.nodeId, u.audioType, u.condition)
                                                   ] ?? ''
                                                 }
                                                 onChange={(e) => {
                                                   const next = e.target.value;
-                                                  const key = usageKey(u.nodeId, u.audioType);
+                                                  const key = usageKey(
+                                                    u.nodeId,
+                                                    u.audioType,
+                                                    u.condition,
+                                                  );
                                                   setReplaceTargetByUsage((prev) => ({
                                                     ...prev,
                                                     [key]: next,
@@ -1074,6 +1107,7 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
                                                       u.nodeId,
                                                       u.audioType,
                                                       next,
+                                                      u.condition,
                                                     ).finally(() => {
                                                       // Clear the dropdown after the swap
                                                       // attempt (success or failure) so

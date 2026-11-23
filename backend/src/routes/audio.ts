@@ -1329,6 +1329,13 @@ export function createAudioRouter(pool: Pool): Router {
         audioType: string;
         fromFileId: string;
         toFileId: string;
+        /** Scope this op to ONE variant. The KEY's presence (not just
+         * its value) is what matters: omitted entirely = swap every
+         * variant of (nodeId, audioType, fromFileId) regardless of
+         * condition (the longstanding "swap everywhere" behavior);
+         * present (including `null`, for the default/unconditioned
+         * variant) = swap only that one row. */
+        condition?: unknown;
       }>;
     };
 
@@ -1340,7 +1347,15 @@ export function createAudioRouter(pool: Pool): Router {
     // a downstream pg `22P02 invalid_text_representation` that the
     // catch block would otherwise turn into a 500.
     const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    for (const op of ops) {
+    // Parsed condition per op, by array index — built once here so
+    // the per-op loop below doesn't re-validate. `hasConditionScope`
+    // flags array index true only when the ORIGINAL request body had
+    // the key at all (see the type's own doc comment above for why
+    // that's distinct from the parsed value being null).
+    const hasConditionScope = ops.map((op) => Object.hasOwn(op, 'condition'));
+    const scopedConditionJson: (string | null)[] = [];
+    for (let i = 0; i < ops.length; i++) {
+      const op = ops[i];
       if (!op.nodeId || !op.audioType || !op.fromFileId || !op.toFileId) {
         res.status(400).json({
           error: 'every op must include nodeId, audioType, fromFileId, toFileId',
@@ -1362,6 +1377,14 @@ export function createAudioRouter(pool: Pool): Router {
         // caller knows their UI is sending pointless rows.
         res.status(400).json({ error: 'fromFileId and toFileId must differ' });
         return;
+      }
+      if (hasConditionScope[i]) {
+        const parsed = parseCondition(op.condition);
+        if (parsed === INVALID_CONDITION) {
+          res.status(400).json({ error: CONDITION_ERROR });
+          return;
+        }
+        scopedConditionJson[i] = parsed ? JSON.stringify(parsed) : null;
       }
     }
 
@@ -1409,7 +1432,8 @@ export function createAudioRouter(pool: Pool): Router {
       }
 
       let swapped = 0;
-      for (const op of ops) {
+      for (let i = 0; i < ops.length; i++) {
+        const op = ops[i];
         // A fromFileId can now match MORE THAN ONE row for the same
         // (node, type) — once under each of several conditions, plus
         // possibly the default. Swap each one individually, carrying
@@ -1417,13 +1441,25 @@ export function createAudioRouter(pool: Pool): Router {
         // assuming exactly one row — that assumption is what the old
         // ON CONFLICT target (now a stale 4-column constraint,
         // widened to 5 by the conditioned-variants migration) relied
-        // on.
-        const del = await client.query(
-          `DELETE FROM node_audio_assignments
-           WHERE project_id = $1 AND node_id = $2 AND audio_type = $3 AND audio_file_id = $4
-           RETURNING id, offset_ms, condition`,
-          [id, op.nodeId, op.audioType, op.fromFileId],
-        );
+        // on. When the op named a specific condition to scope to
+        // (hasConditionScope[i]), only THAT one row is touched —
+        // without this, "Replace" on a single variant silently
+        // applied to every variant of the slot sharing fromFileId
+        // (found in review).
+        const del = hasConditionScope[i]
+          ? await client.query(
+              `DELETE FROM node_audio_assignments
+               WHERE project_id = $1 AND node_id = $2 AND audio_type = $3 AND audio_file_id = $4
+                 AND condition IS NOT DISTINCT FROM $5::jsonb
+               RETURNING id, offset_ms, condition`,
+              [id, op.nodeId, op.audioType, op.fromFileId, scopedConditionJson[i]],
+            )
+          : await client.query(
+              `DELETE FROM node_audio_assignments
+               WHERE project_id = $1 AND node_id = $2 AND audio_type = $3 AND audio_file_id = $4
+               RETURNING id, offset_ms, condition`,
+              [id, op.nodeId, op.audioType, op.fromFileId],
+            );
         if (del.rows.length === 0) {
           // The op promised this assignment existed; if not, the
           // caller's view of the world is stale. Roll back so they

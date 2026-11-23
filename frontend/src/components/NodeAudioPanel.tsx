@@ -444,7 +444,11 @@ export default function NodeAudioPanel({
                     confirm="Use"
                     label={`Replacement ${variantLabel.toLowerCase()} for ${nodeId}`}
                     busy={busy}
-                    onPick={(to) => void run(() => actions.replace(nodeId, slot.key, fileId, to))}
+                    onPick={(to) =>
+                      void run(() =>
+                        actions.replace(nodeId, slot.key, fileId, to, variant.condition ?? null),
+                      )
+                    }
                     onCancel={() => setPicking(null)}
                   />
                 )}
@@ -537,7 +541,7 @@ export default function NodeAudioPanel({
                   onPick={(to) =>
                     void run(async () => {
                       await afterSaves(fileId, { requireSaved: true });
-                      await actions.replace(nodeId, 'sfx', fileId, to);
+                      await actions.replace(nodeId, 'sfx', fileId, to, entry.condition ?? null);
                     })
                   }
                   onCancel={() => setPicking(null)}
