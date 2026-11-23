@@ -184,6 +184,86 @@ describe('useMediaControls — MediaSession bindings', () => {
   });
 });
 
+// Regression (found in review): the lock-screen/Now Playing title
+// used to pick the FIRST text block regardless of its `condition`,
+// so a passage beginning with hidden conditional text exposed that
+// hidden text as the title even though on-screen rendering and
+// narration correctly skipped it.
+describe('useMediaControls — MediaSession title respects conditional text', () => {
+  it('skips a text block whose condition is false, using the next visible one', () => {
+    harnessHooks({
+      story: runningStory,
+      currentNode: {
+        id: 'home',
+        content: [
+          {
+            kind: 'text',
+            text: 'Hidden intro.',
+            tags: [],
+            condition: { kind: 'variable', name: 'seenIntro' },
+          },
+          { kind: 'text', text: 'Visible line.', tags: [] },
+        ],
+        choices: [],
+        divert: null,
+      },
+      variables: { seenIntro: false },
+      showInstructions: false,
+      isAuthenticated: true,
+      playerState: 'playing',
+    });
+    expect(navigator.mediaSession.metadata?.title).toBe('Visible line.');
+  });
+
+  it('shows the conditional text once its condition holds', () => {
+    harnessHooks({
+      story: runningStory,
+      currentNode: {
+        id: 'home',
+        content: [
+          {
+            kind: 'text',
+            text: 'Now visible.',
+            tags: [],
+            condition: { kind: 'variable', name: 'seenIntro' },
+          },
+        ],
+        choices: [],
+        divert: null,
+      },
+      variables: { seenIntro: true },
+      showInstructions: false,
+      isAuthenticated: true,
+      playerState: 'playing',
+    });
+    expect(navigator.mediaSession.metadata?.title).toBe('Now visible.');
+  });
+
+  it('falls back to the node id when every text block is hidden', () => {
+    harnessHooks({
+      story: runningStory,
+      currentNode: {
+        id: 'home',
+        content: [
+          {
+            kind: 'text',
+            text: 'Hidden.',
+            tags: [],
+            condition: { kind: 'variable', name: 'seenIntro' },
+          },
+        ],
+        choices: [],
+        divert: null,
+      },
+      variables: { seenIntro: false },
+      showInstructions: false,
+      isAuthenticated: true,
+      playerState: 'playing',
+    });
+    expect(navigator.mediaSession.metadata?.title).toBe('home');
+  });
+});
+
 describe('useMediaControls — keydown fallback', () => {
   it('MediaPlayPause invokes the headphone-button handler when the story is authenticated + running', () => {
     const { spies } = harnessHooks({

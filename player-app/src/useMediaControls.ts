@@ -1,6 +1,7 @@
-import { isTextBlock, type ContentBlock } from '@wanderline/shared';
+import { type ContentBlock, type VariableValue } from '@wanderline/shared';
 import { fallThroughTarget } from './fall-through';
 import { isFromTextEntry } from './keyboard-target';
+import { nodeText } from './node-text';
 // extract MediaSession + keydown fallback from App.tsx.
 //
 // The bundle we lift here:
@@ -115,6 +116,14 @@ export interface MediaActions {
 export interface UseMediaControlsArgs {
   story: StoryLike | null;
   currentNode: NodeLike | null;
+  /** Current variable store, for filtering the lock-screen/Now
+   * Playing title the same way `nodeText` filters on-screen/narrated
+   * text — without it, a passage whose first text block is
+   * conditionally hidden would still show that hidden text as the
+   * title, contradicting what's actually displayed and read aloud.
+   * Optional (defaults to none declared/set) so a caller with no
+   * variables in play doesn't need to pass an empty object. */
+  variables?: Record<string, VariableValue>;
   showInstructions: boolean;
   isAuthenticated: boolean;
   playerState: PlayerState;
@@ -173,6 +182,7 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
   const {
     story,
     currentNode,
+    variables,
     showInstructions,
     isAuthenticated,
     playerState,
@@ -467,17 +477,19 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
     if (!story || !currentNode || showInstructions) return;
     const ms = navigator.mediaSession;
     if (!ms) return;
-    const trimmedTranscript = currentNode.metadata?.transcript?.trim();
-    const firstTextBlock = currentNode.content.find(isTextBlock);
+    // nodeText already picks the transcript when present and
+    // otherwise joins only the text blocks whose condition currently
+    // holds — the SAME filtering the on-screen/narrated text uses, so
+    // this title can never show text that's actually hidden from the
+    // player (found in review: the old `.find(isTextBlock)` here
+    // ignored `condition` entirely).
+    const displayText = nodeText(currentNode, variables);
     ms.metadata = new MediaMetadata({
-      title:
-        (trimmedTranscript && trimmedTranscript.slice(0, 50)) ||
-        firstTextBlock?.text.slice(0, 50) ||
-        currentNode.id,
+      title: displayText.slice(0, 50) || currentNode.id,
       artist: story.title,
       album: 'Wanderline Story',
     });
-  }, [story, currentNode, showInstructions]);
+  }, [story, currentNode, variables, showInstructions]);
 
   // 7. Mirror playerState onto MediaSession's playbackState so the OS
   // sees a matching transport state.

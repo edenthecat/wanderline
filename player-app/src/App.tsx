@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useOfflineSupport } from './useOfflineSupport';
 import { useMediaControls } from './useMediaControls';
+import { conditionAllows, nodeText } from './node-text';
 import { useAudioCache } from './useAudioCache';
 import { orderAudioUrlsForDownload } from './audio-download-order';
 import { useAmbience } from './useAmbience';
@@ -34,7 +35,6 @@ import {
   evaluate,
   evaluateSimpleCondition,
   execute,
-  truthy,
   type ContentBlock,
   type Expression,
   type VariableDeclaration,
@@ -363,46 +363,12 @@ export function autoAdvanceTarget(
   return null;
 }
 
-/**
- * Whether a conditional block (DEV-199 Phase 3: text; Phase 4:
- * choices) should show, given the current variable store. No
- * condition at all always shows. A condition that fails to evaluate
- * (references a variable that was renamed/removed since the story was
- * authored) is treated as false — hidden, not shown-with-a-crash and
- * not shown-unconditionally, the same tolerant-degradation choice as
- * applyNodeAssignments above.
- */
-export function conditionAllows(
-  condition: Expression | null | undefined,
-  variables: Record<string, VariableValue>,
-): boolean {
-  if (!condition) return true;
-  try {
-    return truthy(evaluate(condition, variables));
-  } catch {
-    return false;
-  }
-}
-
-/** The passage as text: an explicit transcript wins, otherwise the
- * Ink content lines joined — skipping any text block whose condition
- * (DEV-199 Phase 3) doesn't hold against the current variable store. */
-export function nodeText(
-  node: {
-    content: ContentBlock[];
-    metadata?: { transcript?: string | null };
-  },
-  variables: Record<string, VariableValue> = {},
-): string {
-  const transcript = node.metadata?.transcript?.trim();
-  if (transcript) return transcript;
-  return node.content
-    .filter(isTextBlock)
-    .filter((c) => conditionAllows(c.condition, variables))
-    .map((c) => c.text)
-    .join(' ')
-    .trim();
-}
+// Re-exported (not just imported) so every existing
+// `import { nodeText, conditionAllows } from './App'` call site
+// (this file's own uses below, plus a couple of test files) keeps
+// working unchanged — see node-text.ts's own header for why the
+// implementation lives there instead of here.
+export { conditionAllows, nodeText } from './node-text';
 
 // Variable store (DEV-199 Phase 2). Pure helpers, exported for
 // testing — App itself only ever calls them from inside a state
@@ -2675,6 +2641,7 @@ export default function App() {
   useMediaControls({
     story,
     currentNode,
+    variables,
     showInstructions,
     isAuthenticated,
     playerState,
