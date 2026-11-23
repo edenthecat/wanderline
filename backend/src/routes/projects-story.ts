@@ -1425,11 +1425,19 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
       }
 
       const storyGraph = storyResult.rows[0].story_graph;
-      const node = storyGraph.nodes[nodeId];
-      if (!node) {
+      // `Object.hasOwn` first, not a truthy check on the indexed
+      // value directly: `nodeId` is attacker-controlled, and a plain
+      // object's `['__proto__']` lookup resolves to Object.prototype
+      // itself (always truthy) rather than undefined, which would
+      // let a request with `nodeId: "__proto__"` sail past this
+      // guard and then write `.condition` onto a property shared
+      // process-wide (CodeQL flagged this as a prototype-polluting
+      // assignment).
+      if (!Object.hasOwn(storyGraph.nodes, nodeId)) {
         res.status(404).json({ error: 'Node not found' });
         return;
       }
+      const node = storyGraph.nodes[nodeId];
       if (!node.choices || choiceIndex >= node.choices.length) {
         res.status(400).json({ error: 'Choice index out of range' });
         return;
@@ -1504,11 +1512,15 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
       }
 
       const storyGraph = storyResult.rows[0].story_graph;
-      const node = storyGraph.nodes[nodeId];
-      if (!node) {
+      // See the sibling `/choice/condition` route for why this is
+      // `Object.hasOwn` rather than a truthy check on the indexed
+      // value — `nodeId` is attacker-controlled and `['__proto__']`
+      // resolves to Object.prototype itself on a plain object.
+      if (!Object.hasOwn(storyGraph.nodes, nodeId)) {
         res.status(404).json({ error: 'Node not found' });
         return;
       }
+      const node = storyGraph.nodes[nodeId];
       if (!node.content || contentIndex >= node.content.length) {
         res.status(400).json({ error: 'Content index out of range' });
         return;

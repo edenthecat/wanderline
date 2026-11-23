@@ -87,7 +87,12 @@ export interface DialectVariableState {
 }
 
 export function createVariableState(): DialectVariableState {
-  return { variables: [], values: {} };
+  // Null-prototype, same reasoning as ink-parser.ts's ParserState —
+  // `declareVariableIfNew`'s `name` comes from uploaded Twee source
+  // and can legally be `__proto__`, which on an ordinary `{}` hits
+  // Object.prototype's `__proto__` setter instead of becoming an own
+  // property.
+  return { variables: [], values: Object.create(null) as Record<string, VariableValue> };
 }
 
 /**

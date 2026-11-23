@@ -119,6 +119,23 @@ describe('PATCH /:id/story/choice/condition', () => {
 
     expect(res.status).toBe(400);
   });
+
+  it('404s for a __proto__ nodeId instead of resolving to Object.prototype', async () => {
+    const { app } = makeApp(
+      graph({ a: { id: 'a', content: [], choices: [{ text: 'go', target: 'b' }], tags: [] } }),
+    );
+    const res = await request(app)
+      .patch('/api/projects/p1/story/choice/condition')
+      .send({ nodeId: '__proto__', choiceIndex: 0, condition: null });
+
+    expect(res.status).toBe(404);
+    // Object.prototype itself must come out unscathed — a naive
+    // `storyGraph.nodes[nodeId]` truthy check would resolve
+    // `nodeId: '__proto__'` to Object.prototype (always truthy) and
+    // then write `.choices[0].condition` onto it, corrupting every
+    // plain object in the process.
+    expect(Object.prototype).not.toHaveProperty('choices');
+  });
 });
 
 describe('PATCH /:id/story/node/content/condition', () => {
@@ -189,6 +206,20 @@ describe('PATCH /:id/story/node/content/condition', () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/assignment block/);
+  });
+
+  it('404s for a __proto__ nodeId instead of resolving to Object.prototype', async () => {
+    const { app } = makeApp(
+      graph({
+        a: { id: 'a', content: [{ kind: 'text', text: 'hi', tags: [] }], choices: [], tags: [] },
+      }),
+    );
+    const res = await request(app)
+      .patch('/api/projects/p1/story/node/content/condition')
+      .send({ nodeId: '__proto__', contentIndex: 0, condition: 'true' });
+
+    expect(res.status).toBe(404);
+    expect(Object.prototype).not.toHaveProperty('content');
   });
 });
 

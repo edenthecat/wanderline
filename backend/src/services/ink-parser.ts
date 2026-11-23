@@ -72,9 +72,20 @@ export function parseInk(source: string, storyId: string, title?: string): Story
     lastChoiceIndex: null,
     consumedLines: new Set(),
     variables: [],
-    variableValues: {},
-    listMembers: {},
-    listDefinitions: {},
+    // Null-prototype, like `nodes` below — `name`/`token` in every
+    // `state.variableValues[name] = ...`/`state.listMembers[item.name]
+    // = ...` write below comes straight from a `\w+` regex capture on
+    // uploaded Ink source, and `\w+` matches `__proto__` just fine. On
+    // an ordinary `{}`, `variableValues['__proto__'] = someListValue`
+    // doesn't create an own property — it invokes Object.prototype's
+    // `__proto__` SETTER and silently reassigns this object's own
+    // prototype chain to `someListValue` (CodeQL flagged this as
+    // "remote property injection"). `Object.create(null)` has no such
+    // setter, so the same assignment just becomes a normal own
+    // property, same as any other variable name.
+    variableValues: Object.create(null) as Record<string, VariableValue>,
+    listMembers: Object.create(null) as Record<string, { origin: string; ordinal: number }>,
+    listDefinitions: Object.create(null) as Record<string, ListItem[]>,
   };
 
   const lines = source.split('\n');
@@ -181,11 +192,21 @@ function isKnotDeclaration(trimmed: string): boolean {
 // global scope — conventionally at the top of the file, but not
 // required to be — so this is matched wherever parseLine encounters
 // it, not just in a "preamble" position.
-const VARIABLE_DECL_RE = /^(VAR|CONST)\s+(\w+)\s*=\s*(.+)$/;
+//
+// No `\s*` between the final `=` and the captured group: `\s*`
+// immediately followed by a greedy `(.+)$` gives the regex engine
+// many equally-valid places to split a run of whitespace between
+// the two, which is quadratic on a pathological "VAR x=    …    "
+// input (CodeQL flagged this as a polynomial-regex DoS risk). Every
+// caller already calls `.trim()` on this capture (or splits+trims
+// each piece, for LIST), so dropping the `\s*` changes nothing about
+// the parsed result — it just stops the regex engine from needing to
+// consider those extra split points at all.
+const VARIABLE_DECL_RE = /^(VAR|CONST)\s+(\w+)\s*=(.+)$/;
 
 // LIST declaration (DEV-199 Phase 10) — same "wherever it appears"
-// scoping as VAR/CONST above.
-const LIST_DECL_RE = /^LIST\s+(\w+)\s*=\s*(.+)$/;
+// scoping as VAR/CONST above, and the same `\s*(.+)$` → `(.+)$` fix.
+const LIST_DECL_RE = /^LIST\s+(\w+)\s*=(.+)$/;
 
 /** The known-list-members context every parseExpression/parseStatement
  * call in this file needs, so a bare identifier matching a LIST
