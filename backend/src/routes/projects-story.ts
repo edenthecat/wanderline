@@ -683,22 +683,14 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
       }
 
       const storyGraph = storyResult.rows[0].story_graph;
-      // See `/choice/condition`'s own comment for why this is
-      // `Object.hasOwn` rather than a truthy check on the indexed
-      // value — `nodeId` is attacker-controlled and `['__proto__']`
-      // resolves to Object.prototype itself on a plain object. The
-      // guard and the indexed read are fused into one expression
-      // (rather than two separate statements) so static analysis can
-      // see the read is unreachable unless the guard already passed
-      // — CodeQL flagged the later `block.text =` write as a
-      // prototype-polluting assignment when the two were separate
-      // statements, even though the hasOwn check already made it
-      // unreachable for `nodeId === '__proto__'`.
-      const node = Object.hasOwn(storyGraph.nodes, nodeId) ? storyGraph.nodes[nodeId] : undefined;
-      if (!node) {
+      // `nodeId === '__proto__'` resolves to Object.prototype itself
+      // on a plain object — rejected explicitly, not just via
+      // Object.hasOwn, since CodeQL didn't recognize that alone.
+      if (nodeId === '__proto__' || !Object.hasOwn(storyGraph.nodes, nodeId)) {
         res.status(404).json({ error: 'Node not found' });
         return;
       }
+      const node = storyGraph.nodes[nodeId];
       if (!node.content || contentIndex >= node.content.length) {
         res.status(400).json({ error: 'Content index out of range' });
         return;
@@ -1483,24 +1475,14 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
         }
       }
 
-      // `Object.hasOwn` first, not a truthy check on the indexed
-      // value directly: `nodeId` is attacker-controlled, and a plain
-      // object's `['__proto__']` lookup resolves to Object.prototype
-      // itself (always truthy) rather than undefined, which would
-      // let a request with `nodeId: "__proto__"` sail past this
-      // guard and then write `.condition` onto a property shared
-      // process-wide. The guard and the indexed read are fused into
-      // one expression (rather than two separate statements) so
-      // static analysis can see the read is unreachable unless the
-      // guard already passed — CodeQL flagged the later
-      // `.condition =` write as a prototype-polluting assignment when
-      // the two were separate statements, even though the hasOwn
-      // check already made it unreachable for `nodeId === '__proto__'`.
-      const node = Object.hasOwn(storyGraph.nodes, nodeId) ? storyGraph.nodes[nodeId] : undefined;
-      if (!node) {
+      // `nodeId === '__proto__'` resolves to Object.prototype itself
+      // on a plain object — rejected explicitly, not just via
+      // Object.hasOwn, since CodeQL didn't recognize that alone.
+      if (nodeId === '__proto__' || !Object.hasOwn(storyGraph.nodes, nodeId)) {
         res.status(404).json({ error: 'Node not found' });
         return;
       }
+      const node = storyGraph.nodes[nodeId];
       if (!node.choices || choiceIndex >= node.choices.length) {
         res.status(400).json({ error: 'Choice index out of range' });
         return;
@@ -1581,20 +1563,14 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
         }
       }
 
-      // See the sibling `/choice/condition` route for why this is
-      // `Object.hasOwn` rather than a truthy check on the indexed
-      // value — `nodeId` is attacker-controlled and `['__proto__']`
-      // resolves to Object.prototype itself on a plain object. The
-      // guard and the indexed read are fused into one expression so
-      // static analysis can see the read is unreachable unless the
-      // guard already passed — CodeQL flagged the later
-      // `block.condition` delete/assign below as a prototype-
-      // polluting assignment when the two were separate statements.
-      const node = Object.hasOwn(storyGraph.nodes, nodeId) ? storyGraph.nodes[nodeId] : undefined;
-      if (!node) {
+      // `nodeId === '__proto__'` resolves to Object.prototype itself
+      // on a plain object — rejected explicitly, not just via
+      // Object.hasOwn, since CodeQL didn't recognize that alone.
+      if (nodeId === '__proto__' || !Object.hasOwn(storyGraph.nodes, nodeId)) {
         res.status(404).json({ error: 'Node not found' });
         return;
       }
+      const node = storyGraph.nodes[nodeId];
       if (!node.content || contentIndex >= node.content.length) {
         res.status(400).json({ error: 'Content index out of range' });
         return;

@@ -208,16 +208,28 @@ export function parseInk(source: string, storyId: string, title?: string): Story
 // project upload had `==== name ===` on a knot header far into
 // the .ink source, and every reference to that knot logged as
 // missing).
-// The trailing `[=\s]*` (rather than the equivalent-looking
-// `\s*={0,}\s*`) is deliberate: two adjacent `\s*` groups straddling
-// an `={0,}` that can itself match zero characters gives the regex
-// engine countless equivalent ways to split a long run of trailing
-// whitespace with no final match, which is catastrophic-backtracking
-// territory on a crafted knot header (CodeQL-flagged ReDoS). A single
-// quantifier over one combined character class has no such ambiguity
-// and accepts the exact same decorative `=`/whitespace tails real Ink
-// headers use.
-const KNOT_DECL_RE = /^={2,}\s*(function\s+)?(\w+)\s*(?:\(([^)]*)\))?[=\s]*(#.*)?$/;
+// Two deliberate departures from the more obvious-looking
+// `^={2,}\s*(function\s+)?(\w+)\s*(?:\(([^)]*)\))?\s*={0,}\s*(#.*)?$`,
+// both CodeQL-flagged ReDoS (still present even after fixing the
+// first one alone — confirmed by timing a crafted input against the
+// one-fix-only version: ~40k tab characters took ~2.7s):
+//  1. The trailing `[=\s]*` (not `\s*={0,}\s*`): two adjacent `\s*`
+//     groups straddling an `={0,}` that can itself match zero
+//     characters gives the engine countless equivalent ways to split
+//     a long run of trailing whitespace with no final match. A
+//     single quantifier over one combined character class has no
+//     such ambiguity.
+//  2. `(\w+)(?:\s*\(...\))?` (the `\s*` moved INSIDE the optional
+//     parens group, not left standalone before it): a standalone
+//     `\s*` immediately followed by `[=\s]*` once the parens group is
+//     ABSENT puts two overlapping whitespace-matching quantifiers
+//     back to back with nothing between them — the exact same O(n²)
+//     split-counting hazard as #1, just one token later. Requiring
+//     the `\s*` to be immediately followed by a literal `(` (which
+//     can't itself be whitespace) removes the ambiguity: either the
+//     group commits to matching an actual `(`, or it fails fast and
+//     skips straight to `[=\s]*` with no overlap to split.
+const KNOT_DECL_RE = /^={2,}\s*(function\s+)?(\w+)(?:\s*\(([^)]*)\))?[=\s]*(#.*)?$/;
 
 function isKnotDeclaration(trimmed: string): boolean {
   return KNOT_DECL_RE.test(stripLineComment(trimmed).trimEnd());
@@ -846,27 +858,19 @@ function errorMessage(err: unknown): string {
  * is reported as a warning and the declaration is skipped, rather
  * than failing the whole parse.
  */
-// `name`/`token` below comes straight from a `\w+` regex capture on
-// uploaded Ink source, which matches `__proto__`/`constructor`/
-// `prototype` just as readily as any real identifier. The null-
-// prototype `state.variableValues`/`listMembers` objects (see
-// parseInk's own allocation comment) already make a write under any
-// of these names a perfectly ordinary own property at runtime — this
-// explicit rejection exists so static analysis can verify that
-// locally, without needing to trace the object's allocation back
-// through the `state: ParserState` parameter boundary (CodeQL flagged
-// the writes below as "remote property injection" without it), and so
-// a story genuinely named one of these doesn't produce a variable
-// whose name silently means something different anywhere this
-// codebase's OWN object literals (not every consumer uses
-// Object.create(null)) read it back.
-const RESERVED_PROPERTY_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
+// `name`/`token` below comes from a `\w+` capture, which matches
+// `__proto__`/`constructor`/`prototype` too. Inline `===` checks
+// (not `Set.has()`, which CodeQL didn't recognize as a sanitizer)
+// reject these before the write.
+function isReservedPropertyName(name: string): boolean {
+  return name === '__proto__' || name === 'constructor' || name === 'prototype';
+}
 
 function parseVariableDeclarationLine(match: RegExpMatchArray, state: ParserState): void {
   const [, keyword, name, rhsRaw] = match;
   const isConst = keyword === 'CONST';
 
-  if (RESERVED_PROPERTY_NAMES.has(name)) {
+  if (isReservedPropertyName(name)) {
     state.warnings.push({
       type: 'syntax_error',
       message: `${keyword} ${name}: "${name}" can't be used as a variable name`,
@@ -951,7 +955,7 @@ function parseVariableDeclarationLine(match: RegExpMatchArray, state: ParserStat
 function parseListDeclarationLine(match: RegExpMatchArray, state: ParserState): void {
   const [, name, rhsRaw] = match;
 
-  if (RESERVED_PROPERTY_NAMES.has(name)) {
+  if (isReservedPropertyName(name)) {
     state.warnings.push({
       type: 'syntax_error',
       message: `LIST ${name}: "${name}" can't be used as a variable name`,
@@ -1019,7 +1023,7 @@ function parseListDeclarationLine(match: RegExpMatchArray, state: ParserState): 
       });
       return;
     }
-    if (RESERVED_PROPERTY_NAMES.has(token)) {
+    if (isReservedPropertyName(token)) {
       state.warnings.push({
         type: 'syntax_error',
         message: `LIST ${name}: member "${token}" can't be used as a member name`,
