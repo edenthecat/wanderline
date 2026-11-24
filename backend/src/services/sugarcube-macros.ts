@@ -533,52 +533,38 @@ export function processSugarCubePassageBody(
           : (branchCondition ?? priorNegations);
       if (effectiveCondition) {
         const branchText = remaining.slice(branch.bodyStart, branch.bodyEnd);
-        if (/<<\s*set\b/i.test(branchText)) {
-          // A <<set>> nested inside a conditional block has no way
-          // to be represented yet — ContentBlock's assignment variant
-          // has no `condition` field, so there's no honest way to
-          // make it run only when this branch is active. Leaving the
-          // branch as literal text (with a warning) is less wrong
-          // than silently running the assignment unconditionally.
-          warnings.push({
-            type: 'syntax_error',
-            message:
-              '<<set>> inside a conditional <<if>>/<<elseif>>/<<else>> block is not supported yet — move the assignment outside the block.',
-            lineNumber,
+        // Recurse so a nested <<if>> (and any plain prose/links, or a
+        // <<set>>) is fully understood, not just left as literal text
+        // — this is a strict generalization of the old
+        // extractLinks-only handling: a branch with no nested macros
+        // recurses into exactly the same { no tag found ->
+        // pushGenericParagraph } fallback path, so simple branches are
+        // unaffected. A <<set>> found this way becomes an
+        // AssignmentBlock conditioned on effectiveCondition (ANDed
+        // with whatever condition it already picked up from an even
+        // more deeply nested <<if>>) — the same AND-with-whatever-it-
+        // already-has merge TextBlock/Choice already get below, now
+        // that AssignmentBlock has a `condition` field too.
+        const nested = processSugarCubePassageBody(
+          branchText,
+          state,
+          evaluateExpr,
+          warnings,
+          lineNumber,
+        );
+        for (const choice of nested.choices) {
+          pendingChoices.push({
+            ...choice,
+            condition: choice.condition
+              ? and(effectiveCondition, choice.condition)
+              : effectiveCondition,
           });
-          pendingContent.push(...bodyToContent(branchText));
-        } else {
-          // Recurse so a nested <<if>> (and any plain prose/links) is
-          // fully understood, not just left as literal text — this
-          // is a strict generalization of the old extractLinks-only
-          // handling: a branch with no nested macros recurses into
-          // exactly the same { no tag found -> pushGenericParagraph }
-          // fallback path, so simple branches are unaffected.
-          const nested = processSugarCubePassageBody(
-            branchText,
-            state,
-            evaluateExpr,
-            warnings,
-            lineNumber,
-          );
-          for (const choice of nested.choices) {
-            pendingChoices.push({
-              ...choice,
-              condition: choice.condition
-                ? and(effectiveCondition, choice.condition)
-                : effectiveCondition,
-            });
-          }
-          for (const b of nested.content) {
-            if (b.kind === 'assignment') {
-              pendingContent.push(b);
-              continue;
-            }
-            pendingContent.push({
-              ...b,
-              condition: b.condition ? and(effectiveCondition, b.condition) : effectiveCondition,
-            });
-          }
+        }
+        for (const b of nested.content) {
+          pendingContent.push({
+            ...b,
+            condition: b.condition ? and(effectiveCondition, b.condition) : effectiveCondition,
+          });
         }
       }
       if (branchCondition) {

@@ -201,6 +201,14 @@ export interface TextBlock {
 export interface AssignmentBlock {
   kind: 'assignment';
   statement: Statement;
+  /**
+   * A SugarCube/Chapbook `<<set>>` (or Chapbook equivalent) nested
+   * inside a conditional block (DEV-199 follow-up) — Ink's own `~`
+   * assignments have no such wrapping construct, so this is always
+   * `undefined` for Ink-authored content. `undefined` means "always
+   * runs when this block is reached," the same as `TextBlock.condition`.
+   */
+  condition?: Expression;
   /** See {@link TextBlock.id}. */
   id?: string;
 }

@@ -208,4 +208,32 @@ describe('NodeDetail — assignment block preview', () => {
     );
     expect(screen.getByText('~ gold += 5')).toBeTruthy();
   });
+
+  it('shows the condition badge for a conditioned assignment block (SugarCube/Chapbook nested <<set>>, DEV-199 follow-up)', () => {
+    render(
+      <NodeDetail
+        {...props({
+          node: {
+            content: [
+              {
+                kind: 'assignment',
+                statement: {
+                  kind: 'assignment',
+                  name: 'transportation',
+                  operator: '=',
+                  value: { kind: 'literal', value: 'plane' },
+                },
+                condition: { kind: 'variable', name: 'far' },
+              },
+            ],
+            choices: [],
+            divert: null,
+            tags: [],
+          },
+        })}
+      />,
+    );
+    expect(screen.getByText('~ transportation = "plane"')).toBeTruthy();
+    expect(screen.getByText('if far')).toBeTruthy();
+  });
 });

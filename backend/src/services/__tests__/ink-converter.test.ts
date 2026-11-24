@@ -249,6 +249,36 @@ describe('convertStoryGraphToInk', () => {
       expect(lines.indexOf('~ gold += 10')).toBeLessThan(lines.indexOf('After.'));
     });
 
+    it('emits a conditioned assignment block (only arises from a Twine-dialect export) as a multi-line {COND: ~ stmt} weave block, not an unconditional statement', () => {
+      const result = convertStoryGraphToInk({
+        id: 'test',
+        title: 'Test',
+        startNode: 'start',
+        nodes: {
+          start: {
+            id: 'start',
+            type: 'knot',
+            content: [
+              {
+                kind: 'assignment',
+                statement: {
+                  kind: 'assignment',
+                  name: 'gold',
+                  operator: '=',
+                  value: { kind: 'literal', value: 1 },
+                },
+                condition: { kind: 'variable', name: 'far' },
+              },
+            ],
+            choices: [],
+            divert: null,
+            tags: [],
+          },
+        },
+      });
+      expect(result).toContain('{ far:\n    ~ gold = 1\n}');
+    });
+
     it('round-trips VAR declarations and in-content assignment through parseInk -> emit -> parseInk', () => {
       const source = [
         'VAR gold = 50',

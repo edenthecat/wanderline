@@ -186,9 +186,27 @@ function emitContentBlock(
     // return null so this generic per-block path doesn't ALSO try to
     // emit them. A graph with no resolved dialect still has no Twee
     // prose to put an assignment block into at all.
-    if (dialect === 'harlowe') return renderHarloweAssignment(content.statement, listVariableNames);
-    if (dialect === 'sugarcube')
-      return renderSugarCubeAssignment(content.statement, listVariableNames);
+    if (dialect === 'harlowe') {
+      // Emitted correctly even though Harlowe's OWN import side can't
+      // read it back yet: processHarlowePassageBody runs a `(if:
+      // ...)[...]` hook's inner content through extractLinks +
+      // bodyToContent only, which has no macro recognition at all —
+      // a nested `(set:)` would come back as literal text, not an
+      // AssignmentBlock (pre-existing, unrelated to this condition
+      // field; same asymmetry doesn't exist for SugarCube/Chapbook,
+      // both fixed on import in this same change). Still strictly
+      // better than silently making the assignment unconditional.
+      const rendered = renderHarloweAssignment(content.statement, listVariableNames);
+      return content.condition
+        ? `(if: ${renderHarloweExpression(content.condition, listVariableNames)})[${rendered}]`
+        : rendered;
+    }
+    if (dialect === 'sugarcube') {
+      const rendered = renderSugarCubeAssignment(content.statement, listVariableNames);
+      return content.condition
+        ? `<<if ${renderSugarCubeExpression(content.condition, listVariableNames)}>>${rendered}<</if>>`
+        : rendered;
+    }
     return null;
   }
   const text = content.text.trim();
@@ -262,7 +280,7 @@ function emitContent(
       ...graphInitLines,
       ...node.content
         .filter((c) => c.kind === 'assignment')
-        .map((c) => renderChapbookAssignment(c.statement, listVariableNames)),
+        .map((c) => renderChapbookAssignment(c.statement, listVariableNames, c.condition)),
     ];
     if (varsLines.length > 0) {
       return `${varsLines.join('\n')}\n--${body ? `\n${body}` : ''}`;

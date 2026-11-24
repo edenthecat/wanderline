@@ -19,6 +19,7 @@ import {
 import * as Y from 'yjs';
 import {
   isTextBlock,
+  printExpression,
   printStatement,
   type ContentBlock,
   type Expression,
@@ -418,6 +419,19 @@ export default function NodeDetail({
             ) : (
               <div key={i} className="node-content-row node-content-assignment">
                 <code className="text-muted">~ {printStatement(c.statement)}</code>
+                {c.condition && (
+                  // Read-only: this is a SugarCube/Chapbook `<<set>>`
+                  // (or vars-section equivalent) nested inside a
+                  // conditional block (DEV-199 follow-up) — editing
+                  // isn't built for assignment blocks at all yet, so
+                  // this is display-only, same as the statement itself.
+                  <span
+                    className="badge badge-blue condition-badge"
+                    title={printExpression(c.condition)}
+                  >
+                    if {printExpression(c.condition)}
+                  </span>
+                )}
               </div>
             ),
           )}

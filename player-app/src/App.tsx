@@ -459,6 +459,13 @@ export function applyNodeAssignments(
   let next = variables;
   for (const item of node.content) {
     if (item.kind !== 'assignment') continue;
+    // `condition` (DEV-199 follow-up) only arises from a Twine-
+    // dialect `<<set>>`/vars-section assignment nested inside a
+    // conditional block — Ink's own `~` has no such wrapping, so this
+    // is always undefined for Ink-authored content. Same
+    // tolerant-degradation treatment conditionAllows gives a failed
+    // evaluation: not gated is not the same as gated-and-false.
+    if (!conditionAllows(item.condition, next, callFunction)) continue;
     try {
       next = execute(item.statement, next, callFunction);
     } catch (err) {

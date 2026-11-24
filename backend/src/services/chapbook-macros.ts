@@ -43,6 +43,11 @@
  *     conditional TextBlock — the same per-paragraph block-flattening
  *     the plan's architecture section describes for all three Twine
  *     dialects.
+ *   - A conditional vars-section assignment, `name (EXPR): VALUE`
+ *     (only takes effect when EXPR is true) — becomes an
+ *     AssignmentBlock with its `condition` field set to EXPR (DEV-199
+ *     follow-up; previously out of scope — see the "Deliberately out
+ *     of scope" note below, which this superseded).
  *   - Expression syntax: bare (sigil-less) identifiers — Chapbook has
  *     no `$`/`_` variable prefix convention to strip — `===`/`!==`
  *     (→ canonical's `==`/`!=`; Chapbook has no loose-equality
@@ -55,12 +60,6 @@
  *
  * Deliberately out of scope for v1 (left exactly as inert text, same
  * as every Twee macro/modifier was before this phase):
- *   - A conditional vars-section assignment, `name (EXPR): VALUE`
- *     (only takes effect when EXPR is true) — there's no way to
- *     represent a conditional Statement yet (AssignmentBlock has no
- *     `condition` field, the same gap SugarCube's nested-<<set>> case
- *     hit in review). The line is skipped with a warning rather than
- *     being misread as an unconditional assignment.
  *   - `[ifalways]` / `[ifnever]` (debug-only overrides per the guide).
  *   - Variable names starting with `$` or `_` (Chapbook allows both
  *     as the FIRST character, but the canonical grammar's identifier
@@ -213,23 +212,27 @@ export function renderChapbookExpression(
 export function renderChapbookAssignment(
   statement: Statement,
   listVariableNames?: ReadonlySet<string>,
+  condition?: Expression,
 ): string {
   if (statement.kind === 'return') {
     // See renderHarloweAssignment's identical guard — Chapbook has
     // no function-knot equivalent either.
     throw new Error('Chapbook export does not support return statements');
   }
+  const nameSegment = condition
+    ? `${statement.name} (${renderChapbookExpression(condition, listVariableNames)})`
+    : statement.name;
   if (statement.operator === '=') {
-    return `${statement.name}: ${renderChapbookExpression(statement.value, listVariableNames)}`;
+    return `${nameSegment}: ${renderChapbookExpression(statement.value, listVariableNames)}`;
   }
   const baseOperator = statement.operator.slice(0, -1);
-  return `${statement.name}: ${statement.name} ${baseOperator} ${renderChapbookExpression(statement.value, listVariableNames)}`;
+  return `${nameSegment}: ${statement.name} ${baseOperator} ${renderChapbookExpression(statement.value, listVariableNames)}`;
 }
 
 /** A vars-section line matches `name: EXPR` or `name (COND): EXPR` —
- * the parenthesized form is a conditional assignment, out of scope
- * for v1 (see module doc), recognized here only so it can be skipped
- * with a warning rather than being misread as unconditional. */
+ * the parenthesized form is a conditional assignment (DEV-199
+ * follow-up): COND becomes the resulting AssignmentBlock's
+ * `condition`. */
 const VAR_LINE_RE = /^([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(([^)]*)\))?\s*:\s*(.+)$/;
 
 /**
@@ -247,9 +250,9 @@ function splitVarsSection(
   body: string,
   warnings: ValidationMessage[],
   lineNumber: number,
-): { assignments: { name: string; value: Expression }[]; rest: string } {
+): { assignments: { name: string; value: Expression; condition?: Expression }[]; rest: string } {
   const lines = body.split('\n');
-  const assignments: { name: string; value: Expression }[] = [];
+  const assignments: { name: string; value: Expression; condition?: Expression }[] = [];
   for (let i = 0; i < lines.length; i++) {
     const trimmed = lines[i].trim();
     if (trimmed === '--') {
@@ -261,17 +264,22 @@ function splitVarsSection(
       return { assignments: [], rest: body };
     }
     const [, name, conditionText, exprSource] = match;
+    let condition: Expression | undefined;
     if (conditionText !== undefined) {
-      warnings.push({
-        type: 'syntax_error',
-        message: `Chapbook's conditional vars-section assignment ("${name} (${conditionText}): ...") is not supported yet — this line will be skipped.`,
-        lineNumber,
-      });
-      continue;
+      try {
+        condition = parseExpression(translateChapbookExpression(conditionText));
+      } catch (err) {
+        warnings.push({
+          type: 'syntax_error',
+          message: `Could not parse the condition in "${name} (${conditionText}): ...": ${errorMessage(err)}`,
+          lineNumber,
+        });
+        continue;
+      }
     }
     try {
       const value = parseExpression(translateChapbookExpression(exprSource));
-      assignments.push({ name, value });
+      assignments.push({ name, value, condition });
     } catch (err) {
       warnings.push({
         type: 'syntax_error',
@@ -313,12 +321,19 @@ export function processChapbookPassageBody(
   const choices: Choice[] = [];
 
   const { assignments, rest } = splitVarsSection(body, warnings, lineNumber);
-  for (const { name, value } of assignments) {
+  for (const { name, value, condition } of assignments) {
+    // Declared unconditionally even when `condition` is set: the
+    // variable's existence/type for StoryGraph.variables purposes is
+    // a static, parse-time fact, independent of whether the runtime
+    // condition gating this particular assignment ever holds — same
+    // "first mention wins, regardless of what gates it" treatment a
+    // nested SugarCube <<set>> already gets.
     declareVariableIfNew(name, value, state, evaluateExpr, warnings, lineNumber);
     content.push({
       id: newBlockId(),
       kind: 'assignment',
       statement: { kind: 'assignment', name, operator: '=', value },
+      ...(condition ? { condition } : {}),
     });
   }
 

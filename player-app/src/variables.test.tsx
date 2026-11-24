@@ -143,6 +143,42 @@ describe('applyNodeAssignments', () => {
     };
     expect(applyNodeAssignments(node, { gold: 5 })).toEqual({ gold: 5 });
   });
+
+  it('applies a conditioned assignment block when its condition holds (DEV-199 follow-up: SugarCube/Chapbook nested <<set>>)', () => {
+    const node = {
+      content: [
+        {
+          kind: 'assignment' as const,
+          statement: {
+            kind: 'assignment' as const,
+            name: 'gold',
+            operator: '=' as const,
+            value: { kind: 'literal' as const, value: 1 },
+          },
+          condition: { kind: 'variable' as const, name: 'far' },
+        },
+      ],
+    };
+    expect(applyNodeAssignments(node, { gold: 5, far: true })).toEqual({ gold: 1, far: true });
+  });
+
+  it('skips a conditioned assignment block when its condition is false', () => {
+    const node = {
+      content: [
+        {
+          kind: 'assignment' as const,
+          statement: {
+            kind: 'assignment' as const,
+            name: 'gold',
+            operator: '=' as const,
+            value: { kind: 'literal' as const, value: 1 },
+          },
+          condition: { kind: 'variable' as const, name: 'far' },
+        },
+      ],
+    };
+    expect(applyNodeAssignments(node, { gold: 5, far: false })).toEqual({ gold: 5, far: false });
+  });
 });
 
 describe('freshStartVariables', () => {

@@ -193,8 +193,27 @@ export function convertStoryGraphToInk(storyGraph: InkStoryGraph): string {
     // Write content
     for (const content of node.content) {
       // In-content assignment (DEV-199 Phase 1) — re-emit as `~ stmt`.
+      // `condition` (DEV-199 follow-up) only arises from a Twine-
+      // dialect-authored graph (a SugarCube/Chapbook `<<set>>`/`name
+      // (COND): value` nested inside a conditional) being exported TO
+      // Ink — Ink's own `~` syntax never produces one. Real Ink's
+      // `{condition: ...}` weave block can wrap arbitrary content,
+      // including `~` statements, when written multi-line — this
+      // backend's own ink-parser.ts only understands the single-line
+      // `{cond: text}` TEXT form (see its CONDITIONAL_TEXT_RE), so a
+      // story re-uploaded here after this round-trip would come back
+      // with the condition dropped — a pre-existing gap in this
+      // parser's conditional-block support, not something this
+      // function can fix on its own. Emitting it this way is still
+      // strictly better than silently making the assignment
+      // unconditional (which would be actively wrong) or omitting it
+      // outright: a real Ink engine, or a future multi-line-aware
+      // version of this parser, reads it correctly.
       if (content.kind === 'assignment') {
-        lines.push(`~ ${printStatement(content.statement)}`);
+        const stmt = `~ ${printStatement(content.statement)}`;
+        lines.push(
+          content.condition ? `{ ${printExpression(content.condition)}:\n    ${stmt}\n}` : stmt,
+        );
         continue;
       }
       // Conditional text (DEV-199 Phase 3) — wrap in `{condition: text}`

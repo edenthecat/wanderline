@@ -1233,11 +1233,42 @@ describe('parseTwee — SugarCube macro support (DEV-199 Phase 8)', () => {
     ]);
   });
 
-  it('warns and leaves a branch inert when it contains a nested <<set>> — not representable yet, since AssignmentBlock has no condition field', () => {
-    const g = parseTwee(sugarcubeSrc('<<if $a>>hi <<set $b to 1>> there<</if>>'));
-    expect(g.nodes['Start'].content.some((c) => c.kind === 'assignment')).toBe(false);
-    expect(textOf(g.nodes['Start'].content[0])).toContain('<<set $b to 1>>');
-    expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(true);
+  it('represents a nested <<set>> as an AssignmentBlock conditioned on its <<if>> (DEV-199 follow-up, found in review)', () => {
+    const g = parseTwee(sugarcubeSrc('<<if $a>><<set $b to 1>><</if>>'));
+    const block = g.nodes['Start'].content.find((c) => c.kind === 'assignment');
+    expect(block).toBeDefined();
+    expect(stripIds(block)).toEqual({
+      kind: 'assignment',
+      statement: {
+        kind: 'assignment',
+        name: 'b',
+        operator: '=',
+        value: { kind: 'literal', value: 1 },
+      },
+      condition: { kind: 'variable', name: 'a' },
+    });
+    expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(false);
+  });
+
+  it('ANDs the nested <<set>>’s condition with its own branch condition when both are present (a <<set>> behind an inner <<if>>)', () => {
+    const g = parseTwee(sugarcubeSrc('<<if $a>><<if $b>><<set $c to 1>><</if>><</if>>'));
+    const block = g.nodes['Start'].content.find((c) => c.kind === 'assignment');
+    expect(block).toBeDefined();
+    expect(stripIds(block)).toEqual({
+      kind: 'assignment',
+      statement: {
+        kind: 'assignment',
+        name: 'c',
+        operator: '=',
+        value: { kind: 'literal', value: 1 },
+      },
+      condition: {
+        kind: 'logical',
+        operator: '&&',
+        left: { kind: 'variable', name: 'a' },
+        right: { kind: 'variable', name: 'b' },
+      },
+    });
   });
 
   it('warns rather than silently dropping a tag whose own argument text has an unescaped quote', () => {
@@ -1369,13 +1400,35 @@ describe('parseTwee — Chapbook macro support (DEV-199 Phase 9)', () => {
     ]);
   });
 
-  it('skips a conditional vars-section assignment ("name (COND): value") with a warning — not representable yet', () => {
+  it('represents a conditional vars-section assignment ("name (COND): value") as an AssignmentBlock conditioned on COND (DEV-199 follow-up, found in review)', () => {
     const g = parseTwee(
       chapbookSrc("transportation: 'car'\ntransportation (far): 'plane'\n--\nGo."),
     );
     const assignments = g.nodes['Start'].content.filter((c) => c.kind === 'assignment');
-    expect(assignments).toHaveLength(1);
-    expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(true);
+    expect(assignments).toHaveLength(2);
+    expect(stripIds(assignments[1])).toEqual({
+      kind: 'assignment',
+      statement: {
+        kind: 'assignment',
+        name: 'transportation',
+        operator: '=',
+        value: { kind: 'literal', value: 'plane' },
+      },
+      condition: { kind: 'variable', name: 'far' },
+    });
+    expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(false);
+  });
+
+  it('declares the variable from a conditional vars-section assignment even when it is the FIRST mention', () => {
+    const g = parseTwee(chapbookSrc("transportation (far): 'plane'\n--\nGo."));
+    expect(g.variables).toEqual([
+      {
+        name: 'transportation',
+        type: 'string',
+        initialValue: { kind: 'literal', value: 'plane' },
+        isConst: false,
+      },
+    ]);
   });
 
   it('parses [if COND]TEXT as a conditional text block that persists until the next modifier', () => {
