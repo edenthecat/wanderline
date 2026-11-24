@@ -390,7 +390,12 @@ export function emitTwee(graph: StoryGraph): string {
             .map((v, i) => ({ name: v.name, line: scalarInitLines[i] }))
             .filter(
               ({ name }) =>
-                !node.content.some((c) => c.kind === 'assignment' && c.statement.name === name),
+                !node.content.some(
+                  (c) =>
+                    c.kind === 'assignment' &&
+                    c.statement.kind === 'assignment' &&
+                    c.statement.name === name,
+                ),
             )
             .map(({ line }) => line)
         : [];

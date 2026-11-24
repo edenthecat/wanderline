@@ -484,4 +484,111 @@ describe('convertStoryGraphToInk', () => {
       );
     });
   });
+
+  describe('Function-knots (DEV-199 Phase 10b)', () => {
+    it('emits the function keyword and parameter list', () => {
+      const result = convertStoryGraphToInk({
+        id: 'test',
+        title: 'Test',
+        startNode: 'start',
+        nodes: {
+          double: {
+            id: 'double',
+            type: 'knot',
+            content: [
+              {
+                kind: 'assignment',
+                statement: {
+                  kind: 'return',
+                  value: {
+                    kind: 'binary',
+                    operator: '*',
+                    left: { kind: 'variable', name: 'x' },
+                    right: { kind: 'literal', value: 2 },
+                  },
+                },
+              },
+            ],
+            choices: [],
+            divert: null,
+            tags: ['internal:function'],
+            params: ['x'],
+          },
+          start: {
+            id: 'start',
+            type: 'knot',
+            content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+            choices: [],
+            divert: null,
+            tags: [],
+          },
+        },
+      });
+      expect(result).toContain('=== function double(x) ===');
+      expect(result).toContain('~ return x * 2');
+      // The bookkeeping tag must NOT also come back as a `# ...` line
+      // — the header already re-encodes it, and re-emitting it too
+      // would duplicate on every subsequent round-trip.
+      expect(result).not.toContain('# internal:function');
+    });
+
+    it('emits a bare `return` with no value', () => {
+      const result = convertStoryGraphToInk({
+        id: 'test',
+        title: 'Test',
+        startNode: 'start',
+        nodes: {
+          noop: {
+            id: 'noop',
+            type: 'knot',
+            content: [{ kind: 'assignment', statement: { kind: 'return' } }],
+            choices: [],
+            divert: null,
+            tags: ['internal:function'],
+            params: [],
+          },
+          start: {
+            id: 'start',
+            type: 'knot',
+            content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+            choices: [],
+            divert: null,
+            tags: [],
+          },
+        },
+      });
+      expect(result).toContain('=== function noop() ===');
+      expect(result).toContain('~ return');
+    });
+
+    it('round-trips a function-knot (params + return) and a call site through parseInk -> emit -> parseInk', () => {
+      const source = [
+        '=== function double(x) ===',
+        '~ return x * 2',
+        '',
+        '== start ==',
+        '~ gold = double(gold)',
+        '{double(5) > 8: Big.}',
+        '-> END',
+        '',
+      ].join('\n');
+      const first = parseInk(source, 'test-id');
+      expect(first.validation.errors).toEqual([]);
+      const emitted = convertStoryGraphToInk(first);
+      const second = parseInk(emitted, 'test-id');
+      expect(second.validation.errors).toEqual([]);
+      expect(second.nodes['double'].params).toEqual(first.nodes['double'].params);
+      expect(second.nodes['double'].tags).toEqual(first.nodes['double'].tags);
+      expect(stripIds(second.nodes['double'].content)).toEqual(
+        stripIds(first.nodes['double'].content),
+      );
+      expect(stripIds(second.nodes['start'].content)).toEqual(
+        stripIds(first.nodes['start'].content),
+      );
+      // Re-emitting a SECOND time must be stable (no tag/param drift
+      // accumulating across repeated round-trips).
+      const emittedAgain = convertStoryGraphToInk(second);
+      expect(emittedAgain).toBe(emitted);
+    });
+  });
 });

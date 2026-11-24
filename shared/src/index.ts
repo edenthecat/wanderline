@@ -8,4 +8,5 @@ export * from './settings-limits.js';
 export * from './expression-types.js';
 export * from './expression-parser.js';
 export * from './expression-evaluator.js';
+export * from './function-interpreter.js';
 export * from './audio-condition.js';

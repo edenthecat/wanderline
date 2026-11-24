@@ -71,7 +71,11 @@
  *     insert/modifier — {embed passage}, [JavaScript], etc.
  */
 
-import { parseExpression, expressionUsesListFeatures } from '@wanderline/shared';
+import {
+  parseExpression,
+  expressionUsesListFeatures,
+  expressionUsesFunctionCalls,
+} from '@wanderline/shared';
 import type {
   Choice,
   ContentBlock,
@@ -151,6 +155,11 @@ export function renderChapbookExpression(
   if (expressionUsesListFeatures(expr, listVariableNames)) {
     throw new Error('Chapbook export does not support LIST expressions');
   }
+  if (expressionUsesFunctionCalls(expr)) {
+    // Function-knot calls (DEV-199 Phase 10b) are Ink-only — Chapbook
+    // has no concept of a callable knot at all.
+    throw new Error('Chapbook export does not support function calls');
+  }
   switch (expr.kind) {
     case 'literal':
       if (typeof expr.value === 'string') {
@@ -182,6 +191,11 @@ export function renderChapbookExpression(
       // here means a LIST-valued condition/assignment somehow made
       // it into a Chapbook export, which has no correct rendering.
       throw new Error(`Chapbook export does not support LIST expressions (${expr.name})`);
+    case 'call':
+      // Already rejected up front by expressionUsesFunctionCalls
+      // above — unreachable in practice, kept only so this switch
+      // stays exhaustive over Expression's `kind`.
+      throw new Error(`Chapbook export does not support function calls (${expr.name})`);
   }
 }
 
@@ -200,6 +214,11 @@ export function renderChapbookAssignment(
   statement: Statement,
   listVariableNames?: ReadonlySet<string>,
 ): string {
+  if (statement.kind === 'return') {
+    // See renderHarloweAssignment's identical guard — Chapbook has
+    // no function-knot equivalent either.
+    throw new Error('Chapbook export does not support return statements');
+  }
   if (statement.operator === '=') {
     return `${statement.name}: ${renderChapbookExpression(statement.value, listVariableNames)}`;
   }

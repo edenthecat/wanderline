@@ -16,12 +16,25 @@
  * naming the known list members. Every existing caller that omits it
  * keeps treating every identifier as a plain variable, unchanged.
  *
- * Deliberately NOT supported yet (not needed until function-knots
- * land): user-defined function calls (only the fixed LIST_* builtins
- * parse as calls), and the `MOD`/`and`/`or`/`not` word-form operators
- * (Ink accepts both symbol and word forms for logical operators;
- * only the symbol forms `&&`/`||`/`!` are recognized here — a dialect
- * or Ink-source normalization step can translate word-forms to
+ * User-defined function-knot calls (DEV-199 Phase 10b — `{myFunc(x)}`)
+ * are the same story: `name(args)` only parses as a `call` expression
+ * when `name` is in `context.knownFunctions` — a fixed set the caller
+ * must collect itself (by scanning the story's own `=== function ===`
+ * declarations) and pass in, since this module has no story-graph
+ * knowledge of its own. Omitting it means no bare `name(...)` other
+ * than a LIST_* builtin parses as a call, unchanged from before this
+ * phase.
+ *
+ * `~ return EXPR` / bare `~ return` (also Phase 10b) is a second
+ * `Statement` kind alongside assignment — `parseStatement` dispatches
+ * on the `return` keyword before falling into the assignment grammar.
+ *
+ * Deliberately NOT supported (see function-interpreter.ts's header
+ * for the full list): `ref` parameters, a tail-exit divert-target
+ * parameter, and the `MOD`/`and`/`or`/`not` word-form operators (Ink
+ * accepts both symbol and word forms for logical operators; only the
+ * symbol forms `&&`/`||`/`!` are recognized here — a dialect or
+ * Ink-source normalization step can translate word-forms to
  * symbol-forms before calling this parser).
  */
 
@@ -29,10 +42,12 @@ import type {
   AssignmentOperator,
   AssignmentStatement,
   BinaryOperator,
+  CallExpression,
   Expression,
   ListFunctionName,
   ListItem,
   LogicalOperator,
+  ReturnStatement,
   Statement,
   VariableDeclaration,
   VariableValue,
@@ -40,11 +55,17 @@ import type {
 
 export class ExpressionParseError extends Error {}
 
-/** Every LIST_* builtin query function's name — a bare function-call
- * name that isn't one of these is a parse error, since user-defined
- * function calls don't parse yet (no function-knot interpreter
- * exists to run them against). */
-const LIST_FUNCTION_NAMES: ReadonlySet<string> = new Set([
+/** Every LIST_* builtin query function's name — checked ALONGSIDE
+ * `context.knownFunctions` (user-defined function-knots) in
+ * `parseFunctionCall`; a bare `name(...)` that matches neither is a
+ * parse error. Exported so ink-parser.ts's `collectKnownFunctions`
+ * can warn when a story declares a function-knot that collides with
+ * one of these: `parseFunctionCall` checks `isListBuiltin` first, so
+ * a colliding function-knot would otherwise be silently unreachable
+ * as a callable, with every call site resolving to the builtin
+ * instead — no diagnostic, unlike every other name-collision case
+ * (VAR vs LIST, LIST vs LIST member) this parser already checks. */
+export const LIST_FUNCTION_NAMES: ReadonlySet<string> = new Set([
   'LIST_COUNT',
   'LIST_MIN',
   'LIST_MAX',
@@ -66,6 +87,12 @@ export interface ExpressionParseContext {
    * order — becomes a literal's `allItems` (see ListValue) without a
    * second lookup structure at evaluation time. */
   listDefinitions?: Record<string, ListItem[]>;
+  /** Every function-knot name declared anywhere in the story
+   * (DEV-199 Phase 10b), collected by the caller up front (order
+   * doesn't matter — a call may textually precede its own knot's
+   * declaration). A bare `name(...)` whose name is in neither this
+   * set nor the fixed LIST_* builtins is a parse error. */
+  knownFunctions?: ReadonlySet<string>;
 }
 
 /**
@@ -235,6 +262,26 @@ class Parser {
 
   parseStatement(): Statement {
     const nameToken = this.expect('identifier', 'at start of statement');
+    // `return EXPR` / bare `return` (DEV-199 Phase 10b, function
+    // knots) — checked before the assignment grammar below, since
+    // `return` is never followed by an assignment operator. `return`
+    // is treated as a reserved word here the same way `true`/`false`
+    // are in parsePrimary: a variable actually NAMED `return` can't
+    // be assigned to via parseStatement, which matches Ink itself
+    // reserving the word.
+    if (nameToken.value === 'return') {
+      if (this.peek().type === 'eof') {
+        return { kind: 'return' };
+      }
+      const value = this.parseLogicalOr();
+      if (this.peek().type !== 'eof') {
+        throw new ExpressionParseError(
+          `Unexpected trailing input starting at '${this.peek().value}'`,
+        );
+      }
+      const statement: ReturnStatement = { kind: 'return', value };
+      return statement;
+    }
     const opToken = this.peek();
     const assignmentOps: AssignmentOperator[] = ['=', '+=', '-=', '*=', '/='];
     if (
@@ -412,9 +459,9 @@ class Parser {
         this.advance();
         return { kind: 'literal', value: token.value === 'true' };
       }
-      // Function call: a bare name immediately followed by '(' — only
-      // the fixed LIST_* builtins are recognized (no user-defined
-      // function-knot interpreter exists yet to run anything else).
+      // Function call: a bare name immediately followed by '(' —
+      // either a fixed LIST_* builtin, or a user-defined function-
+      // knot named in `context.knownFunctions` (DEV-199 Phase 10b).
       if (this.peekAt(1).type === 'lparen') {
         return this.parseFunctionCall();
       }
@@ -432,9 +479,11 @@ class Parser {
 
   private parseFunctionCall(): Expression {
     const name = this.advance().value;
-    if (!LIST_FUNCTION_NAMES.has(name)) {
+    const isListBuiltin = LIST_FUNCTION_NAMES.has(name);
+    const isKnownFunction = this.context.knownFunctions?.has(name) ?? false;
+    if (!isListBuiltin && !isKnownFunction) {
       throw new ExpressionParseError(
-        `'${name}' is not a recognized function (only LIST_COUNT, LIST_MIN, LIST_MAX, LIST_ALL, LIST_RANGE, LIST_VALUE, LIST_INVERT are supported)`,
+        `'${name}' is not a recognized function (expected a LIST_* builtin — LIST_COUNT, LIST_MIN, LIST_MAX, LIST_ALL, LIST_RANGE, LIST_VALUE, LIST_INVERT — or a declared function-knot)`,
       );
     }
     this.expect('lparen', `after function name '${name}'`);
@@ -447,7 +496,11 @@ class Parser {
       }
     }
     this.expect('rparen', `to close call to '${name}'`);
-    return { kind: 'listFunction', name: name as ListFunctionName, args };
+    if (isListBuiltin) {
+      return { kind: 'listFunction', name: name as ListFunctionName, args };
+    }
+    const call: CallExpression = { kind: 'call', name, args };
+    return call;
   }
 
   /**
@@ -632,10 +685,14 @@ export function printExpression(expr: Expression): string {
       return `${left} ${expr.operator} ${right}`;
     }
     case 'listFunction':
+    case 'call':
       return `${expr.name}(${expr.args.map((arg) => printExpression(arg)).join(', ')})`;
   }
 }
 
 export function printStatement(stmt: Statement): string {
+  if (stmt.kind === 'return') {
+    return stmt.value ? `return ${printExpression(stmt.value)}` : 'return';
+  }
   return `${stmt.name} ${stmt.operator} ${printExpression(stmt.value)}`;
 }

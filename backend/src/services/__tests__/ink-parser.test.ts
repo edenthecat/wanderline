@@ -1,6 +1,13 @@
 import { parseInk } from '../ink-parser.js';
 import { convertStoryGraphToInk } from '../ink-converter.js';
 import { isTextBlock } from '../../types.js';
+import {
+  createFunctionCaller,
+  evaluate,
+  execute,
+  parseExpression,
+  parseStatement,
+} from '@wanderline/shared';
 
 // Content blocks and choices now carry a randomUUID() `id` (DEV-199
 // stable-id rollout) — strips it before comparing parser output
@@ -418,6 +425,348 @@ Hi.
       const result = parseInk(source, 'test-id');
       expect(result.nodes['flag_set']).toBeDefined();
       expect(result.nodes['start']).toBeDefined();
+    });
+
+    it('warns when a function-knot shares a name with a LIST_* builtin (found in review)', () => {
+      const source = `
+=== function LIST_COUNT(x) ===
+~ return x * 2
+
+=== start ===
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      // The function-knot still parses — the warning is the only
+      // signal that every call to LIST_COUNT(...) will resolve to
+      // the builtin, not this knot.
+      expect(result.nodes['LIST_COUNT']).toBeDefined();
+      expect(
+        result.validation.warnings.some(
+          (w) => w.message.includes('LIST_COUNT') && w.message.includes('collides with'),
+        ),
+      ).toBe(true);
+    });
+  });
+
+  describe('Function-knot params and calls (DEV-199 Phase 10b)', () => {
+    it('captures a multi-parameter parameter list on the node', () => {
+      const source = `
+=== function add(a, b) ===
+~ return a + b
+
+=== start ===
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      expect(result.nodes['add'].params).toEqual(['a', 'b']);
+    });
+
+    it('a function knot with empty parens gets an empty params array', () => {
+      const source = `
+=== function noop() ===
+~ return 1
+
+=== start ===
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      expect(result.nodes['noop'].params).toEqual([]);
+    });
+
+    it('strips a `ref` parameter to its plain name and warns it is unsupported', () => {
+      const source = `
+=== function bump(ref x) ===
+~ return x
+
+=== start ===
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      expect(result.nodes['bump'].params).toEqual(['x']);
+      expect(
+        result.validation.warnings.some(
+          (w) =>
+            w.message.includes('bump') && w.message.includes("'ref' parameters are not supported"),
+        ),
+      ).toBe(true);
+    });
+
+    it('parses a call to a function-knot inside a condition, even when the function is declared LATER in the file', () => {
+      const source = `
+=== start ===
+* {double(2) > 3} Go -> next
+-> END
+
+=== function double(x) ===
+~ return x * 2
+
+=== next ===
+Hi.
+-> END
+`;
+      const result = parseInk(source, 'test-id');
+      expect(result.validation.errors).toEqual([]);
+      const condition = result.nodes['start'].choices[0].condition;
+      expect(condition).toEqual({
+        kind: 'binary',
+        operator: '>',
+        left: { kind: 'call', name: 'double', args: [{ kind: 'literal', value: 2 }] },
+        right: { kind: 'literal', value: 3 },
+      });
+    });
+
+    it('parses a call inside an in-content assignment', () => {
+      const source = `
+=== start ===
+~ gold = double(gold)
+Hi.
+
+=== function double(x) ===
+~ return x * 2
+`;
+      const result = parseInk(source, 'test-id');
+      const [block] = result.nodes['start'].content;
+      if (block.kind === 'assignment' && block.statement.kind === 'assignment') {
+        expect(block.statement.value).toEqual({
+          kind: 'call',
+          name: 'double',
+          args: [{ kind: 'variable', name: 'gold' }],
+        });
+      } else {
+        throw new Error('expected an assignment block');
+      }
+    });
+
+    it('parses nested calls f(g(x))', () => {
+      const source = `
+=== function inc(n) ===
+~ return n + 1
+
+=== function double(n) ===
+~ return n * 2
+
+=== start ===
+~ result = double(inc(1))
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      const [block] = result.nodes['start'].content;
+      if (block.kind === 'assignment' && block.statement.kind === 'assignment') {
+        expect(block.statement.value).toEqual({
+          kind: 'call',
+          name: 'double',
+          args: [{ kind: 'call', name: 'inc', args: [{ kind: 'literal', value: 1 }] }],
+        });
+      } else {
+        throw new Error('expected an assignment block');
+      }
+    });
+
+    it('warns (does not crash) on a call to an undeclared function', () => {
+      const source = `
+=== start ===
+~ x = notReal(1)
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      expect(result.validation.warnings.some((w) => w.message.includes('notReal'))).toBe(true);
+    });
+
+    it('warns on a call with the wrong number of arguments', () => {
+      const source = `
+=== function add(a, b) ===
+~ return a + b
+
+=== start ===
+~ x = add(1)
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      expect(
+        result.validation.warnings.some(
+          (w) =>
+            w.message.includes("Call to function 'add'") &&
+            w.message.includes('1 argument(s)') &&
+            w.message.includes('declares 2'),
+        ),
+      ).toBe(true);
+    });
+
+    it('does not warn when the argument count matches', () => {
+      const source = `
+=== function add(a, b) ===
+~ return a + b
+
+=== start ===
+~ x = add(1, 2)
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      expect(result.validation.warnings.some((w) => w.message.includes('Call to function'))).toBe(
+        false,
+      );
+    });
+
+    it('parses a self-recursive call with no complaint at parse time', () => {
+      const source = `
+=== function countdown(n) ===
+~ return countdown(n - 1)
+
+=== start ===
+~ x = countdown(5)
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      expect(result.validation.errors).toEqual([]);
+      expect(result.validation.warnings.some((w) => w.message.includes('countdown'))).toBe(false);
+    });
+
+    it('a bare `~ return` with no value parses as a return statement with no value', () => {
+      const source = `
+=== function sideEffectOnly() ===
+~ gold = gold + 1
+~ return
+
+=== start ===
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      const last = result.nodes['sideEffectOnly'].content.at(-1);
+      expect(last?.kind).toBe('assignment');
+      if (last?.kind === 'assignment') {
+        expect(last.statement).toEqual({ kind: 'return' });
+      }
+    });
+
+    it('warns about a choice/divert inside a function-knot rather than silently ignoring it', () => {
+      const source = `
+=== function broken(x) ===
+~ return x
+-> END
+
+=== start ===
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      expect(
+        result.validation.warnings.some(
+          (w) => w.message.includes('broken') && w.message.includes('choice or divert'),
+        ),
+      ).toBe(true);
+    });
+
+    it('does not flag a function-knot as unreachable_node', () => {
+      const source = `
+=== function helper(x) ===
+~ return x
+
+=== start ===
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      expect(
+        result.validation.warnings.some(
+          (w) => w.type === 'unreachable_node' && w.nodeId === 'helper',
+        ),
+      ).toBe(false);
+    });
+  });
+
+  describe('Function-knot evaluation (DEV-199 Phase 10b) — backend validation-time execution', () => {
+    // Confirms a condition/assignment containing a function call
+    // actually EVALUATES correctly once wired to a real callFunction
+    // handler built from the parsed StoryGraph's own nodes — the
+    // interpreter itself (createFunctionCaller) has its own
+    // dedicated unit tests in player-app/src/function-interpreter.test.ts;
+    // these exercise it end-to-end against parseInk's real output.
+    function functionCallerFor(result: ReturnType<typeof parseInk>) {
+      return createFunctionCaller({
+        getFunction: (name) => {
+          const node = result.nodes[name];
+          if (!node || !node.tags.includes('internal:function')) return undefined;
+          return { params: node.params, content: node.content };
+        },
+      });
+    }
+
+    // parseInk doesn't expose its internal `knownFunctions` set on
+    // the returned StoryGraph — it only needs it DURING parsing, to
+    // recognize `name(args)` as a call. Re-deriving it here from the
+    // already-parsed nodes (same `internal:function` tag the real
+    // parser uses) is just this test's own way to parse a FRESH,
+    // standalone expression/statement string against the same story.
+    function knownFunctionsOf(result: ReturnType<typeof parseInk>): Set<string> {
+      return new Set(
+        Object.values(result.nodes)
+          .filter((n) => n.tags.includes('internal:function'))
+          .map((n) => n.id),
+      );
+    }
+
+    it('evaluates a condition containing a function call', () => {
+      const source = `
+=== function double(x) ===
+~ return x * 2
+
+=== start ===
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      const caller = functionCallerFor(result);
+      const expr = parseExpression('double(5) > 8', { knownFunctions: knownFunctionsOf(result) });
+      expect(evaluate(expr, {}, caller)).toBe(true);
+    });
+
+    it('evaluates an assignment that calls a function-knot', () => {
+      const source = `
+=== function double(x) ===
+~ return x * 2
+
+=== start ===
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      const caller = functionCallerFor(result);
+      const stmt = parseStatement('gold = double(gold)', {
+        knownFunctions: knownFunctionsOf(result),
+      });
+      expect(execute(stmt, { gold: 5 }, caller)).toEqual({ gold: 10 });
+    });
+
+    it('a function with no return statement evaluates without throwing', () => {
+      const source = `
+=== function sideEffectOnly() ===
+~ gold = gold + 1
+
+=== start ===
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      const caller = functionCallerFor(result);
+      const stmt = parseStatement('x = sideEffectOnly()', {
+        knownFunctions: knownFunctionsOf(result),
+      });
+      const next = execute(stmt, { gold: 5 }, caller);
+      expect(next.gold).toBe(6);
+      expect(next.x).toBe('');
+    });
+
+    it('a function referencing an undeclared variable throws when actually called, not at parse time', () => {
+      const source = `
+=== function broken() ===
+~ return undeclaredVar
+
+=== start ===
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      // Parsing succeeds — the parser never checks whether a bare
+      // identifier inside a function body is a declared variable,
+      // same as everywhere else in this grammar.
+      expect(result.validation.errors).toEqual([]);
+      const caller = functionCallerFor(result);
+      const stmt = parseStatement('x = broken()', { knownFunctions: knownFunctionsOf(result) });
+      expect(() => execute(stmt, {}, caller)).toThrow(/Undefined variable/);
     });
   });
 
@@ -873,13 +1222,19 @@ No association with any real narrative.
       expect(stripIds(content[1])).toEqual({ kind: 'text', text: 'Hi.', tags: [] });
     });
 
-    it('falls back to literal text and warns on a `~` line it does not understand yet (e.g. `~ return x`)', () => {
-      const source = '== debug ==\n~ return msg\n';
+    it('falls back to literal text and warns on a `~` line it does not understand yet (e.g. `~ temp x = 5`)', () => {
+      // `~ return x` used to be this test's example, back when
+      // `return` wasn't understood at all — DEV-199 Phase 10b adds
+      // exactly that (see the "return statements" describe block
+      // below), so it's no longer a case this test can use. `temp`
+      // locals remain unsupported (see function-interpreter.ts's
+      // header), so that's the new example.
+      const source = '== debug ==\n~ temp x = 5\n';
       const result = parseInk(source, 'test-id');
       const [block] = result.nodes['debug'].content;
       expect(isTextBlock(block)).toBe(true);
       if (isTextBlock(block)) {
-        expect(block.text).toBe('~ return msg');
+        expect(block.text).toBe('~ temp x = 5');
       }
       expect(
         result.validation.warnings.some((w) => w.message.includes('Could not parse assignment')),
@@ -887,12 +1242,12 @@ No association with any real narrative.
     });
 
     it('preserves the exact original line (no inserted space) when falling back on a line with no space after `~`', () => {
-      const source = '== debug ==\n~return msg\n';
+      const source = '== debug ==\n~temp x=5\n';
       const result = parseInk(source, 'test-id');
       const [block] = result.nodes['debug'].content;
       expect(isTextBlock(block)).toBe(true);
       if (isTextBlock(block)) {
-        expect(block.text).toBe('~return msg');
+        expect(block.text).toBe('~temp x=5');
       }
     });
 

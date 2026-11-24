@@ -1,4 +1,8 @@
-import { type ContentBlock, type VariableValue } from '@wanderline/shared';
+import {
+  type CallFunctionHandler,
+  type ContentBlock,
+  type VariableValue,
+} from '@wanderline/shared';
 import { fallThroughTarget } from './fall-through';
 import { isFromTextEntry } from './keyboard-target';
 import { nodeText } from './node-text';
@@ -124,6 +128,11 @@ export interface UseMediaControlsArgs {
    * Optional (defaults to none declared/set) so a caller with no
    * variables in play doesn't need to pass an empty object. */
   variables?: Record<string, VariableValue>;
+  /** Threaded through to `nodeText` unchanged (DEV-199 Phase 10b) so a
+   * text block gated on a function-calling condition filters the same
+   * way here as it does on-screen. Optional for the same reason
+   * `variables` is. */
+  callFunction?: CallFunctionHandler;
   showInstructions: boolean;
   isAuthenticated: boolean;
   playerState: PlayerState;
@@ -183,6 +192,7 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
     story,
     currentNode,
     variables,
+    callFunction,
     showInstructions,
     isAuthenticated,
     playerState,
@@ -483,13 +493,13 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
     // this title can never show text that's actually hidden from the
     // player (found in review: the old `.find(isTextBlock)` here
     // ignored `condition` entirely).
-    const displayText = nodeText(currentNode, variables);
+    const displayText = nodeText(currentNode, variables, callFunction);
     ms.metadata = new MediaMetadata({
       title: displayText.slice(0, 50) || currentNode.id,
       artist: story.title,
       album: 'Wanderline Story',
     });
-  }, [story, currentNode, variables, showInstructions]);
+  }, [story, currentNode, variables, callFunction, showInstructions]);
 
   // 7. Mirror playerState onto MediaSession's playbackState so the OS
   // sees a matching transport state.

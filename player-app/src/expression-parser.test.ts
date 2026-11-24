@@ -369,3 +369,126 @@ describe('parseExpression — LIST_* query functions', () => {
     },
   );
 });
+
+// Function-knot calls (DEV-199 Phase 10b): `name(args)` parses as a
+// `call` expression only when `name` is in `context.knownFunctions`
+// — the set of declared `=== function ===` knots, collected by the
+// caller (ink-parser.ts in practice). Still rejected, same as before
+// this phase, for any other bare name.
+describe('parseExpression — function-knot calls', () => {
+  const FUNCS: ExpressionParseContext = { knownFunctions: new Set(['double', 'add']) };
+
+  it('parses a call to a known function-knot with its arguments', () => {
+    expect(parseExpression('double(5)', FUNCS)).toEqual({
+      kind: 'call',
+      name: 'double',
+      args: [{ kind: 'literal', value: 5 }],
+    });
+  });
+
+  it('parses a multi-argument call', () => {
+    expect(parseExpression('add(x, 2)', FUNCS)).toEqual({
+      kind: 'call',
+      name: 'add',
+      args: [
+        { kind: 'variable', name: 'x' },
+        { kind: 'literal', value: 2 },
+      ],
+    });
+  });
+
+  it('parses nested calls', () => {
+    expect(parseExpression('double(add(1, 2))', FUNCS)).toEqual({
+      kind: 'call',
+      name: 'double',
+      args: [
+        {
+          kind: 'call',
+          name: 'add',
+          args: [
+            { kind: 'literal', value: 1 },
+            { kind: 'literal', value: 2 },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('parses a call inside a larger expression', () => {
+    const ast = parseExpression('double(5) > 8', FUNCS);
+    expect(ast).toEqual({
+      kind: 'binary',
+      operator: '>',
+      left: { kind: 'call', name: 'double', args: [{ kind: 'literal', value: 5 }] },
+      right: { kind: 'literal', value: 8 },
+    });
+  });
+
+  it('rejects a call to a name not in knownFunctions', () => {
+    expect(() => parseExpression('double(5)')).toThrow(ExpressionParseError);
+    expect(() => parseExpression('notDeclared(5)', FUNCS)).toThrow(ExpressionParseError);
+  });
+
+  it('a LIST_* builtin still wins over a same-named knownFunctions entry', () => {
+    const ctx: ExpressionParseContext = { knownFunctions: new Set(['LIST_COUNT']) };
+    expect(parseExpression('LIST_COUNT(5)', ctx).kind).toBe('listFunction');
+  });
+
+  it.each(['double(5)', 'add(x, 2)', 'double(add(1, 2))'])('round-trips %s', (source) => {
+    const ast = parseExpression(source, FUNCS);
+    const printed = printExpression(ast);
+    expect(parseExpression(printed, FUNCS)).toEqual(ast);
+  });
+});
+
+// `~ return EXPR` / bare `~ return` (DEV-199 Phase 10b): a second
+// Statement kind alongside assignment.
+describe('parseStatement — return', () => {
+  it('parses a bare return with no value', () => {
+    expect(parseStatement('return')).toEqual({ kind: 'return' });
+  });
+
+  it('parses a return with a value expression', () => {
+    expect(parseStatement('return x * 2')).toEqual({
+      kind: 'return',
+      value: {
+        kind: 'binary',
+        operator: '*',
+        left: { kind: 'variable', name: 'x' },
+        right: { kind: 'literal', value: 2 },
+      },
+    });
+  });
+
+  it('parses a return of a function call', () => {
+    const ctx: ExpressionParseContext = { knownFunctions: new Set(['helper']) };
+    expect(parseStatement('return helper(x)', ctx)).toEqual({
+      kind: 'return',
+      value: { kind: 'call', name: 'helper', args: [{ kind: 'variable', name: 'x' }] },
+    });
+  });
+
+  it('round-trips a bare return', () => {
+    const ast = parseStatement('return');
+    expect(parseStatement(printStatement(ast))).toEqual(ast);
+  });
+
+  it('round-trips a return with a value', () => {
+    const ast = parseStatement('return x + 1');
+    expect(parseStatement(printStatement(ast))).toEqual(ast);
+  });
+
+  it('still parses an ordinary assignment unaffected by the return grammar', () => {
+    expect(parseStatement('gold = gold + 10')).toEqual({
+      kind: 'assignment',
+      name: 'gold',
+      operator: '=',
+      value: {
+        kind: 'binary',
+        operator: '+',
+        left: { kind: 'variable', name: 'gold' },
+        right: { kind: 'literal', value: 10 },
+      },
+    });
+  });
+});

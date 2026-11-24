@@ -5,6 +5,22 @@
  * validation, preview) and player-app (runtime playback) so a
  * condition can never evaluate differently in the editor than it does
  * during playback.
+ *
+ * Function-knot calls (DEV-199 Phase 10b — `{myFunc(x)}`) are the one
+ * exception to "no story-graph knowledge": running one requires
+ * walking a knot's content, which this module still must not know how
+ * to do (that would mean importing StoryNode/StoryGraph types here,
+ * and the backend's and player's shapes for "a node" genuinely
+ * diverge). Instead, every entry point below takes an OPTIONAL
+ * `callFunction` callback — a plain data-in/data-out function, not an
+ * object carrying story-graph references — that a caller who DOES
+ * have story-graph access (backend validation, player-app playback)
+ * supplies. See `CallFunctionHandler` and function-interpreter.ts,
+ * which builds one from a generic "knot-like" shape. Omitting the
+ * callback is fully backward-compatible: every existing caller that
+ * passes only (expr, variables) keeps working exactly as before, and
+ * only actually fails if the expression tree turns out to contain a
+ * `call` node.
  */
 
 import type {
@@ -83,6 +99,39 @@ export function expressionUsesListFeatures(
         expressionUsesListFeatures(expr.right, listVariableNames)
       );
     case 'listFunction':
+      return true;
+    case 'call':
+      // A call itself isn't a LIST feature (it's Ink-only for an
+      // entirely different reason — see expressionUsesFunctionCalls),
+      // but an ARGUMENT could still be LIST-valued, e.g.
+      // `f(cold)` or `f(x) has cold`.
+      return expr.args.some((arg) => expressionUsesListFeatures(arg, listVariableNames));
+  }
+}
+
+/**
+ * Does this expression tree call a user-defined function-knot
+ * anywhere (DEV-199 Phase 10b — `{myFunc(x)}`)? Used the same way as
+ * `expressionUsesListFeatures` by the Twine dialect exporters
+ * (Harlowe/SugarCube/Chapbook have no function-knot equivalent, and
+ * no concept of a callable knot at all) to reject a call-bearing
+ * expression up front, rather than letting it fall through to a
+ * `case 'call'` in a dialect's own render switch that has no correct
+ * rendering for it.
+ */
+export function expressionUsesFunctionCalls(expr: Expression): boolean {
+  switch (expr.kind) {
+    case 'literal':
+    case 'variable':
+      return false;
+    case 'unary':
+      return expressionUsesFunctionCalls(expr.operand);
+    case 'binary':
+    case 'logical':
+      return expressionUsesFunctionCalls(expr.left) || expressionUsesFunctionCalls(expr.right);
+    case 'listFunction':
+      return expr.args.some((arg) => expressionUsesFunctionCalls(arg));
+    case 'call':
       return true;
   }
 }
@@ -362,20 +411,54 @@ function evaluateListFunction(name: ListFunctionName, args: VariableValue[]): Va
   }
 }
 
-export function evaluate(
-  expr: Expression,
+/**
+ * A function-knot call's handler — plain data in, plain data out, no
+ * story-graph references baked in (see this file's header). Given the
+ * called function's name, its ALREADY-EVALUATED argument values, and
+ * the variable store at the call site, it must run that function to
+ * completion and report back both its return value (the result the
+ * call expression evaluates to) and the variable store afterward —
+ * a function's body can mutate an outer-scope/global variable via a
+ * plain `~ x = ...` (see expression-types.ts's `ReturnStatement` doc),
+ * and that mutation has to be observable by whatever called `evaluate`/
+ * `execute` in the first place, not silently dropped. Building one of
+ * these from an actual story graph is function-interpreter.ts's job —
+ * this file only defines the shape.
+ */
+export type CallFunctionHandler = (
+  name: string,
+  args: VariableValue[],
   variables: Record<string, VariableValue>,
+) => { value: VariableValue; variables: Record<string, VariableValue> };
+
+/**
+ * Mutable carrier for "the variable store as of the last function
+ * call we evaluated", threaded through one evaluation tree so a call
+ * earlier in the same expression (`f(x) + g(x)`, left-to-right) is
+ * visible to one evaluated later, and so the FINAL store (after every
+ * call in the tree has run) can be reported back to whatever needs it
+ * — see `evaluateWithEffects`. Never read `variables` captured in an
+ * outer closure once `box.vars` exists; always go through the box.
+ */
+interface VariablesBox {
+  vars: Record<string, VariableValue>;
+}
+
+function evaluateNode(
+  expr: Expression,
+  box: VariablesBox,
+  callFunction: CallFunctionHandler | undefined,
 ): VariableValue {
   switch (expr.kind) {
     case 'literal':
       return expr.value;
     case 'variable':
-      if (!(expr.name in variables)) {
+      if (!(expr.name in box.vars)) {
         throw new ExpressionEvaluationError(`Undefined variable: ${expr.name}`);
       }
-      return variables[expr.name];
+      return box.vars[expr.name];
     case 'unary': {
-      const operand = evaluate(expr.operand, variables);
+      const operand = evaluateNode(expr.operand, box, callFunction);
       if (expr.operator === '-') {
         if (typeof operand !== 'number') {
           throw new ExpressionEvaluationError(`Cannot negate a ${typeof operand}`);
@@ -388,26 +471,74 @@ export function evaluate(
     case 'binary':
       return evaluateBinary(
         expr.operator,
-        evaluate(expr.left, variables),
-        evaluate(expr.right, variables),
+        evaluateNode(expr.left, box, callFunction),
+        evaluateNode(expr.right, box, callFunction),
       );
     case 'logical': {
-      const left = evaluate(expr.left, variables);
+      const left = evaluateNode(expr.left, box, callFunction);
       // Short-circuit: the right side is only evaluated when it can
       // actually affect the result, matching every C-family language's
       // &&/|| and letting a condition like `count > 0 && 1/count > x`
       // guard the divide safely.
       if (expr.operator === '&&') {
-        return truthy(left) ? truthy(evaluate(expr.right, variables)) : false;
+        return truthy(left) ? truthy(evaluateNode(expr.right, box, callFunction)) : false;
       }
-      return truthy(left) ? true : truthy(evaluate(expr.right, variables));
+      return truthy(left) ? true : truthy(evaluateNode(expr.right, box, callFunction));
     }
     case 'listFunction':
       return evaluateListFunction(
         expr.name,
-        expr.args.map((arg) => evaluate(arg, variables)),
+        expr.args.map((arg) => evaluateNode(arg, box, callFunction)),
       );
+    case 'call': {
+      if (!callFunction) {
+        throw new ExpressionEvaluationError(
+          `Cannot call '${expr.name}(...)': function calls require a callFunction handler, and none was provided`,
+        );
+      }
+      const argValues = expr.args.map((arg) => evaluateNode(arg, box, callFunction));
+      const result = callFunction(expr.name, argValues, box.vars);
+      box.vars = result.variables;
+      return result.value;
+    }
   }
+}
+
+export function evaluate(
+  expr: Expression,
+  variables: Record<string, VariableValue>,
+  callFunction?: CallFunctionHandler,
+): VariableValue {
+  return evaluateNode(expr, { vars: variables }, callFunction);
+}
+
+/**
+ * Like `evaluate`, but also reports the variable store as it stood
+ * after every function call in the tree ran — the piece plain
+ * `evaluate` necessarily drops, since its signature only returns a
+ * single value. Needed anywhere a call's side effect on a
+ * global/outer-scope variable must actually persist — `execute`
+ * (below) uses this for an assignment's right-hand side so `~ gold =
+ * double(gold)` doesn't silently lose some OTHER global `double`
+ * happened to touch along the way.
+ *
+ * A caller that only wants the value (most condition/conditional-text
+ * checks) can keep calling plain `evaluate` — a function called
+ * PURELY for a side effect from inside a condition won't have that
+ * side effect observed through `evaluate`, which is a known,
+ * documented limitation rather than an oversight (see this file's
+ * header): threading a mutable store through every condition-checking
+ * call site in the codebase is a much larger change than this pass
+ * takes on.
+ */
+export function evaluateWithEffects(
+  expr: Expression,
+  variables: Record<string, VariableValue>,
+  callFunction?: CallFunctionHandler,
+): { value: VariableValue; variables: Record<string, VariableValue> } {
+  const box: VariablesBox = { vars: variables };
+  const value = evaluateNode(expr, box, callFunction);
+  return { value, variables: box.vars };
 }
 
 /**
@@ -415,29 +546,46 @@ export function evaluate(
  * mutating the one passed in — callers (React state setters, backend
  * validation walking a sequence of statements) can rely on the input
  * being untouched.
+ *
+ * A bare `return` statement (function-knots — DEV-199 Phase 10b) has
+ * no effect here: `execute` just walks assignments, and `return`'s
+ * actual meaning (stop walking a function's content, capture a value)
+ * only exists inside function-interpreter.ts's knot walker. Treating
+ * it as a no-op means any EXISTING content walker that doesn't know
+ * about function-knots yet (and never will — see this file's header)
+ * doesn't crash if a ReturnStatement ever reaches it.
  */
 export function execute(
   stmt: Statement,
   variables: Record<string, VariableValue>,
+  callFunction?: CallFunctionHandler,
 ): Record<string, VariableValue> {
-  return executeAssignment(stmt, variables);
+  if (stmt.kind === 'return') {
+    return variables;
+  }
+  return executeAssignment(stmt, variables, callFunction);
 }
 
 function executeAssignment(
   stmt: AssignmentStatement,
   variables: Record<string, VariableValue>,
+  callFunction: CallFunctionHandler | undefined,
 ): Record<string, VariableValue> {
-  const rhs = evaluate(stmt.value, variables);
+  const { value: rhs, variables: afterRhs } = evaluateWithEffects(
+    stmt.value,
+    variables,
+    callFunction,
+  );
   if (stmt.operator === '=') {
-    return { ...variables, [stmt.name]: rhs };
+    return { ...afterRhs, [stmt.name]: rhs };
   }
-  if (!(stmt.name in variables)) {
+  if (!(stmt.name in afterRhs)) {
     throw new ExpressionEvaluationError(
       `Cannot compound-assign to undefined variable: ${stmt.name}`,
     );
   }
   // '+=' -> '+', '-=' -> '-', etc.
   const baseOperator = stmt.operator.slice(0, -1) as BinaryOperator;
-  const next = evaluateBinary(baseOperator, variables[stmt.name], rhs);
-  return { ...variables, [stmt.name]: next };
+  const next = evaluateBinary(baseOperator, afterRhs[stmt.name], rhs);
+  return { ...afterRhs, [stmt.name]: next };
 }

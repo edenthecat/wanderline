@@ -113,6 +113,15 @@ export interface StoryNode {
    * used by Ink or the runtime — pure round-trip preservation.
    */
   metadata?: Record<string, unknown>;
+  /**
+   * Parameter names for a function-knot (`=== function foo(x, y) ===`
+   * — DEV-199 Phase 10b / function-knots), in declaration order. Only
+   * present on a node tagged `internal:function`. See
+   * shared/src/types.ts's `StoryNode.params` — duplicated here
+   * because this file redefines StoryNode rather than re-exporting
+   * the shared one (see this file's header).
+   */
+  params?: string[];
 }
 
 export type NodeType = 'knot' | 'stitch' | 'gather';

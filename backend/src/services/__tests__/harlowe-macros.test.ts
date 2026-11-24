@@ -211,6 +211,25 @@ describe('renderHarloweExpression', () => {
       ).toThrow(/LIST/);
     });
   });
+
+  // DEV-199 Phase 10b: function-knot calls are Ink-only — Harlowe has
+  // no concept of a callable knot at all.
+  describe('rejects a function-call expression', () => {
+    it('a bare call', () => {
+      const call: Expression = { kind: 'call', name: 'double', args: [lit(5)] };
+      expect(() => renderHarloweExpression(call)).toThrow(/function call/);
+    });
+
+    it('a call buried inside a larger expression', () => {
+      const buried: Expression = {
+        kind: 'binary',
+        operator: '>',
+        left: { kind: 'call', name: 'double', args: [lit(5)] },
+        right: lit(8),
+      };
+      expect(() => renderHarloweExpression(buried)).toThrow(/function call/);
+    });
+  });
 });
 
 describe('renderHarloweAssignment', () => {
@@ -232,5 +251,10 @@ describe('renderHarloweAssignment', () => {
       value: { kind: 'literal', value: 10 },
     };
     expect(renderHarloweAssignment(stmt)).toBe('(set: $gold to ($gold) + (10))');
+  });
+
+  it('rejects a return statement (DEV-199 Phase 10b) — Harlowe has no function-knot equivalent', () => {
+    const stmt: Statement = { kind: 'return', value: { kind: 'literal', value: 5 } };
+    expect(() => renderHarloweAssignment(stmt)).toThrow(/return/);
   });
 });

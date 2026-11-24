@@ -138,6 +138,19 @@ describe('renderChapbookExpression', () => {
       expect(() => renderChapbookExpression(call)).toThrow(/LIST/);
     });
   });
+
+  // DEV-199 Phase 10b: function-knot calls are Ink-only — Chapbook
+  // has no concept of a callable knot at all.
+  describe('rejects a function-call expression', () => {
+    it('a bare call', () => {
+      const call: Expression = {
+        kind: 'call',
+        name: 'double',
+        args: [{ kind: 'literal', value: 5 }],
+      };
+      expect(() => renderChapbookExpression(call)).toThrow(/function call/);
+    });
+  });
 });
 
 describe('renderChapbookAssignment', () => {
@@ -159,5 +172,10 @@ describe('renderChapbookAssignment', () => {
       value: { kind: 'literal', value: 10 },
     };
     expect(renderChapbookAssignment(stmt)).toBe('gold: gold + 10');
+  });
+
+  it('rejects a return statement (DEV-199 Phase 10b) — Chapbook has no function-knot equivalent', () => {
+    const stmt: Statement = { kind: 'return', value: { kind: 'literal', value: 5 } };
+    expect(() => renderChapbookAssignment(stmt)).toThrow(/return/);
   });
 });
