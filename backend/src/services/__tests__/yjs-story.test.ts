@@ -85,6 +85,40 @@ describe('yjs-story converter', () => {
     expect(out.right.audio).toBeUndefined();
   });
 
+  it('preserves a conditioned assignment block’s condition (DEV-199 follow-up, found in review)', () => {
+    const doc = new Y.Doc();
+    const graph = baseGraph();
+    graph.nodes.start.content.push({
+      kind: 'assignment',
+      statement: {
+        kind: 'assignment',
+        name: 'transportation',
+        operator: '=',
+        value: { kind: 'literal', value: 'plane' },
+      },
+      condition: { kind: 'variable', name: 'far' },
+    });
+    seedYDocFromStoryGraph(doc, graph);
+    const out = materializeNodesFromYDoc(doc);
+    const assignmentBlock = out.start.content.find((c) => c.kind === 'assignment');
+    expect(assignmentBlock).toMatchObject({
+      kind: 'assignment',
+      condition: { kind: 'variable', name: 'far' },
+    });
+  });
+
+  it('preserves a function-knot’s params (DEV-199 Phase 10b, found in review)', () => {
+    const doc = new Y.Doc();
+    const graph = baseGraph();
+    graph.nodes.start.params = ['x', 'y'];
+    seedYDocFromStoryGraph(doc, graph);
+    const out = materializeNodesFromYDoc(doc);
+    expect(out.start.params).toEqual(['x', 'y']);
+    // A node with no params at all still round-trips with none —
+    // confirms this isn't just always defaulting to [].
+    expect(out.left.params).toBeUndefined();
+  });
+
   it('seed is idempotent: a second call against a populated doc is a no-op', () => {
     const doc = new Y.Doc();
     const graph = baseGraph();

@@ -146,6 +146,14 @@ export interface NodeDetailProps {
    * variables already parsed from source can be picked; declaring a
    * brand-new one is a separate, not-yet-built feature. */
   variables?: VariableDeclaration[];
+  /** Every function-knot name declared anywhere in the story (DEV-199
+   * Phase 10b) — found in review: without this, the condition
+   * editors' parse context only knew about LIST members, so a
+   * working imported condition that calls a function (e.g.
+   * `double(gold) > 10`) couldn't be saved even unchanged, since
+   * re-parsing it client-side rejected the call as an undeclared
+   * function. */
+  knownFunctionNames?: ReadonlySet<string>;
   /** Click a "Reachable from" entry to jump the canvas / list to it. */
   onJumpToNode?: (nodeId: string) => void;
   /**: shared Y.Doc for this project (null until connected).
@@ -188,6 +196,7 @@ export default function NodeDetail({
   audioActions,
   audioLevels,
   variables,
+  knownFunctionNames,
   reachableFrom,
   onJumpToNode,
   yDoc,
@@ -197,7 +206,10 @@ export default function NodeDetail({
   // instance — both the choice and content-block condition editors
   // below need the same LIST-member lookups to re-parse a printed
   // condition without losing it back to a plain variable reference.
-  const listContext = useMemo(() => buildListExpressionContext(variables), [variables]);
+  const listContext = useMemo(
+    () => ({ ...buildListExpressionContext(variables), knownFunctions: knownFunctionNames }),
+    [variables, knownFunctionNames],
+  );
 
   // Postgres column is nullable, so coerce null → '' for the editor.
   const savedTranscript = metadata?.transcript ?? '';
@@ -579,7 +591,16 @@ export default function NodeDetail({
       {(node.choices.length > 0 || onAddChoice) && (
         <div className="node-choices">
           {node.choices.map((ch, i) => (
-            <div key={i} className="node-choice">
+            // Keyed by the choice's own stable id, not its array
+            // index (found in review): an open ConditionEditor keeps
+            // its own draft state, and React matches component
+            // instances up by key across a re-render — with index as
+            // the key, reordering or deleting a choice silently
+            // reattached an open draft to whichever DIFFERENT choice
+            // now occupies that same array slot instead of closing
+            // or resetting it. Falls back to the index only for a
+            // choice with no id (pre-stable-id-rollout data).
+            <div key={ch.id ?? i} className="node-choice">
               <span className="choice-arrow">&rarr;</span>
               <CollabChoiceTextInput
                 yText={yDocReady ? getChoiceText(yDoc, nodeId, i) : null}

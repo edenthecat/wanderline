@@ -112,6 +112,15 @@ export interface ExpressionParseContext {
  */
 export function buildListExpressionContext(
   variables: readonly VariableDeclaration[] | undefined,
+  // Every node, for collecting function-knot names (DEV-199 Phase
+  // 10b) — found in review: without this, re-parsing a saved
+  // condition that calls a function (e.g. `double(gold) > 10`)
+  // rejected the call as an undeclared function, even when the
+  // condition was already there, unchanged. Deliberately a minimal
+  // shape (not the real StoryNode) so this stays usable from both
+  // backend and frontend without either depending on the other's
+  // node type.
+  nodes?: Readonly<Record<string, { id: string; tags?: readonly string[] }>>,
 ): ExpressionParseContext {
   const listMembers: Record<string, { origin: string; ordinal: number }> = {};
   const listDefinitions: Record<string, ListItem[]> = {};
@@ -123,7 +132,11 @@ export function buildListExpressionContext(
       listMembers[item.name] = { origin: decl.name, ordinal: item.ordinal };
     }
   }
-  return { listMembers, listDefinitions };
+  const knownFunctions = new Set<string>();
+  for (const node of Object.values(nodes ?? {})) {
+    if (node.tags?.includes('internal:function')) knownFunctions.add(node.id);
+  }
+  return { listMembers, listDefinitions, knownFunctions };
 }
 
 // === Tokenizer ===

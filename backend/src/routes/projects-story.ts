@@ -1456,16 +1456,21 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
       let parsedCondition = null;
       if (condition !== null && condition.trim().length > 0) {
         try {
-          // The fetched story_graph's own LIST declarations, not an
-          // empty context — without this, a condition referencing a
-          // LIST member (`kettleState has cold`) reparses `cold` as
-          // an undeclared PLAIN variable instead of a list-member
-          // literal, which then throws at evaluation time and makes
-          // the gated choice/content disappear; a multi-member
-          // literal like `(cold, boiling)` fails to parse at all.
+          // The fetched story_graph's own LIST declarations and
+          // function-knot names, not an empty context — without the
+          // former, a condition referencing a LIST member
+          // (`kettleState has cold`) reparses `cold` as an undeclared
+          // PLAIN variable instead of a list-member literal, which
+          // then throws at evaluation time and makes the gated
+          // choice/content disappear; a multi-member literal like
+          // `(cold, boiling)` fails to parse at all. Without the
+          // latter (found in review), re-saving an unchanged
+          // condition that calls a function-knot (`double(gold) >
+          // 10`) fails validation here even though it was already
+          // saved that way.
           parsedCondition = parseExpression(
             condition,
-            buildListExpressionContext(storyGraph.variables),
+            buildListExpressionContext(storyGraph.variables, storyGraph.nodes),
           );
         } catch (err) {
           res.status(400).json({
@@ -1563,7 +1568,7 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
           // needs the fetched story_graph's own LIST context.
           parsedCondition = parseExpression(
             condition,
-            buildListExpressionContext(storyGraph.variables),
+            buildListExpressionContext(storyGraph.variables, storyGraph.nodes),
           );
         } catch (err) {
           res.status(400).json({

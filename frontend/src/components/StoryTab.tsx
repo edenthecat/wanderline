@@ -241,6 +241,7 @@ export default function StoryTab({
     metadataError,
     retryMetadata,
     nodeIdSet,
+    knownFunctionNames,
     nodeIdOptions,
     reverseEdges,
     handleChoiceTextEdit,
@@ -772,6 +773,7 @@ export default function StoryTab({
                     audioActions={audioActions}
                     audioLevels={audioLevels}
                     variables={storyGraph?.variables}
+                    knownFunctionNames={knownFunctionNames}
                     characters={characters}
                     metadataLoaded={metadataLoaded}
                     nodeIdSet={nodeIdSet}
@@ -907,6 +909,7 @@ export default function StoryTab({
                           audioActions={audioActions}
                           audioLevels={audioLevels}
                           variables={storyGraph?.variables}
+                          knownFunctionNames={knownFunctionNames}
                           characters={characters}
                           metadataLoaded={metadataLoaded}
                           nodeIdSet={nodeIdSet}
@@ -977,6 +980,7 @@ export default function StoryTab({
                               audioActions={audioActions}
                               audioLevels={audioLevels}
                               variables={storyGraph?.variables}
+                              knownFunctionNames={knownFunctionNames}
                               characters={characters}
                               metadataLoaded={metadataLoaded}
                               nodeIdSet={nodeIdSet}

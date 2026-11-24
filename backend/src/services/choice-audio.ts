@@ -32,7 +32,15 @@ const FIXED_AUDIO_TYPES = new Set(['voiceover', 'ambience', 'sfx', 'choice1', 'c
 
 /** Every audioType routes/audio.ts accepts: the five fixed slots, or
  * `choice:<id>`. One shared check so POST /assignments and bulk-
- * reassign's validation can't silently drift apart from each other. */
-export function isValidAudioType(audioType: string): boolean {
-  return FIXED_AUDIO_TYPES.has(audioType) || isChoiceAudioType(audioType);
+ * reassign's validation can't silently drift apart from each other.
+ * Takes `unknown`, not `string` — found in review: both call sites
+ * only checked the request body's `audioType` for truthiness before
+ * calling this, so a non-string value (`1`, `{}`) reached
+ * `.startsWith` below and THREW, turning a malformed request into a
+ * 500 instead of the intended 400 validation response. */
+export function isValidAudioType(audioType: unknown): audioType is string {
+  return (
+    typeof audioType === 'string' &&
+    (FIXED_AUDIO_TYPES.has(audioType) || isChoiceAudioType(audioType))
+  );
 }

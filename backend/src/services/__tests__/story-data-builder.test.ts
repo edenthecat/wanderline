@@ -173,6 +173,42 @@ describe('collectNodeAudio', () => {
       expect(audio.a.voiceover?.map((v) => v.file)).toEqual(['door.mp3', 'rain.mp3']);
     });
 
+    it('reaches the filename tiebreak for Date-object created_at values representing the SAME instant (found in review)', () => {
+      // node-pg hands back a `Date` object for a timestamptz column,
+      // not a string — two DISTINCT Date instances for the exact
+      // same timestamp are `!==` by reference even though they're
+      // equal in value, which used to skip the filename tiebreak
+      // entirely and let database row order decide the winner.
+      const sameInstant1 = new Date('2026-01-05T00:00:00.000Z');
+      const sameInstant2 = new Date('2026-01-05T00:00:00.000Z');
+      // Deliberately fed in the OPPOSITE of filename order ('rain.mp3'
+      // before 'door.mp3') — a buggy comparator that never reaches
+      // the tiebreak at all just preserves this input order, which
+      // would make this assertion pass for the WRONG reason if the
+      // row order happened to already be sorted. It isn't here.
+      const audio = collectNodeAudio(
+        [
+          {
+            node_id: 'a',
+            audio_type: 'voiceover',
+            audio_file_id: 'f2',
+            condition: { variable: 'mood', operator: '==', value: 'sad' },
+            created_at: sameInstant1 as unknown as string,
+          },
+          {
+            node_id: 'a',
+            audio_type: 'voiceover',
+            audio_file_id: 'f3',
+            condition: { variable: 'mood', operator: '==', value: 'angry' },
+            created_at: sameInstant2 as unknown as string,
+          },
+        ],
+        fileMap,
+      );
+      // Tiebreak is by filename: 'door.mp3' < 'rain.mp3'.
+      expect(audio.a.voiceover?.map((v) => v.file)).toEqual(['door.mp3', 'rain.mp3']);
+    });
+
     it('leaves out a conditioned candidate whose file no longer resolves, same as the default case', () => {
       const audio = collectNodeAudio(
         [

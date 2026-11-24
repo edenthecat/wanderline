@@ -92,11 +92,14 @@ export interface AssignmentRow {
  * while folding rows — stripped before the final result is returned
  * (the player has no use for it; it only exists to make ordering
  * deterministic across builds). */
+// `string | Date`, not just `string` — node-pg's default column
+// parsing hands back a `Date` object for a `timestamptz` column, not
+// the string this field's old type claimed (found in review).
 interface PendingVariant extends AudioVariant {
-  created_at: string;
+  created_at: string | Date;
 }
 interface PendingSfx extends StoryDataSfx {
-  created_at: string;
+  created_at: string | Date;
 }
 
 /** Conditioned candidates first (in created_at order), then the one
@@ -110,11 +113,26 @@ function compareSingleSlotVariants(a: PendingVariant, b: PendingVariant): number
   const rankA = a.condition ? 0 : 1;
   const rankB = b.condition ? 0 : 1;
   if (rankA !== rankB) return rankA - rankB;
-  if (a.created_at !== b.created_at) return a.created_at < b.created_at ? -1 : 1;
+  // `created_at` is typed as `string` above, but the query actually
+  // supplies a `Date` object (node-pg's default column parsing) —
+  // found in review: comparing two DISTINCT Date instances for the
+  // SAME timestamp with `!==` is always true (reference inequality,
+  // not value), so equal-time rows never reached the filename
+  // tiebreak below at all; worse, `<` on them then returned 1 in
+  // BOTH directions for a genuine tie, making sort order depend on
+  // whatever order Postgres happened to return the rows in. Compare
+  // the actual timestamp VALUE — `new Date(...).getTime()` works
+  // whether the value is already a Date or (for a row from a path
+  // that parses it as a string) still a string.
+  const timeA = new Date(a.created_at).getTime();
+  const timeB = new Date(b.created_at).getTime();
+  if (timeA !== timeB) return timeA < timeB ? -1 : 1;
   return a.file < b.file ? -1 : a.file > b.file ? 1 : 0;
 }
 
-function stripCreatedAt<T extends { created_at?: string }>(variant: T): Omit<T, 'created_at'> {
+function stripCreatedAt<T extends { created_at?: string | Date }>(
+  variant: T,
+): Omit<T, 'created_at'> {
   const { created_at: _createdAt, ...rest } = variant;
   return rest;
 }

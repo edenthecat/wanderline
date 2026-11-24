@@ -455,11 +455,15 @@ describe('choice audio and auto-advance', () => {
     expect(screen.queryByText('The middle.')).toBeNull();
   });
 
-  // Regression: a choice with a stable id (DEV-199 stable-id rollout)
-  // must be addressed by that id, not by its position in the array —
-  // otherwise a cue recorded for one choice would play for whichever
-  // choice currently sits first/second after a reorder.
-  it('resolves a choice’s cue by its own id, ignoring a stale choice1/choice2 entry', async () => {
+  // Regression: a choice's own id-addressed cue (DEV-199 stable-id
+  // rollout) is the FALLBACK when its ordinal (choice1/choice2) slot
+  // is empty — additive, not a replacement for the ordinal slots. The
+  // exact id-vs-position precedence (including the both-assigned
+  // case, where ordinal wins) is covered more precisely by
+  // choice-cue-variants.test.ts; this app-level test just confirms
+  // the id-addressed cue actually gets picked up end-to-end when it's
+  // the only cue a choice has.
+  it('resolves a choice’s cue by its own id when it has no ordinal (choice1/choice2) cue', async () => {
     (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = makeStory({
       settings: { autoAdvance: true },
       nodes: {
@@ -472,8 +476,6 @@ describe('choice audio and auto-advance', () => {
           tags: [],
           audio: {
             voiceover: [{ file: 'start.mp3' }],
-            // Stale/wrong — belongs to a position, not this choice.
-            choice1: [{ file: 'wrong-cue.mp3' }],
             choices: { 'choice-on': [{ file: 'right-cue.mp3' }] },
           },
         },
@@ -492,12 +494,6 @@ describe('choice audio and auto-advance', () => {
     const vo = voiceoverFor('start.mp3')!;
     await waitFor(() => expect(vo).toBeDefined());
     vo.onended?.();
-    // The cue addressed by the choice's own id gets constructed and
-    // played — the exact id-vs-position precedence is covered more
-    // precisely by choice-cue-variants.test.ts (this app-level test
-    // can't distinguish "resolved correctly" from "resolved wrong but
-    // the preload cache happened to already hold the right file under
-    // the same key", since both land on the same cached element).
     await waitFor(() =>
       expect(audioInstances.some((a) => a.src.includes('right-cue.mp3'))).toBe(true),
     );

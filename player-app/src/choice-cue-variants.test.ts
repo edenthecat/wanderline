@@ -2,24 +2,32 @@ import { describe, expect, it } from 'vitest';
 import { choiceCueVariants } from './App';
 
 // A choice's own audio cue, addressed by the choice's stable id
-// (DEV-199 stable-id rollout) — takes priority over the ordinal
-// choice1/choice2 fields when it has one. Falls back to the ordinal
-// field when there's nothing under the id, because ids are minted
-// fresh by randomUUID() on every parse — NOT stable across a full
-// source re-upload — so an author's pre-existing choice1/choice2 cue
-// must keep working after their next re-upload gives this choice a
-// (new) id, even though that trades away perfect reorder-safety for
-// the narrower in-between window before the choice gets its own
-// id-addressed cue.
+// (DEV-199 stable-id rollout) is additive, not a replacement — the
+// ordinal choice1/choice2 fields win when assigned (found in review:
+// this used to have the precedence backwards, contradicting the PR's
+// own stated contract that id-based audio must not change behavior
+// for any existing 2-choice story). Id-addressed audio is only the
+// FALLBACK, used when the ordinal slot is empty — both because that's
+// the advertised contract, and because an id is minted fresh by
+// randomUUID() on every parse (NOT stable across a full source
+// re-upload), so an author's pre-existing choice1/choice2 cue must
+// keep working after their next re-upload gives this choice a (new)
+// id with nothing attached to it yet.
 
 describe('choiceCueVariants', () => {
-  it('resolves by the choice’s own id when present, over the ordinal field', () => {
+  it('resolves by the ordinal field when BOTH it and the choice’s own id have a cue assigned', () => {
     const choice = { text: 'Go', target: 'next', id: 'choice-on' };
     const audio = {
-      choice1: [{ file: 'old-cue.mp3' }],
-      choices: { 'choice-on': [{ file: 'right-cue.mp3' }] },
+      choice1: [{ file: 'ordinal-cue.mp3' }],
+      choices: { 'choice-on': [{ file: 'id-cue.mp3' }] },
     };
-    expect(choiceCueVariants(choice, audio, 0)).toEqual([{ file: 'right-cue.mp3' }]);
+    expect(choiceCueVariants(choice, audio, 0)).toEqual([{ file: 'ordinal-cue.mp3' }]);
+  });
+
+  it('falls back to the id-addressed cue when the ordinal field is empty', () => {
+    const choice = { text: 'Go', target: 'next', id: 'choice-on' };
+    const audio = { choices: { 'choice-on': [{ file: 'id-cue.mp3' }] } };
+    expect(choiceCueVariants(choice, audio, 0)).toEqual([{ file: 'id-cue.mp3' }]);
   });
 
   it('falls back to the ordinal field when the choice has no id', () => {

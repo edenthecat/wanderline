@@ -122,6 +122,55 @@ describe('NodeDetail — choice condition', () => {
       expect(onChoiceConditionEdit).toHaveBeenCalledWith(0, null);
     });
   });
+
+  it('closes an open draft on the choice that moved away, rather than leaking it onto whichever choice now sits in that array slot (found in review)', async () => {
+    const onChoiceConditionEdit = vi.fn().mockResolvedValue(undefined);
+    const makeNode = (choices: { text: string; target: string; id: string }[]) => ({
+      content: [],
+      choices,
+      divert: null,
+      tags: [],
+    });
+    const { rerender } = render(
+      <NodeDetail
+        {...props({
+          node: makeNode([
+            { text: 'Go left', target: 'left', id: 'choice-a' },
+            { text: 'Go right', target: 'right', id: 'choice-b' },
+          ]),
+          onChoiceConditionEdit,
+        })}
+      />,
+    );
+
+    // Open choice A's (index 0) editor and start a draft, without saving.
+    fireEvent.click(screen.getAllByText('+ Condition')[0]);
+    fireEvent.change(screen.getByLabelText('Choice 1 condition on her'), {
+      target: { value: 'gold > 10' },
+    });
+
+    // Swap: B now sits at index 0, A at index 1 — same shape onSwapChoices produces.
+    rerender(
+      <NodeDetail
+        {...props({
+          node: makeNode([
+            { text: 'Go right', target: 'right', id: 'choice-b' },
+            { text: 'Go left', target: 'left', id: 'choice-a' },
+          ]),
+          onChoiceConditionEdit,
+        })}
+      />,
+    );
+
+    // B (now at index 0, "Choice 1") must show its OWN unopened
+    // affordance, not A's stale open draft input that used to live
+    // at this array slot.
+    expect(screen.queryByLabelText('Choice 1 condition on her')).toBeNull();
+    // A's own draft correctly follows A to its new position (index 1,
+    // "Choice 2") instead — confirming the draft wasn't just
+    // discarded, but correctly re-associated with the right choice.
+    expect(screen.getByLabelText('Choice 2 condition on her')).toHaveValue('gold > 10');
+  });
 });
 
 describe('NodeDetail — text block condition', () => {

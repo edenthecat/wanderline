@@ -46,6 +46,7 @@ interface SerializableNode {
   content: ContentBlock[];
   choices: Choice[];
   audio?: StoryNode['audio'];
+  params?: StoryNode['params'];
 }
 
 /**
@@ -73,6 +74,14 @@ function buildContentItem(item: ContentBlock): Y.Map<unknown> {
   writeOptionalId(m, item.id);
   if (item.kind === 'assignment') {
     m.set('statement', JSON.stringify(item.statement));
+    // DEV-199 follow-up (found in review): a SugarCube/Chapbook
+    // assignment nested inside a conditional block carries this —
+    // dropping it on write turned a conditional assignment
+    // unconditional the first time a collaborative edit ran through
+    // CollabShadowSaver (which reads the Y.Doc back via readNode).
+    if (item.condition) {
+      m.set('condition', JSON.stringify(item.condition));
+    }
     return m;
   }
   const yText = new Y.Text();
@@ -129,6 +138,17 @@ export function seedYDocFromStoryGraph(doc: Y.Doc, storyGraph: StoryGraph): void
       const choices = new Y.Array<Y.Map<unknown>>();
       choices.push((n.choices ?? []).map(buildChoiceItem));
       nodeMap.set('choices', choices);
+      // Function-knot parameter names (DEV-199 Phase 10b) — found in
+      // review: omitting this meant a collaborative text edit on a
+      // function-knot's own passage caused CollabShadowSaver to
+      // overwrite the stored node with NO params, failing every
+      // existing call's arity check and emitting an empty param list
+      // on Ink export.
+      if (n.params) {
+        const params = new Y.Array<string>();
+        params.push(n.params);
+        nodeMap.set('params', params);
+      }
       if (n.audio) {
         // Audio assignments are id-references; last-writer-wins on
         // the same slot is fine, so a plain Y.Map of scalars works.
@@ -167,7 +187,13 @@ function readContentItem(m: Y.Map<unknown>): ContentBlock {
     if (!statement) {
       throw new Error("Yjs content item has kind='assignment' but no parseable statement");
     }
-    return { ...idField, kind: 'assignment', statement };
+    const assignmentCondition = readJsonField<Expression>(m, 'condition');
+    return {
+      ...idField,
+      kind: 'assignment',
+      statement,
+      ...(assignmentCondition !== undefined ? { condition: assignmentCondition } : {}),
+    };
   }
   const text = m.get('text');
   const textStr = text instanceof Y.Text ? text.toString() : String(text ?? '');
@@ -210,6 +236,9 @@ function readNode(id: string, m: Y.Map<unknown>): StoryNode {
       readChoiceItem,
     ),
   };
+  if (m.has('params')) {
+    node.params = readArrayOfStrings(m.get('params') as Y.Array<string> | undefined);
+  }
   if (m.has('audio')) {
     const audioMap = m.get('audio') as Y.Map<unknown>;
     const audio: Record<string, unknown> = {};

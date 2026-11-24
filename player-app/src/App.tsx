@@ -609,20 +609,23 @@ export function choiceCueVariants(
   position: 0 | 1,
 ): AudioVariant[] {
   if (!choice) return [];
+  // Ordinal (choice1/choice2) wins when assigned; id-addressed audio
+  // is the FALLBACK, only used when the ordinal slot is empty (found
+  // in review — this had the precedence backwards, contradicting the
+  // PR's own stated contract: id-based audio is additive, not a
+  // replacement, and must not change behavior for any existing
+  // 2-choice story that already has a choice1/choice2 cue assigned).
   // A choice's id is minted fresh by randomUUID() on every parse —
   // NOT stable across a full source re-upload, only across in-place
-  // edits (REST patches, collab) to an already-loaded graph. An
-  // author's existing choice1/choice2 cue, attached before this
-  // choice ever had an id (or before its most recent re-upload),
-  // would otherwise silently stop playing the moment that source is
-  // next re-parsed — a guaranteed regression for every pre-existing
-  // cue, traded for only an occasional, narrower risk: the ordinal
-  // slot holding a DIFFERENT choice's stale audio after a reorder,
-  // and only until this choice gets its own id-addressed cue. That
-  // trade is the right one.
+  // edits (REST patches, collab) to an already-loaded graph — which
+  // is exactly why an author's EXISTING choice1/choice2 cue must keep
+  // winning: falling through to an empty/stale id-addressed cue after
+  // a re-upload would otherwise silently drop audio that was already
+  // working.
+  const ordinal = (position === 0 ? audio?.choice1 : audio?.choice2) ?? [];
+  if (ordinal.length > 0) return ordinal;
   const byId = choice.id ? audio?.choices?.[choice.id] : undefined;
-  if (byId && byId.length > 0) return byId;
-  return (position === 0 ? audio?.choice1 : audio?.choice2) ?? [];
+  return byId && byId.length > 0 ? byId : [];
 }
 
 /**

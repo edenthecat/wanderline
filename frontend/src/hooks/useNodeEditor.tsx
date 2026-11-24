@@ -139,6 +139,10 @@ export interface UseNodeEditorResult {
   retryMetadata: () => void;
   /** Set of every node id that exists in the current storyGraph. */
   nodeIdSet: Set<string>;
+  /** Every function-knot name declared anywhere in the story
+   * (DEV-199 Phase 10b) — feed into NodeDetail's `knownFunctionNames`
+   * prop. */
+  knownFunctionNames: ReadonlySet<string>;
   /** Pre-rendered <option> nodes for choice/divert target dropdowns
    * (includes END + DONE). Stable per-storyGraph. */
   nodeIdOptions: ReactNode;
@@ -448,6 +452,19 @@ export function useNodeEditor({
   // ── Derived: ids + select options for dropdowns ──────────────────
   const allNodeIds = useMemo(() => (storyGraph ? Object.keys(storyGraph.nodes) : []), [storyGraph]);
   const nodeIdSet = useMemo(() => new Set(allNodeIds), [allNodeIds]);
+  // Every function-knot name (DEV-199 Phase 10b), for threading into
+  // the condition editors' parse context (found in review — without
+  // this, a working imported condition that calls a function
+  // couldn't be re-saved even unchanged, since re-parsing it rejected
+  // the call as an undeclared function).
+  const knownFunctionNames = useMemo(() => {
+    const names = new Set<string>();
+    if (!storyGraph) return names;
+    for (const node of Object.values(storyGraph.nodes)) {
+      if (node.tags?.includes('internal:function')) names.add(node.id);
+    }
+    return names;
+  }, [storyGraph]);
   const reverseEdges = useMemo<Map<string, string[]>>(() => {
     const map = new Map<string, string[]>();
     if (!storyGraph) return map;
@@ -689,6 +706,7 @@ export function useNodeEditor({
     metadataError,
     retryMetadata,
     nodeIdSet,
+    knownFunctionNames,
     nodeIdOptions,
     reverseEdges,
     handleChoiceTextEdit,
