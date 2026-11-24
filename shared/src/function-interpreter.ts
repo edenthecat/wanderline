@@ -85,6 +85,24 @@ export interface FunctionCallerOptions {
  */
 export function createFunctionCaller(options: FunctionCallerOptions): CallFunctionHandler {
   let depth = 0;
+  // The TRUE global store, captured fresh at the top of every TOP-
+  // LEVEL call (depth 0) — the only point at which the incoming
+  // `variables` argument is guaranteed to be actual globals, not an
+  // enclosing call's own LOCAL scope. `evaluateNode`'s `case 'call'`
+  // passes `box.vars` as `variables` on every call, nested or not —
+  // for a call made from INSIDE a function body, `box.vars` there is
+  // that function's `local` (globals plus its own bound parameters),
+  // not the story's real globals. Ink has no closures: a nested call
+  // must only ever see true globals, never an enclosing call's
+  // parameters (found in review — with global `x = 100`, `outer(x)`
+  // returning `readGlobal()`, and `readGlobal()` returning bare `x`,
+  // `outer(1)` was returning 1, outer's OWN bound parameter, instead
+  // of 100, the real global of the same name). Every call, at any
+  // depth, builds its own local scope from this snapshot — updated as
+  // each call's global-level effects are merged back below — rather
+  // than from whatever `variables` this particular invocation happens
+  // to receive.
+  let globals: Record<string, VariableValue> | null = null;
 
   const caller: CallFunctionHandler = (name, args, variables) => {
     const fn = options.getFunction(name);
@@ -102,15 +120,27 @@ export function createFunctionCaller(options: FunctionCallerOptions): CallFuncti
         `Function call depth exceeded ${MAX_FUNCTION_CALL_DEPTH} (likely unbounded recursion calling '${name}')`,
       );
     }
+    if (depth === 0) {
+      globals = Object.assign(Object.create(null), variables);
+    }
+    const trueGlobals = globals as Record<string, VariableValue>;
 
     depth++;
     try {
-      // Local scope: a copy of the caller's variables, with each
-      // parameter bound positionally. A parameter whose name shadows
-      // an existing global is intentional — Ink scopes parameters
-      // lexically to the call, see this module's header re: `ref` —
-      // and is undone below before merging back out.
-      let local: Record<string, VariableValue> = { ...variables };
+      // Local scope: a copy of the TRUE globals (not the possibly
+      // locals-contaminated incoming `variables` — see above), with
+      // each parameter bound positionally. A parameter whose name
+      // shadows an existing global is intentional — Ink scopes
+      // parameters lexically to the call, see this module's header
+      // re: `ref` — and is undone below before merging back out.
+      // Object.assign(Object.create(null), ...) rather than a `{...}`
+      // spread: a plain `{}` reintroduces Object.prototype, so a
+      // legal parameter literally named `__proto__` would bind
+      // through the inherited setter instead of becoming an own
+      // property — a function returning that parameter would then
+      // return Object.prototype itself, not its argument (found in
+      // review).
+      let local: Record<string, VariableValue> = Object.assign(Object.create(null), trueGlobals);
       params.forEach((paramName, i) => {
         local[paramName] = args[i];
       });
@@ -143,16 +173,24 @@ export function createFunctionCaller(options: FunctionCallerOptions): CallFuncti
         local = execute(block.statement, local, caller);
       }
 
-      // Merge the local scope back into the CALLER's variables,
-      // excluding this call's own parameter names — a parameter is
-      // local to the call (no `ref`, see header), so even though it
-      // started as a copy of the outer store, it must not leak back
-      // out and clobber (or fabricate) a same-named outer variable.
+      // This call's global-level effects: `local` minus its own
+      // parameter names — a parameter is local to the call (no
+      // `ref`, see header), so it must not leak out and clobber (or
+      // fabricate) a same-named global. Becomes the new snapshot
+      // every OTHER call (sibling or enclosing) sees from here on.
       const paramNames = new Set(params);
-      const mergedVariables: Record<string, VariableValue> = { ...variables };
+      const globalEffects: Record<string, VariableValue> = Object.create(null);
       for (const [key, value] of Object.entries(local)) {
-        if (!paramNames.has(key)) mergedVariables[key] = value;
+        if (!paramNames.has(key)) globalEffects[key] = value;
       }
+      globals = globalEffects;
+
+      // The value THIS call hands back to whatever called it: the
+      // global effects layered onto the CALLER's own incoming view
+      // (preserving whatever the caller's own currently-bound
+      // parameters/locals already were — losing those would break
+      // the caller's own subsequent evaluation, not just globals).
+      const mergedVariables = Object.assign(Object.create(null), variables, globalEffects);
 
       // No `return` statement ran: the call is being used for its
       // value despite being written purely for side effects. Rather
@@ -164,6 +202,7 @@ export function createFunctionCaller(options: FunctionCallerOptions): CallFuncti
       return { value: returnValue ?? '', variables: mergedVariables };
     } finally {
       depth--;
+      if (depth === 0) globals = null;
     }
   };
 

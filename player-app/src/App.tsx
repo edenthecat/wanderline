@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useOfflineSupport } from './useOfflineSupport';
 import { useMediaControls } from './useMediaControls';
-import { conditionAllows, nodeText } from './node-text';
+import { conditionAllows, resolveNodeEntry } from './node-text';
 import { useAudioCache } from './useAudioCache';
 import { orderAudioUrlsForDownload } from './audio-download-order';
 import { useAmbience } from './useAmbience';
@@ -34,11 +34,11 @@ import {
   isTextBlock,
   evaluate,
   evaluateSimpleCondition,
-  execute,
   createFunctionCaller,
   type CallFunctionHandler,
   type ContentBlock,
   type Expression,
+  type TextBlock,
   type VariableDeclaration,
   type VariableValue,
 } from '@wanderline/shared';
@@ -449,45 +449,47 @@ export function initialVariableValues(
  * outer-scope/global variable DOES persist here, since `execute`
  * already returns the full resulting store (see
  * expression-evaluator.ts's `execute`/`evaluateWithEffects`).
+ *
+ * Thin wrapper over `resolveNodeEntry` (node-text.ts), which also
+ * resolves this same node's visible text blocks in the SAME pass —
+ * callers that need both (any real node-entry point, see
+ * `navigateToNode`) should call `resolveNodeEntry` directly rather
+ * than pay for two separate passes over `node.content`; this export
+ * stays for callers that only ever cared about the resulting store
+ * (`freshStartVariables` below, and this file's own tests).
  */
 export function applyNodeAssignments(
   node: { content: ContentBlock[] } | undefined,
   variables: Record<string, VariableValue>,
   callFunction?: CallFunctionHandler,
 ): Record<string, VariableValue> {
-  if (!node) return variables;
-  let next = variables;
-  for (const item of node.content) {
-    if (item.kind !== 'assignment') continue;
-    // `condition` (DEV-199 follow-up) only arises from a Twine-
-    // dialect `<<set>>`/vars-section assignment nested inside a
-    // conditional block — Ink's own `~` has no such wrapping, so this
-    // is always undefined for Ink-authored content. Same
-    // tolerant-degradation treatment conditionAllows gives a failed
-    // evaluation: not gated is not the same as gated-and-false.
-    if (!conditionAllows(item.condition, next, callFunction)) continue;
-    try {
-      next = execute(item.statement, next, callFunction);
-    } catch (err) {
-      // Skip this statement; keep applying the rest of the node's.
-      // Logged (unlike the pre-function-knots version of this catch)
-      // because a function-call error here — undeclared function,
-      // depth exceeded, bad arity, an undefined variable inside the
-      // function body — is otherwise indistinguishable from an
-      // intentionally-gated no-op, with no signal at all that a
-      // statement silently failed to apply.
-      console.warn('[wanderline] assignment failed to apply', { statement: item.statement, err });
-    }
-  }
-  return next;
+  return resolveNodeEntry(node, variables, callFunction).variables;
 }
 
 /**
- * The variable store for a brand-new playthrough: declared defaults,
- * then the start node's own assignments — the start node is never
- * "entered" through navigateToNode (it's set directly, both on first
- * load and on restart), so nothing else ever applies them.
+ * The start node's resolved entry — declared defaults, then the start
+ * node's own assignments and text-block visibility, both resolved in
+ * document order. The start node is never "entered" through
+ * navigateToNode (it's set directly, both on first load and on
+ * restart), so nothing else ever runs this for it.
  */
+export function freshStartEntry(
+  story: {
+    variables?: VariableDeclaration[];
+    startNode: string;
+    nodes: Record<string, { content: ContentBlock[] }>;
+  },
+  callFunction?: CallFunctionHandler,
+): { variables: Record<string, VariableValue>; visibleBlocks: TextBlock[] } {
+  return resolveNodeEntry(
+    story.nodes[story.startNode],
+    initialVariableValues(story.variables, callFunction),
+    callFunction,
+  );
+}
+
+/** Thin wrapper over `freshStartEntry` for callers that only need the
+ * resulting variable store, not the resolved visible text blocks. */
 export function freshStartVariables(
   story: {
     variables?: VariableDeclaration[];
@@ -496,11 +498,7 @@ export function freshStartVariables(
   },
   callFunction?: CallFunctionHandler,
 ): Record<string, VariableValue> {
-  return applyNodeAssignments(
-    story.nodes[story.startNode],
-    initialVariableValues(story.variables, callFunction),
-    callFunction,
-  );
+  return freshStartEntry(story, callFunction).variables;
 }
 
 /**
@@ -671,6 +669,21 @@ export default function App() {
   // listener moves forward. goBack intentionally leaves this alone —
   // see goBack's own comment.
   const [variables, setVariables] = useState<Record<string, VariableValue>>({});
+  // The current node's text blocks resolved in document order against
+  // this SAME entry (DEV-199 follow-up, found in review) — set
+  // alongside `variables` by every real node-entry point
+  // (navigateToNode, restart, the fresh-start load branch) via
+  // `resolveNodeEntry`. `null` means no fresh entry happened (resuming
+  // an autosave, loading a save slot, or going back — none of these
+  // have a genuine "entering" variable snapshot to replay from, same
+  // documented limitation `applyNodeAssignments` already has for
+  // those paths), and every reader of this falls back to filtering
+  // `currentNode.content` against the current `variables` directly —
+  // the best available approximation for those specific paths, same
+  // as before this fix.
+  const [currentNodeVisibleBlocks, setCurrentNodeVisibleBlocks] = useState<TextBlock[] | null>(
+    null,
+  );
   const [selectedChoice, setSelectedChoice] = useState(0);
   const [playerState, setPlayerState] = useState<PlayerState>('loading');
   const [audioProgress, setAudioProgress] = useState(0);
@@ -905,9 +918,21 @@ export default function App() {
             autosave.variables ??
               initialVariableValues(data.variables, storyFunctionCaller(data.nodes)),
           );
+          // No fresh node-entry happened here (see above) — no
+          // correctly-timed visible-block resolution exists to restore
+          // either, same documented gap. `null` makes every reader
+          // fall back to filtering against this restored snapshot
+          // directly, the same approximation this path already used
+          // before resolveNodeEntry existed.
+          setCurrentNodeVisibleBlocks(null);
         } else {
           setCurrentNodeId(data.startNode);
-          setVariables(freshStartVariables(data, storyFunctionCaller(data.nodes)));
+          const { variables: startVariables, visibleBlocks } = freshStartEntry(
+            data,
+            storyFunctionCaller(data.nodes),
+          );
+          setVariables(startVariables);
+          setCurrentNodeVisibleBlocks(visibleBlocks);
         }
 
         // Volume resolution order: per-device localStorage override
@@ -1301,6 +1326,38 @@ export default function App() {
     [currentNode, variables, callFunction],
   );
 
+  // The current node's visible text blocks — `currentNodeVisibleBlocks`
+  // when a real node-entry resolved them (see its own doc comment),
+  // otherwise the best available fallback for resume/loadSlot/goBack.
+  // Single source of truth for the on-screen render, the
+  // screen-reader announcement (`passageText`), readingFloorMs, and
+  // the lock-screen/Now Playing title (via useMediaControls) — DEV-199
+  // follow-up, found in review: these four used to each independently
+  // re-derive "visible text" from `currentNode.content` + the FINAL
+  // `variables`, which is the same mistimed-relative-to-assignments
+  // bug `resolveNodeEntry` exists to fix, four times over.
+  const visibleTextBlocks = useMemo<TextBlock[]>(() => {
+    if (!currentNode) return [];
+    if (currentNodeVisibleBlocks) return currentNodeVisibleBlocks;
+    return currentNode.content
+      .filter(isTextBlock)
+      .filter((c) => conditionAllows(c.condition, variables, callFunction));
+  }, [currentNode, currentNodeVisibleBlocks, variables, callFunction]);
+
+  // The passage as text, for the screen-reader-only announcement
+  // further down and for the lock-screen/Now Playing title.
+  const passageText = useMemo(() => {
+    if (!currentNode) return '';
+    const transcript = currentNode.metadata?.transcript?.trim();
+    return (
+      transcript ||
+      visibleTextBlocks
+        .map((b) => b.text)
+        .join(' ')
+        .trim()
+    );
+  }, [currentNode, visibleTextBlocks]);
+
   // Which voiceover candidate (if any) actually resolves against live
   // variable state — used by render to decide whether to show the
   // play button/progress bar at all. A node whose only candidates are
@@ -1482,8 +1539,17 @@ export default function App() {
       // 2) — computed here, not via a setVariables updater, so the
       // exact resulting snapshot can be saved alongside nodeId/history
       // in the same call rather than racing a second render.
-      const nextVariables = applyNodeAssignments(story.nodes[nodeId], variables, callFunction);
+      // resolveNodeEntry (not plain applyNodeAssignments) so this
+      // node's text visibility is resolved against the RUNNING store
+      // as each block is reached, not the final one — see
+      // currentNodeVisibleBlocks' own doc comment.
+      const { variables: nextVariables, visibleBlocks } = resolveNodeEntry(
+        story.nodes[nodeId],
+        variables,
+        callFunction,
+      );
       setVariables(nextVariables);
+      setCurrentNodeVisibleBlocks(visibleBlocks);
       saveProgress(nodeId, newHistory, nextVariables);
       // Store nodeId for autoplay - the effect will pick this up
       if (autoplay) {
@@ -1552,6 +1618,10 @@ export default function App() {
     stopPassagePlayback();
     setHistory((h) => h.slice(0, -1));
     setCurrentNodeId(prev);
+    // goBack doesn't change `variables` either (see its own state
+    // comment) — no fresh entry into `prev` happens, so there's no
+    // correctly-timed visible-block resolution to go with it.
+    setCurrentNodeVisibleBlocks(null);
     setSelectedChoice(0);
     resetProgress();
     // Stepping back out of the ending returns to a story in progress;
@@ -2302,7 +2372,7 @@ export default function App() {
     // read it) → post-audio hold → onward.
     const holdMs = Math.max(
       currentNode.metadata?.autoAdvanceDelayMs ?? 2000,
-      readingFloorMs(nodeText(currentNode, variables, callFunction)),
+      readingFloorMs(passageText),
     );
     const totalDelay =
       (currentNode.metadata?.delayBeforeMs ?? 0) +
@@ -2332,6 +2402,7 @@ export default function App() {
     passageEntry,
     variables,
     callFunction,
+    passageText,
   ]);
 
   // Debounce showing connection issues to avoid flashing for quick retries
@@ -2374,7 +2445,9 @@ export default function App() {
       setSaveSlots([]);
       setCurrentNodeId(story.startNode);
       setHistory([]);
-      setVariables(freshStartVariables(story, callFunction));
+      const restartEntry = freshStartEntry(story, callFunction);
+      setVariables(restartEntry.variables);
+      setCurrentNodeVisibleBlocks(restartEntry.visibleBlocks);
       // DEV-199 Phase 4: a stale index from wherever the listener was
       // before could point past the start node's visible-choice count
       // (which now varies with runtime state, not just the story's
@@ -2418,6 +2491,10 @@ export default function App() {
       // the load effect: the snapshot already reflects this node's
       // own assignments having run once, when it was first saved.
       setVariables(slot.variables ?? initialVariableValues(story.variables, callFunction));
+      // Same reasoning as the autosave-resume path: no fresh entry
+      // happened, so there's no correctly-timed visible-block
+      // resolution to restore either.
+      setCurrentNodeVisibleBlocks(null);
       // DEV-199 Phase 4: see restart()'s identical comment — a stale
       // index could point past the loaded node's visible-choice count.
       setSelectedChoice(0);
@@ -2710,7 +2787,9 @@ export default function App() {
             setHistory([]);
             setSelectedChoice(0);
             setCurrentNodeId(story.startNode);
-            setVariables(freshStartVariables(story, callFunction));
+            const restartEntry = freshStartEntry(story, callFunction);
+            setVariables(restartEntry.variables);
+            setCurrentNodeVisibleBlocks(restartEntry.visibleBlocks);
           }
           break;
         case 'Escape':
@@ -2760,8 +2839,7 @@ export default function App() {
   useMediaControls({
     story,
     currentNode,
-    variables,
-    callFunction,
+    displayText: passageText,
     showInstructions,
     isAuthenticated,
     playerState,
@@ -2775,15 +2853,10 @@ export default function App() {
       onHeadphoneButtonPressRef: handleHeadphoneButtonPressRef,
     },
     currentNodeRef,
+    visibleChoicesRef,
     selectedChoiceRef,
     setSelectedChoice,
   });
-
-  // The passage as text, for the screen-reader-only announcement below.
-  const passageText = useMemo(
-    () => (currentNode ? nodeText(currentNode, variables, callFunction) : ''),
-    [currentNode, variables, callFunction],
-  );
 
   // Screen readers announce MUTATIONS to a live region they have
   // already registered: text present the moment the region is inserted
@@ -3577,19 +3650,16 @@ export default function App() {
               {currentNode.metadata?.transcript?.trim() ? (
                 <p style={styles.text}>{currentNode.metadata.transcript}</p>
               ) : (
-                // Assignment blocks (DEV-199 Phase 1) have no text of
-                // their own, and a text block's condition (Phase 3)
-                // may not hold against the current variable store —
-                // both filtered out here the same way nodeText() does
-                // for the spoken/SR-only variant.
-                currentNode.content
-                  .filter(isTextBlock)
-                  .filter((c) => conditionAllows(c.condition, variables, callFunction))
-                  .map((c, i) => (
-                    <p key={i} style={styles.text}>
-                      {c.text}
-                    </p>
-                  ))
+                // `visibleTextBlocks` already resolved which blocks
+                // should show, in document order against the running
+                // variable store as of each one's own point in the
+                // passage — the same resolved list the SR-only variant
+                // (`passageText`) and readingFloorMs use.
+                visibleTextBlocks.map((c, i) => (
+                  <p key={i} style={styles.text}>
+                    {c.text}
+                  </p>
+                ))
               )}
             </article>
           )}

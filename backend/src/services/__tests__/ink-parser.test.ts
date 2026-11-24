@@ -1707,62 +1707,47 @@ No association with any real narrative.
       ).toBe(true);
     });
 
-    it('treats __proto__ as an ordinary variable name without corrupting Object.prototype', () => {
+    it('rejects __proto__/constructor/prototype as a VAR name with a warning (found in review: remote property injection)', () => {
       // `\w+` matches `__proto__` just fine, so an uploaded Ink file
-      // can legally declare `VAR __proto__ = 5`. On a plain `{}`,
-      // writing that key invokes Object.prototype's `__proto__`
-      // setter instead of creating an own property (CodeQL flagged
-      // this class of bug as "remote property injection").
-      const source = '== start ==\nVAR __proto__ = 5\nVAR x = __proto__\nHi.\n';
-      const result = parseInk(source, 'test-id');
-      expect(result.variables).toEqual([
-        {
-          name: '__proto__',
-          type: 'number',
-          isConst: false,
-          initialValue: { kind: 'literal', value: 5 },
-        },
-        {
-          name: 'x',
-          type: 'number',
-          isConst: false,
-          initialValue: { kind: 'variable', name: '__proto__' },
-        },
-      ]);
+      // could otherwise legally declare `VAR __proto__ = 5`. The
+      // null-prototype `state.variableValues` this writes into
+      // already makes that write harmless at runtime, but CodeQL's
+      // interprocedural analysis can't trace that allocation through
+      // this function's `state: ParserState` parameter, so it still
+      // flags the write as "remote property injection" — rejecting
+      // the name outright up front resolves that locally, and a
+      // story variable named one of these would be confusing anyway.
+      for (const name of ['__proto__', 'constructor', 'prototype']) {
+        const result = parseInk(`== start ==\nVAR ${name} = 5\nHi.\n`, 'test-id');
+        expect(result.variables).toBeUndefined();
+        expect(
+          result.validation.warnings.some((w) =>
+            w.message.includes("can't be used as a variable name"),
+          ),
+        ).toBe(true);
+      }
       expect(Object.prototype).not.toHaveProperty('x');
     });
 
-    it('treats a LIST named __proto__ as an ordinary LIST without corrupting Object.prototype', () => {
-      const source = '== start ==\nLIST __proto__ = cold, boiling\n~ x = boiling\nHi.\n';
-      const result = parseInk(source, 'test-id');
-      expect(result.variables).toEqual([
-        {
-          name: '__proto__',
-          type: 'list',
-          isConst: false,
-          listMembers: ['cold', 'boiling'],
-          initialValue: {
-            kind: 'literal',
-            value: {
-              kind: 'list',
-              origin: '__proto__',
-              items: [],
-              allItems: [
-                { name: 'cold', ordinal: 0 },
-                { name: 'boiling', ordinal: 1 },
-              ],
-            },
-          },
-        },
-      ]);
-      const assignmentBlock = result.nodes['start'].content.find((c) => c.kind === 'assignment');
-      expect(assignmentBlock).toBeDefined();
-      if (assignmentBlock && assignmentBlock.kind === 'assignment') {
-        expect(assignmentBlock.statement.value).toMatchObject({
-          kind: 'literal',
-          value: { kind: 'list', origin: '__proto__', items: [{ name: 'boiling', ordinal: 1 }] },
-        });
-      }
+    it('rejects a LIST named __proto__, or with a __proto__ member, with a warning', () => {
+      const ownName = parseInk('== start ==\nLIST __proto__ = cold, boiling\nHi.\n', 'test-id');
+      expect(ownName.variables).toBeUndefined();
+      expect(
+        ownName.validation.warnings.some((w) =>
+          w.message.includes("can't be used as a variable name"),
+        ),
+      ).toBe(true);
+
+      const memberName = parseInk(
+        '== start ==\nLIST kettleState = cold, __proto__\nHi.\n',
+        'test-id',
+      );
+      expect(memberName.variables).toBeUndefined();
+      expect(
+        memberName.validation.warnings.some((w) =>
+          w.message.includes("can't be used as a member name"),
+        ),
+      ).toBe(true);
     });
   });
 });

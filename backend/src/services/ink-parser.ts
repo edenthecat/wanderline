@@ -208,7 +208,16 @@ export function parseInk(source: string, storyId: string, title?: string): Story
 // project upload had `==== name ===` on a knot header far into
 // the .ink source, and every reference to that knot logged as
 // missing).
-const KNOT_DECL_RE = /^={2,}\s*(function\s+)?(\w+)\s*(?:\(([^)]*)\))?\s*={0,}\s*(#.*)?$/;
+// The trailing `[=\s]*` (rather than the equivalent-looking
+// `\s*={0,}\s*`) is deliberate: two adjacent `\s*` groups straddling
+// an `={0,}` that can itself match zero characters gives the regex
+// engine countless equivalent ways to split a long run of trailing
+// whitespace with no final match, which is catastrophic-backtracking
+// territory on a crafted knot header (CodeQL-flagged ReDoS). A single
+// quantifier over one combined character class has no such ambiguity
+// and accepts the exact same decorative `=`/whitespace tails real Ink
+// headers use.
+const KNOT_DECL_RE = /^={2,}\s*(function\s+)?(\w+)\s*(?:\(([^)]*)\))?[=\s]*(#.*)?$/;
 
 function isKnotDeclaration(trimmed: string): boolean {
   return KNOT_DECL_RE.test(stripLineComment(trimmed).trimEnd());
@@ -837,9 +846,35 @@ function errorMessage(err: unknown): string {
  * is reported as a warning and the declaration is skipped, rather
  * than failing the whole parse.
  */
+// `name`/`token` below comes straight from a `\w+` regex capture on
+// uploaded Ink source, which matches `__proto__`/`constructor`/
+// `prototype` just as readily as any real identifier. The null-
+// prototype `state.variableValues`/`listMembers` objects (see
+// parseInk's own allocation comment) already make a write under any
+// of these names a perfectly ordinary own property at runtime — this
+// explicit rejection exists so static analysis can verify that
+// locally, without needing to trace the object's allocation back
+// through the `state: ParserState` parameter boundary (CodeQL flagged
+// the writes below as "remote property injection" without it), and so
+// a story genuinely named one of these doesn't produce a variable
+// whose name silently means something different anywhere this
+// codebase's OWN object literals (not every consumer uses
+// Object.create(null)) read it back.
+const RESERVED_PROPERTY_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
+
 function parseVariableDeclarationLine(match: RegExpMatchArray, state: ParserState): void {
   const [, keyword, name, rhsRaw] = match;
   const isConst = keyword === 'CONST';
+
+  if (RESERVED_PROPERTY_NAMES.has(name)) {
+    state.warnings.push({
+      type: 'syntax_error',
+      message: `${keyword} ${name}: "${name}" can't be used as a variable name`,
+      lineNumber: state.lineNumber,
+      args: { name, keyword },
+    });
+    return;
+  }
 
   // A VAR/CONST sharing a name with an already-declared LIST's member
   // would make every later bare reference to that name resolve as
@@ -916,6 +951,16 @@ function parseVariableDeclarationLine(match: RegExpMatchArray, state: ParserStat
 function parseListDeclarationLine(match: RegExpMatchArray, state: ParserState): void {
   const [, name, rhsRaw] = match;
 
+  if (RESERVED_PROPERTY_NAMES.has(name)) {
+    state.warnings.push({
+      type: 'syntax_error',
+      message: `LIST ${name}: "${name}" can't be used as a variable name`,
+      lineNumber: state.lineNumber,
+      args: { name },
+    });
+    return;
+  }
+
   // The LIST's own name must not collide with an already-declared
   // VAR/CONST, another LIST's own name (a LIST's own name is ALSO
   // registered in state.variableValues below, the same as any VAR —
@@ -969,6 +1014,15 @@ function parseListDeclarationLine(match: RegExpMatchArray, state: ParserState): 
       state.warnings.push({
         type: 'syntax_error',
         message: `LIST ${name}: "${token}" is not a valid member name`,
+        lineNumber: state.lineNumber,
+        args: { name, member: token },
+      });
+      return;
+    }
+    if (RESERVED_PROPERTY_NAMES.has(token)) {
+      state.warnings.push({
+        type: 'syntax_error',
+        message: `LIST ${name}: member "${token}" can't be used as a member name`,
         lineNumber: state.lineNumber,
         args: { name, member: token },
       });

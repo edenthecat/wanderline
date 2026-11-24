@@ -8,10 +8,12 @@
 import {
   isTextBlock,
   evaluate,
+  execute,
   truthy,
   type CallFunctionHandler,
   type ContentBlock,
   type Expression,
+  type TextBlock,
   type VariableValue,
 } from '@wanderline/shared';
 
@@ -71,4 +73,53 @@ export function nodeText(
     .map((c) => c.text)
     .join(' ')
     .trim();
+}
+
+/**
+ * Walks `node.content` ONCE, in document order, applying each
+ * assignment to a running variable store as it's encountered and
+ * deciding each text block's visibility against that RUNNING store —
+ * i.e. only the assignments that precede it in the passage, not the
+ * node's FINAL post-every-assignment store (found in review: with
+ * `seen = false`, `{!seen: First visit.}` followed later by `~ seen =
+ * true` was incorrectly hiding "First visit.", because visibility
+ * used to be checked only after every assignment in the node had
+ * already run — nodeText/conditionAllows and App.tsx's
+ * applyNodeAssignments did their work as two separate, mistimed
+ * passes). Returns BOTH the final store (same value
+ * `applyNodeAssignments` alone used to return) and the resolved
+ * TextBlocks — callers that need the on-screen/narrated/MediaSession
+ * text should use the LATTER instead of re-deriving it from
+ * `node.content` + the final store the way the old separate-pass
+ * code did; see App.tsx's `navigateToNode`/`freshStartVariables` call
+ * sites.
+ */
+export function resolveNodeEntry(
+  node: { content: ContentBlock[] } | undefined,
+  variables: Record<string, VariableValue>,
+  callFunction?: CallFunctionHandler,
+): { variables: Record<string, VariableValue>; visibleBlocks: TextBlock[] } {
+  if (!node) return { variables, visibleBlocks: [] };
+  let next = variables;
+  const visibleBlocks: TextBlock[] = [];
+  for (const item of node.content) {
+    if (!isTextBlock(item)) {
+      // AssignmentBlock. Its own `condition` (DEV-199 follow-up — a
+      // SugarCube/Chapbook assignment nested inside a conditional)
+      // gates on the SAME running store a text block's does.
+      if (!conditionAllows(item.condition, next, callFunction)) continue;
+      try {
+        next = execute(item.statement, next, callFunction);
+      } catch (err) {
+        // See applyNodeAssignments' identical catch (App.tsx) for
+        // why this is logged rather than silently swallowed.
+        console.warn('[wanderline] assignment failed to apply', { statement: item.statement, err });
+      }
+      continue;
+    }
+    if (conditionAllows(item.condition, next, callFunction)) {
+      visibleBlocks.push(item);
+    }
+  }
+  return { variables: next, visibleBlocks };
 }

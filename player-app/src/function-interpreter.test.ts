@@ -118,6 +118,78 @@ describe('createFunctionCaller', () => {
     expect(evaluate(expr, {}, caller)).toBe(10); // double(inc(4)) = double(5) = 10
   });
 
+  it('a nested call does not see an enclosing call’s parameter as if it were a global (found in review)', () => {
+    // Global `x` is 100. `outer(x)` binds its OWN param `x` to
+    // whatever it's called with, then calls `readGlobal()` — which
+    // has no params of its own and just returns the bare global `x`.
+    // `readGlobal` must see the REAL global (100), not outer's
+    // currently-bound parameter — Ink has no closures.
+    const readGlobal: FunctionKnotLike = { params: [], content: [returnStmt(v('x'))] };
+    const outer: FunctionKnotLike = {
+      params: ['x'],
+      content: [returnStmt({ kind: 'call', name: 'readGlobal', args: [] })],
+    };
+    const caller = createFunctionCaller({
+      getFunction: (name) =>
+        name === 'outer' ? outer : name === 'readGlobal' ? readGlobal : undefined,
+    });
+    const expr: Expression = { kind: 'call', name: 'outer', args: [lit(1)] };
+    expect(evaluate(expr, { x: 100 }, caller)).toBe(100);
+  });
+
+  it('a nested call’s global write is visible to the OUTER call after it returns', () => {
+    // bump() increments the real global `count`, unrelated to outer's
+    // own parameter `n`. outer() calls bump() twice, then returns the
+    // (now-mutated) global — confirms a global effect from a nested
+    // call propagates back through the outer call's own scope, not
+    // just out to evaluate()'s original caller.
+    const bump: FunctionKnotLike = {
+      params: [],
+      content: [
+        assignStmt('count', { kind: 'binary', operator: '+', left: v('count'), right: lit(1) }),
+      ],
+    };
+    const outer: FunctionKnotLike = {
+      params: ['n'],
+      content: [
+        {
+          kind: 'assignment',
+          statement: {
+            kind: 'assignment',
+            name: 'n',
+            operator: '=',
+            value: { kind: 'call', name: 'bump', args: [] },
+          },
+        },
+        {
+          kind: 'assignment',
+          statement: {
+            kind: 'assignment',
+            name: 'n',
+            operator: '=',
+            value: { kind: 'call', name: 'bump', args: [] },
+          },
+        },
+        returnStmt(v('count')),
+      ],
+    };
+    const caller = createFunctionCaller({
+      getFunction: (name) => (name === 'outer' ? outer : name === 'bump' ? bump : undefined),
+    });
+    expect(evaluate({ kind: 'call', name: 'outer', args: [lit(5)] }, { count: 0 }, caller)).toBe(2);
+  });
+
+  it('a function parameter named __proto__ is bound as an ordinary own property, not Object.prototype (found in review)', () => {
+    const identity: FunctionKnotLike = {
+      params: ['__proto__'],
+      content: [returnStmt(v('__proto__'))],
+    };
+    const caller = createFunctionCaller({ getFunction: () => identity });
+    const expr: Expression = { kind: 'call', name: 'identity', args: [lit(42)] };
+    expect(evaluate(expr, {}, caller)).toBe(42);
+    expect(Object.prototype).not.toHaveProperty('x');
+  });
+
   it('a function calling itself recursively is detected and bounded by the depth guard', () => {
     // This parser has no if/else statement form (see
     // function-interpreter.ts's header) — a function's content is a
