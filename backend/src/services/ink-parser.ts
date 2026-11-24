@@ -50,15 +50,19 @@ interface ParserState {
   // type-infer each subsequent VAR/CONST's initializer when it
   // references an earlier declaration (Ink allows `VAR b = a * 2`).
   // Not consulted anywhere else — the actual runtime variable store
-  // lives in the player (Phase 2).
-  variableValues: Record<string, VariableValue>;
+  // lives in the player (Phase 2). A Map, not a plain object: `name`
+  // comes straight from a `\w+` capture and can legally be
+  // `__proto__`/`constructor`/`prototype` — a Map has no prototype
+  // chain for its own keys to collide with at all, same reasoning as
+  // `nodes` above.
+  variableValues: Map<string, VariableValue>;
   // DEV-199 Phase 10: every LIST member declared so far, across every
   // LIST in the file, and each LIST's full member set — threaded into
   // every parseExpression/parseStatement call below as `context` so
   // a bare `cold` in a LATER condition/assignment resolves as a list
   // literal, not an undeclared-variable reference.
-  listMembers: Record<string, { origin: string; ordinal: number }>;
-  listDefinitions: Record<string, ListItem[]>;
+  listMembers: Map<string, { origin: string; ordinal: number }>;
+  listDefinitions: Map<string, ListItem[]>;
   // Function-knots (DEV-199 Phase 10b): every `=== function name(...) ===`
   // name in the file, collected by a prepass BEFORE the main line
   // loop runs (see collectKnownFunctions) — a call can textually
@@ -84,20 +88,10 @@ export function parseInk(source: string, storyId: string, title?: string): Story
     lastChoiceIndex: null,
     consumedLines: new Set(),
     variables: [],
-    // Null-prototype, like `nodes` below — `name`/`token` in every
-    // `state.variableValues[name] = ...`/`state.listMembers[item.name]
-    // = ...` write below comes straight from a `\w+` regex capture on
-    // uploaded Ink source, and `\w+` matches `__proto__` just fine. On
-    // an ordinary `{}`, `variableValues['__proto__'] = someListValue`
-    // doesn't create an own property — it invokes Object.prototype's
-    // `__proto__` SETTER and silently reassigns this object's own
-    // prototype chain to `someListValue` (CodeQL flagged this as
-    // "remote property injection"). `Object.create(null)` has no such
-    // setter, so the same assignment just becomes a normal own
-    // property, same as any other variable name.
-    variableValues: Object.create(null) as Record<string, VariableValue>,
-    listMembers: Object.create(null) as Record<string, { origin: string; ordinal: number }>,
-    listDefinitions: Object.create(null) as Record<string, ListItem[]>,
+    // Maps, like `nodes` above — see the ParserState field comments.
+    variableValues: new Map(),
+    listMembers: new Map(),
+    listDefinitions: new Map(),
     knownFunctions: new Set(),
   };
 
@@ -298,8 +292,8 @@ const LIST_DECL_RE = /^LIST\s+(\w+)\s*=(.+)$/;
 function expressionContext(state: ParserState | undefined): ExpressionParseContext {
   if (!state) return {};
   return {
-    listMembers: state.listMembers,
-    listDefinitions: state.listDefinitions,
+    listMembers: Object.fromEntries(state.listMembers),
+    listDefinitions: Object.fromEntries(state.listDefinitions),
     knownFunctions: state.knownFunctions,
   };
 }
@@ -858,33 +852,15 @@ function errorMessage(err: unknown): string {
  * is reported as a warning and the declaration is skipped, rather
  * than failing the whole parse.
  */
-// `name`/`token` below comes from a `\w+` capture, which matches
-// `__proto__`/`constructor`/`prototype` too. Inline `===` checks
-// (not `Set.has()`, which CodeQL didn't recognize as a sanitizer)
-// reject these before the write.
-function isReservedPropertyName(name: string): boolean {
-  return name === '__proto__' || name === 'constructor' || name === 'prototype';
-}
-
 function parseVariableDeclarationLine(match: RegExpMatchArray, state: ParserState): void {
   const [, keyword, name, rhsRaw] = match;
   const isConst = keyword === 'CONST';
-
-  if (isReservedPropertyName(name)) {
-    state.warnings.push({
-      type: 'syntax_error',
-      message: `${keyword} ${name}: "${name}" can't be used as a variable name`,
-      lineNumber: state.lineNumber,
-      args: { name, keyword },
-    });
-    return;
-  }
 
   // A VAR/CONST sharing a name with an already-declared LIST's member
   // would make every later bare reference to that name resolve as
   // the list member (parsePrimary checks listMemberInfo first), not
   // this declaration — permanently shadowing it with no warning.
-  const collidingMember = state.listMembers[name];
+  const collidingMember = state.listMembers.get(name);
   if (collidingMember) {
     state.warnings.push({
       type: 'syntax_error',
@@ -897,7 +873,7 @@ function parseVariableDeclarationLine(match: RegExpMatchArray, state: ParserStat
   // A VAR/CONST sharing a name with an already-declared LIST's OWN
   // name is the same hazard in the other direction — the LIST's name
   // is itself a valid reference to its full initial-value literal.
-  if (Object.hasOwn(state.listDefinitions, name)) {
+  if (state.listDefinitions.has(name)) {
     state.warnings.push({
       type: 'syntax_error',
       message: `${keyword} ${name} collides with an already-declared LIST of the same name`,
@@ -922,7 +898,7 @@ function parseVariableDeclarationLine(match: RegExpMatchArray, state: ParserStat
 
   let value: VariableValue;
   try {
-    value = evaluate(initialValue, state.variableValues);
+    value = evaluate(initialValue, Object.fromEntries(state.variableValues));
   } catch (err) {
     state.warnings.push({
       type: 'syntax_error',
@@ -941,7 +917,7 @@ function parseVariableDeclarationLine(match: RegExpMatchArray, state: ParserStat
         ? 'bool'
         : 'string';
   state.variables.push({ name, type, initialValue, isConst });
-  state.variableValues[name] = value;
+  state.variableValues.set(name, value);
 }
 
 /**
@@ -955,16 +931,6 @@ function parseVariableDeclarationLine(match: RegExpMatchArray, state: ParserStat
 function parseListDeclarationLine(match: RegExpMatchArray, state: ParserState): void {
   const [, name, rhsRaw] = match;
 
-  if (isReservedPropertyName(name)) {
-    state.warnings.push({
-      type: 'syntax_error',
-      message: `LIST ${name}: "${name}" can't be used as a variable name`,
-      lineNumber: state.lineNumber,
-      args: { name },
-    });
-    return;
-  }
-
   // The LIST's own name must not collide with an already-declared
   // VAR/CONST, another LIST's own name (a LIST's own name is ALSO
   // registered in state.variableValues below, the same as any VAR —
@@ -974,7 +940,7 @@ function parseListDeclarationLine(match: RegExpMatchArray, state: ParserState): 
   // as a valid bare reference, and silently letting this declaration
   // win would permanently shadow whichever one came first with no
   // warning.
-  if (Object.hasOwn(state.variableValues, name)) {
+  if (state.variableValues.has(name)) {
     state.warnings.push({
       type: 'syntax_error',
       message: `LIST ${name} collides with an already-declared variable of the same name`,
@@ -983,7 +949,7 @@ function parseListDeclarationLine(match: RegExpMatchArray, state: ParserState): 
     });
     return;
   }
-  const collidingOwnName = state.listMembers[name];
+  const collidingOwnName = state.listMembers.get(name);
   if (collidingOwnName) {
     state.warnings.push({
       type: 'syntax_error',
@@ -1018,15 +984,6 @@ function parseListDeclarationLine(match: RegExpMatchArray, state: ParserState): 
       state.warnings.push({
         type: 'syntax_error',
         message: `LIST ${name}: "${token}" is not a valid member name`,
-        lineNumber: state.lineNumber,
-        args: { name, member: token },
-      });
-      return;
-    }
-    if (isReservedPropertyName(token)) {
-      state.warnings.push({
-        type: 'syntax_error',
-        message: `LIST ${name}: member "${token}" can't be used as a member name`,
         lineNumber: state.lineNumber,
         args: { name, member: token },
       });
@@ -1069,7 +1026,7 @@ function parseListDeclarationLine(match: RegExpMatchArray, state: ParserState): 
     // later reference to the name would then resolve against the
     // wrong origin with no warning (real Ink itself rejects this at
     // compile time as a duplicate definition).
-    if (Object.hasOwn(state.variableValues, token)) {
+    if (state.variableValues.has(token)) {
       state.warnings.push({
         type: 'syntax_error',
         message: `LIST ${name}: member "${token}" collides with an already-declared variable of the same name`,
@@ -1081,7 +1038,7 @@ function parseListDeclarationLine(match: RegExpMatchArray, state: ParserState): 
     // A member colliding with another already-declared LIST's OWN
     // name is already caught by the variableValues check above —
     // that LIST's name is registered there too, the same as any VAR.
-    const existingMember = state.listMembers[token];
+    const existingMember = state.listMembers.get(token);
     if (existingMember && existingMember.origin !== name) {
       state.warnings.push({
         type: 'syntax_error',
@@ -1100,9 +1057,9 @@ function parseListDeclarationLine(match: RegExpMatchArray, state: ParserState): 
   // declaration — not meaningful for list literals themselves, but
   // keeps this consistent with how VAR/CONST registers incrementally.
   for (const item of allItems) {
-    state.listMembers[item.name] = { origin: name, ordinal: item.ordinal };
+    state.listMembers.set(item.name, { origin: name, ordinal: item.ordinal });
   }
-  state.listDefinitions[name] = allItems;
+  state.listDefinitions.set(name, allItems);
 
   const activeItems = allItems.filter((item) => activeNames.includes(item.name));
   const value: VariableValue = { kind: 'list', origin: name, items: activeItems, allItems };
@@ -1114,7 +1071,7 @@ function parseListDeclarationLine(match: RegExpMatchArray, state: ParserState): 
     isConst: false,
     listMembers: allItems.map((item) => item.name),
   });
-  state.variableValues[name] = value;
+  state.variableValues.set(name, value);
 }
 
 /**

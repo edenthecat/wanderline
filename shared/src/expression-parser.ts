@@ -95,6 +95,17 @@ export interface ExpressionParseContext {
   knownFunctions?: ReadonlySet<string>;
 }
 
+/** `Object.hasOwn`-guarded lookup — a bare identifier can legally be
+ * named `__proto__`, and `listMembers`/`listDefinitions` are plain
+ * `Record`s (every caller's own source, not under this module's
+ * control), so an unguarded `obj[key]` for a key the object has no
+ * OWN entry for would return the inherited `Object.prototype`
+ * reference instead of `undefined` — truthy, and missing the real
+ * shape callers here expect. */
+function safeGet<T>(obj: Record<string, T> | undefined, key: string): T | undefined {
+  return obj && Object.hasOwn(obj, key) ? obj[key] : undefined;
+}
+
 /**
  * Build the `ExpressionParseContext` every editing surface needs to
  * re-parse a printed condition/assignment without losing its LIST
@@ -122,8 +133,12 @@ export function buildListExpressionContext(
   // node type.
   nodes?: Readonly<Record<string, { id: string; tags?: readonly string[] }>>,
 ): ExpressionParseContext {
-  const listMembers: Record<string, { origin: string; ordinal: number }> = {};
-  const listDefinitions: Record<string, ListItem[]> = {};
+  // Object.create(null): a declared variable/member name can legally
+  // be `__proto__` (see `safeGet`'s doc comment above) — these two
+  // objects are read later via bracket notation, so writing one via a
+  // plain `{}` here would already be unsafe even before that read.
+  const listMembers: Record<string, { origin: string; ordinal: number }> = Object.create(null);
+  const listDefinitions: Record<string, ListItem[]> = Object.create(null);
   for (const decl of variables ?? []) {
     if (decl.type !== 'list' || !decl.listMembers) continue;
     const allItems: ListItem[] = decl.listMembers.map((name, ordinal) => ({ name, ordinal }));
@@ -429,13 +444,13 @@ class Parser {
    * null when it isn't one (and should be parsed as a plain
    * variable instead). */
   private listMemberInfo(name: string): { origin: string; ordinal: number } | null {
-    return this.context.listMembers?.[name] ?? null;
+    return safeGet(this.context.listMembers, name) ?? null;
   }
 
   private listMemberLiteral(name: string): Expression {
     const info = this.listMemberInfo(name);
     if (!info) throw new ExpressionParseError(`'${name}' is not a known LIST member`);
-    const allItems = this.context.listDefinitions?.[info.origin];
+    const allItems = safeGet(this.context.listDefinitions, info.origin);
     if (!allItems) {
       // A real caller always populates listDefinitions alongside
       // listMembers for every origin it registers — reaching here
@@ -566,7 +581,7 @@ class Parser {
       }
       this.expect('rparen', "to close list literal '('");
       const origin = items[0].info.origin;
-      const allItems = this.context.listDefinitions?.[origin];
+      const allItems = safeGet(this.context.listDefinitions, origin);
       if (!allItems) {
         throw new ExpressionParseError(
           `list member '${items[0].name}' is known but its origin LIST '${origin}' has no registered definition — inconsistent parse context`,

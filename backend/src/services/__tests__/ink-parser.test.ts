@@ -1707,47 +1707,42 @@ No association with any real narrative.
       ).toBe(true);
     });
 
-    it('rejects __proto__/constructor/prototype as a VAR name with a warning (found in review: remote property injection)', () => {
-      // `\w+` matches `__proto__` just fine, so an uploaded Ink file
-      // could otherwise legally declare `VAR __proto__ = 5`. The
-      // null-prototype `state.variableValues` this writes into
-      // already makes that write harmless at runtime, but CodeQL's
-      // interprocedural analysis can't trace that allocation through
-      // this function's `state: ParserState` parameter, so it still
-      // flags the write as "remote property injection" — rejecting
-      // the name outright up front resolves that locally, and a
-      // story variable named one of these would be confusing anyway.
+    it('treats __proto__/constructor/prototype as ordinary variable names (found in review: remote property injection)', () => {
+      // `\w+` matches these just fine, so an uploaded Ink file can
+      // legally declare `VAR __proto__ = 5`. state.variableValues is
+      // a Map, not a plain object, so this is just an ordinary entry
+      // — no prototype-chain special-casing to worry about at all.
       for (const name of ['__proto__', 'constructor', 'prototype']) {
-        const result = parseInk(`== start ==\nVAR ${name} = 5\nHi.\n`, 'test-id');
-        expect(result.variables).toBeUndefined();
-        expect(
-          result.validation.warnings.some((w) =>
-            w.message.includes("can't be used as a variable name"),
-          ),
-        ).toBe(true);
+        const result = parseInk(`== start ==\nVAR ${name} = 5\nVAR x = ${name}\nHi.\n`, 'test-id');
+        expect(result.variables).toEqual([
+          { name, type: 'number', isConst: false, initialValue: { kind: 'literal', value: 5 } },
+          { name: 'x', type: 'number', isConst: false, initialValue: { kind: 'variable', name } },
+        ]);
       }
       expect(Object.prototype).not.toHaveProperty('x');
     });
 
-    it('rejects a LIST named __proto__, or with a __proto__ member, with a warning', () => {
+    it('treats a LIST named __proto__, or with a __proto__ member, as ordinary', () => {
       const ownName = parseInk('== start ==\nLIST __proto__ = cold, boiling\nHi.\n', 'test-id');
-      expect(ownName.variables).toBeUndefined();
-      expect(
-        ownName.validation.warnings.some((w) =>
-          w.message.includes("can't be used as a variable name"),
-        ),
-      ).toBe(true);
+      expect(ownName.variables?.[0]).toMatchObject({ name: '__proto__', type: 'list' });
+      expect(ownName.validation.errors).toEqual([]);
 
       const memberName = parseInk(
-        '== start ==\nLIST kettleState = cold, __proto__\nHi.\n',
+        '== start ==\nLIST kettleState = cold, __proto__\n~ x = __proto__\nHi.\n',
         'test-id',
       );
-      expect(memberName.variables).toBeUndefined();
-      expect(
-        memberName.validation.warnings.some((w) =>
-          w.message.includes("can't be used as a member name"),
-        ),
-      ).toBe(true);
+      expect(memberName.validation.errors).toEqual([]);
+      const assignmentBlock = memberName.nodes['start'].content.find(
+        (c) => c.kind === 'assignment',
+      );
+      expect(assignmentBlock).toBeDefined();
+      if (assignmentBlock?.kind === 'assignment') {
+        expect(assignmentBlock.statement.value).toMatchObject({
+          kind: 'literal',
+          value: { kind: 'list', origin: 'kettleState', items: [{ name: '__proto__' }] },
+        });
+      }
+      expect(Object.prototype).not.toHaveProperty('x');
     });
   });
 });

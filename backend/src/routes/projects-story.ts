@@ -17,7 +17,12 @@ import {
   isListValue,
   buildListExpressionContext,
 } from '@wanderline/shared';
-import { isTextBlock, type VariableDeclaration, type VariableType } from '../types.js';
+import {
+  isTextBlock,
+  type StoryNode,
+  type VariableDeclaration,
+  type VariableType,
+} from '../types.js';
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -683,14 +688,16 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
       }
 
       const storyGraph = storyResult.rows[0].story_graph;
-      // `nodeId === '__proto__'` resolves to Object.prototype itself
-      // on a plain object — rejected explicitly, not just via
-      // Object.hasOwn, since CodeQL didn't recognize that alone.
-      if (nodeId === '__proto__' || !Object.hasOwn(storyGraph.nodes, nodeId)) {
+      // A Map, not a bracket lookup on storyGraph.nodes directly:
+      // `nodeId` is attacker-controlled and can legally be
+      // `__proto__`, which a plain object resolves to Object.prototype
+      // itself instead of undefined. A Map has no such special-cased
+      // key at all.
+      const node = new Map<string, StoryNode>(Object.entries(storyGraph.nodes)).get(nodeId);
+      if (!node) {
         res.status(404).json({ error: 'Node not found' });
         return;
       }
-      const node = storyGraph.nodes[nodeId];
       if (!node.content || contentIndex >= node.content.length) {
         res.status(400).json({ error: 'Content index out of range' });
         return;
@@ -1475,14 +1482,13 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
         }
       }
 
-      // `nodeId === '__proto__'` resolves to Object.prototype itself
-      // on a plain object — rejected explicitly, not just via
-      // Object.hasOwn, since CodeQL didn't recognize that alone.
-      if (nodeId === '__proto__' || !Object.hasOwn(storyGraph.nodes, nodeId)) {
+      // A Map, not a bracket lookup on storyGraph.nodes directly — see
+      // the sibling `/node/content/text` route's identical comment.
+      const node = new Map<string, StoryNode>(Object.entries(storyGraph.nodes)).get(nodeId);
+      if (!node) {
         res.status(404).json({ error: 'Node not found' });
         return;
       }
-      const node = storyGraph.nodes[nodeId];
       if (!node.choices || choiceIndex >= node.choices.length) {
         res.status(400).json({ error: 'Choice index out of range' });
         return;
@@ -1563,14 +1569,13 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
         }
       }
 
-      // `nodeId === '__proto__'` resolves to Object.prototype itself
-      // on a plain object — rejected explicitly, not just via
-      // Object.hasOwn, since CodeQL didn't recognize that alone.
-      if (nodeId === '__proto__' || !Object.hasOwn(storyGraph.nodes, nodeId)) {
+      // A Map, not a bracket lookup on storyGraph.nodes directly — see
+      // the sibling `/node/content/text` route's identical comment.
+      const node = new Map<string, StoryNode>(Object.entries(storyGraph.nodes)).get(nodeId);
+      if (!node) {
         res.status(404).json({ error: 'Node not found' });
         return;
       }
-      const node = storyGraph.nodes[nodeId];
       if (!node.content || contentIndex >= node.content.length) {
         res.status(400).json({ error: 'Content index out of range' });
         return;

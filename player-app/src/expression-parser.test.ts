@@ -253,6 +253,29 @@ describe('parseExpression — LIST literals', () => {
     expect(parseExpression('gold', KETTLE_CONTEXT)).toEqual({ kind: 'variable', name: 'gold' });
   });
 
+  it('__proto__ stays a plain variable reference when it has no OWN entry in context.listMembers (found in review)', () => {
+    // `context.listMembers` is a plain Record, and an unguarded
+    // `obj['__proto__']` read inherits Object.prototype (truthy)
+    // instead of returning undefined for a key with no own entry —
+    // which would make `__proto__` look like a registered list
+    // member with a bogus origin, even though no LIST ever declared
+    // one.
+    expect(parseExpression('__proto__', KETTLE_CONTEXT)).toEqual({
+      kind: 'variable',
+      name: '__proto__',
+    });
+    // Omitting `context` entirely never exercised the bug (the
+    // Parser defaults it to `{}`, leaving `listMembers` itself
+    // `undefined`) — an explicit, populated-but-empty `listMembers`
+    // is what actually reproduces it.
+    expect(parseExpression('__proto__ > 0', { listMembers: {} })).toEqual({
+      kind: 'binary',
+      operator: '>',
+      left: { kind: 'variable', name: '__proto__' },
+      right: { kind: 'literal', value: 0 },
+    });
+  });
+
   it('a parenthesized comma list of members is a multi-item LIST literal', () => {
     expect(parseExpression('(cold, boiling)', KETTLE_CONTEXT)).toEqual({
       kind: 'literal',
