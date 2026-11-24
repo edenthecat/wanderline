@@ -179,6 +179,67 @@ describe('createFunctionCaller', () => {
     expect(evaluate({ kind: 'call', name: 'outer', args: [lit(5)] }, { count: 0 }, caller)).toBe(2);
   });
 
+  it('a nested call sees a global write an EARLIER statement in the SAME call already made, not a stale pre-call snapshot (found in review)', () => {
+    // outer() (no params) sets the real global `count` to 10, then
+    // returns readCount() — which must see 10, not the count=0
+    // snapshot that existed when outer started.
+    const readCount: FunctionKnotLike = { params: [], content: [returnStmt(v('count'))] };
+    const outer: FunctionKnotLike = {
+      params: [],
+      content: [
+        assignStmt('count', lit(10)),
+        returnStmt({ kind: 'call', name: 'readCount', args: [] }),
+      ],
+    };
+    const caller = createFunctionCaller({
+      getFunction: (name) =>
+        name === 'outer' ? outer : name === 'readCount' ? readCount : undefined,
+    });
+    expect(evaluate({ kind: 'call', name: 'outer', args: [] }, { count: 0 }, caller)).toBe(10);
+  });
+
+  it('a call whose body never touches a global of the same name as its OWN parameter leaves that global untouched (found in review)', () => {
+    // identity(x) just returns its own param — it never assigns to
+    // anything. The real global `x` (100) must survive the call.
+    const identity: FunctionKnotLike = { params: ['x'], content: [returnStmt(v('x'))] };
+    const readX: FunctionKnotLike = { params: [], content: [returnStmt(v('x'))] };
+    const caller = createFunctionCaller({
+      getFunction: (name) =>
+        name === 'identity' ? identity : name === 'readX' ? readX : undefined,
+    });
+    const stmt = {
+      kind: 'assignment' as const,
+      name: 'ignored',
+      operator: '=' as const,
+      value: { kind: 'call' as const, name: 'identity', args: [lit(1)] },
+    };
+    const afterIdentity = execute(stmt, { x: 100 }, caller);
+    expect(evaluate({ kind: 'call', name: 'readX', args: [] }, afterIdentity, caller)).toBe(100);
+  });
+
+  it('a nested call with no params of its own does not clobber the OUTER call’s same-named shadowed parameter (found in review)', () => {
+    // Global x = 100. outer(x) shadows it with param x = 1, then
+    // returns readX() + x — readX() (no params) correctly reads the
+    // real global (100), but merging that nested result back must
+    // NOT overwrite outer's own param x (1) with the global's value.
+    const readX: FunctionKnotLike = { params: [], content: [returnStmt(v('x'))] };
+    const outer: FunctionKnotLike = {
+      params: ['x'],
+      content: [
+        returnStmt({
+          kind: 'binary',
+          operator: '+',
+          left: { kind: 'call', name: 'readX', args: [] },
+          right: v('x'),
+        }),
+      ],
+    };
+    const caller = createFunctionCaller({
+      getFunction: (name) => (name === 'outer' ? outer : name === 'readX' ? readX : undefined),
+    });
+    expect(evaluate({ kind: 'call', name: 'outer', args: [lit(1)] }, { x: 100 }, caller)).toBe(101);
+  });
+
   it('a function parameter named __proto__ is bound as an ordinary own property, not Object.prototype (found in review)', () => {
     const identity: FunctionKnotLike = {
       params: ['__proto__'],
