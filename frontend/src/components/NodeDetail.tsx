@@ -7,16 +7,34 @@
 // detail rail render the same component (so authors get the same
 // editing affordances regardless of where they jumped in from).
 
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from 'react';
 import * as Y from 'yjs';
+import {
+  isTextBlock,
+  printExpression,
+  printStatement,
+  type ContentBlock,
+  type Expression,
+} from '@wanderline/shared';
 import {
   type AudioAssignments,
   type AudioFile,
+  buildListExpressionContext,
   resolveNodeFlag,
   type Character,
   type NodeFlag,
   type NodeMetadata,
+  type VariableDeclaration,
 } from '../api/client';
+import ConditionEditor from './ConditionEditor';
 import { FLAG_REASON_LABELS } from './flagLabels';
 import NodeAudioPanel from './NodeAudioPanel';
 import type { NodeAudioActions } from '../hooks/useNodeEditor';
@@ -69,8 +87,8 @@ export function hasCustomTiming(meta?: NodeMetadata): boolean {
 export interface NodeDetailProps {
   nodeId: string;
   node: {
-    content: { text: string; tags: string[] }[];
-    choices: { text: string; target: string }[];
+    content: ContentBlock[];
+    choices: { text: string; target: string; condition?: Expression | null; id?: string }[];
     divert: string | null;
     tags: string[];
     audio?: Record<string, unknown>;
@@ -88,6 +106,11 @@ export interface NodeDetailProps {
   onContentEdit: (contentIndex: number, newText: string) => void;
   onChoiceTargetEdit: (choiceIndex: number, newTarget: string) => void;
   onDivertEdit: (newTarget: string) => void;
+  /** Set/clear a choice's visibility condition. Optional — hides the
+   * condition editor affordance when omitted. */
+  onChoiceConditionEdit?: (choiceIndex: number, condition: string | null) => Promise<void>;
+  /** Set/clear a text block's visibility condition. Optional — same. */
+  onContentConditionEdit?: (contentIndex: number, condition: string | null) => Promise<void>;
   /** Append a fresh choice. Optional — when omitted, the "+ Add choice"
    * button is hidden (e.g. for read-only contexts). */
   onAddChoice?: (choice: { text: string; target: string }) => Promise<void>;
@@ -118,6 +141,19 @@ export interface NodeDetailProps {
   audioActions?: NodeAudioActions;
   /** Default levels (0-100) for auditioning the passage's mix. */
   audioLevels?: { voiceover: number; ambience: number };
+  /** The project's declared story variables, for building a
+   * variable-conditioned audio variant (DEV-199 follow-on) — only
+   * variables already parsed from source can be picked; declaring a
+   * brand-new one is a separate, not-yet-built feature. */
+  variables?: VariableDeclaration[];
+  /** Every function-knot name declared anywhere in the story (DEV-199
+   * Phase 10b) — found in review: without this, the condition
+   * editors' parse context only knew about LIST members, so a
+   * working imported condition that calls a function (e.g.
+   * `double(gold) > 10`) couldn't be saved even unchanged, since
+   * re-parsing it client-side rejected the call as an undeclared
+   * function. */
+  knownFunctionNames?: ReadonlySet<string>;
   /** Click a "Reachable from" entry to jump the canvas / list to it. */
   onJumpToNode?: (nodeId: string) => void;
   /**: shared Y.Doc for this project (null until connected).
@@ -144,6 +180,8 @@ export default function NodeDetail({
   onContentEdit,
   onChoiceTargetEdit,
   onDivertEdit,
+  onChoiceConditionEdit,
+  onContentConditionEdit,
   onAddChoice,
   onDeleteChoice,
   onSwapChoices,
@@ -157,11 +195,22 @@ export default function NodeDetail({
   audioFiles,
   audioActions,
   audioLevels,
+  variables,
+  knownFunctionNames,
   reachableFrom,
   onJumpToNode,
   yDoc,
   yDocReady,
 }: NodeDetailProps) {
+  // Built once per `variables` change, not per ConditionEditor
+  // instance — both the choice and content-block condition editors
+  // below need the same LIST-member lookups to re-parse a printed
+  // condition without losing it back to a plain variable reference.
+  const listContext = useMemo(
+    () => ({ ...buildListExpressionContext(variables), knownFunctions: knownFunctionNames }),
+    [variables, knownFunctionNames],
+  );
+
   // Postgres column is nullable, so coerce null → '' for the editor.
   const savedTranscript = metadata?.transcript ?? '';
   const [transcript, setTranscript] = useState(savedTranscript);
@@ -207,6 +256,7 @@ export default function NodeDetail({
   // *player* will see, not what the database stores literally.
   const hasOverride = savedTranscript.trim().length > 0;
   const originalText = node.content
+    .filter(isTextBlock)
     .map((c) => c.text)
     .filter((s) => s.trim().length > 0)
     .join('\n\n');
@@ -345,26 +395,58 @@ export default function NodeDetail({
     <div className="node-detail">
       {node.content.length > 0 && (
         <div className="node-content">
-          {node.content.map((c, i) => (
-            <div key={i} className="node-content-row">
-              <CollabContentTextarea
-                yText={yDocReady ? getContentText(yDoc, nodeId, i) : null}
-                initialText={c.text}
-                onLocalEdit={(text) => onContentEdit(i, text)}
-                ariaLabel={`Content line ${i + 1} on ${nodeId}`}
-                className="node-content-input"
-              />
-              {c.tags.length > 0 && (
-                <span className="node-tags">
-                  {c.tags.map((t, j) => (
-                    <span key={j} className="tag">
-                      #{t}
-                    </span>
-                  ))}
-                </span>
-              )}
-            </div>
-          ))}
+          {node.content.map((c, i) =>
+            // Assignment blocks (variable mutations) have no text to
+            // edit here, just a read-only preview of the statement —
+            // changing the expression itself isn't built yet. Still
+            // rendered (not skipped) so `i` stays the true array
+            // index, matching the Yjs binding in getContentText.
+            isTextBlock(c) ? (
+              <div key={i} className="node-content-row">
+                <CollabContentTextarea
+                  yText={yDocReady ? getContentText(yDoc, nodeId, i) : null}
+                  initialText={c.text}
+                  onLocalEdit={(text) => onContentEdit(i, text)}
+                  ariaLabel={`Content line ${i + 1} on ${nodeId}`}
+                  className="node-content-input"
+                />
+                {c.tags.length > 0 && (
+                  <span className="node-tags">
+                    {c.tags.map((t, j) => (
+                      <span key={j} className="tag">
+                        #{t}
+                      </span>
+                    ))}
+                  </span>
+                )}
+                {onContentConditionEdit && (
+                  <ConditionEditor
+                    value={c.condition}
+                    onSave={(text) => onContentConditionEdit(i, text)}
+                    ariaLabel={`Content line ${i + 1} condition on ${nodeId}`}
+                    listContext={listContext}
+                  />
+                )}
+              </div>
+            ) : (
+              <div key={i} className="node-content-row node-content-assignment">
+                <code className="text-muted">~ {printStatement(c.statement)}</code>
+                {c.condition && (
+                  // Read-only: this is a SugarCube/Chapbook `<<set>>`
+                  // (or vars-section equivalent) nested inside a
+                  // conditional block (DEV-199 follow-up) — editing
+                  // isn't built for assignment blocks at all yet, so
+                  // this is display-only, same as the statement itself.
+                  <span
+                    className="badge badge-blue condition-badge"
+                    title={printExpression(c.condition)}
+                  >
+                    if {printExpression(c.condition)}
+                  </span>
+                )}
+              </div>
+            ),
+          )}
         </div>
       )}
 
@@ -509,7 +591,16 @@ export default function NodeDetail({
       {(node.choices.length > 0 || onAddChoice) && (
         <div className="node-choices">
           {node.choices.map((ch, i) => (
-            <div key={i} className="node-choice">
+            // Keyed by the choice's own stable id, not its array
+            // index (found in review): an open ConditionEditor keeps
+            // its own draft state, and React matches component
+            // instances up by key across a re-render — with index as
+            // the key, reordering or deleting a choice silently
+            // reattached an open draft to whichever DIFFERENT choice
+            // now occupies that same array slot instead of closing
+            // or resetting it. Falls back to the index only for a
+            // choice with no id (pre-stable-id-rollout data).
+            <div key={ch.id ?? i} className="node-choice">
               <span className="choice-arrow">&rarr;</span>
               <CollabChoiceTextInput
                 yText={yDocReady ? getChoiceText(yDoc, nodeId, i) : null}
@@ -531,6 +622,14 @@ export default function NodeDetail({
                 )}
                 {nodeIdOptions}
               </select>
+              {onChoiceConditionEdit && (
+                <ConditionEditor
+                  value={ch.condition}
+                  onSave={(text) => onChoiceConditionEdit(i, text)}
+                  ariaLabel={`Choice ${i + 1} condition on ${nodeId}`}
+                  listContext={listContext}
+                />
+              )}
               {(onSwapChoices || onDeleteChoice) && (
                 <span className="node-choice-actions">
                   {onSwapChoices && (
@@ -605,8 +704,10 @@ export default function NodeDetail({
         nodeAudio={nodeAudio}
         audioNames={audioNames}
         audioFiles={audioFiles}
+        declaredVariables={variables}
         actions={audioActions}
         levels={audioLevels}
+        choices={node.choices}
       />
       {reachableFrom && reachableFrom.length > 0 && (
         <div className="node-reachable-from">

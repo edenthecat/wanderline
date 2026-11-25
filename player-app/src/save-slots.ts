@@ -9,6 +9,8 @@
 // readSlotsWithMigration() moves any such legacy payload into a fresh
 // autosave slot the first time it runs.
 
+import type { ListItem, VariableValue } from '@wanderline/shared';
+
 const STORAGE_PREFIX = 'wanderline_';
 export const AUTOSAVE_SLOT_ID = 'autosave';
 export const MAX_MANUAL_SLOTS = 9;
@@ -37,6 +39,13 @@ export interface SaveSlot {
   nodeId: string;
   history: string[];
   savedAt: string; // ISO timestamp
+  /**
+   * Variable-store snapshot at save time (DEV-199 Phase 2). Optional
+   * because a slot written before this field existed has none —
+   * callers fall back to the story's declared defaults rather than
+   * treating the slot as invalid.
+   */
+  variables?: Record<string, VariableValue>;
 }
 
 const slotsStorageKey = (storyId: string) => `${STORAGE_PREFIX}${storyId}_slots`;
@@ -64,6 +73,46 @@ function safeRemove(key: string): void {
   }
 }
 
+function isValidListItem(value: unknown): value is ListItem {
+  return (
+    !!value &&
+    typeof value === 'object' &&
+    typeof (value as ListItem).name === 'string' &&
+    typeof (value as ListItem).ordinal === 'number'
+  );
+}
+
+/** True for a well-formed LIST value snapshot (DEV-199 Phase 10) —
+ * since `VariableValue` includes `ListValue` alongside number/string/
+ * boolean, a save slot's variables snapshot can hold one. */
+function isValidListValue(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as { kind?: unknown; origin?: unknown; items?: unknown; allItems?: unknown };
+  return (
+    v.kind === 'list' &&
+    typeof v.origin === 'string' &&
+    Array.isArray(v.items) &&
+    v.items.every(isValidListItem) &&
+    Array.isArray(v.allItems) &&
+    v.allItems.every(isValidListItem)
+  );
+}
+
+/** True for a plain `{ name: VariableValue }` record — every value a
+ * number, string, boolean, or well-formed LIST value. Used to
+ * validate a slot's optional `variables` snapshot without trusting
+ * localStorage's shape. */
+function isValidVariableValueRecord(value: unknown): value is Record<string, VariableValue> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  return Object.values(value).every(
+    (v) =>
+      typeof v === 'number' ||
+      typeof v === 'string' ||
+      typeof v === 'boolean' ||
+      isValidListValue(v),
+  );
+}
+
 function parseSlots(raw: string | null): SaveSlot[] {
   if (!raw) return [];
   try {
@@ -78,7 +127,12 @@ function parseSlots(raw: string | null): SaveSlot[] {
         typeof s.nodeId === 'string' &&
         Array.isArray(s.history) &&
         s.history.every((h: unknown) => typeof h === 'string') &&
-        typeof s.savedAt === 'string',
+        typeof s.savedAt === 'string' &&
+        // Pre-DEV-199 slots have no `variables` at all — accept that
+        // as well as a validly-shaped snapshot, rather than requiring
+        // every existing save to be invalidated by this field's
+        // addition.
+        (s.variables === undefined || isValidVariableValueRecord(s.variables)),
     );
   } catch {
     return [];

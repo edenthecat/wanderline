@@ -12,7 +12,7 @@ function node(id: string): StoryNode {
     id,
     type: 'knot',
     parent: null,
-    content: [{ text: `Content of ${id}.`, tags: [] }],
+    content: [{ kind: 'text', text: `Content of ${id}.`, tags: [] }],
     choices: [],
     divert: null,
     tags: [],

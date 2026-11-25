@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback, type ChangeEvent } from 'react';
+import { isTextBlock, type ContentBlock } from '@wanderline/shared';
 import { FLAG_REASON_LABELS } from './flagLabels';
 import FlaggedNodesPanel from './FlaggedNodesPanel';
 import {
@@ -20,6 +21,11 @@ import { useYjs } from '../hooks/useYjs';
 import { useNodeEditor } from '../hooks/useNodeEditor';
 import { useYjsSeedReady } from '../hooks/useStoryYDoc';
 import { nodeMatchesQuery, normalizeQuery } from '../lib/nodeSearch';
+
+/** First text block's content, for the one-line node preview snippet. */
+function firstTextPreview(content: ContentBlock[]): string | undefined {
+  return content.find(isTextBlock)?.text;
+}
 
 interface Props {
   projectId: string;
@@ -235,12 +241,15 @@ export default function StoryTab({
     metadataError,
     retryMetadata,
     nodeIdSet,
+    knownFunctionNames,
     nodeIdOptions,
     reverseEdges,
     handleChoiceTextEdit,
     handleNodeContentEdit,
     handleChoiceTargetEdit,
     handleDivertEdit,
+    handleChoiceConditionEdit,
+    handleContentConditionEdit,
     handleAddChoice,
     handleDeleteChoice,
     handleSwapChoices,
@@ -743,10 +752,10 @@ export default function StoryTab({
                     {hasCustomTiming(metadata[node.id]) && (
                       <span className="badge badge-gray">timing</span>
                     )}
-                    {node.content[0]?.text && (
+                    {firstTextPreview(node.content) && (
                       <span className="node-preview text-muted">
-                        {node.content[0].text.slice(0, 60)}
-                        {node.content[0].text.length > 60 ? '...' : ''}
+                        {firstTextPreview(node.content)!.slice(0, 60)}
+                        {firstTextPreview(node.content)!.length > 60 ? '...' : ''}
                       </span>
                     )}
                   </div>
@@ -763,6 +772,8 @@ export default function StoryTab({
                     audioFiles={audioFiles}
                     audioActions={audioActions}
                     audioLevels={audioLevels}
+                    variables={storyGraph?.variables}
+                    knownFunctionNames={knownFunctionNames}
                     characters={characters}
                     metadataLoaded={metadataLoaded}
                     nodeIdSet={nodeIdSet}
@@ -771,6 +782,12 @@ export default function StoryTab({
                     onContentEdit={(ci, text) => handleNodeContentEdit(node.id, ci, text)}
                     onChoiceTargetEdit={(ci, target) => handleChoiceTargetEdit(node.id, ci, target)}
                     onDivertEdit={(target) => handleDivertEdit(node.id, target)}
+                    onChoiceConditionEdit={(ci, condition) =>
+                      handleChoiceConditionEdit(node.id, ci, condition)
+                    }
+                    onContentConditionEdit={(ci, condition) =>
+                      handleContentConditionEdit(node.id, ci, condition)
+                    }
                     onAddChoice={(c) => handleAddChoice(node.id, c)}
                     onDeleteChoice={(ci) => handleDeleteChoice(node.id, ci)}
                     onSwapChoices={(from, to) => handleSwapChoices(node.id, from, to)}
@@ -848,10 +865,10 @@ export default function StoryTab({
                           ))}
                         </span>
                       )}
-                      {knot.content[0]?.text && (
+                      {firstTextPreview(knot.content) && (
                         <span className="node-preview text-muted">
-                          {knot.content[0].text.slice(0, 50)}
-                          {knot.content[0].text.length > 50 ? '...' : ''}
+                          {firstTextPreview(knot.content)!.slice(0, 50)}
+                          {firstTextPreview(knot.content)!.length > 50 ? '...' : ''}
                         </span>
                       )}
                       {children.length > 0 && (
@@ -891,6 +908,8 @@ export default function StoryTab({
                           audioFiles={audioFiles}
                           audioActions={audioActions}
                           audioLevels={audioLevels}
+                          variables={storyGraph?.variables}
+                          knownFunctionNames={knownFunctionNames}
                           characters={characters}
                           metadataLoaded={metadataLoaded}
                           nodeIdSet={nodeIdSet}
@@ -901,6 +920,12 @@ export default function StoryTab({
                             handleChoiceTargetEdit(knot.id, ci, target)
                           }
                           onDivertEdit={(target) => handleDivertEdit(knot.id, target)}
+                          onChoiceConditionEdit={(ci, condition) =>
+                            handleChoiceConditionEdit(knot.id, ci, condition)
+                          }
+                          onContentConditionEdit={(ci, condition) =>
+                            handleContentConditionEdit(knot.id, ci, condition)
+                          }
                           onAddChoice={(c) => handleAddChoice(knot.id, c)}
                           onDeleteChoice={(ci) => handleDeleteChoice(knot.id, ci)}
                           onSwapChoices={(from, to) => handleSwapChoices(knot.id, from, to)}
@@ -954,6 +979,8 @@ export default function StoryTab({
                               audioFiles={audioFiles}
                               audioActions={audioActions}
                               audioLevels={audioLevels}
+                              variables={storyGraph?.variables}
+                              knownFunctionNames={knownFunctionNames}
                               characters={characters}
                               metadataLoaded={metadataLoaded}
                               nodeIdSet={nodeIdSet}
@@ -968,6 +995,12 @@ export default function StoryTab({
                                 handleChoiceTargetEdit(child.id, ci, target)
                               }
                               onDivertEdit={(target) => handleDivertEdit(child.id, target)}
+                              onChoiceConditionEdit={(ci, condition) =>
+                                handleChoiceConditionEdit(child.id, ci, condition)
+                              }
+                              onContentConditionEdit={(ci, condition) =>
+                                handleContentConditionEdit(child.id, ci, condition)
+                              }
                               onAddChoice={(c) => handleAddChoice(child.id, c)}
                               onDeleteChoice={(ci) => handleDeleteChoice(child.id, ci)}
                               onSwapChoices={(from, to) => handleSwapChoices(child.id, from, to)}

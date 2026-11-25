@@ -3,6 +3,8 @@
  * Types for the story graph format and related structures
  */
 
+import type { ContentBlock, Expression, VariableDeclaration } from './expression-types.js';
+
 // === Story Graph Types ===
 
 export interface StoryGraph {
@@ -18,6 +20,8 @@ export interface StoryGraph {
   validation: ValidationResult;
   /** Original INK source (optional, for reference) */
   source?: string;
+  /** Project-level variable declarations (DEV-199 Phase 0). */
+  variables?: VariableDeclaration[];
 }
 
 export interface StoryNode {
@@ -28,7 +32,7 @@ export interface StoryNode {
   /** Parent knot path (null for root-level knots) */
   parent: string | null;
   /** Text content of the node */
-  content: TextContent[];
+  content: ContentBlock[];
   /** Choices available at this node */
   choices: Choice[];
   /** Direct divert target (if any) */
@@ -39,18 +43,19 @@ export interface StoryNode {
   lineNumber: number;
   /** Audio assignments (populated by editor) */
   audio?: AudioAssignment;
+  /**
+   * Parameter names for a function-knot (`=== function foo(x, y) ===`
+   * — DEV-199 Phase 10b / function-knots), in declaration order. Only
+   * present on a node tagged `internal:function`; absent (not `[]`)
+   * on every other node, same optionality convention as
+   * `VariableDeclaration.listMembers`. `ref` parameters are not
+   * supported (see ink-parser.ts's header) — every name here is a
+   * plain by-value parameter regardless of how the author wrote it.
+   */
+  params?: string[];
 }
 
 export type NodeType = 'knot' | 'stitch' | 'gather';
-
-export interface TextContent {
-  /** The text to display */
-  text: string;
-  /** Tags on this specific line */
-  tags: string[];
-  /** Inline logic/conditionals (simplified) */
-  conditions?: string[];
-}
 
 export interface Choice {
   /** The choice text displayed to the user */
@@ -61,8 +66,8 @@ export interface Choice {
   sticky: boolean;
   /** Whether this choice is a fallback (shown when others are exhausted) */
   fallback: boolean;
-  /** Conditions required to show this choice */
-  conditions?: string[];
+  /** A single boolean expression gating this choice's visibility (DEV-199 Phase 4/7-9). */
+  condition?: Expression | null;
   /** Tags on this choice */
   tags: string[];
 }

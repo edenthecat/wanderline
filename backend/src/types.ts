@@ -3,6 +3,42 @@
  * This allows us to use the types without building the shared package first
  */
 
+import {
+  isTextBlock,
+  isListValue,
+  type Expression,
+  type VariableDeclaration,
+  type VariableType,
+  type VariableValue,
+  type Statement,
+  type ContentBlock,
+  type TextBlock,
+  type AssignmentBlock,
+  type TextContent,
+  type ListItem,
+  type ListValue,
+  type ListFunctionName,
+  type ExpressionParseContext,
+} from '@wanderline/shared';
+
+export {
+  isTextBlock,
+  isListValue,
+  type Expression,
+  type VariableDeclaration,
+  type VariableType,
+  type VariableValue,
+  type Statement,
+  type ContentBlock,
+  type TextBlock,
+  type AssignmentBlock,
+  type TextContent,
+  type ListItem,
+  type ListValue,
+  type ListFunctionName,
+  type ExpressionParseContext,
+};
+
 // === Story Graph Types ===
 
 export interface StoryGraph {
@@ -12,6 +48,15 @@ export interface StoryGraph {
   startNode: string;
   validation: ValidationResult;
   source?: string;
+  /**
+   * Project-level variable declarations (DEV-199 Phase 0). Parsed
+   * from Ink's VAR/CONST preamble (Phase 1) or a Twine dialect's own
+   * declaration syntax (Phases 6-9) — never partially populated by
+   * either parser yet; this field exists now so the schema, the Yjs
+   * collab codec, and the manifest pipeline don't need another
+   * breaking shape change once parsing lands.
+   */
+  variables?: VariableDeclaration[];
   /**
    * Twee-side round-trip preservation. Neither field is used
    * by the Ink pipeline; both are populated by parseTwee and
@@ -33,14 +78,29 @@ export interface StoryGraph {
   twee?: {
     storyData?: Record<string, unknown>;
     specials?: Record<string, string>;
+    /**
+     * Detected Twine macro dialect (DEV-199 Phase 6), read from
+     * StoryData's `format` field or sniffed from macro syntax when
+     * that's missing/unrecognized. Consumed by Phases 7-9's
+     * dialect-specific `<<macro>>`/`(macro:)`/`[macro]` parsing.
+     * Undefined when detection was genuinely ambiguous — surfaced as
+     * an `ambiguous_twee_dialect` validation warning instead of a
+     * silent guess.
+     */
+    dialect?: TweeDialect;
   };
 }
+
+/** Twine macro dialects Wanderline's Twee parser distinguishes
+ * between (DEV-199 Phase 6+). Not Snowman or a custom/third-party
+ * format — those stay undetected, matching the "ambiguous" case. */
+export type TweeDialect = 'harlowe' | 'sugarcube' | 'chapbook';
 
 export interface StoryNode {
   id: string;
   type: NodeType;
   parent: string | null;
-  content: TextContent[];
+  content: ContentBlock[];
   choices: Choice[];
   divert: string | null;
   tags: string[];
@@ -53,23 +113,42 @@ export interface StoryNode {
    * used by Ink or the runtime — pure round-trip preservation.
    */
   metadata?: Record<string, unknown>;
+  /**
+   * Parameter names for a function-knot (`=== function foo(x, y) ===`
+   * — DEV-199 Phase 10b / function-knots), in declaration order. Only
+   * present on a node tagged `internal:function`. See
+   * shared/src/types.ts's `StoryNode.params` — duplicated here
+   * because this file redefines StoryNode rather than re-exporting
+   * the shared one (see this file's header).
+   */
+  params?: string[];
 }
 
 export type NodeType = 'knot' | 'stitch' | 'gather';
 
-export interface TextContent {
-  text: string;
-  tags: string[];
-  conditions?: string[];
-}
+// ContentBlock/TextBlock/AssignmentBlock/TextContent/isTextBlock are
+// re-exported from @wanderline/shared above — see expression-types.ts
+// for the doc comments. Shared (not duplicated per the rest of
+// StoryGraph) because backend validation, player-app playback, and
+// the editor UI must all agree on what counts as a text vs assignment
+// block.
 
 export interface Choice {
   text: string;
   target: string;
   sticky: boolean;
   fallback: boolean;
-  conditions?: string[];
+  /**
+   * A single boolean expression gating this choice's visibility
+   * (DEV-199 Phase 4/7-9). Ink's `{c1}{c2}` multi-condition prefixes
+   * AND together into one expression at parse time, so this is never
+   * a list — see the plan doc's Q4.
+   */
+  condition?: Expression | null;
   tags: string[];
+  /** See {@link TextBlock.id} in expression-types.ts — same stable-
+   * identity contract, independent of this choice's array position. */
+  id?: string;
 }
 
 export interface AudioAssignment {
@@ -111,7 +190,8 @@ export type ValidationType =
   | 'missing_start'
   | 'duplicate_node'
   | 'syntax_error'
-  | 'orphaned_stitch';
+  | 'orphaned_stitch'
+  | 'ambiguous_twee_dialect';
 
 // === Project Types ===
 

@@ -81,6 +81,82 @@ describe('storyHash', () => {
     expect(storyHash({ a: [1, 2] })).not.toBe(storyHash({ a: [2, 1] }));
   });
 
+  // Regression: content blocks and choices carry a randomUUID() `id`
+  // (DEV-199 stable-id rollout) minted fresh on every parse — without
+  // stripping it, re-importing byte-identical Ink/Twee source would
+  // hash differently every time, defeating build dedup the moment
+  // USE_BUILD_DEDUP is on.
+  it('ignores content/choice ids so two parses of identical source hash the same', () => {
+    const graphA = {
+      nodes: {
+        start: {
+          id: 'start',
+          content: [{ id: 'aaaa', kind: 'text', text: 'Hi.', tags: [] }],
+          choices: [{ id: 'bbbb', text: 'Go', target: 'END' }],
+        },
+      },
+    };
+    const graphB = {
+      nodes: {
+        start: {
+          id: 'start',
+          content: [{ id: 'cccc', kind: 'text', text: 'Hi.', tags: [] }],
+          choices: [{ id: 'dddd', text: 'Go', target: 'END' }],
+        },
+      },
+    };
+    expect(storyHash(graphA)).toBe(storyHash(graphB));
+  });
+
+  it('still distinguishes graphs that differ in something other than ids', () => {
+    const graphA = {
+      nodes: {
+        start: { id: 'start', content: [{ id: 'x', kind: 'text', text: 'Hi.', tags: [] }] },
+      },
+    };
+    const graphB = {
+      nodes: {
+        start: { id: 'start', content: [{ id: 'y', kind: 'text', text: 'Bye.', tags: [] }] },
+      },
+    };
+    expect(storyHash(graphA)).not.toBe(storyHash(graphB));
+  });
+
+  // A node's OWN id (its knot/stitch name) is meaningful content, not
+  // an incidental randomUUID — renaming a node must still change the
+  // hash.
+  it('does not strip a node’s own id', () => {
+    const graphA = { nodes: { start: { id: 'start', content: [] } } };
+    const graphB = { nodes: { start: { id: 'renamed', content: [] } } };
+    expect(storyHash(graphA)).not.toBe(storyHash(graphB));
+  });
+
+  // Regression (found in review): a Twee passage can legally be
+  // named `__proto__` (twee-parser.ts's own `nodes` map already
+  // guards against this exact name). stripVolatileIds built its
+  // stripped-nodes record as a plain `{}`, so writing a node keyed
+  // `__proto__` silently dropped it instead of creating an own
+  // property — two graphs differing only in that node's content
+  // hashed IDENTICALLY, wrongly treating a real change as a no-op.
+  it('does not silently drop a node literally named __proto__', () => {
+    // Computed key: the literal `{ __proto__: value }` form would set
+    // this object's OWN PROTOTYPE to `value` (since it's an object)
+    // instead of creating an own property — `graph.nodes` would then
+    // have ZERO own enumerable properties, which defeats this test's
+    // whole point rather than exercising it.
+    const graphA = {
+      nodes: {
+        ['__proto__']: { id: '__proto__', content: [{ kind: 'text', text: 'A', tags: [] }] },
+      },
+    };
+    const graphB = {
+      nodes: {
+        ['__proto__']: { id: '__proto__', content: [{ kind: 'text', text: 'B', tags: [] }] },
+      },
+    };
+    expect(storyHash(graphA)).not.toBe(storyHash(graphB));
+  });
+
   it('throws on null / undefined so an empty story cannot silently collide', () => {
     // Without this guard, canonicalize(null) returns "null" and
     // storyHash(null) = sha256("null") — a real, stable value that

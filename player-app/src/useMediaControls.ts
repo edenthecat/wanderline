@@ -1,3 +1,4 @@
+import { type ContentBlock } from '@wanderline/shared';
 import { fallThroughTarget } from './fall-through';
 import { isFromTextEntry } from './keyboard-target';
 // extract MediaSession + keydown fallback from App.tsx.
@@ -83,7 +84,7 @@ interface NodeLike {
   id: string;
   type?: string;
   parent?: string | null;
-  content: { text: string }[];
+  content: ContentBlock[];
   choices: { target: string }[];
   divert?: string | null;
   metadata?: { transcript?: string | null };
@@ -114,6 +115,17 @@ export interface MediaActions {
 export interface UseMediaControlsArgs {
   story: StoryLike | null;
   currentNode: NodeLike | null;
+  /** The passage's already-resolved on-screen/narrated text (DEV-199
+   * follow-up — found in review: this hook used to re-derive it
+   * itself via `nodeText(currentNode, variables)`, filtering against
+   * the node's FINAL post-every-assignment variable store rather than
+   * the store as it stood at each text block's own point in the
+   * passage, which could show a conditionally-hidden block's text in
+   * the lock-screen/Now Playing title even though it wasn't actually
+   * displayed or narrated. The caller now resolves this once,
+   * correctly, and hands it straight through — this hook no longer
+   * needs `variables`/`callFunction` at all. */
+  displayText: string;
   showInstructions: boolean;
   isAuthenticated: boolean;
   playerState: PlayerState;
@@ -145,6 +157,16 @@ export interface UseMediaControlsArgs {
   /** Current node exposed via a ref so the media-action closures see
    * the latest value even between the binding effect's re-runs. */
   currentNodeRef: React.MutableRefObject<NodeLike | null>;
+  /** The CURRENTLY VISIBLE choices (DEV-199 Phase 4 conditional
+   * choices) — found in review: every `node.choices[...]`/`.length`
+   * below used to read `currentNodeRef.current.choices` directly,
+   * the node's full UNFILTERED list, so a Bluetooth next-track/
+   * seek-forward/confirm press could select or count a choice that's
+   * actually hidden on screen, disagreeing with what's displayed.
+   * Same ref-based reasoning as `currentNodeRef` (App.tsx's own
+   * `visibleChoicesRef`, already used by its multi-click handlers for
+   * exactly this). */
+  visibleChoicesRef: React.MutableRefObject<NodeLike['choices']>;
   /** Latest selected-choice index for the `cycle_choices` /
    * `confirm` actions. Exposed via a ref so rapid headphone presses
    * see the latest value, not the closure-captured snapshot. */
@@ -172,6 +194,7 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
   const {
     story,
     currentNode,
+    displayText,
     showInstructions,
     isAuthenticated,
     playerState,
@@ -180,6 +203,7 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
     startStory,
     handlers,
     currentNodeRef,
+    visibleChoicesRef,
     selectedChoiceRef,
     setSelectedChoice,
   } = args;
@@ -255,25 +279,26 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
       if (!claimFire('next')) return;
       const node = currentNodeRef.current;
       if (!node) return;
+      const choices = visibleChoicesRef.current;
       const navigateToTarget = navigateToTargetRef.current;
       const navigateToNode = navigateToNodeRef.current;
       if (!navigateToTarget || !navigateToNode) return;
       switch (nextAction) {
         case 'choice1': {
-          const choice = node.choices[0];
+          const choice = choices[0];
           if (choice) navigateToTarget(choice.target);
           else if (onwardFrom(node, story)) navigateToNode(onwardFrom(node, story)!);
           break;
         }
         case 'cycle_choices':
-          if (node.choices.length > 0) {
-            setSelectedChoice((c) => Math.min(node.choices.length - 1, c + 1));
+          if (choices.length > 0) {
+            setSelectedChoice((c) => Math.min(choices.length - 1, c + 1));
           }
           break;
         case 'confirm': {
           // Read selection through the ref so rapid headphone presses
           // see the latest value, not the closure-captured snapshot.
-          const choice = node.choices[selectedChoiceRef.current];
+          const choice = choices[selectedChoiceRef.current];
           if (choice) navigateToTarget(choice.target);
           else if (onwardFrom(node, story)) navigateToNode(onwardFrom(node, story)!);
           break;
@@ -292,6 +317,7 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
       if (!claimFire('previous')) return;
       const node = currentNodeRef.current;
       if (!node) return;
+      const choices = visibleChoicesRef.current;
       const navigateToTarget = navigateToTargetRef.current;
       const goBack = goBackRef.current;
       if (!navigateToTarget || !goBack) return;
@@ -304,13 +330,13 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
           // until the passage ends. Registered, wired, and silently doing
           // nothing is indistinguishable from broken to a listener whose
           // only feedback is audio.
-          const choice = node.choices[1];
+          const choice = choices[1];
           if (choice) navigateToTarget(choice.target);
           else goBack();
           break;
         }
         case 'cycle_choices':
-          if (node.choices.length > 0) {
+          if (choices.length > 0) {
             setSelectedChoice((c) => Math.max(0, c - 1));
           }
           break;
@@ -326,11 +352,12 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
       if (!claimFire('seekforward')) return;
       const node = currentNodeRef.current;
       if (!node) return;
+      const choices = visibleChoicesRef.current;
       const navigateToTarget = navigateToTargetRef.current;
       const navigateToNode = navigateToNodeRef.current;
       if (!navigateToTarget || !navigateToNode) return;
-      if (node.choices.length > 0) {
-        const choice = node.choices[0];
+      if (choices.length > 0) {
+        const choice = choices[0];
         if (choice) navigateToTarget(choice.target);
       } else {
         const onward = onwardFrom(node, story);
@@ -359,6 +386,7 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
     goBackRef,
     onHeadphoneButtonPressRef,
     currentNodeRef,
+    visibleChoicesRef,
     selectedChoiceRef,
     setSelectedChoice,
   ]);
@@ -466,16 +494,15 @@ export function useMediaControls(args: UseMediaControlsArgs): UseMediaControlsRe
     if (!story || !currentNode || showInstructions) return;
     const ms = navigator.mediaSession;
     if (!ms) return;
-    const trimmedTranscript = currentNode.metadata?.transcript?.trim();
+    // `displayText` is already resolved by the caller against the
+    // SAME filtering the on-screen/narrated text uses, so this title
+    // can never show text that's actually hidden from the player.
     ms.metadata = new MediaMetadata({
-      title:
-        (trimmedTranscript && trimmedTranscript.slice(0, 50)) ||
-        currentNode.content[0]?.text.slice(0, 50) ||
-        currentNode.id,
+      title: displayText.slice(0, 50) || currentNode.id,
       artist: story.title,
       album: 'Wanderline Story',
     });
-  }, [story, currentNode, showInstructions]);
+  }, [story, currentNode, displayText, showInstructions]);
 
   // 7. Mirror playerState onto MediaSession's playbackState so the OS
   // sees a matching transport state.

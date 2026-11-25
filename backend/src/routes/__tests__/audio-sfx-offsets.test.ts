@@ -69,9 +69,9 @@ describe('GET /assignments', () => {
     const res = await request(app).get(`/api/projects/${PROJECT}/audio/assignments`);
     expect(res.status).toBe(200);
     expect(res.body.assignments.a).toEqual({
-      sfx: [FILE_A, FILE_B],
+      sfx: [{ fileId: FILE_A }, { fileId: FILE_B }],
       sfxOffsets: { [FILE_A]: 1200 },
-      ambience: FILE_B,
+      ambience: [{ fileId: FILE_B }],
     });
   });
 });
@@ -88,7 +88,7 @@ describe('POST /assignments', () => {
       .send({ nodeId: 'a', audioType: 'sfx', audioFileId: FILE_A, offsetMs: 1500 });
     expect(res.status).toBe(201);
     const insert = calls.find(([sql]) => String(sql).includes('INSERT'))!;
-    expect(insert[1]).toEqual([PROJECT, 'a', 'sfx', FILE_A, 1500, true]);
+    expect(insert[1]).toEqual([PROJECT, 'a', 'sfx', FILE_A, 1500, true, null]);
   });
 
   // Re-posting an attached effect: an explicit null means "at the start",
@@ -105,8 +105,8 @@ describe('POST /assignments', () => {
     await request(app)
       .post(`/api/projects/${PROJECT}/audio/assignments`)
       .send({ nodeId: 'a', audioType: 'sfx', audioFileId: FILE_A });
-    expect(inserts[0].slice(4)).toEqual([null, true]);
-    expect(inserts[1].slice(4)).toEqual([null, false]);
+    expect(inserts[0].slice(4)).toEqual([null, true, null]);
+    expect(inserts[1].slice(4)).toEqual([null, false, null]);
   });
 
   // Two attaches to one slot must not both see it empty: the check, clear
@@ -243,7 +243,7 @@ describe('POST /assignments/bulk-reassign', () => {
     const insert = calls.find(([sql]) =>
       String(sql).includes('INSERT INTO node_audio_assignments'),
     )!;
-    expect(insert[1]).toEqual([PROJECT, 'a', 'sfx', FILE_B, 1750]);
+    expect(insert[1]).toEqual([PROJECT, 'a', 'sfx', FILE_B, 1750, null]);
   });
 
   // The node already has the target (it had both files, or a peer just
@@ -268,7 +268,7 @@ describe('POST /assignments/bulk-reassign', () => {
     expect(res.status).toBe(200);
     expect(res.body.swapped).toBe(1);
     const merge = calls.find(([sql]) => sql.includes('COALESCE(offset_ms, $5)'));
-    expect(merge?.[1]).toEqual([PROJECT, 'a', 'sfx', FILE_B, 1750]);
+    expect(merge?.[1]).toEqual([PROJECT, 'a', 'sfx', FILE_B, 1750, null]);
     expect(calls.map(([sql]) => sql)).toContain('COMMIT');
   });
 

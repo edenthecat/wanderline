@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, copyFileSync, statSync } from 'fs';
 import { join } from 'path';
 import { execFileSync } from 'child_process';
-import type { StoryData, AudioFileRow } from './story-data-builder.js';
+import type { StoryData, AudioFileRow, StoryDataNodeAudio } from './story-data-builder.js';
 import { logger } from '../logger.js';
 
 export interface ProcessedAudioFile {
@@ -31,13 +31,19 @@ export function collectUsedAudioFilenames(
 ): Set<string> {
   const usedFilenames = new Set<string>();
 
-  // Add node audio assignments
+  // Add node audio assignments. Each slot can now hold several
+  // variable-conditioned candidates (DEV-199 follow-on) rather than
+  // one fixed file — a static export bundle must ship every
+  // candidate, since the player decides at runtime (from live
+  // variable state) which one actually plays.
   for (const nodeId of Object.keys(storyData.nodes)) {
     const node = storyData.nodes[nodeId];
-    if (node.audio?.voiceover) usedFilenames.add(node.audio.voiceover);
-    if (node.audio?.ambience) usedFilenames.add(node.audio.ambience);
-    if (node.audio?.choice1) usedFilenames.add(node.audio.choice1);
-    if (node.audio?.choice2) usedFilenames.add(node.audio.choice2);
+    for (const slot of ['voiceover', 'ambience', 'choice1', 'choice2'] as const) {
+      for (const variant of node.audio?.[slot] ?? []) usedFilenames.add(variant.file);
+    }
+    for (const variants of Object.values(node.audio?.choices ?? {})) {
+      for (const variant of variants) usedFilenames.add(variant.file);
+    }
     for (const fx of node.audio?.sfx ?? []) usedFilenames.add(fx.file);
   }
 
@@ -257,10 +263,31 @@ export function updateStoryDataFilenames(
   for (const nodeId of Object.keys(storyData.nodes)) {
     const node = storyData.nodes[nodeId];
     if (node.audio) {
-      updateOrRemoveAudioRef(node.audio, 'voiceover', filenameMapping, availableFiles);
-      updateOrRemoveAudioRef(node.audio, 'ambience', filenameMapping, availableFiles);
-      updateOrRemoveAudioRef(node.audio, 'choice1', filenameMapping, availableFiles);
-      updateOrRemoveAudioRef(node.audio, 'choice2', filenameMapping, availableFiles);
+      for (const slot of ['voiceover', 'ambience', 'choice1', 'choice2'] as const) {
+        updateOrRemoveAudioVariants(node.audio, slot, filenameMapping, availableFiles);
+      }
+      // Per-choice-id cues (`audio.choices[choiceId]`) are a map of
+      // slots, not a single slot — same rename-or-drop per id, and
+      // drop the id entirely once its own variant list empties out,
+      // same as `voiceover`/`ambience`/`choice1`/`choice2` above.
+      // Missed here, a WAV cue converted to MP3 during the build
+      // left `choices[id]` still pointing at the absent WAV filename,
+      // so the cue 404s during exported playback.
+      if (node.audio.choices) {
+        for (const choiceId of Object.keys(node.audio.choices)) {
+          const updated = node.audio.choices[choiceId]
+            .map((variant) => ({ ...variant, file: filenameMapping[variant.file] || variant.file }))
+            .filter((variant) => availableFiles.has(variant.file));
+          if (updated.length === 0) {
+            delete node.audio.choices[choiceId];
+          } else {
+            node.audio.choices[choiceId] = updated;
+          }
+        }
+        if (Object.keys(node.audio.choices).length === 0) {
+          delete node.audio.choices;
+        }
+      }
       // Same rename-or-drop as the single slots: a WAV converted to MP3
       // is renamed, and a file missing from the build is dropped rather
       // than left for the player to 404 on.
@@ -304,5 +331,30 @@ function updateOrRemoveAudioRef<K extends string>(
     obj[key] = converted;
   } else if (!availableFiles.has(value)) {
     delete obj[key];
+  }
+}
+
+/**
+ * Same rename-or-drop as updateOrRemoveAudioRef, for a node audio
+ * slot that now holds a list of variable-conditioned candidates
+ * instead of a single filename. Each candidate is renamed/dropped
+ * independently; the slot itself is removed if every candidate ends
+ * up dropped.
+ */
+function updateOrRemoveAudioVariants(
+  audio: StoryDataNodeAudio,
+  slot: 'voiceover' | 'ambience' | 'choice1' | 'choice2',
+  filenameMapping: Record<string, string>,
+  availableFiles: Set<string>,
+): void {
+  const variants = audio[slot];
+  if (!variants) return;
+  const updated = variants
+    .map((variant) => ({ ...variant, file: filenameMapping[variant.file] || variant.file }))
+    .filter((variant) => availableFiles.has(variant.file));
+  if (updated.length === 0) {
+    delete audio[slot];
+  } else {
+    audio[slot] = updated;
   }
 }

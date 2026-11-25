@@ -12,6 +12,12 @@ import { buildMatchTables, matchAudioFile } from '../services/audio-matcher.js';
 import { UPLOAD_DIR } from '../config.js';
 import { uploadPath } from '../services/upload-path.js';
 import { flushDeferredAudioDeletions } from '../services/deferred-audio-deletions.js';
+import {
+  isChoiceAudioType,
+  choiceIdFromAudioType,
+  isValidAudioType,
+} from '../services/choice-audio.js';
+import type { SimpleCondition } from '@wanderline/shared';
 
 const execFileAsync = promisify(execFile);
 
@@ -109,6 +115,35 @@ export function parseOffsetMs(value: unknown): number | null | typeof INVALID_OF
     return INVALID_OFFSET;
   }
   return value;
+}
+
+const INVALID_CONDITION = Symbol('invalid condition');
+const CONDITION_ERROR =
+  'condition must be {variable: non-empty string, operator: one of == != < <= > >=, value: string, number, or boolean}, or omitted/null';
+const CONDITION_OPERATORS = new Set(['==', '!=', '<', '<=', '>', '>=']);
+
+/**
+ * A variable-conditioned audio variant's condition from the request
+ * body. Undefined and null both mean "the default/unconditioned
+ * variant for this slot" — same absent-means-default convention
+ * `parseOffsetMs` uses. The shape is validated here (not just typed)
+ * since it's built from UI dropdowns on a trusted client but still
+ * crosses the network as plain JSON.
+ */
+export function parseCondition(value: unknown): SimpleCondition | null | typeof INVALID_CONDITION {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'object' || Array.isArray(value)) return INVALID_CONDITION;
+  const { variable, operator, value: conditionValue } = value as Record<string, unknown>;
+  if (typeof variable !== 'string' || variable.trim().length === 0) return INVALID_CONDITION;
+  if (typeof operator !== 'string' || !CONDITION_OPERATORS.has(operator)) return INVALID_CONDITION;
+  if (
+    typeof conditionValue !== 'string' &&
+    typeof conditionValue !== 'number' &&
+    typeof conditionValue !== 'boolean'
+  ) {
+    return INVALID_CONDITION;
+  }
+  return { variable, operator: operator as SimpleCondition['operator'], value: conditionValue };
 }
 
 /**
@@ -785,7 +820,11 @@ export function createAudioRouter(pool: Pool): Router {
    *                       choice2: { type: string, format: uuid, nullable: true }
    *                       sfx:
    *                         type: array
-   *                         items: { type: string, format: uuid }
+   *                         items:
+   *                           type: object
+   *                           properties:
+   *                             fileId: { type: string, format: uuid }
+   *                             condition: { type: object, nullable: true }
    *                       sfxOffsets:
    *                         type: object
    *                         description: |
@@ -809,32 +848,66 @@ export function createAudioRouter(pool: Pool): Router {
         [id],
       );
 
-      // Group by node_id
+      // Group by node_id. Each single-value slot is now a LIST of
+      // variants (one default + any number of variable-conditioned
+      // ones), not a single file id — same shape change
+      // collectNodeAudio made to the player-facing manifest.
+      interface AssignmentVariant {
+        fileId: string;
+        condition?: SimpleCondition;
+      }
+      // Null-prototype at both levels, same reasoning as
+      // collectNodeAudio in story-data-builder.ts: `row.node_id` is a
+      // knot/stitch identifier and `choiceId` comes straight out of
+      // `audio_type`'s `choice:<id>` encoding — both author-
+      // controlled text that can legally be `__proto__`. On an
+      // ordinary `{}`, that reads the INHERITED Object.prototype
+      // (truthy, so the `!assignments[...]`/`??=` guards below never
+      // fire) and the next `.push`/property access throws, crashing
+      // this whole endpoint for the project until the row is deleted.
       const assignments: Record<
         string,
         {
-          voiceover?: string;
-          ambience?: string;
-          choice1?: string;
-          choice2?: string;
-          sfx: string[];
+          voiceover?: AssignmentVariant[];
+          ambience?: AssignmentVariant[];
+          choice1?: AssignmentVariant[];
+          choice2?: AssignmentVariant[];
+          /** A choice's own cue, keyed by the choice's stable id —
+           * addresses correctly under reordering, unlike choice1/
+           * choice2's ordinal slots, which this coexists with rather
+           * than replaces (a choice with no id yet still uses those). */
+          choices?: Record<string, AssignmentVariant[]>;
+          sfx: AssignmentVariant[];
           sfxOffsets?: Record<string, number>;
         }
-      > = {};
+      > = Object.create(null);
       for (const row of result.rows) {
         if (!assignments[row.node_id]) {
           assignments[row.node_id] = { sfx: [] };
         }
+        const condition: SimpleCondition | undefined = row.condition ?? undefined;
         if (row.audio_type === 'sfx') {
           const node = assignments[row.node_id];
-          node.sfx.push(row.audio_file_id);
+          node.sfx.push({ fileId: row.audio_file_id, ...(condition ? { condition } : {}) });
           if (typeof row.offset_ms === 'number') {
             (node.sfxOffsets ??= {})[row.audio_file_id] = row.offset_ms;
           }
+        } else if (isChoiceAudioType(row.audio_type)) {
+          const node = assignments[row.node_id];
+          const choiceId = choiceIdFromAudioType(row.audio_type);
+          ((node.choices ??= Object.create(null) as Record<string, AssignmentVariant[]>)[
+            choiceId
+          ] ??= []).push({
+            fileId: row.audio_file_id,
+            ...(condition ? { condition } : {}),
+          });
         } else {
-          assignments[row.node_id][
-            row.audio_type as 'voiceover' | 'ambience' | 'choice1' | 'choice2'
-          ] = row.audio_file_id;
+          const node = assignments[row.node_id];
+          const slot = row.audio_type as 'voiceover' | 'ambience' | 'choice1' | 'choice2';
+          (node[slot] ??= []).push({
+            fileId: row.audio_file_id,
+            ...(condition ? { condition } : {}),
+          });
         }
       }
 
@@ -853,8 +926,10 @@ export function createAudioRouter(pool: Pool): Router {
    *     summary: Assign (or replace) one audio slot on a node.
    *     description: |
    *       Slots are `voiceover`, `ambience`, `choice1`, `choice2`.
-   *       Posting an existing (nodeId, audioType) pair replaces the
-   *       previous file_id.
+   *       Posting an existing (nodeId, audioType, condition) triple
+   *       replaces the previous file_id for that variant; a different
+   *       condition adds a new variant alongside it rather than
+   *       replacing it.
    *     tags: [Audio]
    *     parameters:
    *       - in: path
@@ -880,6 +955,23 @@ export function createAudioRouter(pool: Pool): Router {
    *               expectEmpty:
    *                 type: boolean
    *                 description: Refuse with 409 instead of replacing if the slot is already filled.
+   *               condition:
+   *                 type: object
+   *                 nullable: true
+   *                 description: |
+   *                   Gates this variant on a story variable's value. Omit
+   *                   or null for the slot's default/fallback variant.
+   *                   Multiple variants (one default + several
+   *                   conditioned) can coexist in the same slot.
+   *                 required: [variable, operator, value]
+   *                 properties:
+   *                   variable: { type: string }
+   *                   operator: { type: string, enum: ['==', '!=', '<', '<=', '>', '>='] }
+   *                   value:
+   *                     oneOf:
+   *                       - { type: string }
+   *                       - { type: number }
+   *                       - { type: boolean }
    *     responses:
    *       200: { description: Assigned. }
    *       400: { description: Missing / invalid fields. }
@@ -888,7 +980,14 @@ export function createAudioRouter(pool: Pool): Router {
   router.post('/assignments', async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
-      const { nodeId, audioType, audioFileId, offsetMs, expectEmpty } = req.body;
+      const {
+        nodeId,
+        audioType,
+        audioFileId,
+        offsetMs,
+        expectEmpty,
+        condition: rawCondition,
+      } = req.body;
 
       if (!nodeId || !audioType || !audioFileId) {
         res.status(400).json({ error: 'nodeId, audioType, and audioFileId are required' });
@@ -903,11 +1002,17 @@ export function createAudioRouter(pool: Pool): Router {
         res.status(400).json({ error: 'offsetMs only applies to sfx' });
         return;
       }
+      const condition = parseCondition(rawCondition);
+      if (condition === INVALID_CONDITION) {
+        res.status(400).json({ error: CONDITION_ERROR });
+        return;
+      }
+      const conditionJson = condition ? JSON.stringify(condition) : null;
 
-      if (!['voiceover', 'ambience', 'sfx', 'choice1', 'choice2'].includes(audioType)) {
-        res
-          .status(400)
-          .json({ error: 'audioType must be voiceover, ambience, sfx, choice1, or choice2' });
+      if (!isValidAudioType(audioType)) {
+        res.status(400).json({
+          error: 'audioType must be voiceover, ambience, sfx, choice1, choice2, or choice:<id>',
+        });
         return;
       }
 
@@ -917,8 +1022,11 @@ export function createAudioRouter(pool: Pool): Router {
       const offsetGiven = offsetMs !== undefined;
 
       // A single slot's check, clear and fill run in one transaction under
-      // a lock on that slot, so two attaches can't both see it empty (and
-      // expectEmpty can't be sidestepped by a peer's concurrent attach).
+      // a lock on that slot, so two attaches can't both see the SAME
+      // condition as empty (and expectEmpty can't be sidestepped by a
+      // peer's concurrent attach). The lock is slot-wide (not per
+      // condition) since that's the contended resource — multiple
+      // conditions legitimately coexist in one slot now.
       const client = await pool.connect();
       let failure: Error | undefined;
       let result: { rows: unknown[] };
@@ -930,12 +1038,15 @@ export function createAudioRouter(pool: Pool): Router {
           ]);
           // An editor attaching to what it saw as an empty slot asks for
           // this, so a take a peer attached in the meantime isn't
-          // silently replaced.
+          // silently replaced. "Empty" means this SAME condition (or
+          // the default, when none is given) has no row yet — a
+          // different condition's row doesn't count as "filled" here.
           if (expectEmpty === true) {
             const existing = await client.query(
               `SELECT 1 FROM node_audio_assignments
-               WHERE project_id = $1 AND node_id = $2 AND audio_type = $3`,
-              [id, nodeId, audioType],
+               WHERE project_id = $1 AND node_id = $2 AND audio_type = $3
+                 AND condition IS NOT DISTINCT FROM $4`,
+              [id, nodeId, audioType, conditionJson],
             );
             if (existing.rows.length > 0) {
               await client.query('ROLLBACK');
@@ -943,22 +1054,46 @@ export function createAudioRouter(pool: Pool): Router {
               return;
             }
           }
-          // For voiceover, ambience, choice1, choice2 - replace existing assignment (sfx can have multiple)
+          // Replace the existing assignment for THIS condition only
+          // (sfx can have multiple candidates regardless of
+          // condition, so it skips this clear-before-insert step
+          // entirely, same as before this feature).
           await client.query(
             `DELETE FROM node_audio_assignments
-             WHERE project_id = $1 AND node_id = $2 AND audio_type = $3`,
-            [id, nodeId, audioType],
+             WHERE project_id = $1 AND node_id = $2 AND audio_type = $3
+               AND condition IS NOT DISTINCT FROM $4`,
+            [id, nodeId, audioType, conditionJson],
           );
         }
+        // For voiceover/ambience/choice1/choice2, the preceding DELETE
+        // already cleared any row matching this exact condition, so
+        // this INSERT's own ON CONFLICT branch never actually fires
+        // for those — it's insurance against a conflict the advisory
+        // lock already rules out. For sfx (which skips that DELETE,
+        // since multiple sfx candidates legitimately coexist), this
+        // IS the real de-duplication path, so the conflict target has
+        // to be correct for the common no-condition case too: a plain
+        // unique constraint can't catch two NULL-condition rows as
+        // duplicates of each other (Postgres treats every NULL as
+        // distinct — confirmed empirically), hence branching to the
+        // partial (condition IS NULL) index when there's no condition.
         result = await client.query(
-          `INSERT INTO node_audio_assignments (project_id, node_id, audio_type, audio_file_id, offset_ms)
-           VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT (project_id, node_id, audio_type, audio_file_id)
-           DO UPDATE SET offset_ms = CASE WHEN $6 THEN EXCLUDED.offset_ms
-                                          ELSE node_audio_assignments.offset_ms END,
-                         updated_at = CURRENT_TIMESTAMP
-           RETURNING *`,
-          [id, nodeId, audioType, audioFileId, offset, offsetGiven],
+          conditionJson === null
+            ? `INSERT INTO node_audio_assignments (project_id, node_id, audio_type, audio_file_id, offset_ms, condition)
+               VALUES ($1, $2, $3, $4, $5, $7)
+               ON CONFLICT (project_id, node_id, audio_type, audio_file_id) WHERE condition IS NULL
+               DO UPDATE SET offset_ms = CASE WHEN $6 THEN EXCLUDED.offset_ms
+                                              ELSE node_audio_assignments.offset_ms END,
+                             updated_at = CURRENT_TIMESTAMP
+               RETURNING *`
+            : `INSERT INTO node_audio_assignments (project_id, node_id, audio_type, audio_file_id, offset_ms, condition)
+               VALUES ($1, $2, $3, $4, $5, $7)
+               ON CONFLICT (project_id, node_id, audio_type, audio_file_id, condition)
+               DO UPDATE SET offset_ms = CASE WHEN $6 THEN EXCLUDED.offset_ms
+                                              ELSE node_audio_assignments.offset_ms END,
+                             updated_at = CURRENT_TIMESTAMP
+               RETURNING *`,
+          [id, nodeId, audioType, audioFileId, offset, offsetGiven, conditionJson],
         );
         await client.query('COMMIT');
       } catch (err) {
@@ -1071,23 +1206,52 @@ export function createAudioRouter(pool: Pool): Router {
    *         name: audioType
    *         required: true
    *         schema: { type: string, enum: [voiceover, ambience, choice1, choice2] }
+   *       - in: query
+   *         name: condition
+   *         schema: { type: string }
+   *         description: |
+   *           JSON-encoded {variable, operator, value} — targets that
+   *           specific conditioned variant. Omit to target the
+   *           default/unconditioned variant (not every variant).
    *     responses:
    *       200: { description: Cleared (or already empty). }
    */
   router.delete('/assignments/:nodeId/:audioType', async (req: Request, res: Response) => {
     try {
       const { id, nodeId, audioType } = req.params;
-      const { audioFileId } = req.query;
+      const { audioFileId, condition: rawCondition } = req.query;
+
+      // A JSON-encoded condition narrows to one specific
+      // variable-conditioned variant; omitting it means "the
+      // default/unconditioned variant for this slot" (unchanged from
+      // before conditioned variants existed) — not "every variant".
+      let conditionJson: string | null = null;
+      if (typeof rawCondition === 'string') {
+        let parsedCondition: unknown;
+        try {
+          parsedCondition = JSON.parse(rawCondition);
+        } catch {
+          res.status(400).json({ error: 'condition must be valid JSON' });
+          return;
+        }
+        const condition = parseCondition(parsedCondition);
+        if (condition === INVALID_CONDITION) {
+          res.status(400).json({ error: CONDITION_ERROR });
+          return;
+        }
+        conditionJson = condition ? JSON.stringify(condition) : null;
+      }
 
       let query = `
         DELETE FROM node_audio_assignments
         WHERE project_id = $1 AND node_id = $2 AND audio_type = $3
+          AND condition IS NOT DISTINCT FROM $4
       `;
-      const params: (string | undefined)[] = [id, nodeId, audioType];
+      const params: (string | null)[] = [id, nodeId, audioType, conditionJson];
 
       // For sfx, we might want to remove a specific file
       if (audioFileId) {
-        query += ' AND audio_file_id = $4';
+        query += ' AND audio_file_id = $5';
         params.push(audioFileId as string);
       }
 
@@ -1176,6 +1340,13 @@ export function createAudioRouter(pool: Pool): Router {
         audioType: string;
         fromFileId: string;
         toFileId: string;
+        /** Scope this op to ONE variant. The KEY's presence (not just
+         * its value) is what matters: omitted entirely = swap every
+         * variant of (nodeId, audioType, fromFileId) regardless of
+         * condition (the longstanding "swap everywhere" behavior);
+         * present (including `null`, for the default/unconditioned
+         * variant) = swap only that one row. */
+        condition?: unknown;
       }>;
     };
 
@@ -1187,16 +1358,24 @@ export function createAudioRouter(pool: Pool): Router {
     // a downstream pg `22P02 invalid_text_representation` that the
     // catch block would otherwise turn into a 500.
     const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    for (const op of ops) {
+    // Parsed condition per op, by array index — built once here so
+    // the per-op loop below doesn't re-validate. `hasConditionScope`
+    // flags array index true only when the ORIGINAL request body had
+    // the key at all (see the type's own doc comment above for why
+    // that's distinct from the parsed value being null).
+    const hasConditionScope = ops.map((op) => Object.hasOwn(op, 'condition'));
+    const scopedConditionJson: (string | null)[] = [];
+    for (let i = 0; i < ops.length; i++) {
+      const op = ops[i];
       if (!op.nodeId || !op.audioType || !op.fromFileId || !op.toFileId) {
         res.status(400).json({
           error: 'every op must include nodeId, audioType, fromFileId, toFileId',
         });
         return;
       }
-      if (!['voiceover', 'ambience', 'sfx', 'choice1', 'choice2'].includes(op.audioType)) {
+      if (!isValidAudioType(op.audioType)) {
         res.status(400).json({
-          error: `audioType must be voiceover/ambience/sfx/choice1/choice2; got "${op.audioType}"`,
+          error: `audioType must be voiceover/ambience/sfx/choice1/choice2/choice:<id>; got "${op.audioType}"`,
         });
         return;
       }
@@ -1209,6 +1388,14 @@ export function createAudioRouter(pool: Pool): Router {
         // caller knows their UI is sending pointless rows.
         res.status(400).json({ error: 'fromFileId and toFileId must differ' });
         return;
+      }
+      if (hasConditionScope[i]) {
+        const parsed = parseCondition(op.condition);
+        if (parsed === INVALID_CONDITION) {
+          res.status(400).json({ error: CONDITION_ERROR });
+          return;
+        }
+        scopedConditionJson[i] = parsed ? JSON.stringify(parsed) : null;
       }
     }
 
@@ -1256,13 +1443,34 @@ export function createAudioRouter(pool: Pool): Router {
       }
 
       let swapped = 0;
-      for (const op of ops) {
-        const del = await client.query(
-          `DELETE FROM node_audio_assignments
-           WHERE project_id = $1 AND node_id = $2 AND audio_type = $3 AND audio_file_id = $4
-           RETURNING id, offset_ms`,
-          [id, op.nodeId, op.audioType, op.fromFileId],
-        );
+      for (let i = 0; i < ops.length; i++) {
+        const op = ops[i];
+        // A fromFileId can now match MORE THAN ONE row for the same
+        // (node, type) — once under each of several conditions, plus
+        // possibly the default. Swap each one individually, carrying
+        // its own condition (and offset) forward, rather than
+        // assuming exactly one row — that assumption is what the old
+        // ON CONFLICT target (now a stale 4-column constraint,
+        // widened to 5 by the conditioned-variants migration) relied
+        // on. When the op named a specific condition to scope to
+        // (hasConditionScope[i]), only THAT one row is touched —
+        // without this, "Replace" on a single variant silently
+        // applied to every variant of the slot sharing fromFileId
+        // (found in review).
+        const del = hasConditionScope[i]
+          ? await client.query(
+              `DELETE FROM node_audio_assignments
+               WHERE project_id = $1 AND node_id = $2 AND audio_type = $3 AND audio_file_id = $4
+                 AND condition IS NOT DISTINCT FROM $5::jsonb
+               RETURNING id, offset_ms, condition`,
+              [id, op.nodeId, op.audioType, op.fromFileId, scopedConditionJson[i]],
+            )
+          : await client.query(
+              `DELETE FROM node_audio_assignments
+               WHERE project_id = $1 AND node_id = $2 AND audio_type = $3 AND audio_file_id = $4
+               RETURNING id, offset_ms, condition`,
+              [id, op.nodeId, op.audioType, op.fromFileId],
+            );
         if (del.rows.length === 0) {
           // The op promised this assignment existed; if not, the
           // caller's view of the world is stale. Roll back so they
@@ -1273,27 +1481,46 @@ export function createAudioRouter(pool: Pool): Router {
           });
           return;
         }
-        // Swapping in a new take keeps the effect's timing: the author
-        // placed it against the words, not against the file.
-        const inserted = await client.query(
-          `INSERT INTO node_audio_assignments (project_id, node_id, audio_type, audio_file_id, offset_ms)
-           VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT (project_id, node_id, audio_type, audio_file_id) DO NOTHING
-           RETURNING id`,
-          [id, op.nodeId, op.audioType, op.toFileId, del.rows[0].offset_ms ?? null],
-        );
-        if (inserted.rows.length === 0) {
-          // The target is already attached to this node (the node had both
-          // files, or a peer attached it meanwhile). Merge rather than
-          // fail: "swap everywhere" would otherwise never succeed on such a
-          // node. The target keeps its own timing if it has one, and
-          // otherwise takes the source's, so the effect isn't moved.
-          await client.query(
-            `UPDATE node_audio_assignments
-             SET offset_ms = COALESCE(offset_ms, $5), updated_at = CURRENT_TIMESTAMP
-             WHERE project_id = $1 AND node_id = $2 AND audio_type = $3 AND audio_file_id = $4`,
-            [id, op.nodeId, op.audioType, op.toFileId, del.rows[0].offset_ms ?? null],
+        for (const deleted of del.rows as { offset_ms: number | null; condition: unknown }[]) {
+          const conditionJson = deleted.condition ? JSON.stringify(deleted.condition) : null;
+          // Swapping in a new take keeps the effect's timing: the author
+          // placed it against the words, not against the file.
+          //
+          // The conflict target differs by whether this row is
+          // conditioned: the plain 5-column constraint can't catch a
+          // NULL-condition duplicate (Postgres treats every NULL as
+          // distinct from every other NULL in an ordinary unique
+          // constraint — confirmed empirically), so the default
+          // variant needs the partial (condition IS NULL) index
+          // instead, same as the other two auto-match insert sites.
+          const inserted = await client.query(
+            conditionJson === null
+              ? `INSERT INTO node_audio_assignments (project_id, node_id, audio_type, audio_file_id, offset_ms, condition)
+                 VALUES ($1, $2, $3, $4, $5, $6)
+                 ON CONFLICT (project_id, node_id, audio_type, audio_file_id) WHERE condition IS NULL DO NOTHING
+                 RETURNING id`
+              : `INSERT INTO node_audio_assignments (project_id, node_id, audio_type, audio_file_id, offset_ms, condition)
+                 VALUES ($1, $2, $3, $4, $5, $6)
+                 ON CONFLICT (project_id, node_id, audio_type, audio_file_id, condition) DO NOTHING
+                 RETURNING id`,
+            [id, op.nodeId, op.audioType, op.toFileId, deleted.offset_ms ?? null, conditionJson],
           );
+          if (inserted.rows.length === 0) {
+            // The target is already attached to this node under the
+            // SAME condition (the node had both files under it, or a
+            // peer attached it meanwhile). Merge rather than fail:
+            // "swap everywhere" would otherwise never succeed on such
+            // a node. The target keeps its own timing if it has one,
+            // and otherwise takes the source's, so the effect isn't
+            // moved.
+            await client.query(
+              `UPDATE node_audio_assignments
+               SET offset_ms = COALESCE(offset_ms, $5), updated_at = CURRENT_TIMESTAMP
+               WHERE project_id = $1 AND node_id = $2 AND audio_type = $3 AND audio_file_id = $4
+                 AND condition IS NOT DISTINCT FROM $6`,
+              [id, op.nodeId, op.audioType, op.toFileId, deleted.offset_ms ?? null, conditionJson],
+            );
+          }
         }
         swapped += 1;
       }
@@ -1592,12 +1819,17 @@ export function createAudioRouter(pool: Pool): Router {
           const matchedAudioType: string = match?.audioType ?? 'voiceover';
 
           if (matchedNodeId) {
-            // Auto-assign with the determined audio type
+            // Auto-assign with the determined audio type. Always the
+            // default (no condition) variant, so the conflict target
+            // is the partial index scoped to condition IS NULL rows
+            // — the plain 5-column unique constraint wouldn't catch
+            // this, since Postgres treats every NULL as distinct from
+            // every other NULL in an ordinary unique constraint.
             await pool.query(
               `
             INSERT INTO node_audio_assignments (project_id, node_id, audio_type, audio_file_id)
             VALUES ($1, $2, $3, $4)
-            ON CONFLICT (project_id, node_id, audio_type, audio_file_id) DO NOTHING
+            ON CONFLICT (project_id, node_id, audio_type, audio_file_id) WHERE condition IS NULL DO NOTHING
           `,
               [id, matchedNodeId, matchedAudioType, audioFile.id],
             );
@@ -1923,11 +2155,15 @@ export function createAudioRouter(pool: Pool): Router {
         const matchedAudioType: string = match?.audioType ?? 'voiceover';
 
         if (matchedNodeId) {
+          // Always the default (no condition) variant — see the
+          // matching comment at the bulk-upload auto-match site for
+          // why the conflict target is the partial (condition IS
+          // NULL) index rather than the plain 5-column constraint.
           await pool.query(
             `
             INSERT INTO node_audio_assignments (project_id, node_id, audio_type, audio_file_id)
             VALUES ($1, $2, $3, $4)
-            ON CONFLICT (project_id, node_id, audio_type, audio_file_id) DO NOTHING
+            ON CONFLICT (project_id, node_id, audio_type, audio_file_id) WHERE condition IS NULL DO NOTHING
           `,
             [id, matchedNodeId, matchedAudioType, audioFile.id],
           );

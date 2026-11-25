@@ -20,11 +20,22 @@
  *     StoryCaption / StoryMenu / StoryAuthor / StorySubtitle
  *     (bodies preserved verbatim on graph.twee.specials so a
  *     graph edit + re-emit doesn't destroy them).
+ *   - Twine macro dialect detection (DEV-199 Phase 6): StoryData's
+ *     `format` field, or — when that's missing/unrecognized — a
+ *     syntax-sniffing heuristic over macro delimiters, resolves to
+ *     'harlowe' | 'sugarcube' | 'chapbook' on graph.twee.dialect.
+ *     Genuinely ambiguous input (no signal, or a tie between two
+ *     dialects) surfaces an `ambiguous_twee_dialect` validation
+ *     warning rather than guessing — misdetection would silently
+ *     parse real macro variables/conditionals through the wrong
+ *     grammar. See detectTweeDialect.
  *
- * Deliberately out of scope for v1 (surface as follow-ups):
- *   - <<macros>> — parsed but preserved verbatim in content text.
- *   - Conditional links (`[[Text|Target][cond]]`) — parsed as if the
- *     condition wasn't there.
+ * <<macros>> and conditional links (`[[Text|Target][cond]]`) are
+ * still parsed-but-inert as of Phase 6 — dialect detection on its own
+ * doesn't yet translate macro syntax into Choice.condition /
+ * AssignmentBlock content. That's Phases 7 (Harlowe), 8 (SugarCube),
+ * and 9 (Chapbook), each building on the dialect this module now
+ * resolves.
  *
  * Twee 1 rejection: the `.tw` extension is used for both Twee 1 and
  * Twee 3. Detection is a single signal — a source with NO `:: `
@@ -34,15 +45,21 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { evaluate } from '@wanderline/shared';
 import type {
   StoryGraph,
   StoryNode,
-  TextContent,
+  ContentBlock,
   Choice,
   ValidationResult,
   ValidationMessage,
   NodeType,
+  TweeDialect,
 } from '../types.js';
+import { extractLinks, bodyToContent, createVariableState } from './twee-content.js';
+import { processHarlowePassageBody } from './harlowe-macros.js';
+import { processSugarCubePassageBody } from './sugarcube-macros.js';
+import { processChapbookPassageBody } from './chapbook-macros.js';
 
 export class TweeParseError extends Error {
   constructor(
@@ -238,73 +255,6 @@ const SPECIAL_PASSAGES = new Set([
 ]);
 
 /**
- * extract every link on a passage body + return the body
- * text with the links removed (so the plain content lines don't
- * contain markup). Handles all four shapes documented in the file
- * header.
- *
- * A conditional `[Cond]` suffix (Twine's SugarCube macro pattern) is
- * tolerated but stripped — the parser doesn't evaluate conditions.
- */
-function extractLinks(body: string): { choices: Choice[]; contentBody: string } {
-  const choices: Choice[] = [];
-  const linkPattern = /\[\[([^\][]*?)\]\](?:\[[^\]]*\])?/g;
-  const contentBody = body.replace(linkPattern, (_full, inner: string) => {
-    const link = parseLinkInner(inner);
-    if (link) choices.push(link);
-    // Links are removed from the content stream — they're modelled
-    // as choices, not inline text.
-    return '';
-  });
-  return { choices, contentBody };
-}
-
-function parseLinkInner(inner: string): Choice | null {
-  const trimmed = inner.trim();
-  if (!trimmed) return null;
-  let text: string;
-  let target: string;
-  // Split on the FIRST occurrence of the delimiter — `String.split`
-  // returns every segment, so `'a->b->c'.split('->')` yields three
-  // parts and destructuring silently drops `->c`. Use indexOf so a
-  // delimiter appearing later in the text/target survives.
-  //
-  // Delimiter priority when multiple are present in the same link:
-  // `|` beats `->`/`<-`. A link like `[[Attack -> retreat|Cave]]`
-  // is authored as pipe form (text on the left, target on the right)
-  // — splitting at `->` first would produce text='Attack' and
-  // target='retreat|Cave' which is neither what the author wrote nor
-  // a resolvable passage. Arrow-form links exist too but they never
-  // legitimately contain a `|` in the text or target (Twee 3 spec).
-  let idx: number;
-  if ((idx = trimmed.indexOf('|')) !== -1) {
-    // Shape: [[Text|Target]]
-    text = trimmed.slice(0, idx).trim();
-    target = trimmed.slice(idx + 1).trim();
-  } else if ((idx = trimmed.indexOf('->')) !== -1) {
-    // Shape: [[Text->Target]]
-    text = trimmed.slice(0, idx).trim();
-    target = trimmed.slice(idx + 2).trim();
-  } else if ((idx = trimmed.indexOf('<-')) !== -1) {
-    // Shape: [[Target<-Text]] (reversed)
-    target = trimmed.slice(0, idx).trim();
-    text = trimmed.slice(idx + 2).trim();
-  } else {
-    // Shape: [[Target]] — display text is the target name.
-    text = trimmed;
-    target = trimmed;
-  }
-  if (!target) return null;
-  return {
-    text: text || target,
-    target,
-    sticky: false,
-    fallback: false,
-    tags: [],
-  };
-}
-
-/**
  * Twee 3 identifiers can contain spaces, but StoryGraph node
  * ids are keyed under Record<string, StoryNode>. We use the passage
  * name verbatim as the id — same convention Ink uses for knot names —
@@ -315,34 +265,114 @@ function passageNameToId(name: string): string {
   return name;
 }
 
-/**
- * Parse the raw body content into a TextContent[]. Twee stores prose
- * as a single flat block; we split on blank lines to give each paragraph
- * its own TextContent (parity with Ink's stitch-per-paragraph feel).
- */
-function bodyToContent(body: string): TextContent[] {
-  const trimmed = body.trim();
-  if (!trimmed) return [];
-  return trimmed
-    .split(/\n\s*\n/)
-    .map((chunk) => chunk.trim())
-    .filter(Boolean)
-    .map((text): TextContent => ({
-      // reverse the `\::` line-start escape the emitter
-      // writes. Without this, a genuine `::` paragraph starts
-      // gets a permanent leading backslash on every round-trip.
-      // Only strips the ONE backslash that guards the delimiter;
-      // authors who want a literal `\::` at line-start can
-      // double-escape as `\\::` (and that only affects them if
-      // they later mutate the graph, which is a fine trade).
-      text: text.replace(/(^|\n)\\::/g, '$1::'),
-      tags: [],
-    }));
-}
-
 export interface ParseTweeOptions {
   /** Story ID to assign. Generated when omitted. */
   storyId?: string;
+}
+
+export interface DialectDetectionResult {
+  dialect: TweeDialect | null;
+  /** True when `dialect` (or the lack of one) came from sniffing
+   * macro syntax rather than an explicit StoryData `format` field. */
+  sniffed: boolean;
+  /**
+   * True when `dialect` is null AND there's an actual reason to flag
+   * it — either the source has macro-like syntax that didn't resolve
+   * to one dialect (a genuine tie), or StoryData explicitly named a
+   * format this parser doesn't recognize. False for the overwhelming
+   * common case — plain Twee with no format set and no macros
+   * anywhere — where there's nothing to misdetect and a warning
+   * would just be noise on every ordinary hyperlink-based story.
+   */
+  ambiguous: boolean;
+}
+
+const FORMAT_FIELD_DIALECT_PATTERNS: { pattern: RegExp; dialect: TweeDialect }[] = [
+  { pattern: /harlowe/i, dialect: 'harlowe' },
+  { pattern: /sugarcube/i, dialect: 'sugarcube' },
+  { pattern: /chapbook/i, dialect: 'chapbook' },
+];
+
+function detectDialectFromFormatField(
+  storyData: Record<string, unknown> | undefined,
+): TweeDialect | null {
+  const format = storyData?.format;
+  if (typeof format !== 'string') return null;
+  for (const { pattern, dialect } of FORMAT_FIELD_DIALECT_PATTERNS) {
+    if (pattern.test(format)) return dialect;
+  }
+  return null;
+}
+
+// Syntax signatures used ONLY when StoryData's `format` field is
+// missing or names something this parser doesn't recognize (a custom
+// format, Snowman, a typo). Each dialect's macro delimiter is close
+// to unambiguous on its own, EXCEPT Chapbook's vars-block separator —
+// a bare `--` alone on its own line — which can also appear as prose
+// (an em-dash substitute), so it counts for the same single point a
+// real `[if ...]` match would rather than being weighted higher.
+const HARLOWE_MACRO_RE = /\(\s*(set|if|display|print|link|goto)\s*:/gi;
+const SUGARCUBE_MACRO_RE = /<<\s*(set|if|print|display|goto|link)\b/gi;
+const CHAPBOOK_INSERT_RE = /^\[(if|else|unless)\b/gim;
+const CHAPBOOK_VARS_SEPARATOR_RE = /^--\s*$/m;
+
+function sniffDialectFromSource(source: string): { dialect: TweeDialect | null; anyHits: boolean } {
+  const chapbookInsertHits = (source.match(CHAPBOOK_INSERT_RE) ?? []).length;
+  const hits: Array<[TweeDialect, number]> = [
+    ['harlowe', (source.match(HARLOWE_MACRO_RE) ?? []).length],
+    ['sugarcube', (source.match(SUGARCUBE_MACRO_RE) ?? []).length],
+    [
+      'chapbook',
+      // The vars-block separator only counts as a tie-breaking BONUS
+      // on top of an already-real [if]/insert match — on its own a
+      // bare `--` line is too easily confused with a prose em-dash
+      // paragraph break, which would otherwise misdetect any plain
+      // Harlowe/SugarCube story that happens to use one as Chapbook.
+      chapbookInsertHits +
+        (chapbookInsertHits > 0 && CHAPBOOK_VARS_SEPARATOR_RE.test(source) ? 1 : 0),
+    ],
+  ];
+  const withHits = hits.filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]);
+  if (withHits.length === 0) return { dialect: null, anyHits: false };
+  // A tie between two dialects' signatures is exactly the
+  // "misdetection would silently produce a wrong-but-plausible parse"
+  // case the plan warns about — stay ambiguous rather than picking
+  // arbitrarily between them.
+  if (withHits.length > 1 && withHits[0][1] === withHits[1][1]) {
+    return { dialect: null, anyHits: true };
+  }
+  return { dialect: withHits[0][0], anyHits: true };
+}
+
+/**
+ * Resolve which Twine macro dialect a Twee source uses. Prefers
+ * StoryData's own `format` field (what Twine itself wrote on export);
+ * falls back to sniffing macro syntax only when that's missing or
+ * names a format this parser doesn't recognize. Returns a null
+ * dialect when genuinely ambiguous — callers must not guess, since a
+ * wrong dialect silently parses real macro variables/conditionals
+ * through the wrong grammar in Phases 7-9.
+ *
+ * `ambiguous` deliberately excludes the "no format, no macros
+ * anywhere" case: an ordinary hyperlink-based Twee story has nothing
+ * for any dialect to misdetect, so it stays silently undetected
+ * rather than raising a warning with no actionable follow-up.
+ */
+export function detectTweeDialect(
+  storyData: Record<string, unknown> | undefined,
+  source: string,
+): DialectDetectionResult {
+  const fromFormat = detectDialectFromFormatField(storyData);
+  if (fromFormat) return { dialect: fromFormat, sniffed: false, ambiguous: false };
+
+  const sniffed = sniffDialectFromSource(source);
+  const formatNamedSomethingUnrecognized =
+    typeof storyData?.format === 'string' && storyData.format.trim().length > 0;
+  return {
+    dialect: sniffed.dialect,
+    sniffed: true,
+    ambiguous: sniffed.dialect === null && (sniffed.anyHits || formatNamedSomethingUnrecognized),
+  };
 }
 
 /**
@@ -357,6 +387,35 @@ export interface ParseTweeOptions {
  * returned graph so the import survives and shows the user what
  * needs fixing (missing link targets, orphaned passages, etc.).
  */
+/**
+ * Find StoryData's `format` field (if any) WITHOUT running the full
+ * special-passage handling pass — needed before the main loop below,
+ * since every passage's body has to be processed with the right
+ * dialect-specific (or generic) pipeline from its very first
+ * iteration, not just once storyData happens to have been seen.
+ * "Last StoryData wins" matches the main loop's own duplicate-header
+ * handling.
+ */
+function findStoryDataForDialectDetection(
+  rawPassages: RawPassage[],
+): Record<string, unknown> | undefined {
+  let result: Record<string, unknown> | undefined;
+  for (const raw of rawPassages) {
+    if (raw.header.name !== 'StoryData') continue;
+    try {
+      const parsed = JSON.parse(raw.body.trim());
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        result = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Ignore — the main loop's handleSpecialPassage pass surfaces
+      // (or silently tolerates) malformed StoryData as before; this
+      // early pass only cares about `format`, when parseable at all.
+    }
+  }
+  return result;
+}
+
 export function parseTwee(source: string, options: ParseTweeOptions = {}): StoryGraph {
   if (detectTwee1(source)) {
     throw new TweeParseError(
@@ -392,6 +451,25 @@ export function parseTwee(source: string, options: ParseTweeOptions = {}): Story
   // PassageFooter / etc) so re-emit reproduces them.
   const specials: Record<string, string> = Object.create(null);
   const seenSpecials = new Set<string>();
+
+  // Twine macro dialect detection (DEV-199 Phase 6) — resolved before
+  // the main loop, not after, because EVERY passage body below needs
+  // to know which pipeline (generic, or a dialect module's own) to
+  // run through from its first iteration.
+  const dialectResult = detectTweeDialect(findStoryDataForDialectDetection(rawPassages), source);
+  if (dialectResult.ambiguous) {
+    warnings.push({
+      type: 'ambiguous_twee_dialect',
+      message:
+        "Could not determine which Twine macro format (Harlowe, SugarCube, or Chapbook) this story uses. Macro-based variables and conditionals won't be understood until the format is set in Twine's Story Details, or the story is re-exported with a format-identifying StoryData block.",
+    });
+  }
+  // DEV-199 Phases 7-8: implicit variable declarations threaded across
+  // every passage, in file order, so the first (set:)/(put:)/<<set>>
+  // for a given $-name anywhere in the story is the one that declares
+  // it. Dialect is resolved once per whole-file parse, so only ONE of
+  // Harlowe/SugarCube's processors ever runs against this state.
+  const variableState = createVariableState();
 
   for (const raw of rawPassages) {
     if (SPECIAL_PASSAGES.has(raw.header.name)) {
@@ -446,13 +524,49 @@ export function parseTwee(source: string, options: ParseTweeOptions = {}): Story
       );
     }
 
-    const { choices, contentBody } = extractLinks(raw.body);
+    let content: ContentBlock[];
+    let choices: Choice[];
+    if (dialectResult.dialect === 'harlowe') {
+      const processed = processHarlowePassageBody(
+        raw.body,
+        variableState,
+        evaluate,
+        warnings,
+        raw.header.lineNumber,
+      );
+      content = processed.content;
+      choices = processed.choices;
+    } else if (dialectResult.dialect === 'sugarcube') {
+      const processed = processSugarCubePassageBody(
+        raw.body,
+        variableState,
+        evaluate,
+        warnings,
+        raw.header.lineNumber,
+      );
+      content = processed.content;
+      choices = processed.choices;
+    } else if (dialectResult.dialect === 'chapbook') {
+      const processed = processChapbookPassageBody(
+        raw.body,
+        variableState,
+        evaluate,
+        warnings,
+        raw.header.lineNumber,
+      );
+      content = processed.content;
+      choices = processed.choices;
+    } else {
+      const extracted = extractLinks(raw.body);
+      choices = extracted.choices;
+      content = bodyToContent(extracted.contentBody);
+    }
 
     const node: StoryNode = {
       id,
       type: 'knot' as NodeType,
       parent: null,
-      content: bodyToContent(contentBody),
+      content,
       choices,
       divert: null,
       tags: raw.header.tags,
@@ -500,9 +614,14 @@ export function parseTwee(source: string, options: ParseTweeOptions = {}): Story
     startNode: resolvedStart,
     validation,
     source,
+    ...(variableState.variables.length > 0 ? { variables: variableState.variables } : {}),
     twee:
-      storyData || Object.keys(specials).length > 0
-        ? { storyData, specials: Object.keys(specials).length > 0 ? { ...specials } : undefined }
+      storyData || Object.keys(specials).length > 0 || dialectResult.dialect
+        ? {
+            storyData,
+            specials: Object.keys(specials).length > 0 ? { ...specials } : undefined,
+            dialect: dialectResult.dialect ?? undefined,
+          }
         : undefined,
   };
 }

@@ -18,6 +18,7 @@ import {
   type BulkReassignOp,
   type BulkUploadResult,
   type StoryGraph,
+  type SimpleCondition,
 } from '../api/client';
 import OrphanedAudioPanel from './OrphanedAudioPanel';
 import AssignmentAuditPanel from './AssignmentAuditPanel';
@@ -30,7 +31,12 @@ const AUDIO_ASSIGNMENTS_SIGNAL = 'audio-assignments';
 
 const CATEGORIES = ['voiceover', 'choice', 'indicator', 'ambience', 'sfx', 'music'] as const;
 const AUDIO_TYPES = ['voiceover', 'choice1', 'choice2', 'ambience', 'sfx'] as const;
-type AudioType = (typeof AUDIO_TYPES)[number];
+// `choice:<id>` addresses a specific choice's own cue by its stable
+// id (DEV-199 stable-id rollout) — not offered in the manual-assign
+// dropdown below (it has no node context to list that node's
+// choices from), but usagesByFileId still needs to recognize it so
+// "used in" / "swap everywhere" account for it correctly.
+type AudioType = (typeof AUDIO_TYPES)[number] | `choice:${string}`;
 type FilterMode = 'all' | 'assigned' | 'unassigned';
 
 interface Props {
@@ -72,11 +78,14 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
   const assignedFileIds = useMemo(() => {
     const ids = new Set<string>();
     for (const nodeAssigns of Object.values(assignments)) {
-      if (nodeAssigns.voiceover) ids.add(nodeAssigns.voiceover);
-      if (nodeAssigns.ambience) ids.add(nodeAssigns.ambience);
-      if (nodeAssigns.choice1) ids.add(nodeAssigns.choice1);
-      if (nodeAssigns.choice2) ids.add(nodeAssigns.choice2);
-      for (const sfxId of nodeAssigns.sfx) ids.add(sfxId);
+      for (const v of nodeAssigns.voiceover ?? []) ids.add(v.fileId);
+      for (const v of nodeAssigns.ambience ?? []) ids.add(v.fileId);
+      for (const v of nodeAssigns.choice1 ?? []) ids.add(v.fileId);
+      for (const v of nodeAssigns.choice2 ?? []) ids.add(v.fileId);
+      for (const variants of Object.values(nodeAssigns.choices ?? {})) {
+        for (const v of variants) ids.add(v.fileId);
+      }
+      for (const v of nodeAssigns.sfx) ids.add(v.fileId);
     }
     return ids;
   }, [assignments]);
@@ -88,18 +97,29 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
   // manually, then DELETE + POST each one. The 'sfx' slot is
   // multi-valued so the same file may appear twice on a node.
   const usagesByFileId = useMemo(() => {
-    const map = new Map<string, Array<{ nodeId: string; audioType: AudioType }>>();
-    const push = (fileId: string, nodeId: string, audioType: AudioType) => {
+    const map = new Map<
+      string,
+      Array<{ nodeId: string; audioType: AudioType; condition?: SimpleCondition }>
+    >();
+    const push = (
+      fileId: string,
+      nodeId: string,
+      audioType: AudioType,
+      condition?: SimpleCondition,
+    ) => {
       const list = map.get(fileId);
-      if (list) list.push({ nodeId, audioType });
-      else map.set(fileId, [{ nodeId, audioType }]);
+      if (list) list.push({ nodeId, audioType, condition });
+      else map.set(fileId, [{ nodeId, audioType, condition }]);
     };
     for (const [nodeId, a] of Object.entries(assignments)) {
-      if (a.voiceover) push(a.voiceover, nodeId, 'voiceover');
-      if (a.ambience) push(a.ambience, nodeId, 'ambience');
-      if (a.choice1) push(a.choice1, nodeId, 'choice1');
-      if (a.choice2) push(a.choice2, nodeId, 'choice2');
-      for (const sfxId of a.sfx) push(sfxId, nodeId, 'sfx');
+      for (const v of a.voiceover ?? []) push(v.fileId, nodeId, 'voiceover', v.condition);
+      for (const v of a.ambience ?? []) push(v.fileId, nodeId, 'ambience', v.condition);
+      for (const v of a.choice1 ?? []) push(v.fileId, nodeId, 'choice1', v.condition);
+      for (const v of a.choice2 ?? []) push(v.fileId, nodeId, 'choice2', v.condition);
+      for (const [choiceId, variants] of Object.entries(a.choices ?? {})) {
+        for (const v of variants) push(v.fileId, nodeId, `choice:${choiceId}`, v.condition);
+      }
+      for (const v of a.sfx) push(v.fileId, nodeId, 'sfx', v.condition);
     }
     // Sort each list for stable rendering across refetches.
     for (const list of map.values()) {
@@ -344,13 +364,18 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
     }
   }
 
-  async function handleRemoveAssignment(nodeId: string, audioType: string, audioFileId?: string) {
+  async function handleRemoveAssignment(
+    nodeId: string,
+    audioType: string,
+    audioFileId?: string,
+    condition?: SimpleCondition,
+  ) {
     if (!confirm(`Remove ${audioType} assignment from ${nodeId}?`)) return;
     setError(null);
     setSuccessMessage(null);
 
     try {
-      await removeAudioAssignment(projectId, nodeId, audioType, audioFileId);
+      await removeAudioAssignment(projectId, nodeId, audioType, audioFileId, condition);
       await loadAll();
       bumpLiveSignal(yDoc, AUDIO_ASSIGNMENTS_SIGNAL);
     } catch (err) {
@@ -362,7 +387,14 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
   // controlled (the previous uncontrolled `e.target.value = ''` reset
   // raced the success/failure handler and silently swallowed errors).
   const [replaceTargetByUsage, setReplaceTargetByUsage] = useState<Record<string, string>>({});
-  const usageKey = (nodeId: string, audioType: AudioType) => `${nodeId}#${audioType}`;
+  // Keyed by condition too, not just (nodeId, audioType) — the same
+  // slot can hold several variants of the SAME file under different
+  // conditions (DEV-199 follow-on), and omitting condition here meant
+  // two such usage rows collided on the same React key AND the same
+  // "Replace with" dropdown state, so picking a replacement for one
+  // row's selection showed up in the other (found in review).
+  const usageKey = (nodeId: string, audioType: AudioType, condition?: SimpleCondition) =>
+    `${nodeId}#${audioType}#${JSON.stringify(condition ?? null)}`;
 
   // Apply a batch of (from → to) swaps atomically on the backend. Used
   // by both the "Replace this one" per-row dropdown and the "Swap
@@ -404,12 +436,23 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
     if (!toFileId || toFileId === fromFileId) return;
     const usages = usagesByFileId.get(fromFileId) ?? [];
     if (usages.length === 0) return;
-    const ops: BulkReassignOp[] = usages.map((u) => ({
-      nodeId: u.nodeId,
-      audioType: u.audioType,
-      fromFileId,
-      toFileId,
-    }));
+    // One op per (nodeId, audioType) — NOT one per usage row. The
+    // backend's bulk-reassign already swaps EVERY row matching
+    // (node, type, fromFileId) regardless of condition in a single
+    // op (see its own comment). `usagesByFileId` lists one entry per
+    // condition variant, so the same file reused under two
+    // conditions on one slot produced two IDENTICAL ops here before
+    // this fix: the first op's DELETE already removed both rows, so
+    // the second (duplicate) op's DELETE matched nothing and rolled
+    // back the ENTIRE batch (found in review).
+    const seen = new Set<string>();
+    const ops: BulkReassignOp[] = [];
+    for (const u of usages) {
+      const key = `${u.nodeId}#${u.audioType}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      ops.push({ nodeId: u.nodeId, audioType: u.audioType, fromFileId, toFileId });
+    }
     await handleBulkReassign(ops, fromFileId);
     setSwapTargetByFileId((prev) => {
       const next = { ...prev };
@@ -423,9 +466,20 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
     nodeId: string,
     audioType: AudioType,
     toFileId: string,
+    condition?: SimpleCondition,
   ) {
     if (!toFileId || toFileId === fromFileId) return;
-    await handleBulkReassign([{ nodeId, audioType, fromFileId, toFileId }], fromFileId);
+    // Scoped to this ONE variant (condition explicit, including
+    // `null` for the default one) — without it, the same file reused
+    // under a different condition on this exact slot would also get
+    // swapped, despite the UI targeting only this row (found in
+    // review, same root cause as handleSwapEverywhere's duplicate-op
+    // bug above: the backend swaps every condition variant of a slot
+    // unless told which one).
+    await handleBulkReassign(
+      [{ nodeId, audioType, fromFileId, toFileId, condition: condition ?? null }],
+      fromFileId,
+    );
   }
 
   function formatSize(bytes: number): string {
@@ -467,7 +521,13 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
   );
 
   const nodesWithAssignments = Object.entries(assignments).filter(
-    ([, a]) => a.voiceover || a.ambience || a.choice1 || a.choice2 || a.sfx.length > 0,
+    ([, a]) =>
+      a.voiceover ||
+      a.ambience ||
+      a.choice1 ||
+      a.choice2 ||
+      (a.choices && Object.keys(a.choices).length > 0) ||
+      a.sfx.length > 0,
   );
 
   return (
@@ -727,25 +787,58 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
               </thead>
               <tbody>
                 {nodesWithAssignments.map(([nodeId, nodeAssign]) => {
-                  const rows: { type: string; fileId: string }[] = [];
-                  if (nodeAssign.voiceover)
-                    rows.push({ type: 'voiceover', fileId: nodeAssign.voiceover });
-                  if (nodeAssign.choice1)
-                    rows.push({ type: 'choice1', fileId: nodeAssign.choice1 });
-                  if (nodeAssign.choice2)
-                    rows.push({ type: 'choice2', fileId: nodeAssign.choice2 });
-                  if (nodeAssign.ambience)
-                    rows.push({ type: 'ambience', fileId: nodeAssign.ambience });
-                  for (const sfxId of nodeAssign.sfx) rows.push({ type: 'sfx', fileId: sfxId });
+                  const rows: {
+                    audioType: AudioType;
+                    label: string;
+                    fileId: string;
+                    condition?: SimpleCondition;
+                  }[] = [];
+                  // A slot can hold several variants now (one default +
+                  // any number of variable-conditioned ones) — each gets
+                  // its own row, labelled so a conditioned variant isn't
+                  // silently indistinguishable from the default. The
+                  // REAL audioType/condition (not the display label) is
+                  // what Remove needs to target the right row — the
+                  // same file can legitimately appear twice under two
+                  // different conditions, so fileId alone can't key a
+                  // row either.
+                  for (const slotType of ['voiceover', 'choice1', 'choice2', 'ambience'] as const) {
+                    for (const v of nodeAssign[slotType] ?? []) {
+                      rows.push({
+                        audioType: slotType,
+                        label: v.condition ? `${slotType} (conditioned)` : slotType,
+                        fileId: v.fileId,
+                        condition: v.condition,
+                      });
+                    }
+                  }
+                  for (const [choiceId, variants] of Object.entries(nodeAssign.choices ?? {})) {
+                    for (const v of variants) {
+                      rows.push({
+                        audioType: `choice:${choiceId}`,
+                        label: v.condition ? 'choice cue (conditioned)' : 'choice cue',
+                        fileId: v.fileId,
+                        condition: v.condition,
+                      });
+                    }
+                  }
+                  for (const v of nodeAssign.sfx) {
+                    rows.push({
+                      audioType: 'sfx',
+                      label: v.condition ? 'sfx (conditioned)' : 'sfx',
+                      fileId: v.fileId,
+                      condition: v.condition,
+                    });
+                  }
                   return rows.map((row, idx) => (
-                    <tr key={`${nodeId}-${row.type}-${row.fileId}`}>
+                    <tr key={`${nodeId}-${row.audioType}-${row.fileId}-${idx}`}>
                       {idx === 0 ? (
                         <td className="node-name" rowSpan={rows.length}>
                           {nodeId}
                         </td>
                       ) : null}
                       <td>
-                        <span className="badge badge-blue">{row.type}</span>
+                        <span className="badge badge-blue">{row.label}</span>
                       </td>
                       <td className="audio-filename">{getFileName(row.fileId)}</td>
                       <td>
@@ -754,8 +847,9 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
                           onClick={() =>
                             handleRemoveAssignment(
                               nodeId,
-                              row.type,
-                              row.type === 'sfx' ? row.fileId : undefined,
+                              row.audioType,
+                              row.audioType === 'sfx' ? row.fileId : undefined,
+                              row.condition,
                             )
                           }
                         >
@@ -981,7 +1075,7 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
                                       </thead>
                                       <tbody>
                                         {usages.map((u) => (
-                                          <tr key={`${u.nodeId}#${u.audioType}`}>
+                                          <tr key={usageKey(u.nodeId, u.audioType, u.condition)}>
                                             <td className="node-name">{u.nodeId}</td>
                                             <td>
                                               <span className="badge badge-gray">
@@ -993,12 +1087,16 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
                                                 className="select select-inline"
                                                 value={
                                                   replaceTargetByUsage[
-                                                    usageKey(u.nodeId, u.audioType)
+                                                    usageKey(u.nodeId, u.audioType, u.condition)
                                                   ] ?? ''
                                                 }
                                                 onChange={(e) => {
                                                   const next = e.target.value;
-                                                  const key = usageKey(u.nodeId, u.audioType);
+                                                  const key = usageKey(
+                                                    u.nodeId,
+                                                    u.audioType,
+                                                    u.condition,
+                                                  );
                                                   setReplaceTargetByUsage((prev) => ({
                                                     ...prev,
                                                     [key]: next,
@@ -1009,6 +1107,7 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
                                                       u.nodeId,
                                                       u.audioType,
                                                       next,
+                                                      u.condition,
                                                     ).finally(() => {
                                                       // Clear the dropdown after the swap
                                                       // attempt (success or failure) so
@@ -1042,6 +1141,7 @@ export default function AudioTab({ projectId, storyGraph }: Props) {
                                                     u.nodeId,
                                                     u.audioType,
                                                     u.audioType === 'sfx' ? f.id : undefined,
+                                                    u.condition,
                                                   )
                                                 }
                                                 disabled={isSwapping}

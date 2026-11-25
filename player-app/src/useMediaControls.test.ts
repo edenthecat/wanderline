@@ -46,10 +46,17 @@ function harnessHooks(overrides: Partial<Parameters<typeof useMediaControls>[0]>
       );
       const currentNodeRef = useRef(props.currentNode ?? null);
       currentNodeRef.current = props.currentNode ?? null;
+      // Defaults to the (unfiltered) current node's own choices,
+      // matching App.tsx's real relationship when nothing's hidden;
+      // a test exercising conditional-choice filtering passes its own
+      // `visibleChoicesRef` override instead (via `...props` below).
+      const visibleChoicesRef = useRef(props.currentNode?.choices ?? []);
+      visibleChoicesRef.current = props.currentNode?.choices ?? [];
       const selectedChoiceRef = useRef(0);
       return useMediaControls({
         story: null,
         currentNode: null,
+        displayText: '',
         showInstructions: false,
         isAuthenticated: false,
         playerState: 'loading',
@@ -63,6 +70,7 @@ function harnessHooks(overrides: Partial<Parameters<typeof useMediaControls>[0]>
           onHeadphoneButtonPressRef,
         },
         currentNodeRef,
+        visibleChoicesRef,
         selectedChoiceRef,
         setSelectedChoice,
         ...props,
@@ -134,7 +142,12 @@ describe('useMediaControls — MediaSession bindings', () => {
   it('installs the running-state handlers when a story is playing', () => {
     harnessHooks({
       story: runningStory,
-      currentNode: { id: 'home', content: [{ text: 'Hi.' }], choices: [], divert: null },
+      currentNode: {
+        id: 'home',
+        content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+        choices: [],
+        divert: null,
+      },
       showInstructions: false,
       isAuthenticated: true,
       playerState: 'playing',
@@ -148,7 +161,12 @@ describe('useMediaControls — MediaSession bindings', () => {
   it('mirrors playerState onto navigator.mediaSession.playbackState', () => {
     harnessHooks({
       story: runningStory,
-      currentNode: { id: 'home', content: [{ text: 'Hi.' }], choices: [], divert: null },
+      currentNode: {
+        id: 'home',
+        content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+        choices: [],
+        divert: null,
+      },
       showInstructions: false,
       isAuthenticated: true,
       playerState: 'paused',
@@ -174,11 +192,55 @@ describe('useMediaControls — MediaSession bindings', () => {
   });
 });
 
+// Regression (found in review): the lock-screen/Now Playing title
+// used to pick the FIRST text block regardless of its `condition`,
+// so a passage beginning with hidden conditional text exposed that
+// hidden text as the title even though on-screen rendering and
+// narration correctly skipped it.
+describe('useMediaControls — MediaSession title', () => {
+  // Resolving WHICH text is visible against the current variable
+  // store (DEV-199 Phase 3 conditional text) is the caller's job as
+  // of the DEV-199 follow-up that fixed document-order visibility —
+  // see node-text.test.ts's resolveNodeEntry coverage and App.tsx's
+  // `passageText`/`visibleTextBlocks`, which this hook's `displayText`
+  // prop is fed from. This hook just displays whatever string it's
+  // given; these are smoke tests for that pass-through, not for
+  // condition evaluation.
+  it('uses the given displayText as the title, truncated to 50 chars', () => {
+    harnessHooks({
+      story: runningStory,
+      currentNode: { id: 'home', content: [], choices: [], divert: null },
+      displayText: 'Visible line.',
+      showInstructions: false,
+      isAuthenticated: true,
+      playerState: 'playing',
+    });
+    expect(navigator.mediaSession.metadata?.title).toBe('Visible line.');
+  });
+
+  it('falls back to the node id when displayText is empty', () => {
+    harnessHooks({
+      story: runningStory,
+      currentNode: { id: 'home', content: [], choices: [], divert: null },
+      displayText: '',
+      showInstructions: false,
+      isAuthenticated: true,
+      playerState: 'playing',
+    });
+    expect(navigator.mediaSession.metadata?.title).toBe('home');
+  });
+});
+
 describe('useMediaControls — keydown fallback', () => {
   it('MediaPlayPause invokes the headphone-button handler when the story is authenticated + running', () => {
     const { spies } = harnessHooks({
       story: runningStory,
-      currentNode: { id: 'home', content: [{ text: 'Hi.' }], choices: [], divert: null },
+      currentNode: {
+        id: 'home',
+        content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+        choices: [],
+        divert: null,
+      },
       showInstructions: false,
       isAuthenticated: true,
       playerState: 'playing',
@@ -194,7 +256,7 @@ describe('useMediaControls — keydown fallback', () => {
       story: runningStory,
       currentNode: {
         id: 'home',
-        content: [{ text: 'Hi.' }],
+        content: [{ kind: 'text', text: 'Hi.', tags: [] }],
         choices: [{ target: 'kitchen' }],
         divert: null,
       },
@@ -206,6 +268,29 @@ describe('useMediaControls — keydown fallback', () => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'MediaTrackNext' }));
     });
     expect(spies.navigateToTarget).toHaveBeenCalledWith('kitchen');
+  });
+
+  it('MediaTrackNext selects the first VISIBLE choice, not currentNode.choices[0], when the first choice is conditionally hidden (found in review)', () => {
+    const visibleChoicesRef = { current: [{ target: 'cave' }] };
+    const { spies } = harnessHooks({
+      story: runningStory,
+      currentNode: {
+        id: 'home',
+        content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+        // Unfiltered list — a hidden choice still in position 0.
+        choices: [{ target: 'hidden-door' }, { target: 'cave' }],
+        divert: null,
+      },
+      visibleChoicesRef,
+      showInstructions: false,
+      isAuthenticated: true,
+      playerState: 'playing',
+    });
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'MediaTrackNext' }));
+    });
+    expect(spies.navigateToTarget).toHaveBeenCalledWith('cave');
+    expect(spies.navigateToTarget).not.toHaveBeenCalledWith('hidden-door');
   });
 
   it('MediaPlayPause on the instructions screen starts the story regardless of auth state', () => {
@@ -224,7 +309,12 @@ describe('useMediaControls — keydown fallback', () => {
   it('does nothing for non-media KeyboardEvents', () => {
     const { spies, startStory } = harnessHooks({
       story: runningStory,
-      currentNode: { id: 'home', content: [{ text: 'Hi.' }], choices: [], divert: null },
+      currentNode: {
+        id: 'home',
+        content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+        choices: [],
+        divert: null,
+      },
       showInstructions: false,
       isAuthenticated: true,
       playerState: 'playing',
@@ -268,19 +358,21 @@ describe('useMediaControls — keydown fallback', () => {
         );
         const currentNodeRef = useRef({
           id: 'home',
-          content: [{ text: 'Hi.' }],
+          content: [{ kind: 'text' as const, text: 'Hi.', tags: [] }],
           choices: [],
           divert: null,
         });
+        const visibleChoicesRef = useRef<{ target: string }[]>([]);
         const selectedChoiceRef = useRef(0);
         return useMediaControls({
           story: runningStory,
           currentNode: {
             id: 'home',
-            content: [{ text: 'Hi.' }],
+            content: [{ kind: 'text', text: 'Hi.', tags: [] }],
             choices: [],
             divert: null,
           },
+          displayText: 'Hi.',
           showInstructions: false,
           isAuthenticated: true,
           playerState: 'playing',
@@ -297,6 +389,7 @@ describe('useMediaControls — keydown fallback', () => {
             onHeadphoneButtonPressRef,
           },
           currentNodeRef,
+          visibleChoicesRef,
           selectedChoiceRef,
           setSelectedChoice,
         });
@@ -318,7 +411,12 @@ describe('useMediaControls — keydown fallback', () => {
   it('drops auto-repeat keydown events so a sticky button does not fire multiple transports', () => {
     const { spies } = harnessHooks({
       story: runningStory,
-      currentNode: { id: 'home', content: [{ text: 'Hi.' }], choices: [], divert: null },
+      currentNode: {
+        id: 'home',
+        content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+        choices: [],
+        divert: null,
+      },
       showInstructions: false,
       isAuthenticated: true,
       playerState: 'playing',
@@ -336,13 +434,13 @@ describe('useMediaControls — keydown fallback', () => {
 describe('useMediaControls — Bluetooth transport faults', () => {
   const twoChoiceNode = {
     id: 'home',
-    content: [{ text: 'Hi.' }],
+    content: [{ kind: 'text' as const, text: 'Hi.', tags: [] }],
     choices: [{ target: 'kitchen' }, { target: 'garden' }],
     divert: null,
   };
   const linearNode = {
     id: 'hall',
-    content: [{ text: 'A corridor.' }],
+    content: [{ kind: 'text' as const, text: 'A corridor.', tags: [] }],
     choices: [],
     divert: null,
   };
@@ -464,7 +562,12 @@ describe('useMediaControls — position state', () => {
   it('reports duration and position once both are known', () => {
     harnessHooks({
       story: runningStory,
-      currentNode: { id: 'home', content: [{ text: 'Hi.' }], choices: [], divert: null },
+      currentNode: {
+        id: 'home',
+        content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+        choices: [],
+        divert: null,
+      },
       showInstructions: false,
       isAuthenticated: true,
       playerState: 'playing',
@@ -481,7 +584,12 @@ describe('useMediaControls — position state', () => {
   it('clears position state before the duration is known', () => {
     harnessHooks({
       story: runningStory,
-      currentNode: { id: 'home', content: [{ text: 'Hi.' }], choices: [], divert: null },
+      currentNode: {
+        id: 'home',
+        content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+        choices: [],
+        divert: null,
+      },
       showInstructions: false,
       isAuthenticated: true,
       playerState: 'loading',
@@ -502,7 +610,12 @@ describe('useMediaControls — position state', () => {
   it('clears a previous node’s position on navigating to one with no duration yet', () => {
     const { rerender } = harnessHooks({
       story: runningStory,
-      currentNode: { id: 'home', content: [{ text: 'Hi.' }], choices: [], divert: null },
+      currentNode: {
+        id: 'home',
+        content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+        choices: [],
+        divert: null,
+      },
       showInstructions: false,
       isAuthenticated: true,
       playerState: 'playing',
@@ -517,7 +630,12 @@ describe('useMediaControls — position state', () => {
 
     rerender({
       story: runningStory,
-      currentNode: { id: 'kitchen', content: [{ text: 'Bye.' }], choices: [], divert: null },
+      currentNode: {
+        id: 'kitchen',
+        content: [{ kind: 'text', text: 'Bye.', tags: [] }],
+        choices: [],
+        divert: null,
+      },
       showInstructions: false,
       isAuthenticated: true,
       playerState: 'loading',
@@ -533,7 +651,12 @@ describe('useMediaControls — position state', () => {
     // the new node's (shorter) duration.
     harnessHooks({
       story: runningStory,
-      currentNode: { id: 'kitchen', content: [{ text: 'Hi.' }], choices: [], divert: null },
+      currentNode: {
+        id: 'kitchen',
+        content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+        choices: [],
+        divert: null,
+      },
       showInstructions: false,
       isAuthenticated: true,
       playerState: 'playing',
@@ -553,7 +676,12 @@ describe('useMediaControls — position state', () => {
     expect(() =>
       harnessHooks({
         story: runningStory,
-        currentNode: { id: 'home', content: [{ text: 'Hi.' }], choices: [], divert: null },
+        currentNode: {
+          id: 'home',
+          content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+          choices: [],
+          divert: null,
+        },
         showInstructions: false,
         isAuthenticated: true,
         playerState: 'playing',

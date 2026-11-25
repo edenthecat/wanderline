@@ -11,7 +11,14 @@ vi.mock('../CollabContentTextarea', () => ({ default: () => null }));
 
 const baseProps = {
   nodeId: 'her',
-  node: { content: [{ text: 'Hi.', tags: [] }], choices: [], divert: null, tags: [] },
+  node: {
+    content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+    // No id — exercises the legacy choice1/choice2 fallback the
+    // audio fixtures below address directly.
+    choices: [{ text: 'Go on', target: 'next' }],
+    divert: null,
+    tags: [],
+  },
   metadataLoaded: true,
   nodeIdSet: new Set(['her']),
   nodeIdOptions: null,
@@ -34,7 +41,7 @@ describe('NodeDetail — attached audio', () => {
     render(
       <NodeDetail
         {...baseProps}
-        nodeAudio={{ voiceover: 'f1', choice1: 'f2', sfx: [] }}
+        nodeAudio={{ voiceover: [{ fileId: 'f1' }], choice1: [{ fileId: 'f2' }], sfx: [] }}
         audioNames={{ f1: 'her-vo.mp3', f2: 'cue-a.mp3' }}
       />,
     );
@@ -68,7 +75,13 @@ describe('NodeDetail — attached audio', () => {
   // Falls back to the id so a row still plays when the name lookup is
   // missing an entry, rather than rendering a blank label.
   it('falls back to the file id when the name is unknown', () => {
-    render(<NodeDetail {...baseProps} nodeAudio={{ voiceover: 'f9', sfx: [] }} audioNames={{}} />);
+    render(
+      <NodeDetail
+        {...baseProps}
+        nodeAudio={{ voiceover: [{ fileId: 'f9' }], sfx: [] }}
+        audioNames={{}}
+      />,
+    );
     expect(screen.getByText('f9')).toBeTruthy();
   });
 });

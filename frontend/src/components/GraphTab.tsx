@@ -20,6 +20,7 @@ import {
 } from '@xyflow/react';
 import dagre from '@dagrejs/dagre';
 import '@xyflow/react/dist/style.css';
+import { isTextBlock } from '@wanderline/shared';
 import { updateChoiceTarget, updateDivert, type StoryGraph, type StoryNode } from '../api/client';
 import NodeDetail from './NodeDetail';
 import InkSourceEditor from './InkSourceEditor';
@@ -1307,6 +1308,8 @@ function GraphTabInner({
               audioFiles={editor.audioFiles}
               audioActions={editor.audioActions}
               audioLevels={editor.audioLevels}
+              variables={storyGraph?.variables}
+              knownFunctionNames={editor.knownFunctionNames}
               flags={editor.flagsByNode[selectedNodeId]}
               onFlagsChanged={editor.refreshFlags}
               characters={editor.characters}
@@ -1318,6 +1321,12 @@ function GraphTabInner({
                 editor.handleChoiceTargetEdit(selectedNodeId, ci, target)
               }
               onDivertEdit={(target) => editor.handleDivertEdit(selectedNodeId, target)}
+              onChoiceConditionEdit={(ci, condition) =>
+                editor.handleChoiceConditionEdit(selectedNodeId, ci, condition)
+              }
+              onContentConditionEdit={(ci, condition) =>
+                editor.handleContentConditionEdit(selectedNodeId, ci, condition)
+              }
               onAddChoice={(choice) => editor.handleAddChoice(selectedNodeId, choice)}
               onDeleteChoice={(ci) => editor.handleDeleteChoice(selectedNodeId, ci)}
               onSwapChoices={(from, to) => editor.handleSwapChoices(selectedNodeId, from, to)}
@@ -1364,7 +1373,11 @@ interface HoverPreviewProps {
   y: number;
 }
 function HoverPreview({ node, x, y }: HoverPreviewProps) {
-  const contentText = node.content?.map((c) => c.text).join(' ') ?? '';
+  const contentText =
+    node.content
+      ?.filter(isTextBlock)
+      .map((c) => c.text)
+      .join(' ') ?? '';
   const preview =
     contentText.length > 220 ? `${contentText.slice(0, 220).trim()}…` : contentText || '(empty)';
   return (

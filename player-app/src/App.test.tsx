@@ -19,7 +19,7 @@ const mockStory = {
       ],
       divert: null,
       tags: [],
-      audio: { voiceover: 'start.mp3' },
+      audio: { voiceover: [{ file: 'start.mp3' }] },
     },
     left: {
       id: 'left',
@@ -28,7 +28,7 @@ const mockStory = {
       choices: [],
       divert: 'END',
       tags: ['theme:blue'],
-      audio: { voiceover: 'left.mp3' },
+      audio: { voiceover: [{ file: 'left.mp3' }] },
     },
     right: {
       id: 'right',

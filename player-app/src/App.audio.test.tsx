@@ -99,7 +99,7 @@ function makeStory(overrides: Record<string, unknown> = {}) {
         choices: [{ text: 'Go on', target: 'next' }],
         divert: null,
         tags: [],
-        audio: { voiceover: 'start.mp3' },
+        audio: { voiceover: [{ file: 'start.mp3' }] },
       },
       next: {
         id: 'next',
@@ -225,7 +225,7 @@ describe('restarting a node supersedes the previous attempt', () => {
           choices: [],
           divert: 'next',
           tags: [],
-          audio: { voiceover: 'start.mp3' },
+          audio: { voiceover: [{ file: 'start.mp3' }] },
         },
         next: {
           id: 'next',
@@ -395,7 +395,11 @@ describe('choice audio and auto-advance', () => {
           choices,
           divert: null,
           tags: [],
-          audio: { voiceover: 'start.mp3', choice1: 'n1.mp3', choice2: 'n2.mp3' },
+          audio: {
+            voiceover: [{ file: 'start.mp3' }],
+            choice1: [{ file: 'n1.mp3' }],
+            choice2: [{ file: 'n2.mp3' }],
+          },
         },
         second: {
           id: 'second',
@@ -449,6 +453,50 @@ describe('choice audio and auto-advance', () => {
     await vi.advanceTimersByTimeAsync(20_000);
     expect(screen.getByText('The beginning.')).toBeTruthy();
     expect(screen.queryByText('The middle.')).toBeNull();
+  });
+
+  // Regression: a choice's own id-addressed cue (DEV-199 stable-id
+  // rollout) is the FALLBACK when its ordinal (choice1/choice2) slot
+  // is empty — additive, not a replacement for the ordinal slots. The
+  // exact id-vs-position precedence (including the both-assigned
+  // case, where ordinal wins) is covered more precisely by
+  // choice-cue-variants.test.ts; this app-level test just confirms
+  // the id-addressed cue actually gets picked up end-to-end when it's
+  // the only cue a choice has.
+  it('resolves a choice’s cue by its own id when it has no ordinal (choice1/choice2) cue', async () => {
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = makeStory({
+      settings: { autoAdvance: true },
+      nodes: {
+        start: {
+          id: 'start',
+          type: 'knot',
+          content: [{ text: 'The beginning.' }],
+          choices: [{ text: 'On', target: 'second', id: 'choice-on' }],
+          divert: null,
+          tags: [],
+          audio: {
+            voiceover: [{ file: 'start.mp3' }],
+            choices: { 'choice-on': [{ file: 'right-cue.mp3' }] },
+          },
+        },
+        second: {
+          id: 'second',
+          type: 'knot',
+          content: [{ text: 'The middle.' }],
+          choices: [],
+          divert: null,
+          tags: [],
+        },
+      },
+    });
+    render(<App />);
+    await startTheStory();
+    const vo = voiceoverFor('start.mp3')!;
+    await waitFor(() => expect(vo).toBeDefined());
+    vo.onended?.();
+    await waitFor(() =>
+      expect(audioInstances.some((a) => a.src.includes('right-cue.mp3'))).toBe(true),
+    );
   });
 });
 
@@ -569,7 +617,11 @@ describe('jumping away stops the rest of the passage', () => {
           ],
           divert: null,
           tags: [],
-          audio: { voiceover: 'start.mp3', choice1: 'n1.mp3', choice2: 'n2.mp3' },
+          audio: {
+            voiceover: [{ file: 'start.mp3' }],
+            choice1: [{ file: 'n1.mp3' }],
+            choice2: [{ file: 'n2.mp3' }],
+          },
         },
       },
     });
@@ -604,7 +656,11 @@ describe('jumping away stops the rest of the passage', () => {
           ],
           divert: null,
           tags: [],
-          audio: { voiceover: 'start.mp3', choice1: 'n1.mp3', choice2: 'n2.mp3' },
+          audio: {
+            voiceover: [{ file: 'start.mp3' }],
+            choice1: [{ file: 'n1.mp3' }],
+            choice2: [{ file: 'n2.mp3' }],
+          },
         },
       },
     });
@@ -650,7 +706,11 @@ describe('jumping away stops the rest of the passage', () => {
           ],
           divert: null,
           tags: [],
-          audio: { voiceover: 'second.mp3', choice1: 'n1.mp3', choice2: 'n2.mp3' },
+          audio: {
+            voiceover: [{ file: 'second.mp3' }],
+            choice1: [{ file: 'n1.mp3' }],
+            choice2: [{ file: 'n2.mp3' }],
+          },
         },
       },
     });
@@ -687,5 +747,113 @@ describe('jumping away stops the rest of the passage', () => {
       await vi.advanceTimersByTimeAsync(500);
     });
     expect(voiceoverFor('start.mp3')!.currentTime).toBe(0);
+  });
+});
+
+// Variable-conditioned audio: a slot can hold several candidate
+// files, each gated by an optional {variable, operator, value}
+// condition. The player resolves to the first match (checked in
+// order), falling back to the one unconditioned default.
+describe('variable-conditioned audio', () => {
+  it('plays the conditioned candidate whose condition matches the starting variable value', async () => {
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = makeStory({
+      variables: [
+        {
+          name: 'mood',
+          type: 'string',
+          initialValue: { kind: 'literal', value: 'angry' },
+          isConst: false,
+        },
+      ],
+      nodes: {
+        start: {
+          id: 'start',
+          type: 'knot',
+          content: [{ text: 'Welcome to the story.' }],
+          choices: [{ text: 'Go on', target: 'next' }],
+          divert: null,
+          tags: [],
+          audio: {
+            voiceover: [
+              {
+                file: 'angry.mp3',
+                condition: { variable: 'mood', operator: '==', value: 'angry' },
+              },
+              { file: 'normal.mp3' },
+            ],
+          },
+        },
+        next: {
+          id: 'next',
+          type: 'knot',
+          content: [{ text: 'The end.' }],
+          choices: [],
+          divert: null,
+          tags: [],
+        },
+      },
+    });
+    render(<App />);
+    await startTheStory();
+    await screen.findByLabelText('Pause narration');
+    // Both candidates get an element (preloading warms every
+    // candidate, not just the one that'll resolve) — the PLAYING one
+    // is what actually distinguishes a correct resolution.
+    expect(voiceoverFor('angry.mp3')!.paused).toBe(false);
+    expect(voiceoverFor('normal.mp3')?.paused ?? true).toBe(true);
+  });
+
+  it('falls back to the unconditioned default when no condition matches', async () => {
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = makeStory({
+      variables: [
+        {
+          name: 'mood',
+          type: 'string',
+          initialValue: { kind: 'literal', value: 'cheerful' },
+          isConst: false,
+        },
+      ],
+      nodes: {
+        start: {
+          id: 'start',
+          type: 'knot',
+          content: [{ text: 'Welcome to the story.' }],
+          choices: [{ text: 'Go on', target: 'next' }],
+          divert: null,
+          tags: [],
+          audio: {
+            voiceover: [
+              {
+                file: 'angry.mp3',
+                condition: { variable: 'mood', operator: '==', value: 'angry' },
+              },
+              { file: 'normal.mp3' },
+            ],
+          },
+        },
+        next: {
+          id: 'next',
+          type: 'knot',
+          content: [{ text: 'The end.' }],
+          choices: [],
+          divert: null,
+          tags: [],
+        },
+      },
+    });
+    render(<App />);
+    await startTheStory();
+    await screen.findByLabelText('Pause narration');
+    expect(voiceoverFor('normal.mp3')!.paused).toBe(false);
+    expect(voiceoverFor('angry.mp3')?.paused ?? true).toBe(true);
+  });
+
+  it('still shares the plain cache key with playback for the single-candidate case (no stray untouched element)', async () => {
+    (window as unknown as Record<string, unknown>).__WANDERLINE_STORY__ = makeStory({
+      settings: { voiceoverVolume: 60 },
+    });
+    render(<App />);
+    await startTheStory();
+    await waitFor(() => expect(voiceoverFor('start.mp3')!.volume).toBeCloseTo(0.6, 5));
   });
 });

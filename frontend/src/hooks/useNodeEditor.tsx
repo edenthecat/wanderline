@@ -33,8 +33,10 @@ import {
   fetchMetadata,
   renameNode,
   swapChoices,
+  updateChoiceCondition,
   updateChoiceTarget,
   updateChoiceText,
+  updateContentCondition,
   updateDivert,
   updateNodeContentText,
   updateNodeMetadata,
@@ -44,6 +46,7 @@ import {
   type NodeFlag,
   type NodeMetadata,
   type StoryGraph,
+  type SimpleCondition,
 } from '../api/client';
 import { bumpLiveSignal, useLiveSignal } from './useLiveSignal';
 
@@ -54,20 +57,45 @@ const METADATA_SIGNAL = 'metadata';
 const AUDIO_ASSIGNMENTS_SIGNAL = 'audio-assignments';
 const CHOICE_TEXT_SAVE_DEBOUNCE_MS = 800;
 
-export type NodeAudioSlot = 'voiceover' | 'ambience' | 'choice1' | 'choice2' | 'sfx';
+/** `choice:<id>` addresses a specific choice's own cue by its stable
+ * id (DEV-199 stable-id rollout) — coexists with the older ordinal
+ * choice1/choice2 slots rather than replacing them. */
+export type NodeAudioSlot =
+  'voiceover' | 'ambience' | 'choice1' | 'choice2' | 'sfx' | `choice:${string}`;
 
 export interface NodeAudioActions {
-  /** Attach a file to an empty slot (or add a sound effect). */
-  assign: (nodeId: string, slot: NodeAudioSlot, fileId: string) => Promise<void>;
-  /** Swap one attached file for another, keeping a sound effect's timing. */
+  /** Attach a file to an empty slot (or add a sound effect). `condition`
+   * gates it on a story variable's value — omit for the slot's default/
+   * fallback variant; a different condition adds a new variant alongside
+   * whatever's already there rather than replacing it. */
+  assign: (
+    nodeId: string,
+    slot: NodeAudioSlot,
+    fileId: string,
+    condition?: SimpleCondition,
+  ) => Promise<void>;
+  /** Swap one attached file for another, keeping a sound effect's timing
+   * (and whatever condition that specific row already had). `condition`
+   * scopes the swap to that ONE variant — any caller that already knows
+   * which variant it's replacing (the same value it passes to `clear`)
+   * should pass it here too, or the swap silently applies to every
+   * variant of the slot sharing `fromFileId`, not just the one the user
+   * picked. */
   replace: (
     nodeId: string,
     slot: NodeAudioSlot,
     fromFileId: string,
     toFileId: string,
+    condition?: SimpleCondition | null,
   ) => Promise<void>;
-  /** Detach a file. */
-  clear: (nodeId: string, slot: NodeAudioSlot, fileId: string) => Promise<void>;
+  /** Detach a file. `condition` targets that specific conditioned
+   * variant; omit to target the default/unconditioned one. */
+  clear: (
+    nodeId: string,
+    slot: NodeAudioSlot,
+    fileId: string,
+    condition?: SimpleCondition,
+  ) => Promise<void>;
   /** When a sound effect plays, in ms; null for as the passage starts. */
   setSfxOffset: (nodeId: string, fileId: string, offsetMs: number | null) => Promise<void>;
   /** Upload a new take over a file, everywhere it's used. */
@@ -111,6 +139,10 @@ export interface UseNodeEditorResult {
   retryMetadata: () => void;
   /** Set of every node id that exists in the current storyGraph. */
   nodeIdSet: Set<string>;
+  /** Every function-knot name declared anywhere in the story
+   * (DEV-199 Phase 10b) — feed into NodeDetail's `knownFunctionNames`
+   * prop. */
+  knownFunctionNames: ReadonlySet<string>;
   /** Pre-rendered <option> nodes for choice/divert target dropdowns
    * (includes END + DONE). Stable per-storyGraph. */
   nodeIdOptions: ReactNode;
@@ -121,6 +153,21 @@ export interface UseNodeEditorResult {
   handleNodeContentEdit: (nodeId: string, contentIndex: number, newText: string) => void;
   handleChoiceTargetEdit: (nodeId: string, choiceIndex: number, newTarget: string) => void;
   handleDivertEdit: (nodeId: string, newTarget: string) => void;
+  /** Set/clear a choice's visibility condition. Rejects with the
+   * server's parse-error message on bad input — callers surface it
+   * locally rather than via the shared editorError banner. */
+  handleChoiceConditionEdit: (
+    nodeId: string,
+    choiceIndex: number,
+    condition: string | null,
+  ) => Promise<void>;
+  /** Set/clear a text block's visibility condition. Same error
+   * contract as handleChoiceConditionEdit. */
+  handleContentConditionEdit: (
+    nodeId: string,
+    contentIndex: number,
+    condition: string | null,
+  ) => Promise<void>;
   handleAddChoice: (
     nodeId: string,
     choice: { text: string; target: string },
@@ -281,19 +328,35 @@ export function useNodeEditor({
       }
     };
     return {
-      // The panel only offers Attach on a slot it saw empty.
-      assign: (nodeId, slot, fileId) =>
-        run(() => assignAudio(projectId, nodeId, slot, fileId, undefined, slot !== 'sfx')),
-      // The reassign endpoint swaps atomically and keeps a sound effect's
-      // timing; assign would drop it.
-      replace: (nodeId, slot, fromFileId, toFileId) =>
+      // The panel only offers Attach on a slot it saw empty (for the
+      // default variant) or a fresh condition (for a conditioned one),
+      // so expectEmpty is safe for both — it checks the SAME condition,
+      // not the whole slot.
+      assign: (nodeId, slot, fileId, condition) =>
         run(() =>
-          bulkReassignAudio(projectId, [{ nodeId, audioType: slot, fromFileId, toFileId }]),
+          assignAudio(projectId, nodeId, slot, fileId, undefined, slot !== 'sfx', condition),
+        ),
+      // The reassign endpoint swaps atomically and keeps a sound effect's
+      // timing (and whatever condition that row already had); assign
+      // would drop both. `condition` (including explicit `null`) scopes
+      // the op to that one variant; genuinely omitting the argument
+      // (undefined) keeps the old "every variant of this slot" behavior.
+      replace: (nodeId, slot, fromFileId, toFileId, condition) =>
+        run(() =>
+          bulkReassignAudio(projectId, [
+            {
+              nodeId,
+              audioType: slot,
+              fromFileId,
+              toFileId,
+              ...(condition !== undefined ? { condition } : {}),
+            },
+          ]),
         ),
       // Always name the file the author saw: if a peer has swapped this
       // slot in the meantime, clearing must not remove their new take.
-      clear: (nodeId, slot, fileId) =>
-        run(() => removeAudioAssignment(projectId, nodeId, slot, fileId)),
+      clear: (nodeId, slot, fileId, condition) =>
+        run(() => removeAudioAssignment(projectId, nodeId, slot, fileId, condition)),
       setSfxOffset: (nodeId, fileId, offsetMs) =>
         run(() => setSfxOffset(projectId, nodeId, fileId, offsetMs)),
       newTake: (fileId, file) => run(() => replaceAudioTake(projectId, fileId, file)),
@@ -389,6 +452,19 @@ export function useNodeEditor({
   // ── Derived: ids + select options for dropdowns ──────────────────
   const allNodeIds = useMemo(() => (storyGraph ? Object.keys(storyGraph.nodes) : []), [storyGraph]);
   const nodeIdSet = useMemo(() => new Set(allNodeIds), [allNodeIds]);
+  // Every function-knot name (DEV-199 Phase 10b), for threading into
+  // the condition editors' parse context (found in review — without
+  // this, a working imported condition that calls a function
+  // couldn't be re-saved even unchanged, since re-parsing it rejected
+  // the call as an undeclared function).
+  const knownFunctionNames = useMemo(() => {
+    const names = new Set<string>();
+    if (!storyGraph) return names;
+    for (const node of Object.values(storyGraph.nodes)) {
+      if (node.tags?.includes('internal:function')) names.add(node.id);
+    }
+    return names;
+  }, [storyGraph]);
   const reverseEdges = useMemo<Map<string, string[]>>(() => {
     const map = new Map<string, string[]>();
     if (!storyGraph) return map;
@@ -507,6 +583,26 @@ export function useNodeEditor({
     [projectId, onStoryUpdated],
   );
 
+  // Condition edits have their own inline error slot in NodeDetail
+  // (next to the input, like the transcript-override save), so unlike
+  // handleChoiceTargetEdit/handleDivertEdit above these rethrow
+  // instead of populating the shared editorError banner.
+  const handleChoiceConditionEdit = useCallback(
+    async (nodeId: string, choiceIndex: number, condition: string | null) => {
+      await updateChoiceCondition(projectId, nodeId, choiceIndex, condition);
+      onStoryUpdated();
+    },
+    [projectId, onStoryUpdated],
+  );
+
+  const handleContentConditionEdit = useCallback(
+    async (nodeId: string, contentIndex: number, condition: string | null) => {
+      await updateContentCondition(projectId, nodeId, contentIndex, condition);
+      onStoryUpdated();
+    },
+    [projectId, onStoryUpdated],
+  );
+
   const handleAddChoice = useCallback(
     async (nodeId: string, choice: { text: string; target: string }, atIndex?: number) => {
       // Note: we surface failure via the local AddChoiceRow form
@@ -527,12 +623,19 @@ export function useNodeEditor({
         await deleteChoice(projectId, nodeId, choiceIndex);
         setEditorError(null);
         onStoryUpdated();
+        // Deleting a choice with a stable id also deletes its
+        // choice:<id> audio assignment server-side (orphaned
+        // otherwise, DEV-199 per-choice audio) — tell this tab's own
+        // audio view and any peer tab to refetch so neither keeps
+        // showing/offering to manage a row that's already gone.
+        bumpLiveSignal(yDoc ?? null, AUDIO_ASSIGNMENTS_SIGNAL);
+        setAudioReloadKey((k) => k + 1);
       } catch (err) {
         setEditorError(err instanceof Error ? err.message : 'Failed to remove choice');
         throw err;
       }
     },
-    [projectId, onStoryUpdated],
+    [projectId, onStoryUpdated, yDoc],
   );
 
   const handleSwapChoices = useCallback(
@@ -603,12 +706,15 @@ export function useNodeEditor({
     metadataError,
     retryMetadata,
     nodeIdSet,
+    knownFunctionNames,
     nodeIdOptions,
     reverseEdges,
     handleChoiceTextEdit,
     handleNodeContentEdit,
     handleChoiceTargetEdit,
     handleDivertEdit,
+    handleChoiceConditionEdit,
+    handleContentConditionEdit,
     handleAddChoice,
     handleDeleteChoice,
     handleSwapChoices,

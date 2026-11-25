@@ -1,0 +1,235 @@
+/**
+ * Canonical expression AST shared by every source format (Ink, Harlowe,
+ * SugarCube, Chapbook) and both runtimes (backend validation/preview,
+ * player-app playback). Each format's parser compiles its own native
+ * condition/assignment syntax into this AST; each format's emitter
+ * un-parses the same AST back to native syntax on export. The player
+ * and the editor's condition-editing UI only ever need to understand
+ * this one shape, regardless of which format a story was authored in.
+ *
+ * Ink's own expression grammar is the textual surface this AST's
+ * parser/printer (expression-parser.ts) understands — see that file's
+ * header for why.
+ */
+
+/**
+ * One active member of a LIST value (Ink's `LIST` type — DEV-199
+ * Phase 10). `ordinal` is the member's position in its LIST
+ * declaration's member order — carried on the item itself, not
+ * looked up separately, so the evaluator stays pure (no access to
+ * variable declarations needed to compare or order list values).
+ */
+export interface ListItem {
+  name: string;
+  ordinal: number;
+}
+
+/**
+ * A LIST variable's value is a SUBSET of one LIST declaration's
+ * members (Ink supports mixing multiple origins in one list value;
+ * single-origin covers the overwhelming majority of real usage and
+ * is what's implemented here). `origin` is the declaring LIST's
+ * name, used only for round-tripping/display — set operations
+ * (union/difference/comparison) work on `items` directly.
+ */
+export interface ListValue {
+  kind: 'list';
+  origin: string;
+  /** Currently active members. */
+  items: ListItem[];
+  /**
+   * Every member the origin LIST declares, active or not — needed
+   * by the LIST_ALL/LIST_INVERT/LIST_RANGE query functions, which
+   * must know the full declared set rather than just what's
+   * currently active. Carried on every ListValue sharing this
+   * origin (redundant, but keeps the evaluator pure — no access to
+   * variable declarations needed to answer "what's possible").
+   */
+  allItems: ListItem[];
+}
+
+export type VariableValue = number | string | boolean | ListValue;
+
+export type VariableType = 'number' | 'string' | 'bool' | 'list';
+
+export type BinaryOperator =
+  | '+'
+  | '-'
+  | '*'
+  | '/'
+  | '%'
+  | '=='
+  | '!='
+  | '<'
+  | '<='
+  | '>'
+  | '>='
+  /** LIST membership test — Ink's `?`/`has`. */
+  | 'has'
+  /** LIST non-membership test — Ink's `!?`/`hasnt`. */
+  | 'hasnt';
+
+export type LogicalOperator = '&&' | '||';
+
+export type UnaryOperator = '-' | '!';
+
+/**
+ * A call to one of Ink's built-in LIST query functions (LIST_COUNT,
+ * LIST_MIN, LIST_MAX, LIST_ALL, LIST_RANGE, LIST_VALUE, LIST_INVERT
+ * — DEV-199 Phase 10). Deliberately narrower than a general function
+ * call: user-defined function knots are a separate, larger feature
+ * with no interpreter scaffolding yet (would need a call stack and
+ * mid-evaluation knot walk); this variant only ever resolves against
+ * the fixed set of builtins `evaluate` itself implements.
+ */
+export type ListFunctionName =
+  'LIST_COUNT' | 'LIST_MIN' | 'LIST_MAX' | 'LIST_ALL' | 'LIST_RANGE' | 'LIST_VALUE' | 'LIST_INVERT';
+
+/**
+ * A call to a user-defined Ink function-knot (`=== function foo(x) ===`
+ * — DEV-199 Phase 10b / function-knots). Unlike `listFunction`, `name`
+ * is NOT drawn from a fixed set `evaluate` itself knows how to run —
+ * it names a knot elsewhere in the story graph, which the pure
+ * evaluator has no knowledge of (see this file's header and
+ * expression-evaluator.ts's `CallFunctionHandler`). Evaluating one
+ * requires a caller-supplied `callFunction` callback; parsing one
+ * requires the parser's `context.knownFunctions` to already know the
+ * name is a real function-knot (see expression-parser.ts).
+ */
+export interface CallExpression {
+  kind: 'call';
+  name: string;
+  args: Expression[];
+}
+
+export type Expression =
+  | { kind: 'literal'; value: VariableValue }
+  | { kind: 'variable'; name: string }
+  | { kind: 'unary'; operator: UnaryOperator; operand: Expression }
+  | { kind: 'binary'; operator: BinaryOperator; left: Expression; right: Expression }
+  | { kind: 'logical'; operator: LogicalOperator; left: Expression; right: Expression }
+  | { kind: 'listFunction'; name: ListFunctionName; args: Expression[] }
+  | CallExpression;
+
+/**
+ * `=` is a plain assignment; the compound forms are sugar for
+ * `name = name <op> value` but are kept as their own operator (not
+ * desugared at parse time) so a round-trip through the printer
+ * reproduces what the author actually wrote.
+ */
+export type AssignmentOperator = '=' | '+=' | '-=' | '*=' | '/=';
+
+export interface AssignmentStatement {
+  kind: 'assignment';
+  name: string;
+  operator: AssignmentOperator;
+  value: Expression;
+}
+
+/**
+ * `~ return EXPR` or bare `~ return` inside a function-knot's content
+ * (function-knots — DEV-199 Phase 10b). `value` is omitted for the
+ * bare form — a function that exists purely for its side effects
+ * (mutating an outer-scope/global variable) doesn't need one. Only
+ * meaningful inside a function-knot's own content; a plain knot's
+ * content walker (applyNodeAssignments in the player, the content
+ * emitter in ink-converter.ts) treats one as a no-op rather than
+ * crashing, since nothing about the Statement type itself restricts
+ * where a ReturnStatement can appear.
+ */
+export interface ReturnStatement {
+  kind: 'return';
+  value?: Expression;
+}
+
+export type Statement = AssignmentStatement | ReturnStatement;
+
+export interface VariableDeclaration {
+  name: string;
+  type: VariableType;
+  initialValue: Expression;
+  isConst: boolean;
+  /**
+   * Only present when `type === 'list'`. Every member this LIST
+   * declares, in declaration order — the ORDER determines each
+   * member's ordinal (see {@link ListItem}), so it has to be kept
+   * here rather than derived from `initialValue`, which only holds
+   * the subset that starts active, not the full declared set.
+   */
+  listMembers?: string[];
+}
+
+/**
+ * A node's `content` array is a discriminated union, not a flat list
+ * of text, so Ink's in-content `~` assignment lines (narration, then
+ * `~ x = x + 1`, then more narration — DEV-199 Phase 1) can interleave
+ * with narration in original document order, rather than needing a
+ * separate parallel "statements" array kept in sync by position.
+ *
+ * Shared (not duplicated per format/runtime like the rest of
+ * StoryGraph) because backend validation, player-app playback, and
+ * the editor UI must all agree on what counts as a text block vs an
+ * assignment block — see `isTextBlock`.
+ *
+ * `kind` is required going forward, but every *reader* of this array
+ * should treat a block with no recognized `kind` (e.g. old data from
+ * before this field existed) as a TextBlock — see `isTextBlock`
+ * below — rather than require every existing story_graph row to be
+ * migrated before this type change ships.
+ */
+export type ContentBlock = TextBlock | AssignmentBlock;
+
+export interface TextBlock {
+  kind: 'text';
+  text: string;
+  tags: string[];
+  /** Ink's `{condition: text}` or a Twine dialect's hook condition (DEV-199 Phase 3/7-9). */
+  condition?: Expression;
+  /**
+   * Stable identity for this block, independent of its array
+   * position — generated once at parse/create time, carried through
+   * every edit. Optional and absent on data parsed before this field
+   * existed; such a block just isn't addressable by id yet (same
+   * tolerance `isTextBlock` already has for absent `kind`). Exists so
+   * per-block audio (a future phase) can address a block that
+   * doesn't move when earlier content is edited, the way `node_id`
+   * addresses a node today.
+   */
+  id?: string;
+}
+
+export interface AssignmentBlock {
+  kind: 'assignment';
+  statement: Statement;
+  /**
+   * A SugarCube/Chapbook `<<set>>` (or Chapbook equivalent) nested
+   * inside a conditional block (DEV-199 follow-up) — Ink's own `~`
+   * assignments have no such wrapping construct, so this is always
+   * `undefined` for Ink-authored content. `undefined` means "always
+   * runs when this block is reached," the same as `TextBlock.condition`.
+   */
+  condition?: Expression;
+  /** See {@link TextBlock.id}. */
+  id?: string;
+}
+
+/**
+ * True for a TextBlock, including a pre-Phase-0 content item that has
+ * no `kind` at all — only an explicit `kind: 'assignment'` should
+ * ever be treated as non-text. Prefer this over `block.kind ===
+ * 'text'` anywhere old data might still be in play.
+ *
+ * Accepts `null`/`undefined` (returning `false`, i.e. filtered out
+ * rather than crashing) because every real caller gets this array by
+ * casting loosely-typed JSONB `story_graph` data — the type system
+ * doesn't actually guarantee every element is a well-formed
+ * `ContentBlock`, only that it should be. A malformed element should
+ * disappear from a `.filter(isTextBlock)` call, not take the whole
+ * request down with `Cannot read properties of null`.
+ */
+export function isTextBlock(block: ContentBlock | null | undefined): block is TextBlock {
+  return block != null && block.kind !== 'assignment';
+}
+
+/** @deprecated Use {@link ContentBlock} (a TextBlock | AssignmentBlock union). Kept only as an alias during the DEV-199 migration. */
+export type TextContent = TextBlock;

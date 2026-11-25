@@ -19,6 +19,7 @@
  * }
  */
 
+import { randomUUID } from 'crypto';
 import type { StoryGraph, StoryNode, ValidationResult, ValidationMessage } from '../types.js';
 import { resolveBareStitchTargets } from './ink-parser.js';
 
@@ -226,7 +227,7 @@ function parseKnotContent(id: string, content: unknown[], parent: string | null)
       }
       if (item === '\n') {
         if (currentText.trim() && !inEval) {
-          node.content.push({ text: currentText.trim(), tags: [] });
+          node.content.push({ id: randomUUID(), kind: 'text', text: currentText.trim(), tags: [] });
           currentText = '';
         }
         continue;
@@ -331,6 +332,7 @@ function parseKnotContent(id: string, content: unknown[], parent: string | null)
             (choiceContent.some((c) => c === 'end' || c === 'done') ? 'END' : '');
 
           node.choices.push({
+            id: randomUUID(),
             text: choiceText || `Choice ${choiceNum + 1}`,
             target: choiceDivert || 'END',
             sticky: false,
@@ -344,7 +346,7 @@ function parseKnotContent(id: string, content: unknown[], parent: string | null)
 
   // Add any remaining text
   if (currentText.trim()) {
-    node.content.push({ text: currentText.trim(), tags: [] });
+    node.content.push({ id: randomUUID(), kind: 'text', text: currentText.trim(), tags: [] });
   }
 
   return node;

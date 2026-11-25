@@ -3,6 +3,14 @@
  * Parses .ink files into the Wanderline story graph format
  */
 
+import { randomUUID } from 'crypto';
+import {
+  parseExpression,
+  parseStatement,
+  evaluate,
+  isListValue,
+  LIST_FUNCTION_NAMES,
+} from '@wanderline/shared';
 import type {
   StoryGraph,
   StoryNode,
@@ -10,6 +18,13 @@ import type {
   Choice,
   ValidationResult,
   ValidationMessage,
+  Expression,
+  Statement,
+  VariableDeclaration,
+  VariableType,
+  VariableValue,
+  ListItem,
+  ExpressionParseContext,
 } from '../types.js';
 
 // Re-export types for convenience
@@ -29,6 +44,31 @@ interface ParserState {
   // skips these so the divert isn't double-counted as a fall-through
   // attached to the parent knot.
   consumedLines: Set<number>;
+  // DEV-199 Phase 1: VAR/CONST preamble declarations, in file order.
+  variables: VariableDeclaration[];
+  // Values of variables declared so far (by name), kept ONLY to
+  // type-infer each subsequent VAR/CONST's initializer when it
+  // references an earlier declaration (Ink allows `VAR b = a * 2`).
+  // Not consulted anywhere else — the actual runtime variable store
+  // lives in the player (Phase 2). A Map, not a plain object: `name`
+  // comes straight from a `\w+` capture and can legally be
+  // `__proto__`/`constructor`/`prototype` — a Map has no prototype
+  // chain for its own keys to collide with at all, same reasoning as
+  // `nodes` above.
+  variableValues: Map<string, VariableValue>;
+  // DEV-199 Phase 10: every LIST member declared so far, across every
+  // LIST in the file, and each LIST's full member set — threaded into
+  // every parseExpression/parseStatement call below as `context` so
+  // a bare `cold` in a LATER condition/assignment resolves as a list
+  // literal, not an undeclared-variable reference.
+  listMembers: Map<string, { origin: string; ordinal: number }>;
+  listDefinitions: Map<string, ListItem[]>;
+  // Function-knots (DEV-199 Phase 10b): every `=== function name(...) ===`
+  // name in the file, collected by a prepass BEFORE the main line
+  // loop runs (see collectKnownFunctions) — a call can textually
+  // precede its own knot's declaration, so this can't be built up
+  // incrementally the way listMembers/variableValues are.
+  knownFunctions: Set<string>;
 }
 
 const IMPLICIT_START_NODE = '_intro';
@@ -47,9 +87,16 @@ export function parseInk(source: string, storyId: string, title?: string): Story
     pendingDivert: null,
     lastChoiceIndex: null,
     consumedLines: new Set(),
+    variables: [],
+    // Maps, like `nodes` above — see the ParserState field comments.
+    variableValues: new Map(),
+    listMembers: new Map(),
+    listDefinitions: new Map(),
+    knownFunctions: new Set(),
   };
 
   const lines = source.split('\n');
+  state.knownFunctions = collectKnownFunctions(lines, state.warnings);
 
   // First pass: check if there's content before the first knot
   let hasContentBeforeFirstKnot = false;
@@ -61,6 +108,12 @@ export function parseInk(source: string, storyId: string, title?: string): Story
     if (isKnotDeclaration(trimmed)) {
       break;
     }
+
+    // A VAR/CONST/LIST preamble line is a declaration, not story
+    // content — without this, a leading `VAR gold = 50` (or `LIST
+    // kettleState = ...`) would trip the "content before first knot"
+    // check and spawn an unwanted implicit start node.
+    if (VARIABLE_DECL_RE.test(trimmed) || LIST_DECL_RE.test(trimmed)) continue;
 
     // Found non-empty, non-comment content before a knot
     hasContentBeforeFirstKnot = true;
@@ -96,6 +149,15 @@ export function parseInk(source: string, storyId: string, title?: string): Story
   // down the file, so this can't be decided while parsing.
   resolveBareStitchTargets(nodes);
 
+  // Function-knot call arity (DEV-199 Phase 10b). Has to be a second
+  // pass for the same reason as resolveBareStitchTargets: a call can
+  // reference a function-knot declared LATER in the file, whose
+  // param count isn't known until that knot's own node has been
+  // built. An undeclared-function-NAME call is already caught at
+  // parse time (parseFunctionCall only lets a known name become a
+  // `call` node at all) — this only checks argument COUNT.
+  validateFunctionCallArity(nodes, state.variables, state.warnings);
+
   // Determine start node
   const startNode = findStartNode(nodes);
 
@@ -109,6 +171,7 @@ export function parseInk(source: string, storyId: string, title?: string): Story
     startNode,
     validation,
     source,
+    ...(state.variables.length > 0 ? { variables: state.variables } : {}),
   };
 }
 
@@ -118,7 +181,8 @@ export function parseInk(source: string, storyId: string, title?: string): Story
 //     still want to create a node so subsequent content doesn't leak
 //     onto the previous knot)
 //   - name (\w+)
-//   - optional `()` for function-knots, with optional arg list
+//   - optional `(params)` for function-knots, params captured raw
+//     (DEV-199 Phase 10b — see parseFunctionParams)
 //   - optional 0-3 trailing `=`
 //   - optional trailing whitespace
 // Trailing `# tag` / `// comment` are stripped from the line before
@@ -127,7 +191,9 @@ export function parseInk(source: string, storyId: string, title?: string): Story
 // Capture groups:
 //   1: "function " keyword if present (function knot)
 //   2: knot name
-//   3: trailing tag block (everything from the first `#` to EOL, if any)
+//   3: raw parameter list text (without the parens), if any `(...)`
+//      was present at all — "" for `foo()`, undefined for bare `foo`
+//   4: trailing tag block (everything from the first `#` to EOL, if any)
 // Ink's spec allows ANY number of `=` ≥ 2 on a knot declaration —
 // authors routinely write `==== name ====` or `========= name ==`
 // as visual separators. Our previous {2,3} bound silently dropped
@@ -136,10 +202,100 @@ export function parseInk(source: string, storyId: string, title?: string): Story
 // project upload had `==== name ===` on a knot header far into
 // the .ink source, and every reference to that knot logged as
 // missing).
-const KNOT_DECL_RE = /^={2,}\s*(function\s+)?(\w+)\s*(?:\([^)]*\))?\s*={0,}\s*(#.*)?$/;
+// Two deliberate departures from the more obvious-looking
+// `^={2,}\s*(function\s+)?(\w+)\s*(?:\(([^)]*)\))?\s*={0,}\s*(#.*)?$`,
+// both CodeQL-flagged ReDoS (still present even after fixing the
+// first one alone — confirmed by timing a crafted input against the
+// one-fix-only version: ~40k tab characters took ~2.7s):
+//  1. The trailing `[=\s]*` (not `\s*={0,}\s*`): two adjacent `\s*`
+//     groups straddling an `={0,}` that can itself match zero
+//     characters gives the engine countless equivalent ways to split
+//     a long run of trailing whitespace with no final match. A
+//     single quantifier over one combined character class has no
+//     such ambiguity.
+//  2. `(\w+)(?:\s*\(...\))?` (the `\s*` moved INSIDE the optional
+//     parens group, not left standalone before it): a standalone
+//     `\s*` immediately followed by `[=\s]*` once the parens group is
+//     ABSENT puts two overlapping whitespace-matching quantifiers
+//     back to back with nothing between them — the exact same O(n²)
+//     split-counting hazard as #1, just one token later. Requiring
+//     the `\s*` to be immediately followed by a literal `(` (which
+//     can't itself be whitespace) removes the ambiguity: either the
+//     group commits to matching an actual `(`, or it fails fast and
+//     skips straight to `[=\s]*` with no overlap to split.
+const KNOT_DECL_RE = /^={2,}\s*(function\s+)?(\w+)(?:\s*\(([^)]*)\))?[=\s]*(#.*)?$/;
 
 function isKnotDeclaration(trimmed: string): boolean {
   return KNOT_DECL_RE.test(stripLineComment(trimmed).trimEnd());
+}
+
+/**
+ * First pass (DEV-199 Phase 10b): every `=== function name(...) ===`
+ * name in the file, BEFORE any line-by-line parsing happens — a call
+ * inside an earlier knot's condition/assignment can reference a
+ * function declared later in the file, so `knownFunctions` can't be
+ * built incrementally the way listMembers/variableValues are (see
+ * ParserState's doc comment). Mirrors the existing
+ * "hasContentBeforeFirstKnot" prepass's shape: a lightweight,
+ * read-only scan over the same raw lines the main loop will walk
+ * again.
+ */
+function collectKnownFunctions(lines: string[], warnings: ValidationMessage[]): Set<string> {
+  const names = new Set<string>();
+  lines.forEach((line, index) => {
+    const trimmed = stripLineComment(line).trim();
+    if (!trimmed) return;
+    const match = trimmed.match(KNOT_DECL_RE);
+    if (match && match[1]) {
+      const name = match[2];
+      if (LIST_FUNCTION_NAMES.has(name)) {
+        warnings.push({
+          type: 'syntax_error',
+          message: `function ${name} collides with the LIST_* builtin of the same name — every call to ${name}(...) will resolve to the builtin, not this function`,
+          lineNumber: index + 1,
+          args: { name },
+        });
+      }
+      names.add(name);
+    }
+  });
+  return names;
+}
+
+// VAR/CONST declaration (DEV-199 Phase 1). Ink declares these at
+// global scope — conventionally at the top of the file, but not
+// required to be — so this is matched wherever parseLine encounters
+// it, not just in a "preamble" position.
+//
+// No `\s*` between the final `=` and the captured group: `\s*`
+// immediately followed by a greedy `(.+)$` gives the regex engine
+// many equally-valid places to split a run of whitespace between
+// the two, which is quadratic on a pathological "VAR x=    …    "
+// input (CodeQL flagged this as a polynomial-regex DoS risk). Every
+// caller already calls `.trim()` on this capture (or splits+trims
+// each piece, for LIST), so dropping the `\s*` changes nothing about
+// the parsed result — it just stops the regex engine from needing to
+// consider those extra split points at all.
+const VARIABLE_DECL_RE = /^(VAR|CONST)\s+(\w+)\s*=(.+)$/;
+
+// LIST declaration (DEV-199 Phase 10) — same "wherever it appears"
+// scoping as VAR/CONST above, and the same `\s*(.+)$` → `(.+)$` fix.
+const LIST_DECL_RE = /^LIST\s+(\w+)\s*=(.+)$/;
+
+/** The known-list-members context every parseExpression/parseStatement
+ * call in this file needs, so a bare identifier matching a LIST
+ * member declared EARLIER in the file resolves as a list literal. A
+ * list member declared LATER in the file is simply not yet known at
+ * the point an earlier line is parsed — same ordering rule Ink's own
+ * VAR/CONST forward-reference handling already has (state.variableValues
+ * only has what's been declared so far, not what comes later). */
+function expressionContext(state: ParserState | undefined): ExpressionParseContext {
+  if (!state) return {};
+  return {
+    listMembers: Object.fromEntries(state.listMembers),
+    listDefinitions: Object.fromEntries(state.listDefinitions),
+    knownFunctions: state.knownFunctions,
+  };
 }
 
 /**
@@ -209,13 +365,27 @@ function parseLine(line: string, state: ParserState, allLines: string[], lineInd
     return;
   }
 
+  // VAR/CONST declaration (DEV-199 Phase 1).
+  const variableDeclMatch = trimmed.match(VARIABLE_DECL_RE);
+  if (variableDeclMatch) {
+    parseVariableDeclarationLine(variableDeclMatch, state);
+    return;
+  }
+
+  // LIST declaration (DEV-199 Phase 10).
+  const listDeclMatch = trimmed.match(LIST_DECL_RE);
+  if (listDeclMatch) {
+    parseListDeclarationLine(listDeclMatch, state);
+    return;
+  }
+
   // Knot declaration (=== knot_name === or == knot_name ==, with
   // optional `function` keyword and optional trailing tag/comment).
   const knotMatch = trimmed.match(KNOT_DECL_RE);
   if (knotMatch) {
     const isFunction = !!knotMatch[1];
-    const trailingTags = knotMatch[3] ? extractTags(knotMatch[3]).tags : [];
-    parseKnot(knotMatch[2], state, isFunction, trailingTags);
+    const trailingTags = knotMatch[4] ? extractTags(knotMatch[4]).tags : [];
+    parseKnot(knotMatch[2], state, isFunction, trailingTags, knotMatch[3]);
     return;
   }
 
@@ -246,6 +416,12 @@ function parseLine(line: string, state: ParserState, allLines: string[], lineInd
   // Gather (-)
   if (trimmed.startsWith('-') && !trimmed.startsWith('->')) {
     parseGather(trimmed, state);
+    return;
+  }
+
+  // In-content assignment (~ statement — DEV-199 Phase 1).
+  if (trimmed.startsWith('~')) {
+    parseAssignmentLine(trimmed, state);
     return;
   }
 
@@ -340,17 +516,64 @@ function handleDivert(target: string, state: ParserState): void {
 }
 
 /**
+ * Parse a parameter list raw-captured from a function-knot's
+ * declaration line (DEV-199 Phase 10b — `=== function foo(x, ref y) ===`
+ * captures `rawParams = "x, ref y"`). `ref` parameters (Ink's
+ * by-reference params) are explicitly NOT supported by the
+ * interpreter (see function-interpreter.ts's header) — the `ref`
+ * keyword is stripped here and a warning is pushed so the author
+ * knows it's being treated as an ordinary by-value parameter instead
+ * of silently doing the wrong thing.
+ */
+function parseFunctionParams(rawParams: string, name: string, state: ParserState): string[] {
+  const tokens = rawParams
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean);
+  const params: string[] = [];
+  for (const token of tokens) {
+    const refMatch = token.match(/^ref\s+(\w+)$/);
+    const paramName = refMatch ? refMatch[1] : token;
+    if (refMatch) {
+      state.warnings.push({
+        type: 'syntax_error',
+        message: `Function '${name}': 'ref' parameters are not supported — '${paramName}' will be treated as a plain (by-value) parameter`,
+        lineNumber: state.lineNumber,
+        args: { name, param: paramName },
+      });
+    }
+    if (!/^[A-Za-z_]\w*$/.test(paramName)) {
+      state.warnings.push({
+        type: 'syntax_error',
+        message: `Function '${name}': "${token}" is not a valid parameter name`,
+        lineNumber: state.lineNumber,
+        args: { name, param: token },
+      });
+      continue;
+    }
+    params.push(paramName);
+  }
+  return params;
+}
+
+/**
  * Parse a knot declaration. `isFunction` flips on for `=== function
  * foo() ===`; we still create a node (so subsequent content lands on
  * the function knot and not on the previous knot) but tag it
  * `internal:function` so consumers can filter it from author-facing
- * UI (cause #3).
+ * UI (cause #3). `rawParams` (DEV-199 Phase 10b) is the function's
+ * captured `(...)` parameter list text, if any was present at all —
+ * only meaningful (and only stored on the node) when `isFunction` is
+ * true; a plain knot's own `(...)` (if present at all — real Ink
+ * doesn't allow one, but nothing enforced that before this phase
+ * either) continues to be silently discarded, unchanged.
  */
 function parseKnot(
   name: string,
   state: ParserState,
   isFunction = false,
   extraTags: string[] = [],
+  rawParams?: string,
 ): void {
   state.currentKnot = name;
   state.currentStitch = null;
@@ -366,6 +589,9 @@ function parseKnot(
     return;
   }
 
+  const params =
+    isFunction && rawParams !== undefined ? parseFunctionParams(rawParams, name, state) : undefined;
+
   const node: StoryNode = {
     id: name,
     type: 'knot',
@@ -375,6 +601,7 @@ function parseKnot(
     divert: null,
     tags: [...(isFunction ? ['internal:function'] : []), ...extraTags],
     lineNumber: state.lineNumber,
+    ...(params !== undefined ? { params } : {}),
   };
 
   state.nodes.set(name, node);
@@ -479,6 +706,35 @@ function parseChoiceIntoNode(
     content = content.slice(labelMatch[0].length);
   }
 
+  // Conditional choice visibility (DEV-199 Phase 4): one or more
+  // `{condition}` prefixes right after the marker/label — NOT the
+  // `{condition: text}` form, which is conditional TEXT (Phase 3) and
+  // only applies to content lines. Ink's `{c1}{c2}` stacked prefixes
+  // AND together into one expression (see the plan's architecture
+  // note on Choice.condition being singular, never a list).
+  let condition: Expression | undefined;
+  let conditionMatch: RegExpMatchArray | null;
+  while ((conditionMatch = content.match(/^\{([^{}]+)\}\s*/))) {
+    try {
+      const parsed = parseExpression(conditionMatch[1].trim(), expressionContext(state));
+      condition = condition
+        ? { kind: 'logical', operator: '&&', left: condition, right: parsed }
+        : parsed;
+      content = content.slice(conditionMatch[0].length);
+    } catch (err) {
+      state.warnings.push({
+        type: 'syntax_error',
+        message: `Could not parse choice condition "${conditionMatch[1].trim()}": ${errorMessage(err)}`,
+        lineNumber: state.lineNumber,
+        args: { detail: conditionMatch[1].trim() },
+      });
+      // Leave this (and any further) `{...}` prefix as literal text
+      // rather than risk an infinite loop re-matching the same
+      // unparseable prefix.
+      break;
+    }
+  }
+
   // Extract tags
   const { text, tags } = extractTags(content);
 
@@ -520,11 +776,13 @@ function parseChoiceIntoNode(
   }
 
   const choice: Choice = {
+    id: randomUUID(),
     text: choiceText.trim(),
     target,
     sticky,
     fallback: false,
     tags: label ? [...tags, `internal:label:${label}`] : tags,
+    ...(condition !== undefined ? { condition } : {}),
   };
 
   currentNode.choices.push(choice);
@@ -577,6 +835,291 @@ function parseGather(line: string, state: ParserState): void {
   }
 }
 
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Parse a `VAR name = expr` / `CONST name = expr` declaration into
+ * `state.variables`. Ink has no separate type annotation — the type
+ * is inferred from the initializer, which may itself reference an
+ * earlier declaration (`VAR b = a * 2`), so this evaluates against
+ * `state.variableValues` (built up incrementally, in file order)
+ * rather than requiring a literal.
+ *
+ * Any failure (unparseable expression, or one that can't be
+ * evaluated yet — e.g. it references a variable not yet declared)
+ * is reported as a warning and the declaration is skipped, rather
+ * than failing the whole parse.
+ */
+function parseVariableDeclarationLine(match: RegExpMatchArray, state: ParserState): void {
+  const [, keyword, name, rhsRaw] = match;
+  const isConst = keyword === 'CONST';
+
+  // A VAR/CONST sharing a name with an already-declared LIST's member
+  // would make every later bare reference to that name resolve as
+  // the list member (parsePrimary checks listMemberInfo first), not
+  // this declaration — permanently shadowing it with no warning.
+  const collidingMember = state.listMembers.get(name);
+  if (collidingMember) {
+    state.warnings.push({
+      type: 'syntax_error',
+      message: `${keyword} ${name} collides with a member of LIST ${collidingMember.origin}`,
+      lineNumber: state.lineNumber,
+      args: { name, keyword },
+    });
+    return;
+  }
+  // A VAR/CONST sharing a name with an already-declared LIST's OWN
+  // name is the same hazard in the other direction — the LIST's name
+  // is itself a valid reference to its full initial-value literal.
+  if (state.listDefinitions.has(name)) {
+    state.warnings.push({
+      type: 'syntax_error',
+      message: `${keyword} ${name} collides with an already-declared LIST of the same name`,
+      lineNumber: state.lineNumber,
+      args: { name, keyword },
+    });
+    return;
+  }
+
+  let initialValue: Expression;
+  try {
+    initialValue = parseExpression(rhsRaw.trim(), expressionContext(state));
+  } catch (err) {
+    state.warnings.push({
+      type: 'syntax_error',
+      message: `Could not parse ${keyword} ${name}'s initial value: ${errorMessage(err)}`,
+      lineNumber: state.lineNumber,
+      args: { name, keyword },
+    });
+    return;
+  }
+
+  let value: VariableValue;
+  try {
+    value = evaluate(initialValue, Object.fromEntries(state.variableValues));
+  } catch (err) {
+    state.warnings.push({
+      type: 'syntax_error',
+      message: `Could not determine a type for ${keyword} ${name}: ${errorMessage(err)}`,
+      lineNumber: state.lineNumber,
+      args: { name, keyword },
+    });
+    return;
+  }
+
+  const type: VariableType = isListValue(value)
+    ? 'list'
+    : typeof value === 'number'
+      ? 'number'
+      : typeof value === 'boolean'
+        ? 'bool'
+        : 'string';
+  state.variables.push({ name, type, initialValue, isConst });
+  state.variableValues.set(name, value);
+}
+
+/**
+ * Parse a `LIST name = member1, (member2), member3` declaration
+ * (DEV-199 Phase 10). Parens around a member mark it initially
+ * active; everything else in `state.listMembers`/`listDefinitions`
+ * exists so a bare member name in a LATER expression/statement
+ * resolves as a list literal rather than an undeclared-variable
+ * reference — see `expressionContext`.
+ */
+function parseListDeclarationLine(match: RegExpMatchArray, state: ParserState): void {
+  const [, name, rhsRaw] = match;
+
+  // The LIST's own name must not collide with an already-declared
+  // VAR/CONST, another LIST's own name (a LIST's own name is ALSO
+  // registered in state.variableValues below, the same as any VAR —
+  // it resolves as a plain variable reference everywhere outside
+  // listMembers, so one check against variableValues covers both),
+  // or another LIST's member — each of those already claims `name`
+  // as a valid bare reference, and silently letting this declaration
+  // win would permanently shadow whichever one came first with no
+  // warning.
+  if (state.variableValues.has(name)) {
+    state.warnings.push({
+      type: 'syntax_error',
+      message: `LIST ${name} collides with an already-declared variable of the same name`,
+      lineNumber: state.lineNumber,
+      args: { name },
+    });
+    return;
+  }
+  const collidingOwnName = state.listMembers.get(name);
+  if (collidingOwnName) {
+    state.warnings.push({
+      type: 'syntax_error',
+      message: `LIST ${name} collides with a member of LIST ${collidingOwnName.origin}`,
+      lineNumber: state.lineNumber,
+      args: { name },
+    });
+    return;
+  }
+
+  const memberTokens = rhsRaw
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean);
+  if (memberTokens.length === 0) {
+    state.warnings.push({
+      type: 'syntax_error',
+      message: `LIST ${name} declares no members`,
+      lineNumber: state.lineNumber,
+      args: { name },
+    });
+    return;
+  }
+
+  const allItems: ListItem[] = [];
+  const activeNames: string[] = [];
+  for (let i = 0; i < memberTokens.length; i++) {
+    let token = memberTokens[i];
+    const active = token.startsWith('(') && token.endsWith(')');
+    if (active) token = token.slice(1, -1).trim();
+    if (!/^[A-Za-z_]\w*$/.test(token)) {
+      state.warnings.push({
+        type: 'syntax_error',
+        message: `LIST ${name}: "${token}" is not a valid member name`,
+        lineNumber: state.lineNumber,
+        args: { name, member: token },
+      });
+      return;
+    }
+    // A member sharing the LIST's own name would register itself as
+    // both the LIST variable's name AND one of its own members —
+    // every later bare reference to it would resolve to the fixed
+    // single-item member literal instead of the LIST's actual
+    // current runtime value.
+    if (token === name) {
+      state.warnings.push({
+        type: 'syntax_error',
+        message: `LIST ${name}: member "${token}" cannot share the LIST's own name`,
+        lineNumber: state.lineNumber,
+        args: { name, member: token },
+      });
+      return;
+    }
+    // A duplicate member WITHIN this same declaration (`LIST a = x,
+    // x`) isn't caught by the checks below — those only see what's
+    // already registered in state from a PRIOR declaration, and this
+    // declaration's own earlier tokens aren't registered until the
+    // loop finishes. Without this, `allItems` ends up with two
+    // conflicting ordinals for the same name while listMembers only
+    // keeps the last, corrupting LIST_ALL/LIST_INVERT/LIST_RANGE.
+    if (allItems.some((item) => item.name === token)) {
+      state.warnings.push({
+        type: 'syntax_error',
+        message: `LIST ${name}: member "${token}" is declared more than once`,
+        lineNumber: state.lineNumber,
+        args: { name, member: token },
+      });
+      return;
+    }
+    // A member name that collides with an already-declared VAR/CONST,
+    // or with a member of a DIFFERENT already-declared LIST, would
+    // otherwise silently overwrite the earlier declaration's claim on
+    // that bare identifier in state.listMembers/variableValues — any
+    // later reference to the name would then resolve against the
+    // wrong origin with no warning (real Ink itself rejects this at
+    // compile time as a duplicate definition).
+    if (state.variableValues.has(token)) {
+      state.warnings.push({
+        type: 'syntax_error',
+        message: `LIST ${name}: member "${token}" collides with an already-declared variable of the same name`,
+        lineNumber: state.lineNumber,
+        args: { name, member: token },
+      });
+      return;
+    }
+    // A member colliding with another already-declared LIST's OWN
+    // name is already caught by the variableValues check above —
+    // that LIST's name is registered there too, the same as any VAR.
+    const existingMember = state.listMembers.get(token);
+    if (existingMember && existingMember.origin !== name) {
+      state.warnings.push({
+        type: 'syntax_error',
+        message: `LIST ${name}: member "${token}" collides with a member of LIST ${existingMember.origin}`,
+        lineNumber: state.lineNumber,
+        args: { name, member: token },
+      });
+      return;
+    }
+    allItems.push({ name: token, ordinal: i });
+    if (active) activeNames.push(token);
+  }
+
+  // Register every member BEFORE building the initial-value literal,
+  // so a member can reference an earlier member of the SAME
+  // declaration — not meaningful for list literals themselves, but
+  // keeps this consistent with how VAR/CONST registers incrementally.
+  for (const item of allItems) {
+    state.listMembers.set(item.name, { origin: name, ordinal: item.ordinal });
+  }
+  state.listDefinitions.set(name, allItems);
+
+  const activeItems = allItems.filter((item) => activeNames.includes(item.name));
+  const value: VariableValue = { kind: 'list', origin: name, items: activeItems, allItems };
+  const initialValue: Expression = { kind: 'literal', value };
+  state.variables.push({
+    name,
+    type: 'list',
+    initialValue,
+    isConst: false,
+    listMembers: allItems.map((item) => item.name),
+  });
+  state.variableValues.set(name, value);
+}
+
+/**
+ * Parse an in-content `~ statement` line (DEV-199 Phase 1) into an
+ * AssignmentBlock, interleaved with surrounding TextBlocks in
+ * document order on the current node.
+ *
+ * `name <assignOp> expr` and `~ return expr`/bare `~ return` are
+ * understood (DEV-199 Phase 10b added the latter). Ink's
+ * `~ temp x = ...`, `~ x++`/`~ x--`, and a bare function call with no
+ * assignment (`~ foo()`, called purely for its side effect) are not
+ * — `parseStatement` requires an assignment operator or `return`
+ * after the leading identifier, so a bare call falls through to the
+ * same parse-failure path as the others. Falling back to plain
+ * content on a parse failure matches this parser's pre-DEV-199
+ * behavior for every `~` line (none were understood then either), so
+ * an unsupported form still shows up for the author to notice and
+ * fix, rather than silently vanishing.
+ */
+function parseAssignmentLine(trimmedLine: string, state: ParserState): void {
+  // `trimmedLine` still has its leading `~` — strip it here (rather
+  // than at the call site) so the fallback below can re-emit the
+  // EXACT original line on a parse failure, whitespace included,
+  // instead of a reconstruction that could drift from what the
+  // author actually wrote (e.g. `~return x` with no space).
+  const rest = trimmedLine.slice(1).trim();
+  let statement: Statement;
+  try {
+    statement = parseStatement(rest, expressionContext(state));
+  } catch (err) {
+    state.warnings.push({
+      type: 'syntax_error',
+      message: `Could not parse assignment "${trimmedLine}": ${errorMessage(err)}`,
+      lineNumber: state.lineNumber,
+      args: { detail: rest },
+    });
+    parseContent(trimmedLine, state);
+    return;
+  }
+
+  let currentNode = getCurrentNode(state);
+  if (!currentNode) {
+    createImplicitStartNode(state);
+    currentNode = getCurrentNode(state);
+  }
+  currentNode?.content.push({ id: randomUUID(), kind: 'assignment', statement });
+}
+
 /**
  * Parse content text
  */
@@ -595,12 +1138,41 @@ function parseContent(line: string, state: ParserState): void {
   addContentToNode(line, currentNode, state);
 }
 
+// Ink conditional text (DEV-199 Phase 3): `{condition: text}` wrapping
+// an entire content line. Only this single-condition form is
+// supported — Ink's `{a|b}` alternatives/sequences (cycles, shuffles,
+// once-only lists) are a different feature and stay unsupported
+// (unmatched here, so they fall through as inert text exactly as they
+// did before this phase, which is not a regression).
+const CONDITIONAL_TEXT_RE = /^\{([^{}]+?):(.*)\}$/;
+
 function addContentToNode(line: string, node: StoryNode, state?: ParserState): void {
   const { text, tags } = extractTags(line);
 
+  let innerText = text;
+  let condition: Expression | undefined;
+  const conditionalMatch = text.match(CONDITIONAL_TEXT_RE);
+  if (conditionalMatch) {
+    try {
+      condition = parseExpression(conditionalMatch[1].trim(), expressionContext(state));
+      innerText = conditionalMatch[2].trim();
+    } catch (err) {
+      if (state) {
+        state.warnings.push({
+          type: 'syntax_error',
+          message: `Could not parse conditional text's condition "${conditionalMatch[1].trim()}": ${errorMessage(err)}`,
+          lineNumber: state.lineNumber,
+          args: { detail: conditionalMatch[1].trim() },
+        });
+      }
+      // Fall through with innerText still the whole original line —
+      // same tolerant-degradation choice as the ~ assignment fallback.
+    }
+  }
+
   // Check for inline divert. Allow leading-dot relative targets.
-  let finalText = text;
-  const divertMatch = text.match(/^(.+?)\s*->\s*(\.?\w+(?:\.\w+)?)\s*$/);
+  let finalText = innerText;
+  const divertMatch = innerText.match(/^(.+?)\s*->\s*(\.?\w+(?:\.\w+)?)\s*$/);
   if (divertMatch) {
     finalText = divertMatch[1].trim();
     if (!node.divert) {
@@ -616,8 +1188,11 @@ function addContentToNode(line: string, node: StoryNode, state?: ParserState): v
 
   if (finalText) {
     const content: TextContent = {
+      id: randomUUID(),
+      kind: 'text',
       text: finalText,
       tags,
+      ...(condition !== undefined ? { condition } : {}),
     };
     node.content.push(content);
   }
@@ -696,6 +1271,112 @@ function extractTitle(source: string): string | null {
 }
 
 /**
+ * Walk an Expression tree, invoking `visit` on every `call` node
+ * found anywhere in it (including nested inside another call's own
+ * arguments, e.g. `f(g(x))` visits both `f` and `g`).
+ */
+function forEachCallExpression(
+  expr: Expression,
+  visit: (call: Expression & { kind: 'call' }) => void,
+): void {
+  switch (expr.kind) {
+    case 'literal':
+    case 'variable':
+      return;
+    case 'unary':
+      forEachCallExpression(expr.operand, visit);
+      return;
+    case 'binary':
+    case 'logical':
+      forEachCallExpression(expr.left, visit);
+      forEachCallExpression(expr.right, visit);
+      return;
+    case 'listFunction':
+      expr.args.forEach((arg) => forEachCallExpression(arg, visit));
+      return;
+    case 'call':
+      visit(expr);
+      expr.args.forEach((arg) => forEachCallExpression(arg, visit));
+      return;
+  }
+}
+
+/**
+ * Every Statement's own value expression(s), as a convenience for the
+ * arity walk below — an AssignmentStatement has exactly one
+ * (`.value`), a ReturnStatement has zero or one (`.value?`).
+ */
+function statementExpressions(stmt: Statement): Expression[] {
+  if (stmt.kind === 'return') {
+    return stmt.value ? [stmt.value] : [];
+  }
+  return [stmt.value];
+}
+
+/**
+ * Function-knot call arity check (DEV-199 Phase 10b): every `call`
+ * expression anywhere in the graph (choice conditions, conditional
+ * text, in-content assignments/returns, VAR/CONST initial values)
+ * must supply exactly as many arguments as its target function-knot
+ * declares parameters. A mismatch is reported as a warning — matching
+ * this parser's "warn and skip, don't crash the whole parse"
+ * convention — rather than thrown, since the call expression itself
+ * already parsed successfully and the rest of the graph is still
+ * usable.
+ */
+function validateFunctionCallArity(
+  nodes: Record<string, StoryNode>,
+  variables: VariableDeclaration[],
+  warnings: ValidationMessage[],
+): void {
+  const paramCounts = new Map<string, number>();
+  for (const node of Object.values(nodes)) {
+    if (node.tags.includes('internal:function')) {
+      paramCounts.set(node.id, node.params?.length ?? 0);
+    }
+  }
+  if (paramCounts.size === 0) return;
+
+  const checkExpr = (expr: Expression, nodeId: string | undefined, lineNumber: number): void => {
+    forEachCallExpression(expr, (call) => {
+      const expected = paramCounts.get(call.name);
+      // undefined means "not a function-knot" (e.g. a LIST_* builtin
+      // can't reach here — those parse as 'listFunction', not
+      // 'call' — so this should only ever be a real function-knot
+      // name; checked defensively anyway).
+      if (expected === undefined) return;
+      if (call.args.length !== expected) {
+        warnings.push({
+          type: 'syntax_error',
+          message: `Call to function '${call.name}' passes ${call.args.length} argument(s), but it declares ${expected}`,
+          nodeId,
+          lineNumber,
+          args: { name: call.name, expected, actual: call.args.length },
+        });
+      }
+    });
+  };
+
+  for (const node of Object.values(nodes)) {
+    for (const block of node.content) {
+      if (block.kind === 'assignment') {
+        statementExpressions(block.statement).forEach((e) =>
+          checkExpr(e, node.id, node.lineNumber),
+        );
+      } else if (block.condition) {
+        checkExpr(block.condition, node.id, node.lineNumber);
+      }
+    }
+    for (const choice of node.choices) {
+      if (choice.condition) checkExpr(choice.condition, node.id, node.lineNumber);
+    }
+  }
+  for (const decl of variables) {
+    checkExpr(decl.initialValue, undefined, 0);
+  }
+}
+
+/**
  * Validate the story graph
  */
 function validateGraph(
@@ -765,6 +1446,12 @@ function validateGraph(
     if (!reachable.has(nodeId)) {
       // Don't warn about stitches - they're reachable from their parent knot
       if (!nodeId.includes('.')) {
+        // Don't warn about a function-knot either (DEV-199 Phase
+        // 10b): it's never entered via a divert/choice at all —
+        // only ever invoked as an EXPRESSION call ({myFunc(x)}) — so
+        // "unreachable from the start" would fire on every single
+        // one, which isn't a real authoring problem.
+        if (nodes[nodeId].tags.includes('internal:function')) return;
         warnings.push({
           type: 'unreachable_node',
           message: `Node "${nodeId}" is not reachable from the start`,
@@ -798,6 +1485,28 @@ function validateGraph(
         nodeId: node.id,
         lineNumber: node.lineNumber,
         args: { nodeName: node.id, nodeKind: node.type ?? 'knot' },
+      });
+    }
+  });
+
+  // A function-knot's content must be a flat sequence of plain
+  // assignment/return statements — diverts and choices inside one
+  // are real Ink syntax (a tail-exit divert, or even a full weave)
+  // that this implementation's function-interpreter.ts explicitly
+  // does NOT support (see that module's header). Rather than
+  // silently ignore a divert/choice that was parsed onto the node but
+  // will never actually be followed when the function is CALLED
+  // (only when entered as plain knot content), warn so the author
+  // knows it won't do what it looks like it does.
+  Object.values(nodes).forEach((node) => {
+    if (!node.tags.includes('internal:function')) return;
+    if (node.choices.length > 0 || node.divert) {
+      warnings.push({
+        type: 'syntax_error',
+        message: `Function '${node.id}' contains a choice or divert — function-knots only support plain assignment/return statements; a divert/choice is ignored when the function is called as an expression`,
+        nodeId: node.id,
+        lineNumber: node.lineNumber,
+        args: { nodeName: node.id },
       });
     }
   });

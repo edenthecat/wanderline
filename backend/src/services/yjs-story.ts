@@ -26,7 +26,14 @@
 // preview, validation) stay current.
 
 import * as Y from 'yjs';
-import type { StoryGraph, StoryNode, Choice, TextContent } from '../types.js';
+import type {
+  StoryGraph,
+  StoryNode,
+  Choice,
+  ContentBlock,
+  Expression,
+  Statement,
+} from '../types.js';
 
 const NODES_KEY = 'nodes';
 
@@ -36,29 +43,62 @@ interface SerializableNode {
   divert: StoryNode['divert'];
   lineNumber: number;
   tags: string[];
-  content: TextContent[];
+  content: ContentBlock[];
   choices: Choice[];
   audio?: StoryNode['audio'];
+  params?: StoryNode['params'];
 }
 
-function buildContentItem(item: TextContent): Y.Map<unknown> {
+/**
+ * Expressions/statements (DEV-199) are edited as a single atomic
+ * value, not character-by-character like narration text, so a JSON
+ * string under a plain Y.Map key — last-writer-wins, same as every
+ * other structural field here — is the right fit. No Y.Text needed.
+ */
+/** Read/write use the SAME non-empty-string predicate, so a block/
+ * choice's id round-trips identically regardless of which function
+ * last touched it — a truthy-vs-typeof mismatch between them would
+ * otherwise treat `id: ''` as present on write but absent on read
+ * (or vice versa). */
+function writeOptionalId(m: Y.Map<unknown>, id: string | undefined): void {
+  if (typeof id === 'string' && id.length > 0) m.set('id', id);
+}
+function readOptionalId(m: Y.Map<unknown>): { id: string } | Record<string, never> {
+  const id = m.get('id');
+  return typeof id === 'string' && id.length > 0 ? { id } : {};
+}
+
+function buildContentItem(item: ContentBlock): Y.Map<unknown> {
   const m = new Y.Map<unknown>();
+  m.set('kind', item.kind);
+  writeOptionalId(m, item.id);
+  if (item.kind === 'assignment') {
+    m.set('statement', JSON.stringify(item.statement));
+    // DEV-199 follow-up (found in review): a SugarCube/Chapbook
+    // assignment nested inside a conditional block carries this —
+    // dropping it on write turned a conditional assignment
+    // unconditional the first time a collaborative edit ran through
+    // CollabShadowSaver (which reads the Y.Doc back via readNode).
+    if (item.condition) {
+      m.set('condition', JSON.stringify(item.condition));
+    }
+    return m;
+  }
   const yText = new Y.Text();
   yText.insert(0, item.text);
   m.set('text', yText);
   const tags = new Y.Array<string>();
   tags.push(item.tags ?? []);
   m.set('tags', tags);
-  if (item.conditions && item.conditions.length > 0) {
-    const conds = new Y.Array<string>();
-    conds.push(item.conditions);
-    m.set('conditions', conds);
+  if (item.condition) {
+    m.set('condition', JSON.stringify(item.condition));
   }
   return m;
 }
 
 function buildChoiceItem(ch: Choice): Y.Map<unknown> {
   const m = new Y.Map<unknown>();
+  writeOptionalId(m, ch.id);
   const yText = new Y.Text();
   yText.insert(0, ch.text);
   m.set('text', yText);
@@ -68,10 +108,8 @@ function buildChoiceItem(ch: Choice): Y.Map<unknown> {
   const tags = new Y.Array<string>();
   tags.push(ch.tags ?? []);
   m.set('tags', tags);
-  if (ch.conditions && ch.conditions.length > 0) {
-    const conds = new Y.Array<string>();
-    conds.push(ch.conditions);
-    m.set('conditions', conds);
+  if (ch.condition) {
+    m.set('condition', JSON.stringify(ch.condition));
   }
   return m;
 }
@@ -100,6 +138,17 @@ export function seedYDocFromStoryGraph(doc: Y.Doc, storyGraph: StoryGraph): void
       const choices = new Y.Array<Y.Map<unknown>>();
       choices.push((n.choices ?? []).map(buildChoiceItem));
       nodeMap.set('choices', choices);
+      // Function-knot parameter names (DEV-199 Phase 10b) — found in
+      // review: omitting this meant a collaborative text edit on a
+      // function-knot's own passage caused CollabShadowSaver to
+      // overwrite the stored node with NO params, failing every
+      // existing call's arity check and emitting an empty param list
+      // on Ink export.
+      if (n.params) {
+        const params = new Y.Array<string>();
+        params.push(n.params);
+        nodeMap.set('params', params);
+      }
       if (n.audio) {
         // Audio assignments are id-references; last-writer-wins on
         // the same slot is fine, so a plain Y.Map of scalars works.
@@ -117,30 +166,59 @@ function readArrayOfStrings(arr: Y.Array<string> | undefined): string[] {
   return arr.toArray();
 }
 
-function readContentItem(m: Y.Map<unknown>): TextContent {
+/** Parses a JSON-string-encoded AST value, tolerating old rows that
+ * never had the key at all (returns undefined) rather than throwing. */
+function readJsonField<T>(m: Y.Map<unknown>, key: string): T | undefined {
+  const raw = m.get(key);
+  if (typeof raw !== 'string') return undefined;
+  return JSON.parse(raw) as T;
+}
+
+function readContentItem(m: Y.Map<unknown>): ContentBlock {
+  // Spread first, not last — a key spread after it would silently
+  // override `id` with no type error; spreading first means any
+  // later-added literal key in these objects wins instead.
+  const idField = readOptionalId(m);
+  // `kind` is required on ContentBlock, but a pre-DEV-199 row never
+  // wrote one — treat anything other than an explicit 'assignment' as
+  // text, matching isTextBlock's own contract in types.ts.
+  if (m.get('kind') === 'assignment') {
+    const statement = readJsonField<Statement>(m, 'statement');
+    if (!statement) {
+      throw new Error("Yjs content item has kind='assignment' but no parseable statement");
+    }
+    const assignmentCondition = readJsonField<Expression>(m, 'condition');
+    return {
+      ...idField,
+      kind: 'assignment',
+      statement,
+      ...(assignmentCondition !== undefined ? { condition: assignmentCondition } : {}),
+    };
+  }
   const text = m.get('text');
   const textStr = text instanceof Y.Text ? text.toString() : String(text ?? '');
+  const condition = readJsonField<Expression>(m, 'condition');
   return {
+    ...idField,
+    kind: 'text',
     text: textStr,
     tags: readArrayOfStrings(m.get('tags') as Y.Array<string> | undefined),
-    conditions: m.has('conditions')
-      ? readArrayOfStrings(m.get('conditions') as Y.Array<string> | undefined)
-      : undefined,
+    ...(condition !== undefined ? { condition } : {}),
   };
 }
 
 function readChoiceItem(m: Y.Map<unknown>): Choice {
   const text = m.get('text');
   const textStr = text instanceof Y.Text ? text.toString() : String(text ?? '');
+  const condition = readJsonField<Expression>(m, 'condition');
   return {
+    ...readOptionalId(m),
     text: textStr,
     target: String(m.get('target') ?? ''),
     sticky: Boolean(m.get('sticky')),
     fallback: Boolean(m.get('fallback')),
     tags: readArrayOfStrings(m.get('tags') as Y.Array<string> | undefined),
-    conditions: m.has('conditions')
-      ? readArrayOfStrings(m.get('conditions') as Y.Array<string> | undefined)
-      : undefined,
+    ...(condition !== undefined ? { condition } : {}),
   };
 }
 
@@ -158,6 +236,9 @@ function readNode(id: string, m: Y.Map<unknown>): StoryNode {
       readChoiceItem,
     ),
   };
+  if (m.has('params')) {
+    node.params = readArrayOfStrings(m.get('params') as Y.Array<string> | undefined);
+  }
   if (m.has('audio')) {
     const audioMap = m.get('audio') as Y.Map<unknown>;
     const audio: Record<string, unknown> = {};

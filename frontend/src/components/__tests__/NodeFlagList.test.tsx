@@ -24,7 +24,12 @@ const flag = (over: Partial<client.NodeFlag> = {}): client.NodeFlag => ({
 function props(over: Record<string, unknown> = {}) {
   return {
     nodeId: 'her',
-    node: { content: [{ text: 'Hi.', tags: [] }], choices: [], divert: null, tags: [] },
+    node: {
+      content: [{ kind: 'text', text: 'Hi.', tags: [] }],
+      choices: [],
+      divert: null,
+      tags: [],
+    },
     metadataLoaded: true,
     nodeIdSet: new Set(['her']),
     nodeIdOptions: null,

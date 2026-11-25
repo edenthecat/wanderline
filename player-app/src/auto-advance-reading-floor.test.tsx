@@ -32,20 +32,30 @@ describe('nodeText', () => {
   it('prefers an explicit transcript over the Ink content', () => {
     expect(
       nodeText({
-        content: [{ text: 'raw Ink prose' }],
+        content: [{ kind: 'text', text: 'raw Ink prose', tags: [] }],
         metadata: { transcript: 'the transcript' },
       }),
     ).toBe('the transcript');
   });
 
   it('joins content lines when there is no transcript', () => {
-    expect(nodeText({ content: [{ text: 'One.' }, { text: 'Two.' }] })).toBe('One. Two.');
+    expect(
+      nodeText({
+        content: [
+          { kind: 'text', text: 'One.', tags: [] },
+          { kind: 'text', text: 'Two.', tags: [] },
+        ],
+      }),
+    ).toBe('One. Two.');
   });
 
   it('falls through an empty transcript to the content', () => {
-    expect(nodeText({ content: [{ text: 'Content wins.' }], metadata: { transcript: '  ' } })).toBe(
-      'Content wins.',
-    );
+    expect(
+      nodeText({
+        content: [{ kind: 'text', text: 'Content wins.', tags: [] }],
+        metadata: { transcript: '  ' },
+      }),
+    ).toBe('Content wins.');
   });
 });
 

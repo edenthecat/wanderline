@@ -160,4 +160,70 @@ describe('save-slots', () => {
     writeSlots(STORY_ID, start);
     expect(readSlotsWithMigration(STORY_ID, validIds)).toEqual(start);
   });
+
+  describe('variables (DEV-199 Phase 2)', () => {
+    it('round-trips a slot with a variable snapshot', () => {
+      const start: SaveSlot[] = [
+        makeSlot({ variables: { gold: 50, seen_market: true, name: 'Anna' } }),
+      ];
+      writeSlots(STORY_ID, start);
+      expect(readSlotsWithMigration(STORY_ID, validIds)).toEqual(start);
+    });
+
+    it('accepts a slot with no variables at all (pre-DEV-199 shape)', () => {
+      localStorage.setItem(
+        `wanderline_${STORY_ID}_slots`,
+        JSON.stringify([makeSlot()].map(({ variables: _variables, ...rest }) => rest)),
+      );
+      const slots = readSlotsWithMigration(STORY_ID, validIds);
+      expect(slots).toHaveLength(1);
+      expect(slots[0].variables).toBeUndefined();
+    });
+
+    it('rejects a slot whose variables is not a flat record of scalars', () => {
+      localStorage.setItem(
+        `wanderline_${STORY_ID}_slots`,
+        JSON.stringify([
+          makeSlot({ id: 'a' }),
+          { ...makeSlot({ id: 'b' }), variables: { nested: { oops: true } } },
+          { ...makeSlot({ id: 'c' }), variables: ['not', 'a', 'record'] },
+        ]),
+      );
+      const slots = readSlotsWithMigration(STORY_ID, validIds);
+      expect(slots.map((s) => s.id)).toEqual(['a']);
+    });
+
+    it('round-trips a slot with a LIST-typed variable value (DEV-199 Phase 10)', () => {
+      const kettleState = {
+        kind: 'list' as const,
+        origin: 'kettleState',
+        items: [{ name: 'boiling', ordinal: 1 }],
+        allItems: [
+          { name: 'cold', ordinal: 0 },
+          { name: 'boiling', ordinal: 1 },
+          { name: 'recently_boiled', ordinal: 2 },
+        ],
+      };
+      const start: SaveSlot[] = [makeSlot({ variables: { kettleState } })];
+      writeSlots(STORY_ID, start);
+      expect(readSlotsWithMigration(STORY_ID, validIds)).toEqual(start);
+    });
+
+    it('rejects a slot whose LIST variable value is malformed', () => {
+      localStorage.setItem(
+        `wanderline_${STORY_ID}_slots`,
+        JSON.stringify([
+          makeSlot({ id: 'a' }),
+          {
+            ...makeSlot({ id: 'b' }),
+            variables: {
+              kettleState: { kind: 'list', origin: 'kettleState', items: 'not-an-array' },
+            },
+          },
+        ]),
+      );
+      const slots = readSlotsWithMigration(STORY_ID, validIds);
+      expect(slots.map((s) => s.id)).toEqual(['a']);
+    });
+  });
 });

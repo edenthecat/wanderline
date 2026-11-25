@@ -75,7 +75,7 @@ function makeStory({ startVoiceover = false } = {}) {
         choices: [{ text: 'Onward', target: 'second' }],
         divert: null,
         tags: [],
-        ...(startVoiceover ? { audio: { voiceover: 'start.mp3' } } : {}),
+        ...(startVoiceover ? { audio: { voiceover: [{ file: 'start.mp3' }] } } : {}),
       },
       second: {
         id: 'second',
@@ -84,7 +84,7 @@ function makeStory({ startVoiceover = false } = {}) {
         choices: [],
         divert: null,
         tags: [],
-        audio: { voiceover: 'second.mp3' },
+        audio: { voiceover: [{ file: 'second.mp3' }] },
       },
     },
   };

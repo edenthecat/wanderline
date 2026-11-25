@@ -24,7 +24,7 @@ describe('collectUsedAudioFilenames', () => {
           choices: [],
           divert: null,
           tags: [],
-          audio: { voiceover: 'vo1.mp3' },
+          audio: { voiceover: [{ file: 'vo1.mp3' }] },
         },
         next: {
           id: 'next',
@@ -33,7 +33,7 @@ describe('collectUsedAudioFilenames', () => {
           choices: [],
           divert: null,
           tags: [],
-          audio: { voiceover: 'vo2.mp3', ambience: 'amb1.mp3' },
+          audio: { voiceover: [{ file: 'vo2.mp3' }], ambience: [{ file: 'amb1.mp3' }] },
         },
       },
     });
@@ -52,13 +52,35 @@ describe('collectUsedAudioFilenames', () => {
           choices: [],
           divert: null,
           tags: [],
-          audio: { choice1: 'c1.mp3', choice2: 'c2.mp3' },
+          audio: { choice1: [{ file: 'c1.mp3' }], choice2: [{ file: 'c2.mp3' }] },
         },
       },
     });
 
     const result = collectUsedAudioFilenames(storyData, {}, {}, []);
     expect(result).toEqual(new Set(['c1.mp3', 'c2.mp3']));
+  });
+
+  // Per-choice audio addressed by the choice's own stable id
+  // (DEV-199 stable-id rollout) — coexists with choice1/choice2
+  // without either affecting the other's filename collection.
+  it('should collect per-choice-id audio filenames', () => {
+    const storyData = makeStoryData({
+      nodes: {
+        start: {
+          id: 'start',
+          type: 'knot',
+          content: [],
+          choices: [],
+          divert: null,
+          tags: [],
+          audio: { choices: { abc: [{ file: 'cue1.mp3' }], xyz: [{ file: 'cue2.mp3' }] } },
+        },
+      },
+    });
+
+    const result = collectUsedAudioFilenames(storyData, {}, {}, []);
+    expect(result).toEqual(new Set(['cue1.mp3', 'cue2.mp3']));
   });
 
   it('should collect indicator audio from settings', () => {
@@ -124,7 +146,7 @@ describe('collectUsedAudioFilenames', () => {
           choices: [],
           divert: null,
           tags: [],
-          audio: { voiceover: 'shared.mp3' },
+          audio: { voiceover: [{ file: 'shared.mp3' }] },
         },
       },
     });
@@ -175,5 +197,49 @@ describe('sound effects in a build', () => {
 
     updateStoryDataFilenames(story, {}, new Set());
     expect(story.nodes.start.audio!.sfx).toBeUndefined();
+  });
+});
+
+// Per-choice-id cues (`audio.choices[choiceId]`) went through the
+// same WAV→MP3 build pipeline as every other slot, but
+// updateStoryDataFilenames never touched them — a converted cue kept
+// pointing at the now-absent WAV filename, so it 404'd during
+// exported playback (found in review).
+describe('per-choice-id audio cues in a build', () => {
+  function storyWithChoiceCues(choices: Record<string, { file: string }[]>) {
+    return makeStoryData({
+      nodes: {
+        start: {
+          id: 'start',
+          type: 'knot',
+          content: [],
+          choices: [],
+          divert: null,
+          tags: [],
+          audio: { choices },
+        },
+      },
+    });
+  }
+
+  it('follows a WAV-to-MP3 rename for a per-choice-id cue', () => {
+    const story = storyWithChoiceCues({ abc: [{ file: 'cue.wav' }] });
+    updateStoryDataFilenames(story, { 'cue.wav': 'cue.mp3' }, new Set(['cue.mp3']));
+    expect(story.nodes.start.audio!.choices).toEqual({ abc: [{ file: 'cue.mp3' }] });
+  });
+
+  it('drops a choice id whose cue file is missing from the build, keeping the rest', () => {
+    const story = storyWithChoiceCues({
+      abc: [{ file: 'gone.mp3' }],
+      xyz: [{ file: 'kept.mp3' }],
+    });
+    updateStoryDataFilenames(story, {}, new Set(['kept.mp3']));
+    expect(story.nodes.start.audio!.choices).toEqual({ xyz: [{ file: 'kept.mp3' }] });
+  });
+
+  it('removes the whole choices map once every id drops out', () => {
+    const story = storyWithChoiceCues({ abc: [{ file: 'gone.mp3' }] });
+    updateStoryDataFilenames(story, {}, new Set());
+    expect(story.nodes.start.audio!.choices).toBeUndefined();
   });
 });

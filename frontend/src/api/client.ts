@@ -5,6 +5,33 @@
 // Type-only cycle (normalizeStoryGraph imports StoryGraph from here),
 // erased at build, so there is no runtime import cycle.
 import { normalizeStoryGraph } from '../lib/normalizeStoryGraph';
+import type {
+  ContentBlock,
+  Expression,
+  ExpressionParseContext,
+  VariableDeclaration,
+  VariableType,
+  VariableValue,
+  SimpleCondition,
+  ComparisonOperator,
+} from '@wanderline/shared';
+import {
+  parseExpression,
+  printExpression,
+  ExpressionParseError,
+  buildListExpressionContext,
+} from '@wanderline/shared';
+export type {
+  ContentBlock,
+  Expression,
+  ExpressionParseContext,
+  VariableDeclaration,
+  VariableType,
+  VariableValue,
+  SimpleCondition,
+  ComparisonOperator,
+};
+export { parseExpression, printExpression, ExpressionParseError, buildListExpressionContext };
 
 const API_BASE = '/api';
 
@@ -150,7 +177,8 @@ export type ValidationType =
   | 'missing_start'
   | 'duplicate_node'
   | 'syntax_error'
-  | 'orphaned_stitch';
+  | 'orphaned_stitch'
+  | 'ambiguous_twee_dialect';
 
 export interface ValidationMessage {
   type: ValidationType | string;
@@ -169,14 +197,28 @@ export interface StoryGraph {
     errors: ValidationMessage[];
     warnings: ValidationMessage[];
   };
+  variables?: VariableDeclaration[];
 }
 
 export interface StoryNode {
   id: string;
   type: 'knot' | 'stitch' | 'gather';
   parent: string | null;
-  content: { text: string; tags: string[] }[];
-  choices: { text: string; target: string; sticky: boolean; fallback: boolean; tags: string[] }[];
+  content: ContentBlock[];
+  choices: {
+    text: string;
+    target: string;
+    sticky: boolean;
+    fallback: boolean;
+    tags: string[];
+    condition?: Expression | null;
+    /** Stable id (DEV-199 stable-id rollout) — absent on data parsed
+     * before the rollout. NodeAudioPanel's per-choice-cue addressing
+     * depends on this surviving every point that builds or passes
+     * through a choice object; losing it here would silently fall
+     * every choice back to the fragile ordinal choice1/choice2 keys. */
+    id?: string;
+  }[];
   divert: string | null;
   tags: string[];
   lineNumber: number;
@@ -453,15 +495,29 @@ export interface AudioAssignmentRaw {
   original_name: string;
   mime_type: string;
   created_at: string;
+  /** Gates this variant on a story variable's value; null/absent for
+   * the slot's default/fallback variant (DEV-199 follow-on). */
+  condition?: SimpleCondition | null;
+}
+
+/** One candidate file for a slot — a slot can hold several, each
+ * gated by an optional condition (DEV-199 follow-on: variable-
+ * conditioned audio). `condition` absent means the default variant. */
+export interface AudioAssignmentVariant {
+  fileId: string;
+  condition?: SimpleCondition;
 }
 
 export interface AudioAssignments {
   [nodeId: string]: {
-    voiceover?: string;
-    ambience?: string;
-    choice1?: string;
-    choice2?: string;
-    sfx: string[];
+    voiceover?: AudioAssignmentVariant[];
+    ambience?: AudioAssignmentVariant[];
+    choice1?: AudioAssignmentVariant[];
+    choice2?: AudioAssignmentVariant[];
+    /** A choice's own cue, keyed by the choice's stable id — coexists
+     * with choice1/choice2 rather than replacing them. */
+    choices?: Record<string, AudioAssignmentVariant[]>;
+    sfx: AudioAssignmentVariant[];
     /** When each sound effect plays, in ms, keyed by file id. Absent for
      * one that plays as the passage starts. */
     sfxOffsets?: Record<string, number>;
@@ -483,10 +539,14 @@ export function assignAudio(
   /** Refuse (409) rather than replace if the slot has been filled since
    * the caller last looked. */
   expectEmpty?: boolean,
+  /** Gates this variant on a story variable's value. Omit for the
+   * slot's default/fallback variant — a different condition adds a
+   * new variant alongside it rather than replacing it. */
+  condition?: SimpleCondition,
 ): Promise<{ assignment: AudioAssignmentRaw }> {
   return request(`/projects/${projectId}/audio/assignments`, {
     method: 'POST',
-    body: JSON.stringify({ nodeId, audioType, audioFileId, offsetMs, expectEmpty }),
+    body: JSON.stringify({ nodeId, audioType, audioFileId, offsetMs, expectEmpty, condition }),
   });
 }
 
@@ -509,12 +569,18 @@ export function removeAudioAssignment(
   nodeId: string,
   audioType: string,
   audioFileId?: string,
+  /** Targets that specific conditioned variant; omit to target the
+   * default/unconditioned variant (not every variant in the slot). */
+  condition?: SimpleCondition,
 ): Promise<{ success: boolean }> {
-  const params = audioFileId ? `?audioFileId=${encodeURIComponent(audioFileId)}` : '';
+  const params = new URLSearchParams();
+  if (audioFileId) params.set('audioFileId', audioFileId);
+  if (condition) params.set('condition', JSON.stringify(condition));
+  const query = params.size > 0 ? `?${params.toString()}` : '';
   // Node ids are free text (a Twee passage can be "Left/Right" or "What
   // now?"), so they have to be encoded to land on the right route.
   return request(
-    `/projects/${projectId}/audio/assignments/${encodeURIComponent(nodeId)}/${encodeURIComponent(audioType)}${params}`,
+    `/projects/${projectId}/audio/assignments/${encodeURIComponent(nodeId)}/${encodeURIComponent(audioType)}${query}`,
     { method: 'DELETE' },
   );
 }
@@ -524,6 +590,16 @@ export interface BulkReassignOp {
   audioType: string;
   fromFileId: string;
   toFileId: string;
+  /** Scope this op to ONE SPECIFIC variant of the slot — omit the
+   * field entirely to swap EVERY variant at (nodeId, audioType,
+   * fromFileId) regardless of condition (the "swap everywhere"
+   * behavior); pass the variant's own `condition` (or explicit
+   * `null` for the default/unconditioned variant) to replace only
+   * that one row, leaving any other condition sharing the same file
+   * at this slot untouched. The field's PRESENCE is what the server
+   * checks, not just its value, so `condition: null` and "omitted"
+   * are deliberately NOT the same thing here. */
+  condition?: SimpleCondition | null;
 }
 
 /** Atomically re-point every (nodeId, audioType, fromFileId) assignment
@@ -1436,5 +1512,51 @@ export function renameNode(
   return request(`/projects/${projectId}/story/node/rename`, {
     method: 'PATCH',
     body: JSON.stringify({ oldId, newId }),
+  });
+}
+
+/** Set (or, with `condition: null`, clear) a choice's visibility
+ * condition. `condition` is Ink-expression-syntax source text,
+ * parsed server-side — see `parseExpression`/`printExpression` for
+ * the matching client-side display/validation helpers. */
+export function updateChoiceCondition(
+  projectId: string,
+  nodeId: string,
+  choiceIndex: number,
+  condition: string | null,
+): Promise<StoryEditResult> {
+  return request(`/projects/${projectId}/story/choice/condition`, {
+    method: 'PATCH',
+    body: JSON.stringify({ nodeId, choiceIndex, condition }),
+  });
+}
+
+/** Set (or, with `condition: null`, clear) a text block's visibility
+ * condition. 400s if the block at `contentIndex` is an assignment
+ * block (those have no condition). */
+export function updateContentCondition(
+  projectId: string,
+  nodeId: string,
+  contentIndex: number,
+  condition: string | null,
+): Promise<StoryEditResult> {
+  return request(`/projects/${projectId}/story/node/content/condition`, {
+    method: 'PATCH',
+    body: JSON.stringify({ nodeId, contentIndex, condition }),
+  });
+}
+
+/** Replace the project's entire variable declaration list. Each
+ * entry's `initialValue` is Ink-expression-syntax source text; the
+ * server infers `type` by evaluating it (declarations earlier in the
+ * array are in scope for later ones), so the caller never sends a
+ * `type` field. */
+export function updateVariables(
+  projectId: string,
+  variables: Array<{ name: string; initialValue: string; isConst: boolean }>,
+): Promise<StoryEditResult> {
+  return request(`/projects/${projectId}/story/variables`, {
+    method: 'PATCH',
+    body: JSON.stringify({ variables }),
   });
 }

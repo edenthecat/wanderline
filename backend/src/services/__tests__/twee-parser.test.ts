@@ -1,5 +1,23 @@
-import { parseTwee, TweeParseError } from '../twee-parser.js';
+import { parseTwee, TweeParseError, detectTweeDialect } from '../twee-parser.js';
 import { emitTwee } from '../twee-emitter.js';
+import { isTextBlock, type ContentBlock } from '../../types.js';
+
+// Every fixture in this file is pre-DEV-199 (no `~`/assignment
+// content), so a direct index/find into `.content` is always a
+// TextBlock in practice — this throws clearly if that ever stops
+// being true, rather than reading `undefined` silently.
+function textOf(block: ContentBlock): string {
+  if (!isTextBlock(block)) throw new Error('expected a text block, got an assignment block');
+  return block.text;
+}
+
+// Content blocks and choices now carry a randomUUID() `id` (DEV-199
+// stable-id rollout) — strips it before comparing parser output
+// against a literal fixture, since the exact value is never what
+// these tests are checking.
+function stripIds<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value), (key, v) => (key === 'id' ? undefined : v));
+}
 
 // Twee 3 parser + emitter round-trip.
 
@@ -8,7 +26,7 @@ describe('parseTwee — minimal', () => {
     const src = `:: Start\nHello world.\n`;
     const g = parseTwee(src);
     expect(Object.keys(g.nodes)).toEqual(['Start']);
-    expect(g.nodes['Start'].content[0].text).toBe('Hello world.');
+    expect(textOf(g.nodes['Start'].content[0])).toBe('Hello world.');
     expect(g.startNode).toBe('Start');
     expect(g.validation.valid).toBe(true);
   });
@@ -35,7 +53,7 @@ describe('parseTwee — minimal', () => {
 describe('parseTwee — link syntax', () => {
   it('parses [[Target]]', () => {
     const g = parseTwee(`:: Start\n[[Home]]\n\n:: Home\nDone.\n`);
-    expect(g.nodes['Start'].choices).toEqual([
+    expect(stripIds(g.nodes['Start'].choices)).toEqual([
       expect.objectContaining({ text: 'Home', target: 'Home' }),
     ]);
   });
@@ -64,7 +82,7 @@ describe('parseTwee — link syntax', () => {
   it('strips the link out of the content body so text nodes are just prose', () => {
     const src = `:: Start\nWelcome!\n\n[[Home]]\n\n:: Home\nDone.\n`;
     const g = parseTwee(src);
-    expect(g.nodes['Start'].content.map((c) => c.text)).toEqual(['Welcome!']);
+    expect(g.nodes['Start'].content.filter(isTextBlock).map((c) => c.text)).toEqual(['Welcome!']);
     expect(g.nodes['Start'].choices).toHaveLength(1);
   });
 });
@@ -230,7 +248,7 @@ describe('emitTwee', () => {
     // Inject a `::`-leading line directly on the node so we exercise
     // the escape branch — the parser wouldn't have produced this
     // shape on its own.
-    g.nodes['Start'].content.push({ text: ':: not-a-header', tags: [] });
+    g.nodes['Start'].content.push({ kind: 'text', text: ':: not-a-header', tags: [] });
     const out = emitTwee(g);
     expect(out).toMatch(/\\:: not-a-header/);
   });
@@ -311,7 +329,7 @@ describe('round-trip: parse → emit → parse', () => {
       expect(g2.startNode).toBe(g1.startNode);
       expect(Object.keys(g2.nodes).sort()).toEqual(Object.keys(g1.nodes).sort());
       for (const id of Object.keys(g1.nodes)) {
-        expect(g2.nodes[id].content).toEqual(g1.nodes[id].content);
+        expect(stripIds(g2.nodes[id].content)).toEqual(stripIds(g1.nodes[id].content));
         expect(g2.nodes[id].choices.map((c) => ({ text: c.text, target: c.target }))).toEqual(
           g1.nodes[id].choices.map((c) => ({ text: c.text, target: c.target })),
         );
@@ -374,6 +392,58 @@ describe('emitTwee — link corruption guards', () => {
     const emitted = emitTwee(wrap([{ text: 'Target', target: 'Target' }]));
     expect(emitted).toContain('[[Target]]');
     expect(emitted).not.toContain('[[Target|Target]]');
+  });
+});
+
+// DEV-199 Phase 10: Harlowe/SugarCube/Chapbook have no LIST
+// equivalent — emitTwee must reject a graph whose choice condition
+// bears a bare `{kind:'variable'}` reference to a declared LIST
+// variable, not just a LIST literal/has-hasnt/LIST_* call. This
+// exercises the real threading through emitTwee -> emitChoice ->
+// renderXExpression, not just the dialect renderer in isolation.
+describe('emitTwee — rejects a bare reference to a LIST-typed variable (DEV-199 Phase 10)', () => {
+  const graphWithListCondition = (dialect: 'harlowe' | 'sugarcube' | 'chapbook') => ({
+    id: 's1',
+    title: 'Untitled',
+    nodes: {
+      Start: {
+        id: 'Start',
+        type: 'knot' as const,
+        parent: null,
+        content: [],
+        choices: [
+          {
+            text: 'Go',
+            target: 'Start',
+            sticky: false,
+            fallback: false,
+            tags: [],
+            condition: { kind: 'variable' as const, name: 'kettleState' },
+          },
+        ],
+        divert: null,
+        tags: [],
+        lineNumber: 1,
+      },
+    },
+    startNode: 'Start',
+    validation: { valid: true, errors: [], warnings: [] },
+    variables: [
+      {
+        name: 'kettleState',
+        type: 'list' as const,
+        isConst: false,
+        initialValue: {
+          kind: 'literal' as const,
+          value: { kind: 'list' as const, origin: 'kettleState', items: [], allItems: [] },
+        },
+      },
+    ],
+    twee: { dialect },
+  });
+
+  it.each(['harlowe', 'sugarcube', 'chapbook'] as const)('rejects for %s', (dialect) => {
+    expect(() => emitTwee(graphWithListCondition(dialect))).toThrow(/LIST/);
   });
 });
 
@@ -519,7 +589,7 @@ describe('parseTwee — round-trip fidelity', () => {
           id: 'hallway',
           type: 'knot' as const,
           parent: null,
-          content: [{ text: 'Walk forward.', tags: [] }],
+          content: [{ kind: 'text', text: 'Walk forward.', tags: [] }],
           choices: [],
           divert: 'kitchen',
           tags: [],
@@ -529,7 +599,7 @@ describe('parseTwee — round-trip fidelity', () => {
           id: 'kitchen',
           type: 'knot' as const,
           parent: null,
-          content: [{ text: 'Cold.', tags: [] }],
+          content: [{ kind: 'text', text: 'Cold.', tags: [] }],
           choices: [],
           divert: null,
           tags: [],
@@ -545,7 +615,9 @@ describe('parseTwee — round-trip fidelity', () => {
   it('unescapes `\\::` at line start on parse', () => {
     const src = `:: Home\nA line.\n\n\\:: Not a header\n\nAnother line.\n`;
     const g = parseTwee(src);
-    const paragraph = g.nodes.Home.content.find((c) => c.text.includes('Not a header'));
+    const paragraph = g.nodes.Home.content
+      .filter(isTextBlock)
+      .find((c) => c.text.includes('Not a header'));
     expect(paragraph?.text).toContain(':: Not a header');
     expect(paragraph?.text).not.toContain('\\:: Not a header');
   });
@@ -563,7 +635,7 @@ describe('parseTwee — round-trip fidelity', () => {
           id: 'Home',
           type: 'knot' as const,
           parent: null,
-          content: [{ text: ':: this is content, not a header', tags: [] }],
+          content: [{ kind: 'text', text: ':: this is content, not a header', tags: [] }],
           choices: [],
           divert: null,
           tags: [],
@@ -576,7 +648,7 @@ describe('parseTwee — round-trip fidelity', () => {
     // Emitter escapes once so the re-parse sees the paragraph as body.
     expect(emitted).toContain('\\:: this is content');
     const g2 = parseTwee(emitted);
-    const text = g2.nodes.Home.content[0].text;
+    const text = textOf(g2.nodes.Home.content[0]);
     expect(text).toBe(':: this is content, not a header');
   });
 
@@ -607,5 +679,1000 @@ describe('parseTwee — round-trip fidelity', () => {
     expect(dup.some((w) => w.args?.nodeName === 'StoryTitle')).toBe(true);
     // Last one wins for the title itself.
     expect(g.title).toBe('Second');
+  });
+});
+
+describe('detectTweeDialect (DEV-199 Phase 6)', () => {
+  it('prefers the StoryData format field, case-insensitively, with a version suffix', () => {
+    expect(detectTweeDialect({ format: 'Harlowe' }, '')).toEqual({
+      dialect: 'harlowe',
+      sniffed: false,
+      ambiguous: false,
+    });
+    expect(detectTweeDialect({ format: 'sugarcube 2.36.1' }, '')).toEqual({
+      dialect: 'sugarcube',
+      sniffed: false,
+      ambiguous: false,
+    });
+    expect(detectTweeDialect({ format: 'CHAPBOOK' }, '')).toEqual({
+      dialect: 'chapbook',
+      sniffed: false,
+      ambiguous: false,
+    });
+  });
+
+  it('sniffs Harlowe macro syntax when format is missing', () => {
+    const result = detectTweeDialect(
+      undefined,
+      ':: Start\n(set: $gold to 5)\n(if: $gold > 0)[Rich]\n',
+    );
+    expect(result).toEqual({ dialect: 'harlowe', sniffed: true, ambiguous: false });
+  });
+
+  it('sniffs SugarCube macro syntax when format is missing', () => {
+    const result = detectTweeDialect(
+      undefined,
+      ':: Start\n<<set $gold to 5>>\n<<if $gold > 0>>Rich<</if>>\n',
+    );
+    expect(result).toEqual({ dialect: 'sugarcube', sniffed: true, ambiguous: false });
+  });
+
+  it('sniffs Chapbook macro syntax when format is missing', () => {
+    const result = detectTweeDialect(
+      undefined,
+      ':: Start\ngold: 5\n--\n[if gold > 0]Rich[continued]\n',
+    );
+    expect(result).toEqual({ dialect: 'chapbook', sniffed: true, ambiguous: false });
+  });
+
+  it('falls back to sniffing when format names an unrecognized format', () => {
+    const result = detectTweeDialect({ format: 'Snowman' }, ':: Start\n<<set $gold to 5>>\n');
+    expect(result).toEqual({ dialect: 'sugarcube', sniffed: true, ambiguous: false });
+  });
+
+  it('is NOT flagged ambiguous for plain prose with no format and no macros — nothing to misdetect', () => {
+    // The overwhelmingly common case (an ordinary hyperlink-based
+    // Twee story) must not get a warning with no actionable follow-up.
+    expect(detectTweeDialect(undefined, ':: Start\nJust plain prose.\n')).toEqual({
+      dialect: null,
+      sniffed: true,
+      ambiguous: false,
+    });
+  });
+
+  it('IS flagged ambiguous on a genuine tie between two dialects’ signatures', () => {
+    // One Harlowe-shaped macro, one SugarCube-shaped macro — equal
+    // hits, so picking either would be an arbitrary guess, and unlike
+    // the no-signal case there's real macro syntax here worth flagging.
+    const result = detectTweeDialect(undefined, ':: Start\n(set: $x to 1)\n<<set $y to 2>>\n');
+    expect(result).toEqual({ dialect: null, sniffed: true, ambiguous: true });
+  });
+
+  it('IS flagged ambiguous when StoryData names an unrecognized format and nothing sniffs', () => {
+    // The author told us a format explicitly; it just isn't one of
+    // the three this parser knows. Worth surfacing even with zero
+    // macro syntax, unlike the silent "no format at all" case.
+    const result = detectTweeDialect({ format: 'Snowman' }, ':: Start\nJust plain prose.\n');
+    expect(result).toEqual({ dialect: null, sniffed: true, ambiguous: true });
+  });
+
+  it('does not mistake a lone prose em-dash line for Chapbook', () => {
+    // A bare `--` line alone (no real [if]/insert macro anywhere) is
+    // too easily confused with a prose em-dash paragraph break to
+    // count by itself — otherwise a plain Harlowe/SugarCube story
+    // that happens to format a dramatic pause this way would
+    // misdetect as Chapbook. No signal anywhere else either, so this
+    // is the silent "nothing to misdetect" case, not ambiguous.
+    const result = detectTweeDialect(undefined, ':: Start\nSome prose.\n--\nMore prose.\n');
+    expect(result).toEqual({ dialect: null, sniffed: true, ambiguous: false });
+  });
+
+  it('the vars-block separator is a tie-breaking bonus on top of a real Chapbook insert, not a standalone signal', () => {
+    // One Chapbook insert plus the separator (2 points) beats one
+    // lone Harlowe-shaped macro elsewhere (1 point).
+    const result = detectTweeDialect(
+      undefined,
+      ':: Start\ngold: 5\n--\n[if gold > 0]Rich[continued]\n(goto: "Elsewhere")\n',
+    );
+    expect(result).toEqual({ dialect: 'chapbook', sniffed: true, ambiguous: false });
+  });
+});
+
+describe('parseTwee — Twine macro dialect detection (DEV-199 Phase 6)', () => {
+  it('resolves graph.twee.dialect from a Harlowe StoryData format field', () => {
+    const src = `:: StoryData\n{"start":"Start","format":"Harlowe","format-version":"3.3.9"}\n\n:: Start\nHi.\n`;
+    const g = parseTwee(src);
+    expect(g.twee?.dialect).toBe('harlowe');
+    expect(g.validation.warnings.some((w) => w.type === 'ambiguous_twee_dialect')).toBe(false);
+  });
+
+  it('resolves graph.twee.dialect from a SugarCube StoryData format field', () => {
+    const src = `:: StoryData\n{"start":"Start","format":"SugarCube","format-version":"2.36.1"}\n\n:: Start\nHi.\n`;
+    const g = parseTwee(src);
+    expect(g.twee?.dialect).toBe('sugarcube');
+  });
+
+  it('resolves graph.twee.dialect from a Chapbook StoryData format field', () => {
+    const src = `:: StoryData\n{"start":"Start","format":"Chapbook","format-version":"1.2.3"}\n\n:: Start\nHi.\n`;
+    const g = parseTwee(src);
+    expect(g.twee?.dialect).toBe('chapbook');
+  });
+
+  it('sniffs a dialect and sets graph.twee.dialect when StoryData has no format', () => {
+    const src = `:: Start\n<<set $gold to 5>>\n<<if $gold > 0>>Rich<</if>>\n`;
+    const g = parseTwee(src);
+    expect(g.twee?.dialect).toBe('sugarcube');
+    expect(g.validation.warnings.some((w) => w.type === 'ambiguous_twee_dialect')).toBe(false);
+  });
+
+  it('does not warn for a plain, macro-free Twee story — nothing to misdetect', () => {
+    const src = `:: Start\nJust plain prose, no macros anywhere.\n`;
+    const g = parseTwee(src);
+    expect(g.twee?.dialect).toBeUndefined();
+    expect(g.validation.warnings.some((w) => w.type === 'ambiguous_twee_dialect')).toBe(false);
+  });
+
+  it('warns with ambiguous_twee_dialect and leaves graph.twee.dialect unset on a genuine tie', () => {
+    const src = `:: Start\n(set: $x to 1)\n<<set $y to 2>>\n`;
+    const g = parseTwee(src);
+    expect(g.twee?.dialect).toBeUndefined();
+    const warning = g.validation.warnings.find((w) => w.type === 'ambiguous_twee_dialect');
+    expect(warning).toBeDefined();
+    expect(warning?.message).toContain('Harlowe');
+  });
+});
+
+describe('parseTwee — Harlowe macro support (DEV-199 Phase 7)', () => {
+  const harloweSrc = (body: string) =>
+    `:: StoryData\n{"start":"Start","format":"Harlowe"}\n\n:: Start\n${body}\n`;
+
+  it('declares a variable implicitly from the first (set:), inferring its type', () => {
+    const g = parseTwee(harloweSrc('(set: $gold to 5)\nYou have gold.'));
+    expect(g.variables).toEqual([
+      { name: 'gold', type: 'number', initialValue: { kind: 'literal', value: 5 }, isConst: false },
+    ]);
+    const block = g.nodes['Start'].content.find((c) => c.kind === 'assignment');
+    expect(stripIds(block)).toEqual({
+      kind: 'assignment',
+      statement: {
+        kind: 'assignment',
+        name: 'gold',
+        operator: '=',
+        value: { kind: 'literal', value: 5 },
+      },
+    });
+    expect(textOf(g.nodes['Start'].content.find((c) => c.kind === 'text')!)).toBe('You have gold.');
+  });
+
+  it('does not re-declare a variable already declared by an earlier (set:)', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"Harlowe"}\n\n:: Start\n(set: $gold to 5)\n\n:: Other\n(set: $gold to 10)\n`,
+    );
+    expect(g.variables).toHaveLength(1);
+    expect(g.variables?.[0]).toEqual({
+      name: 'gold',
+      type: 'number',
+      initialValue: { kind: 'literal', value: 5 },
+      isConst: false,
+    });
+  });
+
+  it('parses multi-assignment (set:) via top-level commas', () => {
+    const g = parseTwee(harloweSrc('(set: $x to 1, $y to 2)'));
+    const names = g.variables?.map((v) => v.name);
+    expect(names).toEqual(['x', 'y']);
+  });
+
+  it('parses (put: VALUE into $x) the same as (set:)', () => {
+    const g = parseTwee(harloweSrc('(put: 5 into $gold)'));
+    expect(g.variables?.[0].name).toBe('gold');
+  });
+
+  it('parses a bool-typed variable from a word-form comparison initializer', () => {
+    const g = parseTwee(harloweSrc('(set: $seen to $gold > 10)'));
+    // $gold is undeclared at evaluation time, so the comparison throws
+    // and the declaration is skipped rather than guessing a type —
+    // same "best effort, never crash" contract as ink-parser.ts.
+    expect(g.variables).toBeUndefined();
+  });
+
+  it('warns (rather than failing silently) when a (set:) initializer references an undeclared variable', () => {
+    // Regression: declareIfNew used to swallow this with no warning
+    // at all, leaving an author with zero signal that `seen` was
+    // never declared — right up until this statement throws uncaught
+    // at playback, since `gold` is never set anywhere in this story.
+    const g = parseTwee(harloweSrc('(set: $seen to $gold > 10)'));
+    expect(
+      g.validation.warnings.some((w) => w.type === 'syntax_error' && w.message.includes('$seen')),
+    ).toBe(true);
+  });
+
+  it('parses (if: COND)[TEXT] as a conditional text block', () => {
+    const g = parseTwee(harloweSrc('(set: $gold to 5)\n(if: $gold > 3)[You are rich.]'));
+    const conditional = g.nodes['Start'].content.find((c) => isTextBlock(c) && c.condition);
+    expect(conditional).toBeDefined();
+    if (!isTextBlock(conditional)) throw new Error('expected a text block');
+    expect(textOf(conditional)).toBe('You are rich.');
+    expect(conditional.condition).toEqual({
+      kind: 'binary',
+      operator: '>',
+      left: { kind: 'variable', name: 'gold' },
+      right: { kind: 'literal', value: 3 },
+    });
+  });
+
+  it('parses (if: COND)[[[Link]]] (hook wrapping a link) as a conditional choice', () => {
+    const g = parseTwee(harloweSrc('(if: $gold > 3)[[[Shop]]]'));
+    expect(stripIds(g.nodes['Start'].choices)).toEqual([
+      {
+        text: 'Shop',
+        target: 'Shop',
+        sticky: false,
+        fallback: false,
+        tags: [],
+        condition: {
+          kind: 'binary',
+          operator: '>',
+          left: { kind: 'variable', name: 'gold' },
+          right: { kind: 'literal', value: 3 },
+        },
+      },
+    ]);
+  });
+
+  it('leaves content inert with a warning when an (if:) condition fails to parse', () => {
+    const g = parseTwee(harloweSrc('(if: $gold >> 3)[Broken]'));
+    expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(true);
+    expect(g.nodes['Start'].content.some((c) => c.kind === 'text' && c.condition)).toBe(false);
+  });
+
+  it('does NOT promote a hook-wrapped link to an unconditional choice when its (if:) condition fails to parse', () => {
+    // Regression: the fallback used to run extractLinks on the raw
+    // "(if: ...)[[[Link]]]" text, which still turned the wrapped
+    // link into a real Choice — just with no condition — silently
+    // making it always-visible instead of leaving it inert.
+    const g = parseTwee(harloweSrc('(if: $gold >> 3)[[[Shop]]]'));
+    expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(true);
+    expect(stripIds(g.nodes['Start'].choices)).toEqual([]);
+  });
+
+  it('leaves an unsupported macro like (display:) as inert text', () => {
+    const g = parseTwee(harloweSrc('(display: "Header")'));
+    expect(textOf(g.nodes['Start'].content[0])).toContain('(display:');
+  });
+});
+
+describe('emitTwee — Harlowe re-emission (DEV-199 Phase 7)', () => {
+  it('emits an assignment block as (set: $name to VALUE)', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"Harlowe"}\n\n:: Start\n(set: $gold to 5)\nHi.\n`,
+    );
+    const out = emitTwee(g);
+    expect(out).toContain('(set: $gold to 5)');
+  });
+
+  it('emits a conditional text block wrapped in (if: COND)[...]', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"Harlowe"}\n\n:: Start\n(set: $gold to 5)\n(if: $gold > 3)[Rich.]\n`,
+    );
+    const out = emitTwee(g);
+    expect(out).toContain('(if: ($gold) > (3))[Rich.]');
+  });
+
+  it('emits a conditional choice wrapped in (if: COND)[[[Link]]]', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"Harlowe"}\n\n:: Start\n(if: $gold > 3)[[[Shop]]]\n\n:: Shop\nHi.\n`,
+    );
+    const out = emitTwee(g);
+    expect(out).toContain('(if: ($gold) > (3))[[[Shop]]]');
+  });
+
+  it('drops assignment/condition content for a non-Harlowe dialect, same as before this phase', () => {
+    const g = parseTwee(`:: Start\nHi.\n\n:: Shop\nHi.\n`);
+    g.nodes['Start'].content.push({
+      kind: 'assignment',
+      statement: {
+        kind: 'assignment',
+        name: 'gold',
+        operator: '=',
+        value: { kind: 'literal', value: 5 },
+      },
+    });
+    g.nodes['Start'].choices.push({
+      text: 'Shop',
+      target: 'Shop',
+      sticky: false,
+      fallback: false,
+      tags: [],
+      condition: { kind: 'variable', name: 'seen' },
+    });
+    const out = emitTwee(g);
+    expect(out).not.toContain('(set:');
+    expect(out).not.toContain('(if:');
+    expect(out).toContain('[[Shop]]');
+  });
+});
+
+describe('Harlowe round-trip: parse → emit → parse (DEV-199 Phase 7)', () => {
+  it('produces an equivalent graph for assignment + conditional text + conditional choice', () => {
+    const src =
+      `:: StoryData\n{"start":"Start","format":"Harlowe"}\n\n` +
+      `:: Start\n(set: $gold to 5)\n(if: $gold > 3)[You are rich.]\n(if: $gold > 3)[[[Shop]]]\n\n` +
+      `:: Shop\nWelcome.\n`;
+    const first = parseTwee(src);
+    const reparsed = parseTwee(emitTwee(first));
+    expect(reparsed.variables).toEqual(first.variables);
+    expect(stripIds(reparsed.nodes['Start'].content)).toEqual(
+      stripIds(first.nodes['Start'].content),
+    );
+    expect(stripIds(reparsed.nodes['Start'].choices)).toEqual(
+      stripIds(first.nodes['Start'].choices),
+    );
+  });
+});
+
+describe('parseTwee — SugarCube macro support (DEV-199 Phase 8)', () => {
+  const sugarcubeSrc = (body: string) =>
+    `:: StoryData\n{"start":"Start","format":"SugarCube"}\n\n:: Start\n${body}\n`;
+
+  it('declares a variable implicitly from the first <<set>>, inferring its type', () => {
+    const g = parseTwee(sugarcubeSrc('<<set $gold to 5>>\nYou have gold.'));
+    expect(g.variables).toEqual([
+      { name: 'gold', type: 'number', initialValue: { kind: 'literal', value: 5 }, isConst: false },
+    ]);
+    const block = g.nodes['Start'].content.find((c) => c.kind === 'assignment');
+    expect(stripIds(block)).toEqual({
+      kind: 'assignment',
+      statement: {
+        kind: 'assignment',
+        name: 'gold',
+        operator: '=',
+        value: { kind: 'literal', value: 5 },
+      },
+    });
+    expect(textOf(g.nodes['Start'].content.find((c) => c.kind === 'text')!)).toBe('You have gold.');
+  });
+
+  it('does not re-declare a variable already declared by an earlier <<set>>', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"SugarCube"}\n\n:: Start\n<<set $gold to 5>>\n\n:: Other\n<<set $gold to 10>>\n`,
+    );
+    expect(g.variables).toHaveLength(1);
+    expect(g.variables?.[0]).toEqual({
+      name: 'gold',
+      type: 'number',
+      initialValue: { kind: 'literal', value: 5 },
+      isConst: false,
+    });
+  });
+
+  it('parses a native compound assignment (+=) directly, no desugaring needed', () => {
+    const g = parseTwee(sugarcubeSrc('<<set $gold to 5>>\n<<set $gold += 10>>'));
+    const assignments = g.nodes['Start'].content.filter((c) => c.kind === 'assignment');
+    expect(assignments).toHaveLength(2);
+    expect(stripIds(assignments[1])).toEqual({
+      kind: 'assignment',
+      statement: {
+        kind: 'assignment',
+        name: 'gold',
+        operator: '+=',
+        value: { kind: 'literal', value: 10 },
+      },
+    });
+  });
+
+  it('parses a single <<if>>...<</if>> as a conditional text block', () => {
+    const g = parseTwee(sugarcubeSrc('<<set $gold to 5>>\n<<if $gold gt 3>>You are rich.<</if>>'));
+    const conditional = g.nodes['Start'].content.find((c) => isTextBlock(c) && c.condition);
+    expect(conditional).toBeDefined();
+    if (!isTextBlock(conditional)) throw new Error('expected a text block');
+    expect(textOf(conditional)).toBe('You are rich.');
+    expect(conditional.condition).toEqual({
+      kind: 'binary',
+      operator: '>',
+      left: { kind: 'variable', name: 'gold' },
+      right: { kind: 'literal', value: 3 },
+    });
+  });
+
+  it('parses <<if>>...<<elseif>>...<<else>>...<</if>> as mutually-exclusive conditional text blocks', () => {
+    const g = parseTwee(
+      sugarcubeSrc(
+        '<<set $gold to 5>>\n<<if $gold gt 10>>Rich<<elseif $gold gt 0>>Some gold<<else>>Broke<</if>>',
+      ),
+    );
+    const textBlocks = g.nodes['Start'].content.filter(isTextBlock);
+    expect(textBlocks.map((b) => b.text)).toEqual(['Rich', 'Some gold', 'Broke']);
+    const gt = (n: number): object => ({
+      kind: 'binary',
+      operator: '>',
+      left: { kind: 'variable', name: 'gold' },
+      right: { kind: 'literal', value: n },
+    });
+    expect(textBlocks[0].condition).toEqual(gt(10));
+    expect(textBlocks[1].condition).toEqual({
+      kind: 'logical',
+      operator: '&&',
+      left: { kind: 'unary', operator: '!', operand: gt(10) },
+      right: gt(0),
+    });
+    expect(textBlocks[2].condition).toEqual({
+      kind: 'logical',
+      operator: '&&',
+      left: { kind: 'unary', operator: '!', operand: gt(10) },
+      right: { kind: 'unary', operator: '!', operand: gt(0) },
+    });
+  });
+
+  it('parses <<if>>[[Link]]<</if>> (wrapping a link) as a conditional choice', () => {
+    const g = parseTwee(sugarcubeSrc('<<if $gold gt 3>>[[Shop]]<</if>>'));
+    expect(stripIds(g.nodes['Start'].choices)).toEqual([
+      {
+        text: 'Shop',
+        target: 'Shop',
+        sticky: false,
+        fallback: false,
+        tags: [],
+        condition: {
+          kind: 'binary',
+          operator: '>',
+          left: { kind: 'variable', name: 'gold' },
+          right: { kind: 'literal', value: 3 },
+        },
+      },
+    ]);
+  });
+
+  it('parses an <<if>>/<<else>> wrapping DIFFERENT links as two mutually-exclusive conditional choices', () => {
+    const g = parseTwee(sugarcubeSrc('<<if $gold gt 10>>[[Shop]]<<else>>[[Beg]]<</if>>'));
+    expect(g.nodes['Start'].choices.map((c) => c.text)).toEqual(['Shop', 'Beg']);
+    expect(g.nodes['Start'].choices[0].condition).toEqual({
+      kind: 'binary',
+      operator: '>',
+      left: { kind: 'variable', name: 'gold' },
+      right: { kind: 'literal', value: 10 },
+    });
+    expect(g.nodes['Start'].choices[1].condition).toEqual({
+      kind: 'unary',
+      operator: '!',
+      operand: {
+        kind: 'binary',
+        operator: '>',
+        left: { kind: 'variable', name: 'gold' },
+        right: { kind: 'literal', value: 10 },
+      },
+    });
+  });
+
+  it('warns (rather than failing silently) when a <<set>> initializer references an undeclared variable', () => {
+    const g = parseTwee(sugarcubeSrc('<<set $seen to $gold gt 10>>'));
+    expect(g.variables).toBeUndefined();
+    expect(
+      g.validation.warnings.some((w) => w.type === 'syntax_error' && w.message.includes('$seen')),
+    ).toBe(true);
+  });
+
+  it('leaves content inert with a warning when an <<if>> condition fails to parse', () => {
+    const g = parseTwee(sugarcubeSrc('<<if $gold is>>Broken<</if>>'));
+    expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(true);
+    expect(g.nodes['Start'].content.some((c) => c.kind === 'text' && c.condition)).toBe(false);
+  });
+
+  it('does NOT promote a wrapped link to an unconditional choice when its <<if>> condition fails to parse', () => {
+    const g = parseTwee(sugarcubeSrc('<<if $gold is>>[[Shop]]<</if>>'));
+    expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(true);
+    expect(stripIds(g.nodes['Start'].choices)).toEqual([]);
+  });
+
+  it('leaves an unsupported macro like <<print>> as inert text', () => {
+    const g = parseTwee(sugarcubeSrc('<<print $gold>>'));
+    expect(textOf(g.nodes['Start'].content[0])).toContain('<<print');
+  });
+
+  it('does not strip a temp variable (_name) sigil — using one surfaces as an undefined-variable warning, not a silent $-collision', () => {
+    const g = parseTwee(sugarcubeSrc('<<set $seen to _counter>>'));
+    expect(g.variables).toBeUndefined();
+    expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(true);
+  });
+
+  it("warns (rather than silently declaring with the wrong value) when a compound <<set>> is a variable's first-ever mention", () => {
+    // Regression: a compound op (+=/-=/etc) can't declare a variable
+    // — it needs an EXISTING value to combine with. This used to be
+    // declared as if the bare RHS were a plain assignment (`$gold`
+    // "starting" at 10), silently misreporting what the statement
+    // actually does.
+    const g = parseTwee(sugarcubeSrc('<<set $gold += 10>>'));
+    expect(g.variables).toBeUndefined();
+    expect(
+      g.validation.warnings.some((w) => w.type === 'syntax_error' && w.message.includes('$gold')),
+    ).toBe(true);
+  });
+
+  it('recurses into a nested <<if>> inside a branch, combining conditions with AND', () => {
+    // Regression: a branch's body used to only go through the
+    // generic extractLinks+bodyToContent fallback, so a nested
+    // <<if>> was never recognized as one — it leaked as raw macro
+    // text instead of producing its own, further-gated content.
+    const g = parseTwee(
+      sugarcubeSrc(
+        '<<set $a to true>>\n<<set $b to true>>\n<<if $a>>outer <<if $b>>inner<</if>> text<</if>>',
+      ),
+    );
+    const textBlocks = g.nodes['Start'].content.filter(isTextBlock);
+    expect(textBlocks.map((b) => b.text)).toEqual(['outer', 'inner', 'text']);
+    expect(textBlocks[0].condition).toEqual({ kind: 'variable', name: 'a' });
+    expect(textBlocks[1].condition).toEqual({
+      kind: 'logical',
+      operator: '&&',
+      left: { kind: 'variable', name: 'a' },
+      right: { kind: 'variable', name: 'b' },
+    });
+    expect(textBlocks[2].condition).toEqual({ kind: 'variable', name: 'a' });
+  });
+
+  it('recurses into a nested <<if>> wrapping a link, combining it into one doubly-conditional choice', () => {
+    const g = parseTwee(
+      sugarcubeSrc(
+        '<<set $a to true>>\n<<set $b to true>>\n<<if $a>><<if $b>>[[Shop]]<</if>><</if>>',
+      ),
+    );
+    expect(stripIds(g.nodes['Start'].choices)).toEqual([
+      {
+        text: 'Shop',
+        target: 'Shop',
+        sticky: false,
+        fallback: false,
+        tags: [],
+        condition: {
+          kind: 'logical',
+          operator: '&&',
+          left: { kind: 'variable', name: 'a' },
+          right: { kind: 'variable', name: 'b' },
+        },
+      },
+    ]);
+  });
+
+  it('represents a nested <<set>> as an AssignmentBlock conditioned on its <<if>> (DEV-199 follow-up, found in review)', () => {
+    const g = parseTwee(sugarcubeSrc('<<if $a>><<set $b to 1>><</if>>'));
+    const block = g.nodes['Start'].content.find((c) => c.kind === 'assignment');
+    expect(block).toBeDefined();
+    expect(stripIds(block)).toEqual({
+      kind: 'assignment',
+      statement: {
+        kind: 'assignment',
+        name: 'b',
+        operator: '=',
+        value: { kind: 'literal', value: 1 },
+      },
+      condition: { kind: 'variable', name: 'a' },
+    });
+    expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(false);
+  });
+
+  it('ANDs the nested <<set>>’s condition with its own branch condition when both are present (a <<set>> behind an inner <<if>>)', () => {
+    const g = parseTwee(sugarcubeSrc('<<if $a>><<if $b>><<set $c to 1>><</if>><</if>>'));
+    const block = g.nodes['Start'].content.find((c) => c.kind === 'assignment');
+    expect(block).toBeDefined();
+    expect(stripIds(block)).toEqual({
+      kind: 'assignment',
+      statement: {
+        kind: 'assignment',
+        name: 'c',
+        operator: '=',
+        value: { kind: 'literal', value: 1 },
+      },
+      condition: {
+        kind: 'logical',
+        operator: '&&',
+        left: { kind: 'variable', name: 'a' },
+        right: { kind: 'variable', name: 'b' },
+      },
+    });
+  });
+
+  it('warns rather than silently dropping a tag whose own argument text has an unescaped quote', () => {
+    // Regression: a stray apostrophe inside <<if>>'s own condition
+    // text (not a real string literal) made findTags treat it as an
+    // opening quote, run off the end looking for its match, and drop
+    // the whole tag with zero diagnostic.
+    const g = parseTwee(sugarcubeSrc("<<if $name is Bob's>>hi<</if>>"));
+    expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(true);
+  });
+});
+
+describe('emitTwee — SugarCube re-emission (DEV-199 Phase 8)', () => {
+  it('emits an assignment block as <<set $name = VALUE>>', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"SugarCube"}\n\n:: Start\n<<set $gold to 5>>\nHi.\n`,
+    );
+    const out = emitTwee(g);
+    expect(out).toContain('<<set $gold = 5>>');
+  });
+
+  it('emits a compound assignment block natively', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"SugarCube"}\n\n:: Start\n<<set $gold to 5>>\n<<set $gold += 10>>\n`,
+    );
+    const out = emitTwee(g);
+    expect(out).toContain('<<set $gold += 10>>');
+  });
+
+  it('emits a conditional text block wrapped in <<if COND>>...<</if>>', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"SugarCube"}\n\n:: Start\n<<set $gold to 5>>\n<<if $gold gt 3>>Rich.<</if>>\n`,
+    );
+    const out = emitTwee(g);
+    expect(out).toContain('<<if ($gold > 3)>>Rich.<</if>>');
+  });
+
+  it('emits a conditional choice wrapped in <<if COND>>...<</if>>', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"SugarCube"}\n\n:: Start\n<<if $gold gt 3>>[[Shop]]<</if>>\n\n:: Shop\nHi.\n`,
+    );
+    const out = emitTwee(g);
+    expect(out).toContain('<<if ($gold > 3)>>[[Shop]]<</if>>');
+  });
+});
+
+describe('SugarCube round-trip: parse → emit → parse (DEV-199 Phase 8)', () => {
+  it('produces an equivalent graph for assignment + conditional text + conditional choice', () => {
+    const src =
+      `:: StoryData\n{"start":"Start","format":"SugarCube"}\n\n` +
+      `:: Start\n<<set $gold to 5>>\n<<if $gold gt 3>>You are rich.<</if>>\n<<if $gold gt 3>>[[Shop]]<</if>>\n\n` +
+      `:: Shop\nWelcome.\n`;
+    const first = parseTwee(src);
+    const reparsed = parseTwee(emitTwee(first));
+    expect(reparsed.variables).toEqual(first.variables);
+    expect(stripIds(reparsed.nodes['Start'].content)).toEqual(
+      stripIds(first.nodes['Start'].content),
+    );
+    expect(stripIds(reparsed.nodes['Start'].choices)).toEqual(
+      stripIds(first.nodes['Start'].choices),
+    );
+  });
+
+  it('preserves per-branch semantics of an if/elseif/else chain, even though it re-emits as independent <<if>> blocks', () => {
+    // The emitted TEXT won't come back as an if/elseif/else chain
+    // (emitContentBlock wraps each conditioned block independently,
+    // same simplification Harlowe's emitter already makes) — but the
+    // resolved per-branch conditions must still be equivalent after
+    // a reparse, since that's what actually governs visibility.
+    const src =
+      `:: StoryData\n{"start":"Start","format":"SugarCube"}\n\n` +
+      `:: Start\n<<set $gold to 5>>\n<<if $gold gt 10>>Rich<<elseif $gold gt 0>>Some gold<<else>>Broke<</if>>\n`;
+    const first = parseTwee(src);
+    const reparsed = parseTwee(emitTwee(first));
+    expect(stripIds(reparsed.nodes['Start'].content)).toEqual(
+      stripIds(first.nodes['Start'].content),
+    );
+  });
+});
+
+describe('parseTwee — Chapbook macro support (DEV-199 Phase 9)', () => {
+  const chapbookSrc = (body: string) =>
+    `:: StoryData\n{"start":"Start","format":"Chapbook"}\n\n:: Start\n${body}\n`;
+
+  it('declares every vars-section line implicitly, inferring type, as leading assignment blocks', () => {
+    const g = parseTwee(chapbookSrc('gold: 5\n--\nYou have gold.'));
+    expect(g.variables).toEqual([
+      { name: 'gold', type: 'number', initialValue: { kind: 'literal', value: 5 }, isConst: false },
+    ]);
+    expect(stripIds(g.nodes['Start'].content[0])).toEqual({
+      kind: 'assignment',
+      statement: {
+        kind: 'assignment',
+        name: 'gold',
+        operator: '=',
+        value: { kind: 'literal', value: 5 },
+      },
+    });
+    expect(textOf(g.nodes['Start'].content[1])).toBe('You have gold.');
+  });
+
+  it('treats a passage with no "--" separator as having no vars section at all', () => {
+    const g = parseTwee(chapbookSrc('Just plain prose, no vars here.'));
+    expect(g.variables).toBeUndefined();
+    expect(g.nodes['Start'].content.some((c) => c.kind === 'assignment')).toBe(false);
+    expect(textOf(g.nodes['Start'].content[0])).toBe('Just plain prose, no vars here.');
+  });
+
+  it('does not re-declare a variable already declared by an earlier vars section', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"Chapbook"}\n\n:: Start\ngold: 5\n--\nHi.\n\n:: Other\ngold: 10\n--\nHi.\n`,
+    );
+    expect(g.variables).toHaveLength(1);
+    expect(g.variables?.[0]).toEqual({
+      name: 'gold',
+      type: 'number',
+      initialValue: { kind: 'literal', value: 5 },
+      isConst: false,
+    });
+  });
+
+  it('honors multiple assignments to the same name in one vars section, in file order', () => {
+    const g = parseTwee(chapbookSrc("transportation: 'car'\ntransportation: 'plane'\n--\nGo."));
+    const assignments = g.nodes['Start'].content.filter((c) => c.kind === 'assignment');
+    expect(assignments).toHaveLength(2);
+    expect(assignments.map((a) => (a.kind === 'assignment' ? a.statement.value : null))).toEqual([
+      { kind: 'literal', value: 'car' },
+      { kind: 'literal', value: 'plane' },
+    ]);
+  });
+
+  it('represents a conditional vars-section assignment ("name (COND): value") as an AssignmentBlock conditioned on COND (DEV-199 follow-up, found in review)', () => {
+    const g = parseTwee(
+      chapbookSrc("transportation: 'car'\ntransportation (far): 'plane'\n--\nGo."),
+    );
+    const assignments = g.nodes['Start'].content.filter((c) => c.kind === 'assignment');
+    expect(assignments).toHaveLength(2);
+    expect(stripIds(assignments[1])).toEqual({
+      kind: 'assignment',
+      statement: {
+        kind: 'assignment',
+        name: 'transportation',
+        operator: '=',
+        value: { kind: 'literal', value: 'plane' },
+      },
+      condition: { kind: 'variable', name: 'far' },
+    });
+    expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(false);
+  });
+
+  it('declares the variable from a conditional vars-section assignment even when it is the FIRST mention', () => {
+    const g = parseTwee(chapbookSrc("transportation (far): 'plane'\n--\nGo."));
+    expect(g.variables).toEqual([
+      {
+        name: 'transportation',
+        type: 'string',
+        initialValue: { kind: 'literal', value: 'plane' },
+        isConst: false,
+      },
+    ]);
+  });
+
+  it('parses [if COND]TEXT as a conditional text block that persists until the next modifier', () => {
+    const g = parseTwee(
+      chapbookSrc(
+        'hasKey: true\n--\nAt the door.\n\n[if hasKey]\nYou could unlock it.\n\nYou wait.',
+      ),
+    );
+    const textBlocks = g.nodes['Start'].content.filter(isTextBlock);
+    expect(textBlocks.map((b) => b.text)).toEqual([
+      'At the door.',
+      'You could unlock it.',
+      'You wait.',
+    ]);
+    expect(textBlocks[0].condition).toBeUndefined();
+    expect(textBlocks[1].condition).toEqual({ kind: 'variable', name: 'hasKey' });
+    expect(textBlocks[2].condition).toEqual({ kind: 'variable', name: 'hasKey' });
+  });
+
+  it('[else] negates the most recent [if], and [continue] resets back to unconditional', () => {
+    const g = parseTwee(
+      chapbookSrc(
+        'hasKey: true\n--\n[if hasKey]\nYou could unlock it.\n\n[else]\nNo key.\n\n[continue]\nYou turn back.',
+      ),
+    );
+    const textBlocks = g.nodes['Start'].content.filter(isTextBlock);
+    expect(textBlocks.map((b) => b.text)).toEqual([
+      'You could unlock it.',
+      'No key.',
+      'You turn back.',
+    ]);
+    expect(textBlocks[0].condition).toEqual({ kind: 'variable', name: 'hasKey' });
+    expect(textBlocks[1].condition).toEqual({
+      kind: 'unary',
+      operator: '!',
+      operand: { kind: 'variable', name: 'hasKey' },
+    });
+    expect(textBlocks[2].condition).toBeUndefined();
+  });
+
+  it('[unless COND] is the negation of COND', () => {
+    const g = parseTwee(chapbookSrc('tookAntidote: false\n--\n[unless tookAntidote]\nYou die.'));
+    const block = g.nodes['Start'].content.find(isTextBlock);
+    expect(block?.condition).toEqual({
+      kind: 'unary',
+      operator: '!',
+      operand: { kind: 'variable', name: 'tookAntidote' },
+    });
+  });
+
+  it('parses [if COND][[Link]] (wrapping a link) as a conditional choice', () => {
+    const g = parseTwee(chapbookSrc('hasKey: true\n--\n[if hasKey]\n[[Shop]]\n\n[continue]'));
+    expect(stripIds(g.nodes['Start'].choices)).toEqual([
+      {
+        text: 'Shop',
+        target: 'Shop',
+        sticky: false,
+        fallback: false,
+        tags: [],
+        condition: { kind: 'variable', name: 'hasKey' },
+      },
+    ]);
+  });
+
+  it('translates strict equality (===) and re-quotes strings in a condition', () => {
+    const g = parseTwee(chapbookSrc('color: "red"\n--\n[if color === "red"]\nRed alert.'));
+    const block = g.nodes['Start'].content.find(isTextBlock);
+    expect(block?.condition).toEqual({
+      kind: 'binary',
+      operator: '==',
+      left: { kind: 'variable', name: 'color' },
+      right: { kind: 'literal', value: 'red' },
+    });
+  });
+
+  it('leaves content inert with a warning when an [if] condition fails to parse', () => {
+    const g = parseTwee(chapbookSrc('[if hasKey ===]\nBroken'));
+    expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(true);
+    expect(g.nodes['Start'].content.some((c) => c.kind === 'text' && c.condition)).toBe(false);
+  });
+
+  it('does NOT promote a wrapped link to an unconditional choice when its [if] condition fails to parse', () => {
+    const g = parseTwee(chapbookSrc('[if hasKey ===]\n[[Shop]]'));
+    expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(true);
+    expect(stripIds(g.nodes['Start'].choices)).toEqual([]);
+  });
+
+  it('warns and leaves it inert when [else] has no preceding [if] in the passage', () => {
+    const g = parseTwee(chapbookSrc('[else]\nSomething.'));
+    expect(g.validation.warnings.some((w) => w.type === 'syntax_error')).toBe(true);
+    expect(g.nodes['Start'].content.some((c) => c.kind === 'text' && c.condition)).toBe(false);
+  });
+});
+
+describe('emitTwee — Chapbook re-emission (DEV-199 Phase 9)', () => {
+  it('hoists assignment blocks into a leading vars section, separated by "--"', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"Chapbook"}\n\n:: Start\ngold: 5\n--\nHi.\n`,
+    );
+    const out = emitTwee(g);
+    expect(out).toContain('gold: 5\n--\nHi.');
+  });
+
+  it('expands a compound assignment, since Chapbook has no += shorthand', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"Chapbook"}\n\n:: Start\ngold: 5\n--\nHi.\n`,
+    );
+    g.nodes['Start'].content.push({
+      kind: 'assignment',
+      statement: {
+        kind: 'assignment',
+        name: 'gold',
+        operator: '+=',
+        value: { kind: 'literal', value: 10 },
+      },
+    });
+    const out = emitTwee(g);
+    expect(out).toContain('gold: gold + 10');
+  });
+
+  it('emits a conditional text block wrapped in [if COND]/[continue]', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"Chapbook"}\n\n:: Start\ngold: 5\n--\n[if gold > 3]\nRich.\n\n[continue]\n`,
+    );
+    const out = emitTwee(g);
+    expect(out).toContain('[if (gold > 3)]\nRich.\n\n[continue]');
+  });
+
+  it('emits a conditional choice wrapped in [if COND]/[continue]', () => {
+    const g = parseTwee(
+      `:: StoryData\n{"start":"Start","format":"Chapbook"}\n\n:: Start\ngold: 5\n--\n[if gold > 3]\n[[Shop]]\n\n[continue]\n\n:: Shop\nHi.\n`,
+    );
+    const out = emitTwee(g);
+    expect(out).toContain('[if (gold > 3)]\n[[Shop]]\n\n[continue]');
+  });
+});
+
+describe('Chapbook round-trip: parse → emit → parse (DEV-199 Phase 9)', () => {
+  it('produces an equivalent graph for vars section + conditional text + conditional choice', () => {
+    const src =
+      `:: StoryData\n{"start":"Start","format":"Chapbook"}\n\n` +
+      `:: Start\ngold: 5\n--\n[if gold > 3]\nRich.\n\n[continue]\n\n[if gold > 3]\n[[Shop]]\n\n[continue]\n\n` +
+      `:: Shop\nWelcome.\n`;
+    const first = parseTwee(src);
+    const reparsed = parseTwee(emitTwee(first));
+    expect(reparsed.variables).toEqual(first.variables);
+    expect(stripIds(reparsed.nodes['Start'].content)).toEqual(
+      stripIds(first.nodes['Start'].content),
+    );
+    expect(stripIds(reparsed.nodes['Start'].choices)).toEqual(
+      stripIds(first.nodes['Start'].choices),
+    );
+  });
+});
+
+// A scalar variable authored via VariablesTab (graph.variables) has
+// no corresponding in-content assignment block for any dialect
+// emitter to discover — before this fix, a resolved-dialect export
+// would include a condition referencing it with NOTHING anywhere in
+// the exported file that ever sets it (found in review).
+describe('emitTwee — initializes a VariablesTab-only scalar variable with no assignment block', () => {
+  function graphWithUninitializedVariable(dialect: 'harlowe' | 'sugarcube' | 'chapbook') {
+    return {
+      id: 's1',
+      title: 'Untitled',
+      nodes: {
+        Start: {
+          id: 'Start',
+          type: 'knot' as const,
+          parent: null,
+          content: [] as ContentBlock[],
+          choices: [
+            {
+              text: 'Go',
+              target: 'Start',
+              sticky: false,
+              fallback: false,
+              tags: [],
+              condition: {
+                kind: 'binary' as const,
+                operator: '>' as const,
+                left: { kind: 'variable' as const, name: 'gold' },
+                right: { kind: 'literal' as const, value: 3 },
+              },
+            },
+          ],
+          divert: null,
+          tags: [],
+          lineNumber: 1,
+        },
+      },
+      startNode: 'Start',
+      validation: { valid: true, errors: [], warnings: [] },
+      variables: [
+        {
+          name: 'gold',
+          type: 'number' as const,
+          isConst: false,
+          initialValue: { kind: 'literal' as const, value: 5 },
+        },
+      ],
+      twee: { dialect },
+    };
+  }
+
+  it('Harlowe: emits (set: $gold to 5) into StoryInit', () => {
+    const out = emitTwee(graphWithUninitializedVariable('harlowe'));
+    expect(out).toContain(':: StoryInit');
+    expect(out).toContain('(set: $gold to 5)');
+  });
+
+  it('SugarCube: emits <<set $gold = 5>> into StoryInit', () => {
+    const out = emitTwee(graphWithUninitializedVariable('sugarcube'));
+    expect(out).toContain(':: StoryInit');
+    expect(out).toContain('<<set $gold = 5>>');
+  });
+
+  it('Chapbook: emits gold: 5 into the start node’s own vars section', () => {
+    const out = emitTwee(graphWithUninitializedVariable('chapbook'));
+    expect(out).toContain('gold: 5');
+    // No separate StoryInit passage — Chapbook has no such special
+    // passage, so the start node's own vars section is the only
+    // place this can go.
+    expect(out).not.toContain(':: StoryInit');
+  });
+
+  it('Chapbook: does not duplicate the variable when the start node already assigns it itself', () => {
+    const g = graphWithUninitializedVariable('chapbook');
+    g.nodes.Start.content = [
+      {
+        id: 'b1',
+        kind: 'assignment' as const,
+        statement: {
+          kind: 'assignment' as const,
+          name: 'gold',
+          operator: '=' as const,
+          value: { kind: 'literal' as const, value: 7 },
+        },
+      },
+    ];
+    const out = emitTwee(g);
+    // Only the node's own assignment (7), not a second synthesized
+    // one (5) from graph.variables.
+    expect(out.match(/gold:/g)).toHaveLength(1);
+    expect(out).toContain('gold: 7');
   });
 });

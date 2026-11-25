@@ -13,10 +13,18 @@ function story(overrides: Partial<OrderableStory> = {}): OrderableStory {
     nodes: {
       // Declaration order is deliberately NOT narrative order — that's
       // the bug this module exists to fix.
-      late: { choices: [], divert: 'END', audio: { voiceover: 'late.mp3' } },
-      orphan: { choices: [], divert: null, audio: { voiceover: 'orphan.mp3' } },
-      start: { choices: [{ target: 'middle' }], divert: null, audio: { voiceover: 'start.mp3' } },
-      middle: { choices: [{ target: 'late' }], divert: null, audio: { voiceover: 'middle.mp3' } },
+      late: { choices: [], divert: 'END', audio: { voiceover: [{ file: 'late.mp3' }] } },
+      orphan: { choices: [], divert: null, audio: { voiceover: [{ file: 'orphan.mp3' }] } },
+      start: {
+        choices: [{ target: 'middle' }],
+        divert: null,
+        audio: { voiceover: [{ file: 'start.mp3' }] },
+      },
+      middle: {
+        choices: [{ target: 'late' }],
+        divert: null,
+        audio: { voiceover: [{ file: 'middle.mp3' }] },
+      },
     },
     ...overrides,
   };
@@ -106,8 +114,12 @@ describe('orderAudioUrlsForDownload', () => {
     const s = story({
       startNode: 'a',
       nodes: {
-        a: { choices: [{ target: 'b' }], divert: null, audio: { voiceover: 'shared.mp3' } },
-        b: { choices: [], divert: null, audio: { voiceover: 'shared.mp3' } },
+        a: {
+          choices: [{ target: 'b' }],
+          divert: null,
+          audio: { voiceover: [{ file: 'shared.mp3' }] },
+        },
+        b: { choices: [], divert: null, audio: { voiceover: [{ file: 'shared.mp3' }] } },
       },
     });
     expect(orderAudioUrlsForDownload(s)).toEqual(['./audio/shared.mp3']);
@@ -121,10 +133,10 @@ describe('orderAudioUrlsForDownload', () => {
           choices: [],
           divert: null,
           audio: {
-            voiceover: 'v.mp3',
-            choice1: 'c1.mp3',
-            choice2: 'c2.mp3',
-            ambience: 'am.mp3',
+            voiceover: [{ file: 'v.mp3' }],
+            choice1: [{ file: 'c1.mp3' }],
+            choice2: [{ file: 'c2.mp3' }],
+            ambience: [{ file: 'am.mp3' }],
             // Sound effects play offline too, so they're downloaded with
             // the rest of the passage.
             sfx: [{ file: 'fx.mp3' }],
@@ -145,12 +157,31 @@ describe('orderAudioUrlsForDownload', () => {
     const s = story({
       audioBaseUrl: './audio',
       startNode: 'a',
-      nodes: { a: { choices: [], divert: null, audio: { voiceover: 'v.mp3' } } },
+      nodes: { a: { choices: [], divert: null, audio: { voiceover: [{ file: 'v.mp3' }] } } },
     });
     expect(orderAudioUrlsForDownload(s)).toEqual(['./audio/v.mp3']);
   });
 
   it('returns nothing for a missing story', () => {
     expect(orderAudioUrlsForDownload(null)).toEqual([]);
+  });
+
+  // Variable-conditioned audio: a slot can hold several candidates.
+  // Downloading can't know which one will end up playing (that
+  // depends on live variable state), so every candidate is included.
+  it('includes every candidate for a slot with multiple variants', () => {
+    const s = story({
+      startNode: 'a',
+      nodes: {
+        a: {
+          choices: [],
+          divert: null,
+          audio: {
+            voiceover: [{ file: 'angry.mp3' }, { file: 'normal.mp3' }],
+          },
+        },
+      },
+    });
+    expect(orderAudioUrlsForDownload(s)).toEqual(['./audio/angry.mp3', './audio/normal.mp3']);
   });
 });

@@ -1,0 +1,125 @@
+// Pulled out of App.tsx so useMediaControls.ts (which App.tsx itself
+// imports) can use the SAME condition-filtered text App.tsx uses for
+// on-screen/narrated display, without an import cycle (App.tsx ->
+// useMediaControls.ts -> App.tsx). App.tsx re-exports both names so
+// every existing `import { nodeText, conditionAllows } from './App'`
+// call site keeps working unchanged.
+
+import {
+  isTextBlock,
+  evaluate,
+  execute,
+  truthy,
+  type CallFunctionHandler,
+  type ContentBlock,
+  type Expression,
+  type TextBlock,
+  type VariableValue,
+} from '@wanderline/shared';
+
+/**
+ * Whether a conditional block (DEV-199 Phase 3: text; Phase 4:
+ * choices) should show, given the current variable store. No
+ * condition at all always shows. A condition that fails to evaluate
+ * (references a variable that was renamed/removed since the story was
+ * authored) is treated as false — hidden, not shown-with-a-crash and
+ * not shown-unconditionally, the same tolerant-degradation choice as
+ * applyNodeAssignments in App.tsx.
+ *
+ * `callFunction` (DEV-199 Phase 10b) is optional and passed through
+ * to `evaluate` unchanged — see expression-evaluator.ts's header for
+ * why a condition that calls a function PURELY for a side effect
+ * won't have that side effect persist through this path (a documented
+ * limitation, not a bug): this function only ever returns a boolean,
+ * so there's nowhere to hand back a mutated variable store even if it
+ * computed one internally.
+ */
+export function conditionAllows(
+  condition: Expression | null | undefined,
+  variables: Record<string, VariableValue>,
+  callFunction?: CallFunctionHandler,
+): boolean {
+  if (!condition) return true;
+  try {
+    return truthy(evaluate(condition, variables, callFunction));
+  } catch (err) {
+    // Logged (unlike the pre-function-knots version of this catch)
+    // because a function-call error here — undeclared function,
+    // depth exceeded, bad arity, an undefined variable inside the
+    // function body — is otherwise indistinguishable from an
+    // intentionally-gated choice/text block, with no console signal
+    // that the condition actually failed to evaluate at all.
+    console.warn('[wanderline] condition failed to evaluate', { condition, err });
+    return false;
+  }
+}
+
+/** The passage as text: an explicit transcript wins, otherwise the
+ * Ink content lines joined — skipping any text block whose condition
+ * (DEV-199 Phase 3) doesn't hold against the current variable store. */
+export function nodeText(
+  node: {
+    content: ContentBlock[];
+    metadata?: { transcript?: string | null };
+  },
+  variables: Record<string, VariableValue> = {},
+  callFunction?: CallFunctionHandler,
+): string {
+  const transcript = node.metadata?.transcript?.trim();
+  if (transcript) return transcript;
+  return node.content
+    .filter(isTextBlock)
+    .filter((c) => conditionAllows(c.condition, variables, callFunction))
+    .map((c) => c.text)
+    .join(' ')
+    .trim();
+}
+
+/**
+ * Walks `node.content` ONCE, in document order, applying each
+ * assignment to a running variable store as it's encountered and
+ * deciding each text block's visibility against that RUNNING store —
+ * i.e. only the assignments that precede it in the passage, not the
+ * node's FINAL post-every-assignment store (found in review: with
+ * `seen = false`, `{!seen: First visit.}` followed later by `~ seen =
+ * true` was incorrectly hiding "First visit.", because visibility
+ * used to be checked only after every assignment in the node had
+ * already run — nodeText/conditionAllows and App.tsx's
+ * applyNodeAssignments did their work as two separate, mistimed
+ * passes). Returns BOTH the final store (same value
+ * `applyNodeAssignments` alone used to return) and the resolved
+ * TextBlocks — callers that need the on-screen/narrated/MediaSession
+ * text should use the LATTER instead of re-deriving it from
+ * `node.content` + the final store the way the old separate-pass
+ * code did; see App.tsx's `navigateToNode`/`freshStartVariables` call
+ * sites.
+ */
+export function resolveNodeEntry(
+  node: { content: ContentBlock[] } | undefined,
+  variables: Record<string, VariableValue>,
+  callFunction?: CallFunctionHandler,
+): { variables: Record<string, VariableValue>; visibleBlocks: TextBlock[] } {
+  if (!node) return { variables, visibleBlocks: [] };
+  let next = variables;
+  const visibleBlocks: TextBlock[] = [];
+  for (const item of node.content) {
+    if (!isTextBlock(item)) {
+      // AssignmentBlock. Its own `condition` (DEV-199 follow-up — a
+      // SugarCube/Chapbook assignment nested inside a conditional)
+      // gates on the SAME running store a text block's does.
+      if (!conditionAllows(item.condition, next, callFunction)) continue;
+      try {
+        next = execute(item.statement, next, callFunction);
+      } catch (err) {
+        // See applyNodeAssignments' identical catch (App.tsx) for
+        // why this is logged rather than silently swallowed.
+        console.warn('[wanderline] assignment failed to apply', { statement: item.statement, err });
+      }
+      continue;
+    }
+    if (conditionAllows(item.condition, next, callFunction)) {
+      visibleBlocks.push(item);
+    }
+  }
+  return { variables: next, visibleBlocks };
+}

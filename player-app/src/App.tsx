@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useOfflineSupport } from './useOfflineSupport';
 import { useMediaControls } from './useMediaControls';
+import { conditionAllows, resolveNodeEntry } from './node-text';
 import { useAudioCache } from './useAudioCache';
 import { orderAudioUrlsForDownload } from './audio-download-order';
 import { useAmbience } from './useAmbience';
 import { isUntimed, takeDueSfx, takeUntimedSfx, sfxOffset, type PassageSfx } from './passage-sfx';
+import { resolveAudioVariant, allAudioVariantFiles, type AudioVariant } from './audio-variants';
 import OfflineControls from './OfflineControls';
 import { styles } from './styles';
 import {
@@ -27,7 +29,19 @@ import {
   writeSlots,
   type SaveSlot,
 } from './save-slots';
-import { sanitizeChoiceAudioDelayMs } from '@wanderline/shared';
+import {
+  sanitizeChoiceAudioDelayMs,
+  isTextBlock,
+  evaluate,
+  evaluateSimpleCondition,
+  createFunctionCaller,
+  type CallFunctionHandler,
+  type ContentBlock,
+  type Expression,
+  type TextBlock,
+  type VariableDeclaration,
+  type VariableValue,
+} from '@wanderline/shared';
 
 // The pause before a choice option's audio starts, once the passage's
 // own narration ends — story.settings.choiceAudioDelayMs, defaulting to
@@ -78,15 +92,43 @@ async function loadStoryData(): Promise<StoryData | null> {
 interface StoryNode {
   id: string;
   type: string;
-  content: { text: string }[];
-  choices: { text: string; target: string }[];
+  // ContentBlock (DEV-199 Phase 2): a `~`-assignment block carries no
+  // `.text` — applyNodeAssignments walks this array to mutate the
+  // variable store, and every display site filters to text blocks
+  // (isTextBlock) first. See nodeText() below.
+  content: ContentBlock[];
+  choices: {
+    text: string;
+    target: string;
+    // Stable id (DEV-199 stable-id rollout) — absent on data parsed
+    // before the rollout. Used to resolve this choice's own audio
+    // cue (node.audio.choices[id]) independent of its position in
+    // this array, so a reorder can't misattribute audio to the wrong
+    // choice the way the ordinal choice1/choice2 slots could.
+    id?: string;
+    // Not yet acted on — gating choice visibility on this is Phase 4.
+    // Carried through now so the manifest shape doesn't need to
+    // change again when that phase lands.
+    condition?: Expression | null;
+  }[];
   divert: string | null;
   tags: string[];
   audio?: {
-    voiceover?: string;
-    ambience?: string;
-    choice1?: string;
-    choice2?: string;
+    // Each single-value slot is a LIST of candidates, not a single
+    // filename — several can coexist, each gated by an optional
+    // variable condition; resolveAudioVariant (audio-variants.ts)
+    // picks the one that actually plays. sfx entries are similarly
+    // each independently gated (see PassageSfx.condition), not
+    // mutually exclusive alternatives.
+    voiceover?: AudioVariant[];
+    ambience?: AudioVariant[];
+    choice1?: AudioVariant[];
+    choice2?: AudioVariant[];
+    // A choice's own cue, keyed by the choice's stable id — addresses
+    // correctly under reordering, unlike choice1/choice2's ordinal
+    // slots. A choice with no id (data from before the stable-id
+    // rollout) can only ever use those ordinal slots.
+    choices?: Record<string, AudioVariant[]>;
     sfx?: PassageSfx[];
   };
   metadata?: {
@@ -103,6 +145,14 @@ interface StoryNode {
     choice2TimestampMs?: number;
     theme?: string;
   };
+  /**
+   * Function-knot parameter names (DEV-199 Phase 10b), present only
+   * on a node tagged `internal:function` — see
+   * shared/src/types.ts's `StoryNode.params`. Read by
+   * `storyFunctionCaller` below to run a `{myFunc(x)}` call during
+   * real playback.
+   */
+  params?: string[];
 }
 
 interface StoryData {
@@ -112,6 +162,8 @@ interface StoryData {
   startNode: string;
   nodes: Record<string, StoryNode>;
   indicatorAudio?: { choice1?: string; choice2?: string };
+  /** Project-level variable declarations (DEV-199 Phase 2). */
+  variables?: VariableDeclaration[];
   settings?: {
     password?: string;
     backgroundMusicVolume?: number;
@@ -292,7 +344,7 @@ export function autoAdvanceTarget(
         id?: string;
         type?: string;
         parent?: string | null;
-        choices?: { target: string }[];
+        choices?: { target: string; condition?: Expression | null }[];
         divert?: string | null;
       }
     | null
@@ -306,26 +358,171 @@ export function autoAdvanceTarget(
     string,
     { id: string; type?: string; parent?: string | null; lineNumber?: number }
   >,
+  // DEV-199 Phase 4: "exactly one way forward" must count only the
+  // choices actually visible, not however many the node happens to
+  // declare — a node with two choices where one is conditionally
+  // hidden has exactly one real way forward, same as if it had been
+  // authored with just the one.
+  variables: Record<string, VariableValue> = {},
+  // Function-knot calls (DEV-199 Phase 10b): a choice's condition can
+  // contain one (`{double(x) > 8}`), so this needs the same handler
+  // every other condition/assignment evaluation does. Optional and
+  // last — every existing caller that omits it keeps working exactly
+  // as before (and simply can't gate on a call-bearing condition).
+  callFunction?: CallFunctionHandler,
 ): string | null {
   if (settings?.autoAdvance !== true || !node) return null;
-  const choices = node.choices ?? [];
+  const choices = (node.choices ?? []).filter((c) =>
+    conditionAllows(c.condition, variables, callFunction),
+  );
   if (choices.length === 1) return choices[0]?.target ?? null;
   if (choices.length === 0 && node.divert) return node.divert;
   if (choices.length === 0 && nodes && node.id) return fallThroughTarget(node.id, node, nodes);
   return null;
 }
 
-/** The passage as text: an explicit transcript wins, otherwise the Ink content lines joined. */
-export function nodeText(node: {
-  content: { text: string }[];
-  metadata?: { transcript?: string | null };
-}): string {
-  const transcript = node.metadata?.transcript?.trim();
-  if (transcript) return transcript;
-  return node.content
-    .map((c) => c.text)
-    .join(' ')
-    .trim();
+// Re-exported (not just imported) so every existing
+// `import { nodeText, conditionAllows } from './App'` call site
+// (this file's own uses below, plus a couple of test files) keeps
+// working unchanged — see node-text.ts's own header for why the
+// implementation lives there instead of here. Both now also accept
+// the optional `callFunction` (DEV-199 Phase 10b) param — see
+// node-text.ts for why a condition that calls a function purely for
+// a side effect won't have that side effect persist through this path.
+export { conditionAllows, nodeText } from './node-text';
+
+// Variable store (DEV-199 Phase 2). Pure helpers, exported for
+// testing — App itself only ever calls them from inside a state
+// setter or the load effect.
+
+/**
+ * The variable store's state the moment a story is freshly started
+ * (no save to resume from): each declaration's initializer evaluated
+ * in order, so a later one can reference an earlier one (Ink allows
+ * `VAR b = a * 2`) — mirrors ink-parser.ts's own incremental build.
+ * A declaration whose initializer fails to evaluate (should not
+ * happen for a graph the backend already validated) is skipped
+ * rather than crashing playback.
+ *
+ * `callFunction` (DEV-199 Phase 10b): real Ink doesn't allow a VAR's
+ * initializer to call a function anyway (it must be a compile-time
+ * constant expression), so this is really only here for signature
+ * symmetry with the other variable-store helpers below — threaded
+ * through regardless, in case that ever changes.
+ */
+export function initialVariableValues(
+  declarations: VariableDeclaration[] | undefined,
+  callFunction?: CallFunctionHandler,
+): Record<string, VariableValue> {
+  // Null-prototype, same reasoning as ink-parser.ts's ParserState —
+  // `decl.name` comes from an author's Ink/Twee declaration and can
+  // legally be `__proto__`. On an ordinary `{}`, `values['__proto__']
+  // = ...` doesn't create an own property — it invokes
+  // Object.prototype's `__proto__` setter instead, either silently
+  // dropping a primitive value or, for a LIST value, corrupting this
+  // object's own prototype chain. Every LATER reference to an
+  // undeclared variable whose name collides with a real
+  // Object.prototype member (toString/constructor/valueOf/
+  // hasOwnProperty) would also silently resolve to that built-in
+  // instead of throwing "Undefined variable" as intended.
+  const values: Record<string, VariableValue> = Object.create(null);
+  for (const decl of declarations ?? []) {
+    try {
+      values[decl.name] = evaluate(decl.initialValue, values, callFunction);
+    } catch {
+      // Skip — leaves the name undefined, same as it would be for a
+      // story with no VAR line for it at all.
+    }
+  }
+  return values;
+}
+
+/**
+ * Run a node's assignment blocks, in document order, against the
+ * current variable store, returning the resulting store. A statement
+ * that fails (e.g. a compound-assign to a name that was never
+ * declared) is skipped rather than crashing playback — the same
+ * tolerant-degradation choice as initialVariableValues above.
+ *
+ * `callFunction` (DEV-199 Phase 10b) is threaded through to `execute`
+ * — unlike `conditionAllows`, a mutation a function call makes to an
+ * outer-scope/global variable DOES persist here, since `execute`
+ * already returns the full resulting store (see
+ * expression-evaluator.ts's `execute`/`evaluateWithEffects`).
+ *
+ * Thin wrapper over `resolveNodeEntry` (node-text.ts), which also
+ * resolves this same node's visible text blocks in the SAME pass —
+ * callers that need both (any real node-entry point, see
+ * `navigateToNode`) should call `resolveNodeEntry` directly rather
+ * than pay for two separate passes over `node.content`; this export
+ * stays for callers that only ever cared about the resulting store
+ * (`freshStartVariables` below, and this file's own tests).
+ */
+export function applyNodeAssignments(
+  node: { content: ContentBlock[] } | undefined,
+  variables: Record<string, VariableValue>,
+  callFunction?: CallFunctionHandler,
+): Record<string, VariableValue> {
+  return resolveNodeEntry(node, variables, callFunction).variables;
+}
+
+/**
+ * The start node's resolved entry — declared defaults, then the start
+ * node's own assignments and text-block visibility, both resolved in
+ * document order. The start node is never "entered" through
+ * navigateToNode (it's set directly, both on first load and on
+ * restart), so nothing else ever runs this for it.
+ */
+export function freshStartEntry(
+  story: {
+    variables?: VariableDeclaration[];
+    startNode: string;
+    nodes: Record<string, { content: ContentBlock[] }>;
+  },
+  callFunction?: CallFunctionHandler,
+): { variables: Record<string, VariableValue>; visibleBlocks: TextBlock[] } {
+  return resolveNodeEntry(
+    story.nodes[story.startNode],
+    initialVariableValues(story.variables, callFunction),
+    callFunction,
+  );
+}
+
+/** Thin wrapper over `freshStartEntry` for callers that only need the
+ * resulting variable store, not the resolved visible text blocks. */
+export function freshStartVariables(
+  story: {
+    variables?: VariableDeclaration[];
+    startNode: string;
+    nodes: Record<string, { content: ContentBlock[] }>;
+  },
+  callFunction?: CallFunctionHandler,
+): Record<string, VariableValue> {
+  return freshStartEntry(story, callFunction).variables;
+}
+
+/**
+ * Builds the `callFunction` handler real playback needs to run a
+ * `{myFunc(x)}` call during an actual game session — the one piece
+ * that must behave IDENTICALLY to backend validation (see
+ * function-interpreter.ts's header), so it's built from the SAME
+ * `createFunctionCaller` shared helper, just pointed at THIS player's
+ * own node shape (a function-knot is any node tagged
+ * `internal:function`, same tag ink-parser.ts sets).
+ *
+ * Exported for testing; `App` itself builds one via `useMemo` keyed
+ * on `story` so every evaluate/execute call site in a single
+ * playthrough shares one caller instance (and so its recursion-depth
+ * guard's state is scoped to that story, not recreated per call).
+ */
+export function storyFunctionCaller(nodes: Record<string, StoryNode>): CallFunctionHandler {
+  return createFunctionCaller({
+    getFunction: (name) => {
+      const node = nodes[name];
+      if (!node || !node.tags.includes('internal:function')) return undefined;
+      return { params: node.params, content: node.content };
+    },
+  });
 }
 
 // Silent-reading pace used only as an auto-advance floor, not a
@@ -374,6 +571,64 @@ function clampVolume(level: number): number {
 }
 
 /**
+ * Cache key for preloading one candidate of a voiceover/choice1/
+ * choice2 slot. The FIRST candidate (index 0) shares the plain
+ * `prefix+nodeId` key that actual playback (getCachedAudio in
+ * playVoiceover) always uses for that slot — for the overwhelmingly
+ * common single-candidate slot, this means preloading IS populating
+ * the exact cache entry playback will read, same sharing the old
+ * single-file code got for free. Only additional candidates (index
+ * 1+) get their own suffixed key, since reusing the plain key for
+ * them would make preloadAudio's "already loaded under this key"
+ * short-circuit silently skip loading everything past the first.
+ */
+function preloadKey(prefix: string, nodeId: string, index: number): string {
+  return index === 0 ? prefix + nodeId : `${prefix}${nodeId}_${index}`;
+}
+
+/**
+ * The audio candidates for a choice occupying the first (position 0)
+ * or second (position 1) slot in the read-aloud cue sequence. A
+ * choice with a stable id (DEV-199 stable-id rollout) is addressed
+ * by that id only — no fallback to the ordinal choice1/choice2
+ * fields, which may belong to a DIFFERENT choice if this story's
+ * choices have ever been reordered. A choice with no id (data from
+ * before the rollout) has no other way to carry audio, so it still
+ * uses those fields.
+ *
+ * Takes the choice and the node's audio separately (not a node)
+ * because callers disagree on WHICH choice array position 0/1
+ * means: preloading walks the manifest's raw, unfiltered
+ * `node.choices`, while actual playback needs the currently VISIBLE
+ * (condition-filtered) choices — passing a node would silently pick
+ * the wrong one for one of the two callers.
+ */
+export function choiceCueVariants(
+  choice: StoryNode['choices'][number] | undefined,
+  audio: StoryNode['audio'] | undefined,
+  position: 0 | 1,
+): AudioVariant[] {
+  if (!choice) return [];
+  // Ordinal (choice1/choice2) wins when assigned; id-addressed audio
+  // is the FALLBACK, only used when the ordinal slot is empty (found
+  // in review — this had the precedence backwards, contradicting the
+  // PR's own stated contract: id-based audio is additive, not a
+  // replacement, and must not change behavior for any existing
+  // 2-choice story that already has a choice1/choice2 cue assigned).
+  // A choice's id is minted fresh by randomUUID() on every parse —
+  // NOT stable across a full source re-upload, only across in-place
+  // edits (REST patches, collab) to an already-loaded graph — which
+  // is exactly why an author's EXISTING choice1/choice2 cue must keep
+  // winning: falling through to an empty/stale id-addressed cue after
+  // a re-upload would otherwise silently drop audio that was already
+  // working.
+  const ordinal = (position === 0 ? audio?.choice1 : audio?.choice2) ?? [];
+  if (ordinal.length > 0) return ordinal;
+  const byId = choice.id ? audio?.choices?.[choice.id] : undefined;
+  return byId && byId.length > 0 ? byId : [];
+}
+
+/**
  * A passage's ambience bed and sound effects as cache entries. Keyed by
  * URL, not node: the same bed or effect is usually shared by several
  * passages, and one cached copy serves them all. The keys match what
@@ -384,8 +639,12 @@ function passageExtras(
   audioBaseUrl: string,
 ): Array<{ key: string; url: string }> {
   const extras: Array<{ key: string; url: string }> = [];
-  if (node?.audio?.ambience) {
-    const url = audioBaseUrl + node.audio.ambience;
+  // Every candidate ambience bed is cache-warmed, not just whichever
+  // one the live variable state would currently pick — same "preload
+  // everything, decide at play time" simplification used everywhere
+  // else audio variants are preloaded.
+  for (const file of allAudioVariantFiles(node?.audio?.ambience)) {
+    const url = audioBaseUrl + file;
     extras.push({ key: 'amb_' + url, url });
   }
   for (const fx of node?.audio?.sfx ?? []) {
@@ -398,7 +657,36 @@ function passageExtras(
 export default function App() {
   const offline = useOfflineSupport();
   const [story, setStory] = useState<StoryData | null>(null);
+  // Function-knot calls (DEV-199 Phase 10b): one caller per loaded
+  // story, shared by every evaluate/execute call site below (same
+  // instance, not rebuilt per call) — see storyFunctionCaller's doc
+  // comment for why this needs to be the SAME handler the whole
+  // playthrough uses.
+  const callFunction = useMemo(
+    () => (story ? storyFunctionCaller(story.nodes) : undefined),
+    [story],
+  );
   const [currentNodeId, setCurrentNodeId] = useState<string | null>(null);
+  // DEV-199 Phase 2. Seeded in the load effect (fresh start or
+  // restored from a save slot); mutated by navigateToNode as the
+  // listener moves forward. goBack intentionally leaves this alone —
+  // see goBack's own comment.
+  const [variables, setVariables] = useState<Record<string, VariableValue>>({});
+  // The current node's text blocks resolved in document order against
+  // this SAME entry (DEV-199 follow-up, found in review) — set
+  // alongside `variables` by every real node-entry point
+  // (navigateToNode, restart, the fresh-start load branch) via
+  // `resolveNodeEntry`. `null` means no fresh entry happened (resuming
+  // an autosave, loading a save slot, or going back — none of these
+  // have a genuine "entering" variable snapshot to replay from, same
+  // documented limitation `applyNodeAssignments` already has for
+  // those paths), and every reader of this falls back to filtering
+  // `currentNode.content` against the current `variables` directly —
+  // the best available approximation for those specific paths, same
+  // as before this fix.
+  const [currentNodeVisibleBlocks, setCurrentNodeVisibleBlocks] = useState<TextBlock[] | null>(
+    null,
+  );
   const [selectedChoice, setSelectedChoice] = useState(0);
   const [playerState, setPlayerState] = useState<PlayerState>('loading');
   const [audioProgress, setAudioProgress] = useState(0);
@@ -510,6 +798,12 @@ export default function App() {
   const selectedChoiceRef = useRef(0);
   const playerStateRef = useRef<PlayerState>('loading');
   const currentNodeRef = useRef<StoryNode | null>(null);
+  // DEV-199 Phase 4: mirrors currentNodeRef's own reasoning — the
+  // multi-click handlers below read this via a ref (not the
+  // component-level visibleChoices directly) so a rapid double/triple
+  // click right after navigating sees the NEW node's visible choices,
+  // not a closure-captured snapshot of the previous one.
+  const visibleChoicesRef = useRef<StoryNode['choices']>([]);
   const navigateToTargetRef = useRef<((target: string) => void) | null>(null);
   const navigateToNodeRef = useRef<((nodeId: string) => void) | null>(null);
   const goBackRef = useRef<(() => void) | null>(null);
@@ -600,16 +894,48 @@ export default function App() {
         const loadedSlots = readSlotsWithMigration(data.id, validNodeIds);
         setSaveSlots(loadedSlots);
         const autosave = loadedSlots.find((s) => s.id === AUTOSAVE_SLOT_ID);
-        // Auto-resume the autosave only when it diverges from the
-        // start node — otherwise we'd surface a "Resume?" affordance
-        // for a brand-new story that the user has only just opened.
+        // Auto-resume the autosave only when it reflects real progress
+        // — otherwise we'd surface a "Resume?" affordance for a
+        // brand-new story that the user has only just opened. nodeId
+        // alone can't tell these apart: a story that diverts/choices
+        // back to its own start node leaves a non-empty history even
+        // though nodeId again equals startNode, so check history too
+        // (navigateToNode always pushes the node being left, so an
+        // autosave written by any real navigation has at least one
+        // entry — only the pristine "never navigated" case has none).
         // If the user has manual slots saved, show the picker on the
         // instructions screen instead (handled in the JSX).
-        if (autosave && autosave.nodeId !== data.startNode) {
+        const autosaveHasProgress =
+          autosave && (autosave.nodeId !== data.startNode || autosave.history.length > 0);
+        if (autosaveHasProgress) {
           setCurrentNodeId(autosave.nodeId);
           setHistory(autosave.history);
+          // Restore the snapshot as-is — it already reflects every
+          // assignment up through this point, so re-running the
+          // resumed node's own would double-apply them. A slot saved
+          // before this field existed has no snapshot to restore;
+          // falling back to the story's bare declared defaults is a
+          // known, documented degrade for that migration case (there's
+          // no recorded history of intermediate nodes to replay).
+          setVariables(
+            autosave.variables ??
+              initialVariableValues(data.variables, storyFunctionCaller(data.nodes)),
+          );
+          // No fresh node-entry happened here (see above) — no
+          // correctly-timed visible-block resolution exists to restore
+          // either, same documented gap. `null` makes every reader
+          // fall back to filtering against this restored snapshot
+          // directly, the same approximation this path already used
+          // before resolveNodeEntry existed.
+          setCurrentNodeVisibleBlocks(null);
         } else {
           setCurrentNodeId(data.startNode);
+          const { variables: startVariables, visibleBlocks } = freshStartEntry(
+            data,
+            storyFunctionCaller(data.nodes),
+          );
+          setVariables(startVariables);
+          setCurrentNodeVisibleBlocks(visibleBlocks);
         }
 
         // Volume resolution order: per-device localStorage override
@@ -733,14 +1059,38 @@ export default function App() {
     ];
     for (const nodeId of nearbyNodeIds) {
       const node = story.nodes[nodeId];
-      if (node?.audio?.voiceover) {
-        criticalFiles.push({ key: 'vo_' + nodeId, url: story.audioBaseUrl + node.audio.voiceover });
+      // Every candidate for each slot is preloaded — see preloadKey's
+      // doc comment for why only the first shares playback's key.
+      //
+      // Known gap: this walks node.choices in RAW manifest order,
+      // while actual playback resolves against the condition-
+      // FILTERED visibleChoices order (see the playback-site call
+      // below). If a conditionally-hidden choice sits ahead of an
+      // id-addressed one, this preloads the wrong choice's cue under
+      // this key — never plays wrong audio (getCachedAudio's URL-
+      // mismatch guard refuses the stale entry and builds a fresh
+      // one) but stalls/rebuffers instead of having warmed the right
+      // file. Narrow enough (needs conditional choice-hiding AND
+      // per-choice-id audio on the same node) not to be worth
+      // preloading every choice's cue regardless of position to
+      // close entirely.
+      for (const [i, variant] of (node?.audio?.voiceover ?? []).entries()) {
+        criticalFiles.push({
+          key: preloadKey('vo_', nodeId, i),
+          url: story.audioBaseUrl + variant.file,
+        });
       }
-      if (node?.audio?.choice1) {
-        criticalFiles.push({ key: 'c1_' + nodeId, url: story.audioBaseUrl + node.audio.choice1 });
+      for (const [i, variant] of choiceCueVariants(node?.choices?.[0], node?.audio, 0).entries()) {
+        criticalFiles.push({
+          key: preloadKey('c1_', nodeId, i),
+          url: story.audioBaseUrl + variant.file,
+        });
       }
-      if (node?.audio?.choice2) {
-        criticalFiles.push({ key: 'c2_' + nodeId, url: story.audioBaseUrl + node.audio.choice2 });
+      for (const [i, variant] of choiceCueVariants(node?.choices?.[1], node?.audio, 1).entries()) {
+        criticalFiles.push({
+          key: preloadKey('c2_', nodeId, i),
+          url: story.audioBaseUrl + variant.file,
+        });
       }
       // The bed and effects start with the passage, alongside its
       // narration, so they're wanted as early.
@@ -767,17 +1117,20 @@ export default function App() {
 
     // Remaining nodes
     for (const [nodeId, node] of Object.entries(story.nodes)) {
-      if (node.audio?.voiceover && !criticalKeys.has('vo_' + nodeId)) {
-        backgroundFiles.push({
-          key: 'vo_' + nodeId,
-          url: story.audioBaseUrl + node.audio.voiceover,
-        });
+      for (const [i, variant] of (node.audio?.voiceover ?? []).entries()) {
+        const key = preloadKey('vo_', nodeId, i);
+        if (!criticalKeys.has(key))
+          backgroundFiles.push({ key, url: story.audioBaseUrl + variant.file });
       }
-      if (node.audio?.choice1 && !criticalKeys.has('c1_' + nodeId)) {
-        backgroundFiles.push({ key: 'c1_' + nodeId, url: story.audioBaseUrl + node.audio.choice1 });
+      for (const [i, variant] of choiceCueVariants(node.choices?.[0], node.audio, 0).entries()) {
+        const key = preloadKey('c1_', nodeId, i);
+        if (!criticalKeys.has(key))
+          backgroundFiles.push({ key, url: story.audioBaseUrl + variant.file });
       }
-      if (node.audio?.choice2 && !criticalKeys.has('c2_' + nodeId)) {
-        backgroundFiles.push({ key: 'c2_' + nodeId, url: story.audioBaseUrl + node.audio.choice2 });
+      for (const [i, variant] of choiceCueVariants(node.choices?.[1], node.audio, 1).entries()) {
+        const key = preloadKey('c2_', nodeId, i);
+        if (!criticalKeys.has(key))
+          backgroundFiles.push({ key, url: story.audioBaseUrl + variant.file });
       }
       for (const extra of passageExtras(node, story.audioBaseUrl)) {
         if (!criticalKeys.has(extra.key)) {
@@ -961,6 +1314,63 @@ export default function App() {
 
   const currentNode = story && currentNodeId ? story.nodes[currentNodeId] : null;
 
+  // DEV-199 Phase 4: the single source of truth for "what can the
+  // listener currently see and pick" — every choice-count/indexing
+  // decision (auto-continue, the choice1/choice2 audio-cue sequence,
+  // keyboard selection, the rendered list, the ending/divert-fallback
+  // check) reads this instead of currentNode.choices directly, so a
+  // conditionally-hidden choice is consistently invisible everywhere,
+  // not just in the rendered list.
+  const visibleChoices = useMemo(
+    () =>
+      (currentNode?.choices ?? []).filter((c) =>
+        conditionAllows(c.condition, variables, callFunction),
+      ),
+    [currentNode, variables, callFunction],
+  );
+
+  // The current node's visible text blocks — `currentNodeVisibleBlocks`
+  // when a real node-entry resolved them (see its own doc comment),
+  // otherwise the best available fallback for resume/loadSlot/goBack.
+  // Single source of truth for the on-screen render, the
+  // screen-reader announcement (`passageText`), readingFloorMs, and
+  // the lock-screen/Now Playing title (via useMediaControls) — DEV-199
+  // follow-up, found in review: these four used to each independently
+  // re-derive "visible text" from `currentNode.content` + the FINAL
+  // `variables`, which is the same mistimed-relative-to-assignments
+  // bug `resolveNodeEntry` exists to fix, four times over.
+  const visibleTextBlocks = useMemo<TextBlock[]>(() => {
+    if (!currentNode) return [];
+    if (currentNodeVisibleBlocks) return currentNodeVisibleBlocks;
+    return currentNode.content
+      .filter(isTextBlock)
+      .filter((c) => conditionAllows(c.condition, variables, callFunction));
+  }, [currentNode, currentNodeVisibleBlocks, variables, callFunction]);
+
+  // The passage as text, for the screen-reader-only announcement
+  // further down and for the lock-screen/Now Playing title.
+  const passageText = useMemo(() => {
+    if (!currentNode) return '';
+    const transcript = currentNode.metadata?.transcript?.trim();
+    return (
+      transcript ||
+      visibleTextBlocks
+        .map((b) => b.text)
+        .join(' ')
+        .trim()
+    );
+  }, [currentNode, visibleTextBlocks]);
+
+  // Which voiceover candidate (if any) actually resolves against live
+  // variable state — used by render to decide whether to show the
+  // play button/progress bar at all. A node whose only candidates are
+  // conditioned and currently all false has no EFFECTIVE voiceover,
+  // same as having none declared.
+  const resolvedVoiceoverFile = useMemo(
+    () => resolveAudioVariant(currentNode?.audio?.voiceover, variables),
+    [currentNode, variables],
+  );
+
   // Every audio URL referenced by the story — used by the
   // "Download for offline" button to ask the service worker to
   // precache them in one pass. Deduped because background music
@@ -979,6 +1389,7 @@ export default function App() {
   selectedChoiceRef.current = selectedChoice;
   playerStateRef.current = playerState;
   currentNodeRef.current = currentNode;
+  visibleChoicesRef.current = visibleChoices;
 
   // Tell an embedding editor which passage is on screen, so it can
   // offer to flag THIS one. The reviewer is listening, not reading the
@@ -1010,13 +1421,14 @@ export default function App() {
   }, [currentNodeId]);
 
   const saveProgress = useCallback(
-    (nodeId: string, hist: string[]) => {
+    (nodeId: string, hist: string[], vars: Record<string, VariableValue>) => {
       if (!story) return;
       const nextSlot: SaveSlot = {
         id: AUTOSAVE_SLOT_ID,
         name: 'Autosave',
         nodeId,
         history: hist,
+        variables: vars,
         savedAt: new Date().toISOString(),
       };
       setSaveSlots((prev) => {
@@ -1126,7 +1538,22 @@ export default function App() {
       setSelectedChoice(0);
       resetProgress();
       setPlayerState('ready');
-      saveProgress(nodeId, newHistory);
+      // Entering a node runs its own `~` assignments (DEV-199 Phase
+      // 2) — computed here, not via a setVariables updater, so the
+      // exact resulting snapshot can be saved alongside nodeId/history
+      // in the same call rather than racing a second render.
+      // resolveNodeEntry (not plain applyNodeAssignments) so this
+      // node's text visibility is resolved against the RUNNING store
+      // as each block is reached, not the final one — see
+      // currentNodeVisibleBlocks' own doc comment.
+      const { variables: nextVariables, visibleBlocks } = resolveNodeEntry(
+        story.nodes[nodeId],
+        variables,
+        callFunction,
+      );
+      setVariables(nextVariables);
+      setCurrentNodeVisibleBlocks(visibleBlocks);
+      saveProgress(nodeId, newHistory, nextVariables);
       // Store nodeId for autoplay - the effect will pick this up
       if (autoplay) {
         pendingAutoplayNodeIdRef.current = nodeId;
@@ -1136,23 +1563,26 @@ export default function App() {
       const nearbyNodeIds = getReachableNodes(nodeId, story.nodes, 2);
       for (const nearbyId of nearbyNodeIds) {
         const node = story.nodes[nearbyId];
-        if (node?.audio?.voiceover) {
-          const key = 'vo_' + nearbyId;
-          if (!isCached(key)) {
-            preloadAudio(story.audioBaseUrl + node.audio.voiceover, key);
-          }
+        // See preloadKey's doc comment for the key scheme.
+        for (const [i, variant] of (node?.audio?.voiceover ?? []).entries()) {
+          const key = preloadKey('vo_', nearbyId, i);
+          if (!isCached(key)) preloadAudio(story.audioBaseUrl + variant.file, key);
         }
-        if (node?.audio?.choice1) {
-          const key = 'c1_' + nearbyId;
-          if (!isCached(key)) {
-            preloadAudio(story.audioBaseUrl + node.audio.choice1, key);
-          }
+        for (const [i, variant] of choiceCueVariants(
+          node?.choices?.[0],
+          node?.audio,
+          0,
+        ).entries()) {
+          const key = preloadKey('c1_', nearbyId, i);
+          if (!isCached(key)) preloadAudio(story.audioBaseUrl + variant.file, key);
         }
-        if (node?.audio?.choice2) {
-          const key = 'c2_' + nearbyId;
-          if (!isCached(key)) {
-            preloadAudio(story.audioBaseUrl + node.audio.choice2, key);
-          }
+        for (const [i, variant] of choiceCueVariants(
+          node?.choices?.[1],
+          node?.audio,
+          1,
+        ).entries()) {
+          const key = preloadKey('c2_', nearbyId, i);
+          if (!isCached(key)) preloadAudio(story.audioBaseUrl + variant.file, key);
         }
         for (const { key, url } of passageExtras(node, story.audioBaseUrl)) {
           if (!isCached(key)) preloadAudio(url, key);
@@ -1163,6 +1593,8 @@ export default function App() {
       story,
       currentNodeId,
       history,
+      variables,
+      callFunction,
       saveProgress,
       getReachableNodes,
       preloadAudio,
@@ -1171,6 +1603,12 @@ export default function App() {
     ],
   );
 
+  // Stepping back re-shows a previous passage; it is not an undo, so
+  // the variable store is left exactly as it is. Replaying the
+  // original node's assignments on the way back would double-apply
+  // them (they already ran once, going forward) — rewinding them
+  // instead would need a value snapshotted per history entry, which
+  // nothing here tracks.
   const goBack = useCallback(() => {
     if (history.length === 0) return;
     const prev = history[history.length - 1];
@@ -1183,6 +1621,10 @@ export default function App() {
     stopPassagePlayback();
     setHistory((h) => h.slice(0, -1));
     setCurrentNodeId(prev);
+    // goBack doesn't change `variables` either (see its own state
+    // comment) — no fresh entry into `prev` happens, so there's no
+    // correctly-timed visible-block resolution to go with it.
+    setCurrentNodeVisibleBlocks(null);
     setSelectedChoice(0);
     resetProgress();
     // Stepping back out of the ending returns to a story in progress;
@@ -1266,6 +1708,11 @@ export default function App() {
     (sfx: PassageSfx[], indices: number[]) => {
       if (!story) return;
       for (const i of indices) {
+        // Unlike voiceover/ambience/choice1/choice2 (exactly one
+        // candidate wins), each sfx entry is independently gated —
+        // a false condition just means THIS effect doesn't fire this
+        // visit, with no bearing on any other effect in the list.
+        if (sfx[i].condition && !evaluateSimpleCondition(sfx[i].condition, variables)) continue;
         const url = story.audioBaseUrl + sfx[i].file;
         const el = getCachedAudio('sfx_' + url, url);
         el.loop = false;
@@ -1275,7 +1722,7 @@ export default function App() {
         el.play().catch(() => {});
       }
     },
-    [story, getCachedAudio],
+    [story, getCachedAudio, variables],
   );
 
   // Fire whichever of this passage's sound effects are due at
@@ -1299,7 +1746,14 @@ export default function App() {
   );
 
   const playVoiceover = useCallback(() => {
-    if (!story || !currentNode?.audio?.voiceover || !currentNodeId) return;
+    const voiceoverFile = resolveAudioVariant(currentNode?.audio?.voiceover, variables);
+    // currentNode's own nullability check is explicit here (not just
+    // implied by voiceoverFile's truthiness) so the rest of this
+    // function narrows correctly — resolveAudioVariant is an opaque
+    // function call now, not a direct property access TS can trace
+    // back to currentNode.audio's definedness the way the old inline
+    // `!currentNode?.audio?.voiceover` check let it.
+    if (!story || !currentNode || !voiceoverFile || !currentNodeId) return;
     // A call held from an earlier passage (startStory's delayed start, say)
     // must not start that passage's audio or effects on this one.
     if (currentNodeIdRef.current !== currentNodeId) return;
@@ -1422,19 +1876,26 @@ export default function App() {
       choice2IndicatorRef.current.volume = indicatorVol;
     }
 
-    // Use cached choice audio elements
-    if (currentNode.audio?.choice1) {
-      const url = story.audioBaseUrl + currentNode.audio.choice1;
+    // Use cached choice audio elements — resolved against the
+    // currently VISIBLE choices (condition-filtered), not the raw
+    // manifest array, since that's what actually occupies the first/
+    // second slot in the cue sequence a listener hears.
+    const choice1Variants = choiceCueVariants(visibleChoicesRef.current[0], currentNode?.audio, 0);
+    const choice1File = resolveAudioVariant(choice1Variants, variables);
+    if (choice1File) {
+      const url = story.audioBaseUrl + choice1File;
       choice1AudioRef.current = getCachedAudio('c1_' + currentNodeId, url);
     }
-    if (currentNode.audio?.choice2) {
-      const url = story.audioBaseUrl + currentNode.audio.choice2;
+    const choice2Variants = choiceCueVariants(visibleChoicesRef.current[1], currentNode?.audio, 1);
+    const choice2File = resolveAudioVariant(choice2Variants, variables);
+    if (choice2File) {
+      const url = story.audioBaseUrl + choice2File;
       choice2AudioRef.current = getCachedAudio('c2_' + currentNodeId, url);
     }
 
     // Stale callbacks are handled by isStale() above, which covers both
     // the captured node id and the playback epoch.
-    const audioUrl = story.audioBaseUrl + currentNode.audio.voiceover;
+    const audioUrl = story.audioBaseUrl + voiceoverFile;
     // Use cached voiceover audio if available
     const audio = getCachedAudio('vo_' + currentNodeId, audioUrl);
     audio.volume = voiceoverVolume / 100;
@@ -1470,14 +1931,15 @@ export default function App() {
       // never fire; play it now rather than lose it.
       playDueSfx(currentNode.audio?.sfx, Number.POSITIVE_INFINITY);
 
+      // DEV-199 Phase 4: visibleChoices (the component-level derived
+      // value above) is what every choice-count/indexing decision
+      // below reads — only what the listener can actually see and
+      // pick, not however many the node declares.
+
       // Auto-continue: if only one choice and autoContinue enabled, navigate automatically
-      if (
-        autoContinue &&
-        currentNode.choices?.length === 1 &&
-        story.nodes[currentNode.choices[0].target]
-      ) {
+      if (autoContinue && visibleChoices.length === 1 && story.nodes[visibleChoices[0].target]) {
         autoNavigateTimeoutRef.current = setTimeout(
-          () => navigateToNode(currentNode.choices[0].target),
+          () => navigateToNode(visibleChoices[0].target),
           choiceAudioDelayMs(story.settings),
         );
         return;
@@ -1485,7 +1947,7 @@ export default function App() {
 
       // If node has choices with audio, start repeating choice sequence
       const hasChoiceAudio = choice1AudioRef.current || choice2AudioRef.current;
-      if (currentNode.choices?.length > 0 && hasChoiceAudio) {
+      if (visibleChoices.length > 0 && hasChoiceAudio) {
         // Play sequence: wait (configurable) -> indicator1 -> choice1 -> indicator2 -> choice2 -> wait 2s -> repeat
         const playAudio = (audioEl: HTMLAudioElement | null): Promise<void> => {
           return new Promise((resolve) => {
@@ -1539,6 +2001,8 @@ export default function App() {
             currentNode,
             { autoAdvance: autoAdvanceRef.current },
             story.nodes,
+            variables,
+            callFunction,
           );
           if (onward) {
             // Same hold as the no-cue branch below, so two passages
@@ -1559,12 +2023,20 @@ export default function App() {
         // Start the sequence
         runChoiceSequence();
       } else if (
-        autoAdvanceTarget(currentNode, { autoAdvance: autoAdvanceRef.current }, story.nodes)
+        autoAdvanceTarget(
+          currentNode,
+          { autoAdvance: autoAdvanceRef.current },
+          story.nodes,
+          variables,
+          callFunction,
+        )
       ) {
         const target = autoAdvanceTarget(
           currentNode,
           { autoAdvance: autoAdvanceRef.current },
           story.nodes,
+          variables,
+          callFunction,
         )!;
         // Total post-audio hold = the per-node delayAfterMs (a generic
         // "wait after audio finishes" hint) plus the dedicated
@@ -1638,8 +2110,7 @@ export default function App() {
       }
 
       // Max retries reached - show error
-      const filename = currentNode.audio?.voiceover || 'unknown';
-      console.error('[wanderline] audio load error', { file: filename, url: audioUrl });
+      console.error('[wanderline] audio load error', { file: voiceoverFile, url: audioUrl });
       setAudioError('Audio could not be loaded - check your connection');
       setRetryingAudio(false);
       setPlayerState('ready');
@@ -1708,11 +2179,13 @@ export default function App() {
     currentNodeId,
     navigateToNode,
     autoContinue,
+    visibleChoices,
     getCachedAudio,
     voiceoverVolume,
     userIndicatorVolume,
     playDueSfx,
     playUntimedSfx,
+    callFunction,
   ]);
 
   const skipAudio = useCallback(() => {
@@ -1729,7 +2202,7 @@ export default function App() {
   useEffect(() => {
     const handleOnline = () => {
       // If we have an error or are stalled, retry playback
-      if ((audioError || audioStalled) && currentNode?.audio?.voiceover) {
+      if ((audioError || audioStalled) && resolvedVoiceoverFile) {
         audioRetryCountRef.current = 0; // Reset retry count
         resumingRef.current = true;
         setAudioError(null);
@@ -1740,7 +2213,7 @@ export default function App() {
 
     window.addEventListener('online', handleOnline);
     return () => window.removeEventListener('online', handleOnline);
-  }, [audioError, audioStalled, currentNode, playVoiceover]);
+  }, [audioError, audioStalled, resolvedVoiceoverFile, playVoiceover]);
 
   // No visibilitychange handler here on purpose. This is an audio-
   // narrative player, so listening through a lock screen or with the
@@ -1761,7 +2234,7 @@ export default function App() {
     (currentNode.tags.includes('ending') ||
       currentNode.divert === 'END' ||
       currentNode.divert === 'DONE' ||
-      (currentNode.choices.length === 0 &&
+      (visibleChoices.length === 0 &&
         !currentNode.divert &&
         !fallThroughTarget(currentNode.id, currentNode, story.nodes)));
 
@@ -1774,11 +2247,10 @@ export default function App() {
   // looping under "The End" indefinitely.
   const storyOver =
     reachedEnding ||
-    (onEndingPassage &&
-      (!currentNode?.audio?.voiceover || playerState === 'ended' || !!audioError));
+    (onEndingPassage && (!resolvedVoiceoverFile || playerState === 'ended' || !!audioError));
   const ambienceFile =
     story && isAuthenticated && !showInstructions && !storyOver
-      ? currentNode?.audio?.ambience
+      ? resolveAudioVariant(currentNode?.audio?.ambience, variables)
       : undefined;
   const getAmbienceElement = useCallback(
     (url: string) => getCachedAudio('amb_' + url, url),
@@ -1813,13 +2285,29 @@ export default function App() {
   // this without replaying them.
   useEffect(() => {
     if (!story || !currentNode || !isAuthenticated || showInstructions) return;
-    if (!currentNode.audio?.voiceover || !currentNode.audio.sfx?.length) return;
+    // Resolved, not just present: a node whose only voiceover
+    // candidates are conditioned and none currently match has NO
+    // effective voiceover, so this passage behaves as voiceover-less
+    // (the sibling effect below), same as if it had none at all.
+    if (
+      !resolveAudioVariant(currentNode.audio?.voiceover, variables) ||
+      !currentNode.audio?.sfx?.length
+    )
+      return;
     const visit = currentNode.id + '#' + passageEntryRef.current;
     if (voicedSfxVisitRef.current === visit) return;
     voicedSfxVisitRef.current = visit;
     sfxPlayedRef.current = new Set();
     playUntimedSfx(currentNode.audio.sfx);
-  }, [story, currentNode, isAuthenticated, showInstructions, passageEntry, playUntimedSfx]);
+  }, [
+    story,
+    currentNode,
+    isAuthenticated,
+    showInstructions,
+    passageEntry,
+    playUntimedSfx,
+    variables,
+  ]);
 
   // Sound effects on a passage with no narration. There's no voiceover
   // clock to follow, so each one's offset counts from arriving. With
@@ -1834,7 +2322,9 @@ export default function App() {
   const sfxVisitElapsedRef = useRef(0);
   useEffect(() => {
     if (!story || !currentNode || !isAuthenticated || showInstructions) return;
-    if (currentNode.audio?.voiceover) return;
+    // Resolved, not just present — see the matching comment on the
+    // sibling effect above.
+    if (resolveAudioVariant(currentNode.audio?.voiceover, variables)) return;
     const sfx = currentNode.audio?.sfx;
     if (!sfx?.length) return;
     const visit = currentNode.id + '#' + passageEntry;
@@ -1861,7 +2351,7 @@ export default function App() {
         sfxVisitElapsedRef.current = alreadyElapsed + (Date.now() - startedAt);
       }
     };
-  }, [story, currentNode, isAuthenticated, showInstructions, playDueSfx, passageEntry]);
+  }, [story, currentNode, isAuthenticated, showInstructions, playDueSfx, passageEntry, variables]);
 
   // Voiceover-less auto-advance: when the current node has no audio
   // there's no `audio.onended` to hook into, so the auto-advance path
@@ -1869,14 +2359,23 @@ export default function App() {
   // silent transition nodes (a pure divert) with timing fields too.
   useEffect(() => {
     if (!story || !currentNode || !isAuthenticated || showInstructions) return;
-    if (currentNode.audio?.voiceover) return; // handled by playVoiceover's audio.onended
-    const target = autoAdvanceTarget(currentNode, { autoAdvance }, story.nodes);
+    // Resolved, not just present — see the matching comment on the
+    // sfx effects above; an effectively voiceover-less node (every
+    // candidate conditioned out) has no onended to hook into either.
+    if (resolveAudioVariant(currentNode.audio?.voiceover, variables)) return; // handled by playVoiceover's audio.onended
+    const target = autoAdvanceTarget(
+      currentNode,
+      { autoAdvance },
+      story.nodes,
+      variables,
+      callFunction,
+    );
     if (!target) return;
     // Compose: pre-roll → (no audio, so hold at least long enough to
     // read it) → post-audio hold → onward.
     const holdMs = Math.max(
       currentNode.metadata?.autoAdvanceDelayMs ?? 2000,
-      readingFloorMs(nodeText(currentNode)),
+      readingFloorMs(passageText),
     );
     const totalDelay =
       (currentNode.metadata?.delayBeforeMs ?? 0) +
@@ -1904,6 +2403,9 @@ export default function App() {
     showInstructions,
     autoAdvance,
     passageEntry,
+    variables,
+    callFunction,
+    passageText,
   ]);
 
   // Debounce showing connection issues to avoid flashing for quick retries
@@ -1946,6 +2448,15 @@ export default function App() {
       setSaveSlots([]);
       setCurrentNodeId(story.startNode);
       setHistory([]);
+      const restartEntry = freshStartEntry(story, callFunction);
+      setVariables(restartEntry.variables);
+      setCurrentNodeVisibleBlocks(restartEntry.visibleBlocks);
+      // DEV-199 Phase 4: a stale index from wherever the listener was
+      // before could point past the start node's visible-choice count
+      // (which now varies with runtime state, not just the story's
+      // authored structure) — pre-existing gap for loadSlot() too, see
+      // its own comment.
+      setSelectedChoice(0);
       if (audioRef.current) {
         audioRef.current.pause();
         audioRef.current = null;
@@ -1958,7 +2469,7 @@ export default function App() {
       setPlayerState('ready');
       pendingAutoplayNodeIdRef.current = null;
     }
-  }, [story, saveSlots, resetProgress, stopPassagePlayback]);
+  }, [story, saveSlots, resetProgress, stopPassagePlayback, callFunction]);
 
   // — save slot management. These operate against the slot
   // array in state, then persist via writeSlots(). They're stable
@@ -1979,6 +2490,17 @@ export default function App() {
       pendingAutoplayNodeIdRef.current = null;
       setHistory(slot.history);
       setCurrentNodeId(slot.nodeId);
+      // Restore as-is, same reasoning as the autosave-resume path in
+      // the load effect: the snapshot already reflects this node's
+      // own assignments having run once, when it was first saved.
+      setVariables(slot.variables ?? initialVariableValues(story.variables, callFunction));
+      // Same reasoning as the autosave-resume path: no fresh entry
+      // happened, so there's no correctly-timed visible-block
+      // resolution to restore either.
+      setCurrentNodeVisibleBlocks(null);
+      // DEV-199 Phase 4: see restart()'s identical comment — a stale
+      // index could point past the loaded node's visible-choice count.
+      setSelectedChoice(0);
       resetProgress();
       stopPassagePlayback();
       // The element was just dropped, and its onpause is now stale, so
@@ -1991,7 +2513,7 @@ export default function App() {
       setShowSettings(false);
       setShowInstructions(false);
     },
-    [story, saveSlots, resetProgress, stopPassagePlayback],
+    [story, saveSlots, resetProgress, stopPassagePlayback, callFunction],
   );
 
   const saveCurrentToNewSlot = useCallback(
@@ -2003,6 +2525,7 @@ export default function App() {
         name,
         nodeId: currentNodeId,
         history,
+        variables,
         savedAt: new Date().toISOString(),
       };
       setSaveSlots((prev) => {
@@ -2011,7 +2534,7 @@ export default function App() {
         return next;
       });
     },
-    [story, currentNodeId, history, saveSlots],
+    [story, currentNodeId, history, variables, saveSlots],
   );
 
   const deleteSlot = useCallback(
@@ -2045,10 +2568,10 @@ export default function App() {
     setShowInstructions(false);
     startBackgroundMusic();
     // Auto-play first node after a short delay
-    if (currentNode?.audio?.voiceover) {
+    if (resolvedVoiceoverFile) {
       setTimeout(() => playVoiceover(), 300);
     }
-  }, [startBackgroundMusic, currentNode, playVoiceover]);
+  }, [startBackgroundMusic, resolvedVoiceoverFile, playVoiceover]);
 
   // Handle password submission
   const handlePasswordSubmit = useCallback(
@@ -2075,7 +2598,7 @@ export default function App() {
     if (
       pendingNodeId &&
       pendingNodeId === currentNodeId &&
-      currentNode?.audio?.voiceover &&
+      resolvedVoiceoverFile &&
       playerState === 'ready'
     ) {
       pendingAutoplayNodeIdRef.current = null;
@@ -2083,7 +2606,7 @@ export default function App() {
       const timer = setTimeout(() => playVoiceover(), 100);
       return () => clearTimeout(timer);
     }
-  }, [currentNodeId, showInstructions, currentNode, playerState, playVoiceover]);
+  }, [currentNodeId, showInstructions, resolvedVoiceoverFile, playerState, playVoiceover]);
 
   // Click handlers for headphone controls
   /**
@@ -2132,8 +2655,9 @@ export default function App() {
   const handleDoubleClick = useCallback(() => {
     const node = currentNodeRef.current;
     if (!story || !node) return;
-    if (node.choices.length > 0) {
-      const choice = node.choices[0];
+    const choices = visibleChoicesRef.current;
+    if (choices.length > 0) {
+      const choice = choices[0];
       if (choice) navigateToTarget(choice.target);
     } else {
       // Not just `node.divert`: a fall-through passage is navigable and
@@ -2146,8 +2670,9 @@ export default function App() {
   const handleTripleClick = useCallback(() => {
     const node = currentNodeRef.current;
     if (!story || !node) return;
-    if (node.choices.length > 1) {
-      const choice = node.choices[1];
+    const choices = visibleChoicesRef.current;
+    if (choices.length > 1) {
+      const choice = choices[1];
       if (choice) navigateToTarget(choice.target);
     }
   }, [story, navigateToTarget]);
@@ -2224,17 +2749,17 @@ export default function App() {
           break;
         case 'ArrowUp':
           e.preventDefault();
-          if (currentNode.choices.length > 0) setSelectedChoice((c) => Math.max(0, c - 1));
+          if (visibleChoices.length > 0) setSelectedChoice((c) => Math.max(0, c - 1));
           break;
         case 'ArrowDown':
           e.preventDefault();
-          if (currentNode.choices.length > 0)
-            setSelectedChoice((c) => Math.min(currentNode.choices.length - 1, c + 1));
+          if (visibleChoices.length > 0)
+            setSelectedChoice((c) => Math.min(visibleChoices.length - 1, c + 1));
           break;
         case 'Enter':
           e.preventDefault();
-          if (currentNode.choices.length > 0) {
-            const choice = currentNode.choices[selectedChoice];
+          if (visibleChoices.length > 0) {
+            const choice = visibleChoices[selectedChoice];
             if (choice) navigateToTarget(choice.target);
           } else {
             const onward =
@@ -2265,6 +2790,9 @@ export default function App() {
             setHistory([]);
             setSelectedChoice(0);
             setCurrentNodeId(story.startNode);
+            const restartEntry = freshStartEntry(story, callFunction);
+            setVariables(restartEntry.variables);
+            setCurrentNodeVisibleBlocks(restartEntry.visibleBlocks);
           }
           break;
         case 'Escape':
@@ -2302,6 +2830,8 @@ export default function App() {
     isAuthenticated,
     resetProgress,
     stopPassagePlayback,
+    visibleChoices,
+    callFunction,
   ]);
 
   // MediaSession + keydown fallback + metadata /
@@ -2312,6 +2842,7 @@ export default function App() {
   useMediaControls({
     story,
     currentNode,
+    displayText: passageText,
     showInstructions,
     isAuthenticated,
     playerState,
@@ -2325,12 +2856,10 @@ export default function App() {
       onHeadphoneButtonPressRef: handleHeadphoneButtonPressRef,
     },
     currentNodeRef,
+    visibleChoicesRef,
     selectedChoiceRef,
     setSelectedChoice,
   });
-
-  // The passage as text, for the screen-reader-only announcement below.
-  const passageText = useMemo(() => (currentNode ? nodeText(currentNode) : ''), [currentNode]);
 
   // Screen readers announce MUTATIONS to a live region they have
   // already registered: text present the moment the region is inserted
@@ -2423,7 +2952,7 @@ export default function App() {
     history: string[];
   } | null>(null);
   useEffect(() => {
-    const choices = currentNode?.choices ?? [];
+    const choices = visibleChoices;
     if (!storyScreenVisible || !currentNode || choices.length === 0) {
       lastChoiceAnnouncedRef.current = null;
       setChoiceAnnouncement(clearAnnouncement);
@@ -2479,7 +3008,7 @@ export default function App() {
         speak(`Choice ${selectedChoice + 1} of ${choices.length}: ${armed.text}`),
       );
     }
-  }, [storyScreenVisible, choiceNavFocused, currentNode, selectedChoice, history]);
+  }, [storyScreenVisible, choiceNavFocused, currentNode, selectedChoice, history, visibleChoices]);
 
   if (playerState === 'error' || !story) {
     return (
@@ -3124,7 +3653,12 @@ export default function App() {
               {currentNode.metadata?.transcript?.trim() ? (
                 <p style={styles.text}>{currentNode.metadata.transcript}</p>
               ) : (
-                currentNode.content.map((c, i) => (
+                // `visibleTextBlocks` already resolved which blocks
+                // should show, in document order against the running
+                // variable store as of each one's own point in the
+                // passage — the same resolved list the SR-only variant
+                // (`passageText`) and readingFloorMs use.
+                visibleTextBlocks.map((c, i) => (
                   <p key={i} style={styles.text}>
                     {c.text}
                   </p>
@@ -3149,7 +3683,7 @@ export default function App() {
             used to be trapped inside the audio-only condition, so a
             text-only passage — or one whose audio failed, which is
             exactly when someone wants to retreat — had no way back. */}
-        {(history.length > 0 || (currentNode.audio?.voiceover && !audioError && !audioSkipped)) && (
+        {(history.length > 0 || (resolvedVoiceoverFile && !audioError && !audioSkipped)) && (
           <div style={styles.player} role="group" aria-label="Playback controls" lang="en">
             {/* goBack was reachable only by Backspace or a headphone
                 button, so on a phone — the primary way this is listened
@@ -3169,7 +3703,7 @@ export default function App() {
                 <span aria-hidden="true">&#8592;</span>
               </button>
             )}
-            {currentNode.audio?.voiceover && !audioError && !audioSkipped && (
+            {resolvedVoiceoverFile && !audioError && !audioSkipped && (
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -3189,7 +3723,7 @@ export default function App() {
                 </span>
               </button>
             )}
-            {currentNode.audio?.voiceover &&
+            {resolvedVoiceoverFile &&
               !audioError &&
               !audioSkipped &&
               story.settings?.showProgressBar !== false && (
@@ -3238,7 +3772,7 @@ export default function App() {
             keys before the global shortcuts ever see them. Off-screen
             until something inside takes focus, then shown, so a sighted
             keyboard user can see where they are. */}
-        {currentNode.choices.length > 0 && (
+        {visibleChoices.length > 0 && (
           <nav
             ref={choiceNavRef}
             style={choiceListHidden && !choiceNavFocused ? styles.srOnly : styles.choices}
@@ -3260,7 +3794,7 @@ export default function App() {
                 button whose meaning has changed turns the next Space,
                 meant to pause, into a second press of whatever now
                 occupies that slot. */}
-            {currentNode.choices.map((c, i) => (
+            {visibleChoices.map((c, i) => (
               <button
                 key={`${c.target}|${c.text}|${i}`}
                 onClick={(e) => {
@@ -3287,7 +3821,7 @@ export default function App() {
           </nav>
         )}
 
-        {(currentNode.divert || fallThrough) && currentNode.choices.length === 0 && !isEnd && (
+        {(currentNode.divert || fallThrough) && visibleChoices.length === 0 && !isEnd && (
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -3346,10 +3880,10 @@ export default function App() {
                   audioRetryCountRef.current = 0;
                   resumingRef.current = true;
                   setShowConnectionIssue(false);
-                  if (currentNodeId && currentNode?.audio?.voiceover) {
+                  if (currentNodeId && resolvedVoiceoverFile) {
                     retryFailedAudio(
                       'vo_' + currentNodeId,
-                      story.audioBaseUrl + currentNode.audio.voiceover,
+                      story.audioBaseUrl + resolvedVoiceoverFile,
                     );
                   }
                   playVoiceover();

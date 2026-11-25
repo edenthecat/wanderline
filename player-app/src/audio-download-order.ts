@@ -29,10 +29,19 @@ export interface OrderableNode {
   choices?: Array<{ target?: string }>;
   divert?: string | null;
   audio?: {
-    voiceover?: string;
-    ambience?: string;
-    choice1?: string;
-    choice2?: string;
+    // Each slot is a list of variable-conditioned candidates, not a
+    // single filename — see audio-variants.ts. Downloading for
+    // offline use grabs every candidate (same "preload/download
+    // everything, decide at play time" policy used elsewhere), since
+    // which one actually plays can depend on variable state that
+    // isn't known yet when a download starts.
+    voiceover?: Array<{ file: string }>;
+    ambience?: Array<{ file: string }>;
+    choice1?: Array<{ file: string }>;
+    choice2?: Array<{ file: string }>;
+    // A choice's own cue, keyed by the choice's stable id (DEV-199
+    // stable-id rollout) — coexists with choice1/choice2.
+    choices?: Record<string, Array<{ file: string }>>;
     sfx?: Array<{ file: string }>;
   };
 }
@@ -114,11 +123,16 @@ export function orderAudioUrlsForDownload(story: OrderableStory | null): string[
     const audio = story.nodes[nodeId]?.audio;
     if (!audio) continue;
     // Voiceover before cues: it's the thing the listener is actually
-    // here for, and it's the larger file.
-    if (audio.voiceover) urls.add(base + audio.voiceover);
-    if (audio.choice1) urls.add(base + audio.choice1);
-    if (audio.choice2) urls.add(base + audio.choice2);
-    if (audio.ambience) urls.add(base + audio.ambience);
+    // here for, and it's the larger file. Every candidate for a slot
+    // is included, not just whichever one the current variable state
+    // would pick.
+    for (const v of audio.voiceover ?? []) urls.add(base + v.file);
+    for (const v of audio.choice1 ?? []) urls.add(base + v.file);
+    for (const v of audio.choice2 ?? []) urls.add(base + v.file);
+    for (const variants of Object.values(audio.choices ?? {})) {
+      for (const v of variants) urls.add(base + v.file);
+    }
+    for (const v of audio.ambience ?? []) urls.add(base + v.file);
     for (const fx of audio.sfx ?? []) urls.add(base + fx.file);
   }
 

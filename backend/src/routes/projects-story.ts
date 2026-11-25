@@ -8,6 +8,25 @@ import { emitInk } from '../services/ink-converter.js';
 import { randomUUID } from 'crypto';
 import { captureSnapshot } from './projects-snapshots.js';
 import { invalidateRoom } from '../services/collab-server.js';
+import { audioTypeForChoice } from '../services/choice-audio.js';
+import { reconcileChoiceIds } from '../services/reconcile-choice-ids.js';
+import {
+  parseExpression,
+  ExpressionParseError,
+  evaluate,
+  isListValue,
+  buildListExpressionContext,
+} from '@wanderline/shared';
+import {
+  isTextBlock,
+  type StoryNode,
+  type VariableDeclaration,
+  type VariableType,
+} from '../types.js';
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 export function mountStoryRoutes(router: Router, pool: Pool): void {
   /**
@@ -75,12 +94,17 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
       const storyId = randomUUID();
       const storyGraph = parseInk(source, storyId);
 
-      // Auto-capture the previous state before we overwrite it.
-      // Skipped if the project has no story yet (first-time upload).
-      const existing = await pool.query('SELECT 1 FROM project_stories WHERE project_id = $1', [
-        id,
-      ]);
+      // Fetched up front (not just a `SELECT 1` existence check) so
+      // reconcileChoiceIds below can carry forward each choice's
+      // stable id — without it, a re-upload mints a fresh randomUUID()
+      // for every choice and any per-choice audio (addressed by that
+      // id) silently disappears, even for byte-identical source.
+      const existing = await pool.query(
+        'SELECT story_graph FROM project_stories WHERE project_id = $1',
+        [id],
+      );
       if (existing.rows.length > 0) {
+        reconcileChoiceIds(existing.rows[0].story_graph, storyGraph);
         try {
           await captureSnapshot({
             pool,
@@ -226,6 +250,17 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
       const storyId = randomUUID();
       const storyGraph = parseInkJson(jsonContent, storyId);
 
+      // See the /ink route's own comment — without this, a
+      // re-upload mints a fresh id for every choice and any
+      // per-choice audio silently disappears.
+      const existing = await pool.query(
+        'SELECT story_graph FROM project_stories WHERE project_id = $1',
+        [id],
+      );
+      if (existing.rows.length > 0) {
+        reconcileChoiceIds(existing.rows[0].story_graph, storyGraph);
+      }
+
       // compiled Ink JSON has no editable source, but
       // authoring is still Ink-flavoured — set source_language='ink'
       // and clear twee_source so the vocab + editor pick the Ink
@@ -345,11 +380,14 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
       }
 
       // mirror the /ink route's auto-snapshot behaviour so
-      // switching between formats leaves a rollback point.
-      const existing = await pool.query('SELECT 1 FROM project_stories WHERE project_id = $1', [
-        id,
-      ]);
+      // switching between formats leaves a rollback point, and its
+      // choice-id reconciliation so per-choice audio survives too.
+      const existing = await pool.query(
+        'SELECT story_graph FROM project_stories WHERE project_id = $1',
+        [id],
+      );
       if (existing.rows.length > 0) {
+        reconcileChoiceIds(existing.rows[0].story_graph, storyGraph);
         try {
           await captureSnapshot({
             pool,
@@ -650,7 +688,12 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
       }
 
       const storyGraph = storyResult.rows[0].story_graph;
-      const node = storyGraph.nodes[nodeId];
+      // A Map, not a bracket lookup on storyGraph.nodes directly:
+      // `nodeId` is attacker-controlled and can legally be
+      // `__proto__`, which a plain object resolves to Object.prototype
+      // itself instead of undefined. A Map has no such special-cased
+      // key at all.
+      const node = new Map<string, StoryNode>(Object.entries(storyGraph.nodes)).get(nodeId);
       if (!node) {
         res.status(404).json({ error: 'Node not found' });
         return;
@@ -659,8 +702,13 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
         res.status(400).json({ error: 'Content index out of range' });
         return;
       }
+      const block = node.content[contentIndex];
+      if (!isTextBlock(block)) {
+        res.status(400).json({ error: 'Cannot set text on an assignment block' });
+        return;
+      }
 
-      node.content[contentIndex].text = newText;
+      block.text = newText;
 
       await pool.query(
         `UPDATE project_stories
@@ -725,7 +773,7 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
       }
 
       // Remove the choice
-      storyGraph.nodes[nodeId].choices.splice(choiceIndex, 1);
+      const [removedChoice] = storyGraph.nodes[nodeId].choices.splice(choiceIndex, 1);
 
       // Save updated story graph
       await pool.query(
@@ -740,6 +788,20 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
 
       // Update project timestamp
       await pool.query('UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1', [id]);
+
+      // A choice-id-addressed cue (DEV-199 per-choice audio) is
+      // otherwise orphaned forever — nothing else ever re-parents or
+      // garbage-collects it, since its id dies with the choice.
+      // Ordinal choice1/choice2 rows are deliberately left as-is:
+      // they belong to a POSITION, not this specific choice, and the
+      // remaining choices just shift into their slots as before.
+      if (removedChoice?.id) {
+        await pool.query(
+          `DELETE FROM node_audio_assignments
+           WHERE project_id = $1 AND node_id = $2 AND audio_type = $3`,
+          [id, nodeId, audioTypeForChoice(removedChoice.id)],
+        );
+      }
 
       // Structural change to the choices array — the in-memory
       // Y.Doc still has the pre-delete `choices` Y.Array, and its
@@ -911,15 +973,21 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
         storyGraph.nodes[nodeId].choices = [];
       }
 
+      // A fresh id, not whatever (if anything) the client sent — this
+      // is the one place a choice is newly created via REST rather
+      // than parsed from source, so it's the one place that needs to
+      // generate one.
+      const newChoice = { ...choice, id: randomUUID() };
+
       // Add the choice at specified index or at the end
       if (
         atIndex !== undefined &&
         atIndex >= 0 &&
         atIndex <= storyGraph.nodes[nodeId].choices.length
       ) {
-        storyGraph.nodes[nodeId].choices.splice(atIndex, 0, choice);
+        storyGraph.nodes[nodeId].choices.splice(atIndex, 0, newChoice);
       } else {
-        storyGraph.nodes[nodeId].choices.push(choice);
+        storyGraph.nodes[nodeId].choices.push(newChoice);
       }
 
       // Save updated story graph
@@ -1346,6 +1414,345 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
     });
 
     res.json({ success: true, story_graph: renamedGraph });
+  });
+
+  // Replace a choice's visibility condition. An empty/null condition
+  // clears it (the choice becomes unconditional) — mirrors the Expression |
+  // null shape Choice.condition already has from DEV-199 Phase 4.
+  router.patch('/:id/story/choice/condition', async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { nodeId, choiceIndex, condition } = req.body;
+
+      if (!nodeId || choiceIndex === undefined || condition === undefined) {
+        res.status(400).json({ error: 'nodeId, choiceIndex, and condition are required' });
+        return;
+      }
+      if (
+        typeof nodeId !== 'string' ||
+        !Number.isInteger(choiceIndex) ||
+        choiceIndex < 0 ||
+        (condition !== null && typeof condition !== 'string')
+      ) {
+        res.status(400).json({
+          error:
+            'nodeId must be a string, choiceIndex a non-negative integer, condition a string or null',
+        });
+        return;
+      }
+
+      const storyResult = await pool.query(
+        `SELECT story_graph FROM project_stories WHERE project_id = $1`,
+        [id],
+      );
+      if (storyResult.rows.length === 0 || !storyResult.rows[0].story_graph) {
+        res.status(404).json({ error: 'Story not found' });
+        return;
+      }
+
+      const storyGraph = storyResult.rows[0].story_graph;
+
+      let parsedCondition = null;
+      if (condition !== null && condition.trim().length > 0) {
+        try {
+          // The fetched story_graph's own LIST declarations and
+          // function-knot names, not an empty context — without the
+          // former, a condition referencing a LIST member
+          // (`kettleState has cold`) reparses `cold` as an undeclared
+          // PLAIN variable instead of a list-member literal, which
+          // then throws at evaluation time and makes the gated
+          // choice/content disappear; a multi-member literal like
+          // `(cold, boiling)` fails to parse at all. Without the
+          // latter (found in review), re-saving an unchanged
+          // condition that calls a function-knot (`double(gold) >
+          // 10`) fails validation here even though it was already
+          // saved that way.
+          parsedCondition = parseExpression(
+            condition,
+            buildListExpressionContext(storyGraph.variables, storyGraph.nodes),
+          );
+        } catch (err) {
+          res.status(400).json({
+            error:
+              err instanceof ExpressionParseError
+                ? err.message
+                : `Could not parse condition: ${errorMessage(err)}`,
+          });
+          return;
+        }
+      }
+
+      // A Map, not a bracket lookup on storyGraph.nodes directly — see
+      // the sibling `/node/content/text` route's identical comment.
+      const node = new Map<string, StoryNode>(Object.entries(storyGraph.nodes)).get(nodeId);
+      if (!node) {
+        res.status(404).json({ error: 'Node not found' });
+        return;
+      }
+      if (!node.choices || choiceIndex >= node.choices.length) {
+        res.status(400).json({ error: 'Choice index out of range' });
+        return;
+      }
+
+      node.choices[choiceIndex].condition = parsedCondition;
+
+      await pool.query(
+        `UPDATE project_stories
+         SET story_graph = $1, updated_at = CURRENT_TIMESTAMP,
+             ink_source = NULL, twee_source = NULL
+         WHERE project_id = $2`,
+        [JSON.stringify(storyGraph), id],
+      );
+      await pool.query('UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1', [id]);
+      await invalidateRoom(id);
+
+      res.json({ success: true, story_graph: storyGraph });
+    } catch (error) {
+      req.log.error({ err: error }, 'Failed to update choice condition');
+      res.status(500).json({ error: 'Failed to update choice condition' });
+    }
+  });
+
+  // Replace a text block's visibility condition. Assignment blocks
+  // have no condition field (they always run) — rejected with 400
+  // rather than silently doing nothing.
+  router.patch('/:id/story/node/content/condition', async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { nodeId, contentIndex, condition } = req.body;
+
+      if (!nodeId || contentIndex === undefined || condition === undefined) {
+        res.status(400).json({ error: 'nodeId, contentIndex, and condition are required' });
+        return;
+      }
+      if (
+        typeof nodeId !== 'string' ||
+        !Number.isInteger(contentIndex) ||
+        contentIndex < 0 ||
+        (condition !== null && typeof condition !== 'string')
+      ) {
+        res.status(400).json({
+          error:
+            'nodeId must be a string, contentIndex a non-negative integer, condition a string or null',
+        });
+        return;
+      }
+
+      const storyResult = await pool.query(
+        `SELECT story_graph FROM project_stories WHERE project_id = $1`,
+        [id],
+      );
+      if (storyResult.rows.length === 0 || !storyResult.rows[0].story_graph) {
+        res.status(404).json({ error: 'Story not found' });
+        return;
+      }
+
+      const storyGraph = storyResult.rows[0].story_graph;
+
+      let parsedCondition;
+      if (condition !== null && condition.trim().length > 0) {
+        try {
+          // See the sibling `/choice/condition` route for why this
+          // needs the fetched story_graph's own LIST context.
+          parsedCondition = parseExpression(
+            condition,
+            buildListExpressionContext(storyGraph.variables, storyGraph.nodes),
+          );
+        } catch (err) {
+          res.status(400).json({
+            error:
+              err instanceof ExpressionParseError
+                ? err.message
+                : `Could not parse condition: ${errorMessage(err)}`,
+          });
+          return;
+        }
+      }
+
+      // A Map, not a bracket lookup on storyGraph.nodes directly — see
+      // the sibling `/node/content/text` route's identical comment.
+      const node = new Map<string, StoryNode>(Object.entries(storyGraph.nodes)).get(nodeId);
+      if (!node) {
+        res.status(404).json({ error: 'Node not found' });
+        return;
+      }
+      if (!node.content || contentIndex >= node.content.length) {
+        res.status(400).json({ error: 'Content index out of range' });
+        return;
+      }
+      const block = node.content[contentIndex];
+      if (!isTextBlock(block)) {
+        res.status(400).json({ error: 'Cannot set a condition on an assignment block' });
+        return;
+      }
+
+      if (parsedCondition === undefined) {
+        delete block.condition;
+      } else {
+        block.condition = parsedCondition;
+      }
+
+      await pool.query(
+        `UPDATE project_stories
+         SET story_graph = $1, updated_at = CURRENT_TIMESTAMP,
+             ink_source = NULL, twee_source = NULL
+         WHERE project_id = $2`,
+        [JSON.stringify(storyGraph), id],
+      );
+      await pool.query('UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1', [id]);
+      await invalidateRoom(id);
+
+      res.json({ success: true, story_graph: storyGraph });
+    } catch (error) {
+      req.log.error({ err: error }, 'Failed to update content condition');
+      res.status(500).json({ error: 'Failed to update content condition' });
+    }
+  });
+
+  // Replace the project's entire variable declaration list. Mirrors
+  // ink-parser's own VAR/CONST handling: a variable's `type` isn't
+  // author-chosen, it's inferred from evaluating `initialValue` (so
+  // the UI and the Ink source parser can never disagree about what
+  // `VAR gold = 5` means). Declarations are evaluated in array order
+  // so a later one can reference an earlier one's initial value,
+  // exactly like Ink's own top-of-file preamble.
+  router.patch('/:id/story/variables', async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { variables } = req.body;
+
+      if (!Array.isArray(variables)) {
+        res.status(400).json({ error: 'variables must be an array' });
+        return;
+      }
+
+      // Fetched up front (not just before the final write) so the
+      // project's EXISTING LIST declarations can be validated against
+      // and preserved below — this route has no UI/schema for
+      // authoring a LIST's member universe, so it only ever edits the
+      // SCALAR subset of `variables`; a LIST declared via Ink upload
+      // must survive a scalar-only save untouched instead of being
+      // silently dropped (the previous behavior: this route always
+      // wrote `nextVariables` as the COMPLETE replacement array, so
+      // VariablesTab round-tripping an existing LIST's `printExpression`
+      // output back through this scalar-only parser either failed
+      // outright (a multi-member literal isn't valid syntax with no
+      // LIST context) or silently mis-typed it — found in review).
+      const storyResult = await pool.query(
+        `SELECT story_graph FROM project_stories WHERE project_id = $1`,
+        [id],
+      );
+      if (storyResult.rows.length === 0 || !storyResult.rows[0].story_graph) {
+        res.status(404).json({ error: 'Story not found' });
+        return;
+      }
+      const storyGraph = storyResult.rows[0].story_graph;
+      const existingListDeclarations: VariableDeclaration[] = (storyGraph.variables ?? []).filter(
+        (v: VariableDeclaration) => v.type === 'list',
+      );
+      const existingListNames = new Set(existingListDeclarations.map((v) => v.name));
+
+      const seenNames = new Set<string>();
+      // Object.create(null), not {} — a declared name of `__proto__`
+      // would otherwise hit Object.prototype's accessor instead of
+      // being stored as a real entry, so a LATER declaration that
+      // reads it back via `name in variableValues` would see it as
+      // already (falsely) present.
+      const variableValues: Record<string, string | number | boolean> = Object.create(null);
+      const nextVariables: VariableDeclaration[] = [];
+
+      for (let i = 0; i < variables.length; i++) {
+        const entry = variables[i];
+        const name = entry?.name;
+        const initialValueSource = entry?.initialValue;
+        // Only a real boolean false means false — Boolean(entry?.isConst)
+        // would otherwise coerce the string "false" (or any other
+        // truthy non-boolean) to true.
+        const isConst = entry?.isConst === true;
+
+        if (typeof name !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+          res.status(400).json({
+            error: `Variable ${i + 1}: name must be a valid identifier (letters, digits, underscore, not starting with a digit)`,
+          });
+          return;
+        }
+        if (seenNames.has(name)) {
+          res.status(400).json({ error: `Variable ${i + 1}: duplicate name "${name}"` });
+          return;
+        }
+        if (existingListNames.has(name)) {
+          res.status(400).json({
+            error: `Variable ${i + 1}: "${name}" is already declared as a LIST — rename this variable or edit the LIST via the Ink source.`,
+          });
+          return;
+        }
+        seenNames.add(name);
+
+        if (typeof initialValueSource !== 'string' || initialValueSource.trim().length === 0) {
+          res.status(400).json({ error: `Variable "${name}": initialValue is required` });
+          return;
+        }
+
+        let expr;
+        try {
+          expr = parseExpression(initialValueSource);
+        } catch (err) {
+          res.status(400).json({
+            error: `Variable "${name}": ${err instanceof ExpressionParseError ? err.message : errorMessage(err)}`,
+          });
+          return;
+        }
+
+        let value;
+        try {
+          value = evaluate(expr, variableValues);
+        } catch (err) {
+          res.status(400).json({
+            error: `Variable "${name}": could not determine a value — ${errorMessage(err)}`,
+          });
+          return;
+        }
+
+        // LIST declarations (DEV-199 Phase 10) need their own member
+        // universe declared alongside them, not just an initial-value
+        // expression — this generic scalar-variable route has no way
+        // to collect that, so it's authored via Ink source import
+        // instead, not here.
+        if (isListValue(value)) {
+          res.status(400).json({
+            error: `Variable "${name}": LIST variables aren't supported here yet — declare them in the Ink source instead.`,
+          });
+          return;
+        }
+
+        const type: VariableType =
+          typeof value === 'number' ? 'number' : typeof value === 'boolean' ? 'bool' : 'string';
+        variableValues[name] = value;
+        nextVariables.push({ name, type, initialValue: expr, isConst });
+      }
+
+      // LIST declarations first (preserving their own relative
+      // order), then the scalar set this request submitted — a LIST
+      // must textually precede anything that could reference one of
+      // its members, same ordering ink-converter.ts's own VAR/CONST/
+      // LIST preamble emission already relies on.
+      storyGraph.variables = [...existingListDeclarations, ...nextVariables];
+
+      await pool.query(
+        `UPDATE project_stories
+         SET story_graph = $1, updated_at = CURRENT_TIMESTAMP,
+             ink_source = NULL, twee_source = NULL
+         WHERE project_id = $2`,
+        [JSON.stringify(storyGraph), id],
+      );
+      await pool.query('UPDATE projects SET updated_at = CURRENT_TIMESTAMP WHERE id = $1', [id]);
+      await invalidateRoom(id);
+
+      res.json({ success: true, story_graph: storyGraph });
+    } catch (error) {
+      req.log.error({ err: error }, 'Failed to update variables');
+      res.status(500).json({ error: 'Failed to update variables' });
+    }
   });
 
   /**

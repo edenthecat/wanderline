@@ -67,9 +67,21 @@ describe('useNodeEditor audio actions', () => {
   it('clears only the file the author saw', async () => {
     const { result } = mount();
     await act(() => result.current.audioActions.clear('hall', 'ambience', 'rain'));
-    expect(client.removeAudioAssignment).toHaveBeenLastCalledWith('p1', 'hall', 'ambience', 'rain');
+    expect(client.removeAudioAssignment).toHaveBeenLastCalledWith(
+      'p1',
+      'hall',
+      'ambience',
+      'rain',
+      undefined,
+    );
     await act(() => result.current.audioActions.clear('hall', 'sfx', 'door'));
-    expect(client.removeAudioAssignment).toHaveBeenLastCalledWith('p1', 'hall', 'sfx', 'door');
+    expect(client.removeAudioAssignment).toHaveBeenLastCalledWith(
+      'p1',
+      'hall',
+      'sfx',
+      'door',
+      undefined,
+    );
   });
 
   it('loads the project’s levels for the mix audition', async () => {

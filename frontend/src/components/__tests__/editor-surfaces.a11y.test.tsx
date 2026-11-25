@@ -16,7 +16,7 @@ const node = (id: string, over: Partial<StoryNode> = {}): StoryNode => ({
   id,
   type: 'knot',
   parent: null,
-  content: [{ text: `${id} says something.`, tags: [] }],
+  content: [{ kind: 'text', text: `${id} says something.`, tags: [] }],
   choices: [],
   divert: null,
   tags: [],

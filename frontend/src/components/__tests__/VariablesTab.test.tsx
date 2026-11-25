@@ -1,0 +1,266 @@
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import VariablesTab from '../VariablesTab';
+import type { StoryGraph } from '../../api/client';
+
+// DEV-199 Phase 5: authoring brand-new story variables. updateVariables
+// is mocked; printExpression/printStatement are real (pure, no network)
+// so the rendered "= <value>" text reflects the actual printer.
+const mockUpdateVariables = vi.hoisted(() => vi.fn());
+vi.mock('../../api/client', async () => {
+  const actual = await vi.importActual<typeof import('../../api/client')>('../../api/client');
+  return { ...actual, updateVariables: mockUpdateVariables };
+});
+
+beforeEach(() => {
+  mockUpdateVariables.mockReset();
+});
+
+function graph(variables: StoryGraph['variables']): StoryGraph {
+  return {
+    id: 'g1',
+    title: 'T',
+    nodes: {},
+    startNode: 'a',
+    validation: { valid: true, errors: [], warnings: [] },
+    variables,
+  } as unknown as StoryGraph;
+}
+
+describe('VariablesTab', () => {
+  it('shows the empty state when there are no variables', () => {
+    render(<VariablesTab projectId="p1" storyGraph={graph([])} />);
+    expect(screen.getByText('No variables yet.')).toBeTruthy();
+  });
+
+  it('lists existing variables with their inferred type and printed value', () => {
+    render(
+      <VariablesTab
+        projectId="p1"
+        storyGraph={graph([
+          {
+            name: 'gold',
+            type: 'number',
+            initialValue: { kind: 'literal', value: 10 },
+            isConst: false,
+          },
+        ])}
+      />,
+    );
+    expect(screen.getByText('gold')).toBeTruthy();
+    expect(screen.getByText('number')).toBeTruthy();
+    expect(screen.getByText('= 10')).toBeTruthy();
+  });
+
+  it('creates a new variable, sending the whole array including existing ones', async () => {
+    mockUpdateVariables.mockResolvedValue({
+      success: true,
+      story_graph: graph([
+        {
+          name: 'gold',
+          type: 'number',
+          initialValue: { kind: 'literal', value: 10 },
+          isConst: false,
+        },
+        {
+          name: 'hasKey',
+          type: 'bool',
+          initialValue: { kind: 'literal', value: false },
+          isConst: false,
+        },
+      ]),
+    });
+    const onStoryUpdated = vi.fn();
+    render(
+      <VariablesTab
+        projectId="p1"
+        storyGraph={graph([
+          {
+            name: 'gold',
+            type: 'number',
+            initialValue: { kind: 'literal', value: 10 },
+            isConst: false,
+          },
+        ])}
+        onStoryUpdated={onStoryUpdated}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('New variable'));
+    fireEvent.change(screen.getByPlaceholderText('gold'), { target: { value: 'hasKey' } });
+    fireEvent.change(screen.getByPlaceholderText('10, "Alex", or true'), {
+      target: { value: 'false' },
+    });
+    fireEvent.click(screen.getByText('Create variable'));
+
+    await waitFor(() => {
+      expect(mockUpdateVariables).toHaveBeenCalledWith('p1', [
+        { name: 'gold', initialValue: '10', isConst: false },
+        { name: 'hasKey', initialValue: 'false', isConst: false },
+      ]);
+      expect(onStoryUpdated).toHaveBeenCalled();
+    });
+    expect(screen.getByText('hasKey')).toBeTruthy();
+  });
+
+  it('shows the server error message on a failed save', async () => {
+    mockUpdateVariables.mockRejectedValue(new Error('Variable 1: duplicate name "gold"'));
+    render(
+      <VariablesTab
+        projectId="p1"
+        storyGraph={graph([
+          {
+            name: 'gold',
+            type: 'number',
+            initialValue: { kind: 'literal', value: 10 },
+            isConst: false,
+          },
+        ])}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('New variable'));
+    fireEvent.change(screen.getByPlaceholderText('gold'), { target: { value: 'gold' } });
+    fireEvent.change(screen.getByPlaceholderText('10, "Alex", or true'), {
+      target: { value: '5' },
+    });
+    fireEvent.click(screen.getByText('Create variable'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Variable 1: duplicate name "gold"')).toBeTruthy();
+    });
+  });
+
+  it('deletes a variable after confirmation', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    mockUpdateVariables.mockResolvedValue({ success: true, story_graph: graph([]) });
+    render(
+      <VariablesTab
+        projectId="p1"
+        storyGraph={graph([
+          {
+            name: 'gold',
+            type: 'number',
+            initialValue: { kind: 'literal', value: 10 },
+            isConst: false,
+          },
+        ])}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('Delete'));
+
+    await waitFor(() => {
+      expect(mockUpdateVariables).toHaveBeenCalledWith('p1', []);
+    });
+    confirmSpy.mockRestore();
+  });
+
+  // Regression: deleting a variable another variable's initialValue
+  // depends on used to send the PATCH anyway, which the server
+  // rejected with a confusing evaluator error ("could not determine a
+  // value — Undefined variable: base") instead of a clear message —
+  // and the confirm() dialog's claim that only conditions would stop
+  // matching was simply wrong in this case.
+  it('blocks deleting a variable another variable depends on, without even confirming', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm');
+    render(
+      <VariablesTab
+        projectId="p1"
+        storyGraph={graph([
+          {
+            name: 'base',
+            type: 'number',
+            initialValue: { kind: 'literal', value: 10 },
+            isConst: false,
+          },
+          {
+            name: 'doubled',
+            type: 'number',
+            initialValue: {
+              kind: 'binary',
+              operator: '*',
+              left: { kind: 'variable', name: 'base' },
+              right: { kind: 'literal', value: 2 },
+            },
+            isConst: false,
+          },
+        ])}
+      />,
+    );
+
+    fireEvent.click(screen.getAllByText('Delete')[0]);
+
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(mockUpdateVariables).not.toHaveBeenCalled();
+    expect(screen.getByText(/Can't delete "base" — doubled still references it/)).toBeTruthy();
+    confirmSpy.mockRestore();
+  });
+
+  // Regression: this tab has no member-list input for a LIST, so
+  // editing/creating a SCALAR must never round-trip an existing
+  // LIST's printed active-subset text back through the scalar-only
+  // save route — that text isn't valid syntax to re-parse without
+  // the project's LIST context, which this route doesn't have
+  // (found in review). The server now preserves an existing LIST
+  // regardless of what's submitted, so the fix here is specifically
+  // that THIS tab must stop re-submitting it at all.
+  describe('LIST declarations', () => {
+    const kettleState = {
+      name: 'kettleState',
+      type: 'list' as const,
+      isConst: false,
+      listMembers: ['cold', 'boiling'],
+      initialValue: {
+        kind: 'literal' as const,
+        value: {
+          kind: 'list' as const,
+          origin: 'kettleState',
+          items: [{ name: 'cold', ordinal: 0 }],
+          allItems: [
+            { name: 'cold', ordinal: 0 },
+            { name: 'boiling', ordinal: 1 },
+          ],
+        },
+      },
+    };
+
+    it('renders a LIST read-only, with no Edit/Delete affordance', () => {
+      render(<VariablesTab projectId="p1" storyGraph={graph([kettleState])} />);
+      expect(screen.getByText('kettleState')).toBeTruthy();
+      expect(screen.getByText('LIST')).toBeTruthy();
+      expect(screen.getByText('Declared in Ink source — edit there')).toBeTruthy();
+      expect(screen.queryByText('Edit')).toBeNull();
+      expect(screen.queryByText('Delete')).toBeNull();
+    });
+
+    it('creating a scalar alongside an existing LIST never includes the LIST in the submitted payload', async () => {
+      mockUpdateVariables.mockResolvedValue({
+        success: true,
+        story_graph: graph([
+          kettleState,
+          {
+            name: 'gold',
+            type: 'number',
+            initialValue: { kind: 'literal', value: 10 },
+            isConst: false,
+          },
+        ]),
+      });
+      render(<VariablesTab projectId="p1" storyGraph={graph([kettleState])} />);
+
+      fireEvent.click(screen.getByText('New variable'));
+      fireEvent.change(screen.getByPlaceholderText('gold'), { target: { value: 'gold' } });
+      fireEvent.change(screen.getByPlaceholderText('10, "Alex", or true'), {
+        target: { value: '10' },
+      });
+      fireEvent.click(screen.getByText('Create variable'));
+
+      await waitFor(() => {
+        expect(mockUpdateVariables).toHaveBeenCalledWith('p1', [
+          { name: 'gold', initialValue: '10', isConst: false },
+        ]);
+      });
+    });
+  });
+});

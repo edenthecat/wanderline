@@ -23,7 +23,7 @@ const node = (id: string, over: Record<string, unknown> = {}) => ({
   type: id.includes('.') ? 'stitch' : 'knot',
   parent: id.includes('.') ? id.split('.')[0] : null,
   lineNumber: ++line,
-  content: [{ text: 'x', tags: [] }],
+  content: [{ kind: 'text', text: 'x', tags: [] }],
   choices: [],
   divert: null,
   tags: [],

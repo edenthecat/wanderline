@@ -1,4 +1,7 @@
 import { Pool } from 'pg';
+import type { ContentBlock, Choice, VariableDeclaration } from '../types.js';
+import type { SimpleCondition } from '@wanderline/shared';
+import { isChoiceAudioType, choiceIdFromAudioType } from './choice-audio.js';
 
 /**
  * Pick the title the player renders. Prefer the story-graph
@@ -32,19 +35,43 @@ export class StoryDataError extends Error {
   }
 }
 
+/** One candidate audio file for a slot. `condition` absent means this
+ * is the slot's default/fallback candidate. */
+export interface AudioVariant {
+  file: string;
+  condition?: SimpleCondition;
+}
+
 /** One sound effect on a node. `offsetMs` absent means "as the passage
  * starts"; present, it's a point on the narration's timeline (or time
  * since arriving, on a passage with no narration). */
-export interface StoryDataSfx {
-  file: string;
+export interface StoryDataSfx extends AudioVariant {
   offsetMs?: number;
 }
 
+/**
+ * Each single-value slot (voiceover/ambience/choice1/choice2) is a
+ * list of candidates, not a single filename — a node can have
+ * several, each gated by an optional variable condition. The player
+ * (shared/src/audio-condition.ts's evaluateSimpleCondition) checks
+ * conditioned candidates in order and falls back to the one
+ * unconditioned candidate, if any; collectNodeAudio below always
+ * orders the unconditioned candidate last so that fallback semantics
+ * fall out of simple linear iteration. `sfx` entries don't follow
+ * this "exactly one wins" model — each plays independently, gated by
+ * its own condition (or unconditionally) — so they keep their
+ * existing offset-based ordering instead.
+ */
 export interface StoryDataNodeAudio {
-  voiceover?: string;
-  ambience?: string;
-  choice1?: string;
-  choice2?: string;
+  voiceover?: AudioVariant[];
+  ambience?: AudioVariant[];
+  choice1?: AudioVariant[];
+  choice2?: AudioVariant[];
+  /** A choice's own cue, keyed by the choice's stable id — addresses
+   * correctly under reordering, unlike choice1/choice2's ordinal
+   * slots, which this coexists with rather than replaces (a choice
+   * with no id yet still only ever uses those). */
+  choices?: Record<string, AudioVariant[]>;
   sfx?: StoryDataSfx[];
 }
 
@@ -53,6 +80,61 @@ export interface AssignmentRow {
   audio_type: string;
   audio_file_id: string;
   offset_ms?: number | null;
+  condition?: SimpleCondition | null;
+  /** Used only to order same-slot candidates deterministically
+   * (conditioned-first, insertion order, then by file as a final
+   * tiebreak) — real DB rows always have one; test fixtures may omit
+   * it and just rely on the filename tiebreak. */
+  created_at?: string;
+}
+
+/** A candidate still carrying its `created_at`, used only internally
+ * while folding rows — stripped before the final result is returned
+ * (the player has no use for it; it only exists to make ordering
+ * deterministic across builds). */
+// `string | Date`, not just `string` — node-pg's default column
+// parsing hands back a `Date` object for a `timestamptz` column, not
+// the string this field's old type claimed (found in review).
+interface PendingVariant extends AudioVariant {
+  created_at: string | Date;
+}
+interface PendingSfx extends StoryDataSfx {
+  created_at: string | Date;
+}
+
+/** Conditioned candidates first (in created_at order), then the one
+ * unconditioned/default candidate last, so a linear scan at playback
+ * naturally implements "first matching condition wins, else
+ * default." Only meaningful for the single-value slots — sfx entries
+ * are each independently gated by their own condition (or play
+ * unconditionally), not mutually exclusive alternatives, so sfx keeps
+ * its existing offset-based ordering untouched by this. */
+function compareSingleSlotVariants(a: PendingVariant, b: PendingVariant): number {
+  const rankA = a.condition ? 0 : 1;
+  const rankB = b.condition ? 0 : 1;
+  if (rankA !== rankB) return rankA - rankB;
+  // `created_at` is typed as `string` above, but the query actually
+  // supplies a `Date` object (node-pg's default column parsing) —
+  // found in review: comparing two DISTINCT Date instances for the
+  // SAME timestamp with `!==` is always true (reference inequality,
+  // not value), so equal-time rows never reached the filename
+  // tiebreak below at all; worse, `<` on them then returned 1 in
+  // BOTH directions for a genuine tie, making sort order depend on
+  // whatever order Postgres happened to return the rows in. Compare
+  // the actual timestamp VALUE — `new Date(...).getTime()` works
+  // whether the value is already a Date or (for a row from a path
+  // that parses it as a string) still a string.
+  const timeA = new Date(a.created_at).getTime();
+  const timeB = new Date(b.created_at).getTime();
+  if (timeA !== timeB) return timeA < timeB ? -1 : 1;
+  return a.file < b.file ? -1 : a.file > b.file ? 1 : 0;
+}
+
+function stripCreatedAt<T extends { created_at?: string | Date }>(
+  variant: T,
+): Omit<T, 'created_at'> {
+  const { created_at: _createdAt, ...rest } = variant;
+  return rest;
 }
 
 /**
@@ -70,43 +152,113 @@ export function collectNodeAudio(
   rows: AssignmentRow[],
   fileMap: Record<string, string>,
 ): Record<string, StoryDataNodeAudio> {
-  const byNode: Record<string, StoryDataNodeAudio> = {};
+  // Null-prototype at both levels: `row.node_id` is an Ink/Twee knot
+  // or stitch identifier, and `choiceId` (below) comes straight out
+  // of `audio_type`'s `choice:<id>` encoding — both are author-
+  // controlled text that can legally be `__proto__`. On an ordinary
+  // `{}`, `byNode['__proto__']` (or `node.choices['__proto__']`)
+  // reads the INHERITED Object.prototype object (truthy, so `??=`
+  // skips assigning a fresh one) and the next `.push(...)` throws
+  // trying to call a method Object.prototype doesn't have — a single
+  // crafted row crashes every build/preview/export for the whole
+  // project until it's manually deleted from the DB.
+  const byNode: Record<
+    string,
+    {
+      voiceover: PendingVariant[];
+      ambience: PendingVariant[];
+      choice1: PendingVariant[];
+      choice2: PendingVariant[];
+      choices: Record<string, PendingVariant[]>;
+      sfx: PendingSfx[];
+    }
+  > = Object.create(null);
   for (const row of rows) {
     const file = fileMap[row.audio_file_id];
     if (!file) continue;
-    const audio = (byNode[row.node_id] ??= {});
+    const node = (byNode[row.node_id] ??= {
+      voiceover: [],
+      ambience: [],
+      choice1: [],
+      choice2: [],
+      choices: Object.create(null) as Record<string, PendingVariant[]>,
+      sfx: [],
+    });
+    const condition = row.condition ?? undefined;
+    const created_at = row.created_at ?? '';
+    if (isChoiceAudioType(row.audio_type)) {
+      const choiceId = choiceIdFromAudioType(row.audio_type);
+      (node.choices[choiceId] ??= []).push({
+        file,
+        ...(condition ? { condition } : {}),
+        created_at,
+      });
+      continue;
+    }
     switch (row.audio_type) {
       case 'voiceover':
       case 'ambience':
       case 'choice1':
       case 'choice2':
-        audio[row.audio_type] = file;
+        node[row.audio_type].push({ file, ...(condition ? { condition } : {}), created_at });
         break;
       case 'sfx': {
         const offset = row.offset_ms;
-        (audio.sfx ??= []).push(
-          typeof offset === 'number' && Number.isFinite(offset) && offset >= 0
-            ? { file, offsetMs: offset }
-            : { file },
-        );
+        node.sfx.push({
+          file,
+          ...(typeof offset === 'number' && Number.isFinite(offset) && offset >= 0
+            ? { offsetMs: offset }
+            : {}),
+          ...(condition ? { condition } : {}),
+          created_at,
+        });
         break;
       }
     }
   }
-  for (const audio of Object.values(byNode)) {
-    audio.sfx?.sort(
-      (a, b) =>
-        (a.offsetMs ?? -1) - (b.offsetMs ?? -1) || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0),
-    );
+  // Same null-prototype reasoning as `byNode`/`node.choices` above —
+  // `nodeId` and `choiceId` are both still author-controlled text at
+  // this point.
+  const result: Record<string, StoryDataNodeAudio> = Object.create(null);
+  for (const [nodeId, node] of Object.entries(byNode)) {
+    const audio: StoryDataNodeAudio = {};
+    for (const slot of ['voiceover', 'ambience', 'choice1', 'choice2'] as const) {
+      if (node[slot].length > 0) {
+        audio[slot] = node[slot].sort(compareSingleSlotVariants).map(stripCreatedAt);
+      }
+    }
+    const choiceIds = Object.keys(node.choices);
+    if (choiceIds.length > 0) {
+      audio.choices = Object.create(null) as Record<string, AudioVariant[]>;
+      for (const choiceId of choiceIds) {
+        audio.choices[choiceId] = node.choices[choiceId]
+          .sort(compareSingleSlotVariants)
+          .map(stripCreatedAt);
+      }
+    }
+    if (node.sfx.length > 0) {
+      audio.sfx = node.sfx
+        .sort(
+          (a, b) =>
+            (a.offsetMs ?? -1) - (b.offsetMs ?? -1) ||
+            (a.file < b.file ? -1 : a.file > b.file ? 1 : 0),
+        )
+        .map(stripCreatedAt);
+    }
+    result[nodeId] = audio;
   }
-  return byNode;
+  return result;
 }
 
 export interface StoryDataNode {
   id: string;
   type: string;
-  content: { text: string }[];
-  choices: { text: string; target: string }[];
+  // ContentBlock (DEV-199 Phase 2): a `~`-assignment block carries no
+  // `.text` — the player walks this array to mutate its variable
+  // store (App.tsx's applyNodeAssignments) and filters to text blocks
+  // (isTextBlock) before deriving anything display-facing.
+  content: ContentBlock[];
+  choices: Choice[];
   divert: string | null;
   tags: string[];
   audio?: StoryDataNodeAudio;
@@ -131,6 +283,9 @@ export interface StoryData {
   startNode: string;
   nodes: Record<string, StoryDataNode>;
   indicatorAudio: { choice1?: string; choice2?: string };
+  /** Project-level variable declarations (DEV-199). Not per-node, so
+   * it's wired in separately from the nodes loop in buildStoryData. */
+  variables?: VariableDeclaration[];
   settings?: {
     password?: string;
     voiceoverVolume?: number;
@@ -360,6 +515,9 @@ export async function buildStoryData(
       theme: settings.theme,
     },
     backgroundMusic: backgroundMusicFiles.length > 0 ? backgroundMusicFiles : undefined,
+    // Project-level, not per-node (DEV-199 Phase 2) — the loop below
+    // only ever touches storyData.nodes, so this needs its own line.
+    variables: project.story_graph.variables,
   };
 
   const nodeAudio = collectNodeAudio(assignmentsResult.rows as AssignmentRow[], fileMap);

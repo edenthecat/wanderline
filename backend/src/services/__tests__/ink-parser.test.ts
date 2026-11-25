@@ -1,4 +1,21 @@
 import { parseInk } from '../ink-parser.js';
+import { convertStoryGraphToInk } from '../ink-converter.js';
+import { isTextBlock } from '../../types.js';
+import {
+  createFunctionCaller,
+  evaluate,
+  execute,
+  parseExpression,
+  parseStatement,
+} from '@wanderline/shared';
+
+// Content blocks and choices now carry a randomUUID() `id` (DEV-199
+// stable-id rollout) — strips it before comparing parser output
+// against a literal fixture, since the exact value is never what
+// these tests are checking.
+function stripIds<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value), (key, v) => (key === 'id' ? undefined : v));
+}
 
 describe('Ink Parser', () => {
   describe('Knot Detection', () => {
@@ -409,6 +426,348 @@ Hi.
       expect(result.nodes['flag_set']).toBeDefined();
       expect(result.nodes['start']).toBeDefined();
     });
+
+    it('warns when a function-knot shares a name with a LIST_* builtin (found in review)', () => {
+      const source = `
+=== function LIST_COUNT(x) ===
+~ return x * 2
+
+=== start ===
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      // The function-knot still parses — the warning is the only
+      // signal that every call to LIST_COUNT(...) will resolve to
+      // the builtin, not this knot.
+      expect(result.nodes['LIST_COUNT']).toBeDefined();
+      expect(
+        result.validation.warnings.some(
+          (w) => w.message.includes('LIST_COUNT') && w.message.includes('collides with'),
+        ),
+      ).toBe(true);
+    });
+  });
+
+  describe('Function-knot params and calls (DEV-199 Phase 10b)', () => {
+    it('captures a multi-parameter parameter list on the node', () => {
+      const source = `
+=== function add(a, b) ===
+~ return a + b
+
+=== start ===
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      expect(result.nodes['add'].params).toEqual(['a', 'b']);
+    });
+
+    it('a function knot with empty parens gets an empty params array', () => {
+      const source = `
+=== function noop() ===
+~ return 1
+
+=== start ===
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      expect(result.nodes['noop'].params).toEqual([]);
+    });
+
+    it('strips a `ref` parameter to its plain name and warns it is unsupported', () => {
+      const source = `
+=== function bump(ref x) ===
+~ return x
+
+=== start ===
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      expect(result.nodes['bump'].params).toEqual(['x']);
+      expect(
+        result.validation.warnings.some(
+          (w) =>
+            w.message.includes('bump') && w.message.includes("'ref' parameters are not supported"),
+        ),
+      ).toBe(true);
+    });
+
+    it('parses a call to a function-knot inside a condition, even when the function is declared LATER in the file', () => {
+      const source = `
+=== start ===
+* {double(2) > 3} Go -> next
+-> END
+
+=== function double(x) ===
+~ return x * 2
+
+=== next ===
+Hi.
+-> END
+`;
+      const result = parseInk(source, 'test-id');
+      expect(result.validation.errors).toEqual([]);
+      const condition = result.nodes['start'].choices[0].condition;
+      expect(condition).toEqual({
+        kind: 'binary',
+        operator: '>',
+        left: { kind: 'call', name: 'double', args: [{ kind: 'literal', value: 2 }] },
+        right: { kind: 'literal', value: 3 },
+      });
+    });
+
+    it('parses a call inside an in-content assignment', () => {
+      const source = `
+=== start ===
+~ gold = double(gold)
+Hi.
+
+=== function double(x) ===
+~ return x * 2
+`;
+      const result = parseInk(source, 'test-id');
+      const [block] = result.nodes['start'].content;
+      if (block.kind === 'assignment' && block.statement.kind === 'assignment') {
+        expect(block.statement.value).toEqual({
+          kind: 'call',
+          name: 'double',
+          args: [{ kind: 'variable', name: 'gold' }],
+        });
+      } else {
+        throw new Error('expected an assignment block');
+      }
+    });
+
+    it('parses nested calls f(g(x))', () => {
+      const source = `
+=== function inc(n) ===
+~ return n + 1
+
+=== function double(n) ===
+~ return n * 2
+
+=== start ===
+~ result = double(inc(1))
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      const [block] = result.nodes['start'].content;
+      if (block.kind === 'assignment' && block.statement.kind === 'assignment') {
+        expect(block.statement.value).toEqual({
+          kind: 'call',
+          name: 'double',
+          args: [{ kind: 'call', name: 'inc', args: [{ kind: 'literal', value: 1 }] }],
+        });
+      } else {
+        throw new Error('expected an assignment block');
+      }
+    });
+
+    it('warns (does not crash) on a call to an undeclared function', () => {
+      const source = `
+=== start ===
+~ x = notReal(1)
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      expect(result.validation.warnings.some((w) => w.message.includes('notReal'))).toBe(true);
+    });
+
+    it('warns on a call with the wrong number of arguments', () => {
+      const source = `
+=== function add(a, b) ===
+~ return a + b
+
+=== start ===
+~ x = add(1)
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      expect(
+        result.validation.warnings.some(
+          (w) =>
+            w.message.includes("Call to function 'add'") &&
+            w.message.includes('1 argument(s)') &&
+            w.message.includes('declares 2'),
+        ),
+      ).toBe(true);
+    });
+
+    it('does not warn when the argument count matches', () => {
+      const source = `
+=== function add(a, b) ===
+~ return a + b
+
+=== start ===
+~ x = add(1, 2)
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      expect(result.validation.warnings.some((w) => w.message.includes('Call to function'))).toBe(
+        false,
+      );
+    });
+
+    it('parses a self-recursive call with no complaint at parse time', () => {
+      const source = `
+=== function countdown(n) ===
+~ return countdown(n - 1)
+
+=== start ===
+~ x = countdown(5)
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      expect(result.validation.errors).toEqual([]);
+      expect(result.validation.warnings.some((w) => w.message.includes('countdown'))).toBe(false);
+    });
+
+    it('a bare `~ return` with no value parses as a return statement with no value', () => {
+      const source = `
+=== function sideEffectOnly() ===
+~ gold = gold + 1
+~ return
+
+=== start ===
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      const last = result.nodes['sideEffectOnly'].content.at(-1);
+      expect(last?.kind).toBe('assignment');
+      if (last?.kind === 'assignment') {
+        expect(last.statement).toEqual({ kind: 'return' });
+      }
+    });
+
+    it('warns about a choice/divert inside a function-knot rather than silently ignoring it', () => {
+      const source = `
+=== function broken(x) ===
+~ return x
+-> END
+
+=== start ===
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      expect(
+        result.validation.warnings.some(
+          (w) => w.message.includes('broken') && w.message.includes('choice or divert'),
+        ),
+      ).toBe(true);
+    });
+
+    it('does not flag a function-knot as unreachable_node', () => {
+      const source = `
+=== function helper(x) ===
+~ return x
+
+=== start ===
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      expect(
+        result.validation.warnings.some(
+          (w) => w.type === 'unreachable_node' && w.nodeId === 'helper',
+        ),
+      ).toBe(false);
+    });
+  });
+
+  describe('Function-knot evaluation (DEV-199 Phase 10b) — backend validation-time execution', () => {
+    // Confirms a condition/assignment containing a function call
+    // actually EVALUATES correctly once wired to a real callFunction
+    // handler built from the parsed StoryGraph's own nodes — the
+    // interpreter itself (createFunctionCaller) has its own
+    // dedicated unit tests in player-app/src/function-interpreter.test.ts;
+    // these exercise it end-to-end against parseInk's real output.
+    function functionCallerFor(result: ReturnType<typeof parseInk>) {
+      return createFunctionCaller({
+        getFunction: (name) => {
+          const node = result.nodes[name];
+          if (!node || !node.tags.includes('internal:function')) return undefined;
+          return { params: node.params, content: node.content };
+        },
+      });
+    }
+
+    // parseInk doesn't expose its internal `knownFunctions` set on
+    // the returned StoryGraph — it only needs it DURING parsing, to
+    // recognize `name(args)` as a call. Re-deriving it here from the
+    // already-parsed nodes (same `internal:function` tag the real
+    // parser uses) is just this test's own way to parse a FRESH,
+    // standalone expression/statement string against the same story.
+    function knownFunctionsOf(result: ReturnType<typeof parseInk>): Set<string> {
+      return new Set(
+        Object.values(result.nodes)
+          .filter((n) => n.tags.includes('internal:function'))
+          .map((n) => n.id),
+      );
+    }
+
+    it('evaluates a condition containing a function call', () => {
+      const source = `
+=== function double(x) ===
+~ return x * 2
+
+=== start ===
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      const caller = functionCallerFor(result);
+      const expr = parseExpression('double(5) > 8', { knownFunctions: knownFunctionsOf(result) });
+      expect(evaluate(expr, {}, caller)).toBe(true);
+    });
+
+    it('evaluates an assignment that calls a function-knot', () => {
+      const source = `
+=== function double(x) ===
+~ return x * 2
+
+=== start ===
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      const caller = functionCallerFor(result);
+      const stmt = parseStatement('gold = double(gold)', {
+        knownFunctions: knownFunctionsOf(result),
+      });
+      expect(execute(stmt, { gold: 5 }, caller)).toEqual({ gold: 10 });
+    });
+
+    it('a function with no return statement evaluates without throwing', () => {
+      const source = `
+=== function sideEffectOnly() ===
+~ gold = gold + 1
+
+=== start ===
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      const caller = functionCallerFor(result);
+      const stmt = parseStatement('x = sideEffectOnly()', {
+        knownFunctions: knownFunctionsOf(result),
+      });
+      const next = execute(stmt, { gold: 5 }, caller);
+      expect(next.gold).toBe(6);
+      expect(next.x).toBe('');
+    });
+
+    it('a function referencing an undeclared variable throws when actually called, not at parse time', () => {
+      const source = `
+=== function broken() ===
+~ return undeclaredVar
+
+=== start ===
+Hi.
+`;
+      const result = parseInk(source, 'test-id');
+      // Parsing succeeds — the parser never checks whether a bare
+      // identifier inside a function body is a declared variable,
+      // same as everywhere else in this grammar.
+      expect(result.validation.errors).toEqual([]);
+      const caller = functionCallerFor(result);
+      const stmt = parseStatement('x = broken()', { knownFunctions: knownFunctionsOf(result) });
+      expect(() => execute(stmt, {}, caller)).toThrow(/Undefined variable/);
+    });
   });
 
   describe('Relative diverts (#4)', () => {
@@ -500,8 +859,8 @@ Body.
       const result = parseInk(source, 'test-id');
       // The (rejoin) label is stripped — the gather content reads
       // exactly like the unlabeled version.
-      const leftContent = result.nodes['left'].content.map((c) => c.text);
-      const rightContent = result.nodes['right'].content.map((c) => c.text);
+      const leftContent = result.nodes['left'].content.filter(isTextBlock).map((c) => c.text);
+      const rightContent = result.nodes['right'].content.filter(isTextBlock).map((c) => c.text);
       expect(leftContent).toEqual(rightContent);
     });
   });
@@ -715,6 +1074,675 @@ No association with any real narrative.
       expect(chamberNode.choices[0].target).toBe('END');
       expect(chamberNode.choices[1].text).toBe('RIGHT');
       expect(chamberNode.choices[1].target).toBe('passage');
+    });
+  });
+
+  describe('VAR/CONST declarations (DEV-199 Phase 1)', () => {
+    it('parses a VAR declaration with an inferred number type', () => {
+      const result = parseInk('VAR gold = 50\n\n== start ==\nHi.\n-> END\n', 'test-id');
+      expect(result.variables).toEqual([
+        {
+          name: 'gold',
+          type: 'number',
+          initialValue: { kind: 'literal', value: 50 },
+          isConst: false,
+        },
+      ]);
+    });
+
+    it('parses a CONST declaration with isConst true', () => {
+      const result = parseInk('CONST max_health = 100\n\n== start ==\nHi.\n', 'test-id');
+      expect(result.variables).toEqual([
+        {
+          name: 'max_health',
+          type: 'number',
+          initialValue: { kind: 'literal', value: 100 },
+          isConst: true,
+        },
+      ]);
+    });
+
+    it('infers string and bool types', () => {
+      const result = parseInk(
+        'VAR greeting = "hello"\nVAR flag = true\n\n== start ==\nHi.\n',
+        'test-id',
+      );
+      expect(result.variables).toEqual([
+        {
+          name: 'greeting',
+          type: 'string',
+          initialValue: { kind: 'literal', value: 'hello' },
+          isConst: false,
+        },
+        {
+          name: 'flag',
+          type: 'bool',
+          initialValue: { kind: 'literal', value: true },
+          isConst: false,
+        },
+      ]);
+    });
+
+    it('evaluates an initializer that references an earlier declaration', () => {
+      const result = parseInk('VAR a = 5\nVAR b = a * 2\n\n== start ==\nHi.\n', 'test-id');
+      expect(result.variables?.[1]).toEqual({
+        name: 'b',
+        type: 'number',
+        initialValue: {
+          kind: 'binary',
+          operator: '*',
+          left: { kind: 'variable', name: 'a' },
+          right: { kind: 'literal', value: 2 },
+        },
+        isConst: false,
+      });
+    });
+
+    it('does not create an implicit start node for a leading VAR line', () => {
+      const result = parseInk('VAR gold = 50\n\n== start ==\nHi.\n-> END\n', 'test-id');
+      expect(result.nodes['_intro']).toBeUndefined();
+      expect(result.startNode).toBe('start');
+    });
+
+    it('warns and skips a VAR whose initializer references an undeclared variable', () => {
+      const result = parseInk('VAR b = unknown_var + 1\n\n== start ==\nHi.\n', 'test-id');
+      expect(result.variables).toBeUndefined();
+      expect(
+        result.validation.warnings.some((w) => w.message.includes('Could not determine a type')),
+      ).toBe(true);
+    });
+
+    it('warns and skips a VAR with an unparseable initializer', () => {
+      const result = parseInk('VAR b = $$$\n\n== start ==\nHi.\n', 'test-id');
+      expect(result.variables).toBeUndefined();
+      expect(result.validation.warnings.some((w) => w.message.includes('Could not parse'))).toBe(
+        true,
+      );
+    });
+
+    it('leaves variables undefined for a story with no declarations', () => {
+      const result = parseInk('== start ==\nHi.\n-> END\n', 'test-id');
+      expect(result.variables).toBeUndefined();
+    });
+  });
+
+  describe('In-content `~` assignment (DEV-199 Phase 1)', () => {
+    it('interleaves an assignment block between text blocks in document order', () => {
+      const source = '== start ==\nBefore.\n~ gold = gold + 10\nAfter.\n-> END\n';
+      const result = parseInk(source, 'test-id');
+      const content = result.nodes['start'].content;
+      expect(stripIds(content)).toEqual([
+        { kind: 'text', text: 'Before.', tags: [] },
+        {
+          kind: 'assignment',
+          statement: {
+            kind: 'assignment',
+            name: 'gold',
+            operator: '=',
+            value: {
+              kind: 'binary',
+              operator: '+',
+              left: { kind: 'variable', name: 'gold' },
+              right: { kind: 'literal', value: 10 },
+            },
+          },
+        },
+        { kind: 'text', text: 'After.', tags: [] },
+      ]);
+    });
+
+    it('parses a compound assignment operator', () => {
+      const source = '== start ==\n~ gold += 10\n';
+      const result = parseInk(source, 'test-id');
+      const [block] = result.nodes['start'].content;
+      expect(stripIds(block)).toEqual({
+        kind: 'assignment',
+        statement: {
+          kind: 'assignment',
+          name: 'gold',
+          operator: '+=',
+          value: { kind: 'literal', value: 10 },
+        },
+      });
+    });
+
+    it('places a leading assignment on an implicit start node', () => {
+      const source = '~ gold = 0\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      const content = result.nodes[result.startNode].content;
+      expect(stripIds(content[0])).toEqual({
+        kind: 'assignment',
+        statement: {
+          kind: 'assignment',
+          name: 'gold',
+          operator: '=',
+          value: { kind: 'literal', value: 0 },
+        },
+      });
+      expect(stripIds(content[1])).toEqual({ kind: 'text', text: 'Hi.', tags: [] });
+    });
+
+    it('falls back to literal text and warns on a `~` line it does not understand yet (e.g. `~ temp x = 5`)', () => {
+      // `~ return x` used to be this test's example, back when
+      // `return` wasn't understood at all — DEV-199 Phase 10b adds
+      // exactly that (see the "return statements" describe block
+      // below), so it's no longer a case this test can use. `temp`
+      // locals remain unsupported (see function-interpreter.ts's
+      // header), so that's the new example.
+      const source = '== debug ==\n~ temp x = 5\n';
+      const result = parseInk(source, 'test-id');
+      const [block] = result.nodes['debug'].content;
+      expect(isTextBlock(block)).toBe(true);
+      if (isTextBlock(block)) {
+        expect(block.text).toBe('~ temp x = 5');
+      }
+      expect(
+        result.validation.warnings.some((w) => w.message.includes('Could not parse assignment')),
+      ).toBe(true);
+    });
+
+    it('preserves the exact original line (no inserted space) when falling back on a line with no space after `~`', () => {
+      const source = '== debug ==\n~temp x=5\n';
+      const result = parseInk(source, 'test-id');
+      const [block] = result.nodes['debug'].content;
+      expect(isTextBlock(block)).toBe(true);
+      if (isTextBlock(block)) {
+        expect(block.text).toBe('~temp x=5');
+      }
+    });
+
+    it('round-trips through the shared content array unaffected when no assignment lines are present', () => {
+      // Guards against a regression where adding `~` dispatch somehow
+      // changes behavior for the overwhelming majority of existing
+      // stories that never use it.
+      const source = '== start ==\nJust narration.\n-> END\n';
+      const result = parseInk(source, 'test-id');
+      expect(stripIds(result.nodes['start'].content)).toEqual([
+        { kind: 'text', text: 'Just narration.', tags: [] },
+      ]);
+    });
+  });
+
+  describe('Ink conditional text (DEV-199 Phase 3)', () => {
+    it('parses a `{condition: text}` line into a TextBlock with its condition', () => {
+      const source = '== start ==\n{gold > 10: You have plenty of gold.}\n';
+      const result = parseInk(source, 'test-id');
+      expect(stripIds(result.nodes['start'].content)).toEqual([
+        {
+          kind: 'text',
+          text: 'You have plenty of gold.',
+          tags: [],
+          condition: {
+            kind: 'binary',
+            operator: '>',
+            left: { kind: 'variable', name: 'gold' },
+            right: { kind: 'literal', value: 10 },
+          },
+        },
+      ]);
+    });
+
+    it('interleaves conditional and unconditional lines in document order', () => {
+      const source =
+        '== start ==\nAlways shown.\n{seen_market: You remember the market.}\nAlso always shown.\n';
+      const result = parseInk(source, 'test-id');
+      expect(stripIds(result.nodes['start'].content)).toEqual([
+        { kind: 'text', text: 'Always shown.', tags: [] },
+        {
+          kind: 'text',
+          text: 'You remember the market.',
+          tags: [],
+          condition: { kind: 'variable', name: 'seen_market' },
+        },
+        { kind: 'text', text: 'Also always shown.', tags: [] },
+      ]);
+    });
+
+    it('preserves a trailing tag on a conditional line', () => {
+      const source = '== start ==\n{gold > 10: Rich.} # narrator:smug\n';
+      const result = parseInk(source, 'test-id');
+      expect(stripIds(result.nodes['start'].content)).toEqual([
+        {
+          kind: 'text',
+          text: 'Rich.',
+          tags: ['narrator:smug'],
+          condition: {
+            kind: 'binary',
+            operator: '>',
+            left: { kind: 'variable', name: 'gold' },
+            right: { kind: 'literal', value: 10 },
+          },
+        },
+      ]);
+    });
+
+    it('resolves an inline divert inside the conditional text', () => {
+      const source = '== start ==\n{gold > 10: Onward. -> next}\n\n== next ==\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      const startNode = result.nodes['start'];
+      expect(startNode.divert).toBe('next');
+      expect(stripIds(startNode.content)).toEqual([
+        {
+          kind: 'text',
+          text: 'Onward.',
+          tags: [],
+          condition: {
+            kind: 'binary',
+            operator: '>',
+            left: { kind: 'variable', name: 'gold' },
+            right: { kind: 'literal', value: 10 },
+          },
+        },
+      ]);
+    });
+
+    it('combines logical operators in the condition', () => {
+      const source = '== start ==\n{seen_market && gold > 10: Rich and well-travelled.}\n';
+      const result = parseInk(source, 'test-id');
+      const [block] = result.nodes['start'].content;
+      expect(stripIds(block)).toEqual({
+        kind: 'text',
+        text: 'Rich and well-travelled.',
+        tags: [],
+        condition: {
+          kind: 'logical',
+          operator: '&&',
+          left: { kind: 'variable', name: 'seen_market' },
+          right: {
+            kind: 'binary',
+            operator: '>',
+            left: { kind: 'variable', name: 'gold' },
+            right: { kind: 'literal', value: 10 },
+          },
+        },
+      });
+    });
+
+    it('falls back to literal text and warns when the condition fails to parse', () => {
+      const source = '== start ==\n{$$$: broken}\n';
+      const result = parseInk(source, 'test-id');
+      const [block] = result.nodes['start'].content;
+      expect(isTextBlock(block)).toBe(true);
+      if (isTextBlock(block)) {
+        expect(block.text).toBe('{$$$: broken}');
+        expect(block.condition).toBeUndefined();
+      }
+      expect(
+        result.validation.warnings.some((w) =>
+          w.message.includes("Could not parse conditional text's condition"),
+        ),
+      ).toBe(true);
+    });
+
+    it('does not treat a colon-less brace line (Ink alternatives/sequences) as conditional text', () => {
+      // {a|b} is a different, unsupported Ink feature (sequences,
+      // shuffles, once-only lists) — it must pass through exactly as
+      // it did before this phase: inert literal text, no condition.
+      const source = '== start ==\n{a|b}\n';
+      const result = parseInk(source, 'test-id');
+      expect(stripIds(result.nodes['start'].content)).toEqual([
+        { kind: 'text', text: '{a|b}', tags: [] },
+      ]);
+    });
+  });
+
+  describe('Ink conditional choice visibility (DEV-199 Phase 4)', () => {
+    it('parses a `{condition}` choice prefix into Choice.condition', () => {
+      const source =
+        '== start ==\nQuestion?\n\n* {gold > 10} Buy something -> shop\n\n== shop ==\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      const [choice] = result.nodes['start'].choices;
+      expect(choice.text).toBe('Buy something');
+      expect(choice.target).toBe('shop');
+      expect(choice.condition).toEqual({
+        kind: 'binary',
+        operator: '>',
+        left: { kind: 'variable', name: 'gold' },
+        right: { kind: 'literal', value: 10 },
+      });
+    });
+
+    it('ANDs stacked `{c1}{c2}` prefixes into one expression', () => {
+      const source =
+        '== start ==\nQuestion?\n\n* {gold > 10}{seen_market} Buy something -> shop\n\n== shop ==\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      const [choice] = result.nodes['start'].choices;
+      expect(choice.condition).toEqual({
+        kind: 'logical',
+        operator: '&&',
+        left: {
+          kind: 'binary',
+          operator: '>',
+          left: { kind: 'variable', name: 'gold' },
+          right: { kind: 'literal', value: 10 },
+        },
+        right: { kind: 'variable', name: 'seen_market' },
+      });
+    });
+
+    it('leaves a choice with no condition prefix without a condition field at all', () => {
+      const source = '== start ==\nQuestion?\n\n* Leave -> END\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.nodes['start'].choices[0]).not.toHaveProperty('condition');
+    });
+
+    it('resolves a condition alongside bracket choice-text syntax', () => {
+      const source =
+        '== start ==\nQuestion?\n\n* {gold > 10} [Buy] You bought it. -> shop\n\n== shop ==\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      const [choice] = result.nodes['start'].choices;
+      expect(choice.text).toBe('Buy');
+      expect(choice.condition).toEqual({
+        kind: 'binary',
+        operator: '>',
+        left: { kind: 'variable', name: 'gold' },
+        right: { kind: 'literal', value: 10 },
+      });
+    });
+
+    it('resolves a condition on a divert-on-next-line choice', () => {
+      const source =
+        '== start ==\nQuestion?\n\n* {gold > 10} Buy something\n    -> shop\n\n== shop ==\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      const [choice] = result.nodes['start'].choices;
+      expect(choice.target).toBe('shop');
+      expect(choice.condition).toBeDefined();
+    });
+
+    it('preserves document order across conditional and unconditional choices', () => {
+      const source =
+        '== start ==\nQuestion?\n\n* Leave -> END\n* {gold > 10} Buy something -> shop\n* Look around -> END\n\n== shop ==\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      const choices = result.nodes['start'].choices;
+      expect(choices.map((c) => c.text)).toEqual(['Leave', 'Buy something', 'Look around']);
+      expect(choices[0]).not.toHaveProperty('condition');
+      expect(choices[1].condition).toBeDefined();
+      expect(choices[2]).not.toHaveProperty('condition');
+    });
+
+    it('falls back to literal text and warns when the choice condition fails to parse', () => {
+      const source = '== start ==\nQuestion?\n\n* {$$$} Buy something -> shop\n\n== shop ==\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      const [choice] = result.nodes['start'].choices;
+      expect(choice.condition).toBeUndefined();
+      expect(choice.text).toBe('{$$$} Buy something');
+      expect(
+        result.validation.warnings.some((w) =>
+          w.message.includes('Could not parse choice condition'),
+        ),
+      ).toBe(true);
+    });
+  });
+
+  describe('LIST declarations (DEV-199 Phase 10)', () => {
+    it('declares a LIST with its members in order and the parenthesized ones active', () => {
+      const source = '== start ==\nLIST kettleState = cold, (boiling), recently_boiled\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.variables).toEqual([
+        {
+          name: 'kettleState',
+          type: 'list',
+          isConst: false,
+          listMembers: ['cold', 'boiling', 'recently_boiled'],
+          initialValue: {
+            kind: 'literal',
+            value: {
+              kind: 'list',
+              origin: 'kettleState',
+              items: [{ name: 'boiling', ordinal: 1 }],
+              allItems: [
+                { name: 'cold', ordinal: 0 },
+                { name: 'boiling', ordinal: 1 },
+                { name: 'recently_boiled', ordinal: 2 },
+              ],
+            },
+          },
+        },
+      ]);
+    });
+
+    it('declares a LIST with no initially-active members as an empty list', () => {
+      const source = '== start ==\nLIST flags = seenIntro, metGuard\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.variables?.[0].initialValue).toMatchObject({
+        kind: 'literal',
+        value: { kind: 'list', items: [] },
+      });
+    });
+
+    it('resolves a bare member name in a LATER condition as a list literal, not an undeclared variable', () => {
+      const source =
+        '== start ==\nLIST kettleState = cold, (boiling), recently_boiled\n{kettleState == boiling: It is boiling.}\n';
+      const result = parseInk(source, 'test-id');
+      const [block] = result.nodes['start'].content;
+      expect(isTextBlock(block)).toBe(true);
+      if (isTextBlock(block)) {
+        expect(block.text).toBe('It is boiling.');
+        expect(block.condition).toEqual({
+          kind: 'binary',
+          operator: '==',
+          left: { kind: 'variable', name: 'kettleState' },
+          right: {
+            kind: 'literal',
+            value: {
+              kind: 'list',
+              origin: 'kettleState',
+              items: [{ name: 'boiling', ordinal: 1 }],
+              allItems: [
+                { name: 'cold', ordinal: 0 },
+                { name: 'boiling', ordinal: 1 },
+                { name: 'recently_boiled', ordinal: 2 },
+              ],
+            },
+          },
+        });
+      }
+    });
+
+    it('resolves a bare member name in a LATER ~ assignment as a list literal', () => {
+      const source =
+        '== start ==\nLIST kettleState = cold, boiling\n~ kettleState += boiling\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      const assignmentBlock = result.nodes['start'].content.find((c) => c.kind === 'assignment');
+      expect(assignmentBlock).toBeDefined();
+      if (assignmentBlock && assignmentBlock.kind === 'assignment') {
+        expect(assignmentBlock.statement.value).toMatchObject({
+          kind: 'literal',
+          value: { kind: 'list', items: [{ name: 'boiling', ordinal: 1 }] },
+        });
+      }
+    });
+
+    it('a LIST declaration before the first knot does not spawn an implicit start node', () => {
+      const source = 'LIST kettleState = cold, (boiling)\n\n== start ==\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.nodes['_intro']).toBeUndefined();
+      expect(result.startNode).toBe('start');
+    });
+
+    it('warns and skips an invalid member name rather than crashing', () => {
+      const source = '== start ==\nLIST bad = 1nvalid\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.variables).toBeUndefined();
+      expect(
+        result.validation.warnings.some((w) => w.message.includes('not a valid member name')),
+      ).toBe(true);
+    });
+
+    it('warns and skips a LIST whose member name collides with an already-declared VAR', () => {
+      const source = '== start ==\nVAR cold = 5\nLIST kettleState = cold, boiling\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      // Only the VAR survives — the colliding LIST is rejected whole.
+      expect(result.variables).toEqual([
+        {
+          name: 'cold',
+          type: 'number',
+          isConst: false,
+          initialValue: { kind: 'literal', value: 5 },
+        },
+      ]);
+      expect(result.validation.warnings.some((w) => w.message.includes('collides with'))).toBe(
+        true,
+      );
+    });
+
+    it('warns and skips a VAR whose name collides with an already-declared LIST member', () => {
+      const source = '== start ==\nLIST kettleState = cold, boiling\nVAR cold = 5\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      // Only the LIST survives.
+      expect(result.variables).toHaveLength(1);
+      expect(result.variables?.[0].name).toBe('kettleState');
+      expect(result.validation.warnings.some((w) => w.message.includes('collides with'))).toBe(
+        true,
+      );
+    });
+
+    it('warns and skips a LIST whose member name collides with a different LIST’s member', () => {
+      const source = '== start ==\nLIST a = x, y\nLIST b = y, z\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.variables).toHaveLength(1);
+      expect(result.variables?.[0].name).toBe('a');
+      expect(
+        result.validation.warnings.some((w) => w.message.includes('collides with a member of')),
+      ).toBe(true);
+    });
+
+    it('a VAR that merely references an existing LIST member round-trips as a VAR, not a bogus second LIST declaration', () => {
+      const source = '== start ==\nLIST kettleState = cold, (boiling)\nVAR temp = cold\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      const tempDecl = result.variables?.find((v) => v.name === 'temp');
+      expect(tempDecl).toMatchObject({ name: 'temp', type: 'list' });
+
+      const ink = convertStoryGraphToInk(result);
+      expect(ink).toContain('LIST kettleState = cold, (boiling)');
+      expect(ink).toContain('VAR temp = cold');
+      expect(ink).not.toMatch(/LIST temp/);
+
+      // Round-trips back through the parser unchanged.
+      const reparsed = parseInk(ink, 'test-id');
+      expect(reparsed.variables?.find((v) => v.name === 'temp')).toEqual(tempDecl);
+    });
+
+    it('warns and skips a LIST whose OWN name collides with an already-declared VAR', () => {
+      const source = '== start ==\nVAR kettleState = 5\nLIST kettleState = cold, boiling\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.variables).toHaveLength(1);
+      expect(result.variables?.[0]).toMatchObject({ name: 'kettleState', type: 'number' });
+      expect(result.validation.warnings.some((w) => w.message.includes('collides with'))).toBe(
+        true,
+      );
+    });
+
+    it('warns and skips a VAR whose OWN name collides with an already-declared LIST', () => {
+      const source = '== start ==\nLIST kettleState = cold, boiling\nVAR kettleState = 5\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.variables).toHaveLength(1);
+      expect(result.variables?.[0]).toMatchObject({ name: 'kettleState', type: 'list' });
+      expect(result.validation.warnings.some((w) => w.message.includes('collides with'))).toBe(
+        true,
+      );
+    });
+
+    it('warns and skips a second LIST whose OWN name collides with an already-declared LIST', () => {
+      const source =
+        '== start ==\nLIST kettleState = cold, boiling\nLIST kettleState = p, q\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.variables).toHaveLength(1);
+      expect(result.variables?.[0].listMembers).toEqual(['cold', 'boiling']);
+      expect(result.validation.warnings.some((w) => w.message.includes('collides with'))).toBe(
+        true,
+      );
+    });
+
+    it('warns and skips a LIST whose OWN name collides with another LIST’s member', () => {
+      const source = '== start ==\nLIST a = boiling, y\nLIST boiling = p, q\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.variables).toHaveLength(1);
+      expect(result.variables?.[0].name).toBe('a');
+      expect(result.validation.warnings.some((w) => w.message.includes('collides with'))).toBe(
+        true,
+      );
+    });
+
+    it('warns and skips a LIST member that collides with another already-declared LIST’s OWN name', () => {
+      const source = '== start ==\nLIST a = p, q\nLIST b = a, z\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.variables).toHaveLength(1);
+      expect(result.variables?.[0].name).toBe('a');
+      expect(result.validation.warnings.some((w) => w.message.includes('collides with'))).toBe(
+        true,
+      );
+    });
+
+    it('rejects a list literal mixing members from two different LISTs', () => {
+      const source = '== start ==\nLIST a = x, y\nLIST b = p, q\n~ temp = (x, p)\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      // The assignment statement failed to parse, so no assignment
+      // block is emitted for it — just the plain text line.
+      expect(result.nodes['start'].content.some((c) => c.kind === 'assignment')).toBe(false);
+      expect(
+        result.validation.warnings.some((w) =>
+          w.message.includes('mixes members from different LISTs'),
+        ),
+      ).toBe(true);
+    });
+
+    it('warns and skips a LIST whose own name is also one of its own members', () => {
+      const source = '== start ==\nLIST a = a, b\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.variables).toBeUndefined();
+      expect(
+        result.validation.warnings.some((w) =>
+          w.message.includes("cannot share the LIST's own name"),
+        ),
+      ).toBe(true);
+    });
+
+    it('warns and skips a LIST with a duplicate member within the same declaration', () => {
+      const source = '== start ==\nLIST a = x, x\nHi.\n';
+      const result = parseInk(source, 'test-id');
+      expect(result.variables).toBeUndefined();
+      expect(
+        result.validation.warnings.some((w) => w.message.includes('is declared more than once')),
+      ).toBe(true);
+    });
+
+    it('treats __proto__/constructor/prototype as ordinary variable names (found in review: remote property injection)', () => {
+      // `\w+` matches these just fine, so an uploaded Ink file can
+      // legally declare `VAR __proto__ = 5`. state.variableValues is
+      // a Map, not a plain object, so this is just an ordinary entry
+      // — no prototype-chain special-casing to worry about at all.
+      for (const name of ['__proto__', 'constructor', 'prototype']) {
+        const result = parseInk(`== start ==\nVAR ${name} = 5\nVAR x = ${name}\nHi.\n`, 'test-id');
+        expect(result.variables).toEqual([
+          { name, type: 'number', isConst: false, initialValue: { kind: 'literal', value: 5 } },
+          { name: 'x', type: 'number', isConst: false, initialValue: { kind: 'variable', name } },
+        ]);
+      }
+      expect(Object.prototype).not.toHaveProperty('x');
+    });
+
+    it('treats a LIST named __proto__, or with a __proto__ member, as ordinary', () => {
+      const ownName = parseInk('== start ==\nLIST __proto__ = cold, boiling\nHi.\n', 'test-id');
+      expect(ownName.variables?.[0]).toMatchObject({ name: '__proto__', type: 'list' });
+      expect(ownName.validation.errors).toEqual([]);
+
+      const memberName = parseInk(
+        '== start ==\nLIST kettleState = cold, __proto__\n~ x = __proto__\nHi.\n',
+        'test-id',
+      );
+      expect(memberName.validation.errors).toEqual([]);
+      const assignmentBlock = memberName.nodes['start'].content.find(
+        (c) => c.kind === 'assignment',
+      );
+      expect(assignmentBlock).toBeDefined();
+      if (assignmentBlock?.kind === 'assignment') {
+        expect(assignmentBlock.statement.value).toMatchObject({
+          kind: 'literal',
+          value: { kind: 'list', origin: 'kettleState', items: [{ name: '__proto__' }] },
+        });
+      }
+      expect(Object.prototype).not.toHaveProperty('x');
     });
   });
 });

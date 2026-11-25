@@ -5,6 +5,7 @@ import StoryTab from '../components/StoryTab';
 import AudioTab from '../components/AudioTab';
 import MusicTab from '../components/MusicTab';
 import CharactersTab from '../components/CharactersTab';
+import VariablesTab from '../components/VariablesTab';
 import BuildsTab from '../components/BuildsTab';
 import HistoryTab from '../components/HistoryTab';
 import EditableProjectTitle from '../components/EditableProjectTitle';
@@ -31,6 +32,7 @@ type Tab =
   | 'audio'
   | 'music'
   | 'characters'
+  | 'variables'
   | 'volumes'
   | 'systemSounds'
   | 'headphone'
@@ -50,7 +52,12 @@ type Tab =
 type GroupId = 'narrative' | 'sound' | 'style' | 'ship';
 type Group = { id: GroupId; label: string; mobileLabel: string; tabs: Tab[] };
 const GROUPS: Group[] = [
-  { id: 'narrative', label: 'Narrative', mobileLabel: 'Narrative', tabs: ['story', 'graph'] },
+  {
+    id: 'narrative',
+    label: 'Narrative',
+    mobileLabel: 'Narrative',
+    tabs: ['story', 'graph', 'variables'],
+  },
   {
     id: 'sound',
     label: 'Voice & sound',
@@ -70,6 +77,7 @@ const TAB_LABEL: Record<Tab, string> = {
   audio: 'Audio',
   music: 'Music',
   characters: 'Characters',
+  variables: 'Variables',
   volumes: 'Volumes',
   systemSounds: 'System sounds',
   headphone: 'Headphone controls',
@@ -417,6 +425,13 @@ export default function ProjectDetailPage() {
             )}
             {activeTab === 'music' && <MusicTab projectId={id} />}
             {activeTab === 'characters' && <CharactersTab projectId={id} />}
+            {activeTab === 'variables' && (
+              <VariablesTab
+                projectId={id}
+                storyGraph={project.story_graph}
+                onStoryUpdated={() => loadProject({ silent: true })}
+              />
+            )}
             {activeTab === 'volumes' && <VolumesTab projectId={id} />}
             {activeTab === 'systemSounds' && <SystemSoundsTab projectId={id} />}
             {activeTab === 'headphone' && <HeadphoneControlsTab projectId={id} />}
