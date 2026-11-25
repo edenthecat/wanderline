@@ -1,4 +1,4 @@
-FROM node:20-alpine
+FROM node:22-alpine
 
 # ffmpeg is used at runtime to transcode uploaded WAV audio to MP3.
 # make/g++/python3 are kept for native npm modules (bcrypt in
