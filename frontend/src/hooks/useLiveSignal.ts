@@ -12,7 +12,7 @@
 // version counter (no read-modify-write race) and because they
 // make staleness debuggable.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as Y from 'yjs';
 
 const SIGNALS_KEY = '__signals__';
@@ -40,11 +40,30 @@ export function bumpLiveSignal(doc: Y.Doc | null, key: string): void {
  */
 export function useLiveSignal(doc: Y.Doc | null, key: string): number {
   const [tick, setTick] = useState(0);
+  const seenDocRef = useRef<Y.Doc | null>(null);
   useEffect(() => {
     if (!doc) return;
     const m = getSignalsMap(doc);
+    // A REPLACEMENT doc (not the first one) means useYjs threw the
+    // previous one away — room invalidation, or coming back from an
+    // idle-tab suspension. Either way this tab was disconnected and may
+    // have missed bumps, and it cannot recover them: the shadow saver
+    // persists only the `nodes` map, so a room the server rehydrated
+    // has an EMPTY signals map. The seed is then 0, the `seed !== 0`
+    // branch below leaves the stale tick in place, no dependency
+    // changes, and consumers keep rendering REST data fetched before
+    // the gap (found in review — AudioTab and useNodeEditor both sat
+    // on stale assignments after a peer changed them).
+    //
+    // So force one catch-up tick instead. Consumers skip tick 0 and
+    // de-dupe on the previous value, so a fresh Date.now() is exactly
+    // one refetch. The first doc deliberately does not trigger this:
+    // consumers already fetch on mount.
+    const replaced = seenDocRef.current !== null && seenDocRef.current !== doc;
+    seenDocRef.current = doc;
     const seed = (m.get(key) as number | undefined) ?? 0;
-    if (seed !== 0) setTick(seed);
+    if (replaced) setTick(Date.now());
+    else if (seed !== 0) setTick(seed);
     // Y.YMapEvent's `transaction.local` is true when the mutation
     // originated in THIS Y.Doc instance (vs being applied from a
     // remote peer). The caller of bumpLiveSignal has already done
