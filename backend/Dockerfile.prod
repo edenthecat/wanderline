@@ -3,7 +3,7 @@
 # endpoint, so without baking it into this image the prod backend
 # returns 500 on every preview request (the path expected by
 # projects-preview.ts is /player-app/dist/index.html).
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
 RUN apk add --no-cache make g++ git python3
 
@@ -58,7 +58,7 @@ RUN if [ -d backend/node_modules ]; then cp -a backend/node_modules/. node_modul
 RUN if [ -d shared/node_modules ]; then cp -a shared/node_modules/. node_modules/; fi
 
 # Stage 2: Production image
-FROM node:20-alpine
+FROM node:22-alpine
 
 # ffmpeg is used at runtime to transcode uploaded WAV audio to MP3.
 RUN apk add --no-cache ffmpeg
