@@ -698,11 +698,17 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
         res.status(404).json({ error: 'Node not found' });
         return;
       }
-      if (!node.content || contentIndex >= node.content.length) {
+      // `.at()`, not `node.content[contentIndex]`: a bracket read with a
+      // user-supplied key is a prototype-pollution sink (the following
+      // write would land on Array.prototype). A `>= length` bounds check
+      // does NOT close it, because `'__proto__' >= length` is false.
+      // `.at()` coerces its argument to an integer, so no key can reach
+      // the prototype chain even if the isInteger guard above regresses.
+      const block = node.content?.at(contentIndex);
+      if (!block) {
         res.status(400).json({ error: 'Content index out of range' });
         return;
       }
-      const block = node.content[contentIndex];
       if (!isTextBlock(block)) {
         res.status(400).json({ error: 'Cannot set text on an assignment block' });
         return;
@@ -1489,12 +1495,14 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
         res.status(404).json({ error: 'Node not found' });
         return;
       }
-      if (!node.choices || choiceIndex >= node.choices.length) {
+      // `.at()`, not a bracket read — see the sibling text route.
+      const choice = node.choices?.at(choiceIndex);
+      if (!choice) {
         res.status(400).json({ error: 'Choice index out of range' });
         return;
       }
 
-      node.choices[choiceIndex].condition = parsedCondition;
+      choice.condition = parsedCondition;
 
       await pool.query(
         `UPDATE project_stories
@@ -1576,11 +1584,12 @@ export function mountStoryRoutes(router: Router, pool: Pool): void {
         res.status(404).json({ error: 'Node not found' });
         return;
       }
-      if (!node.content || contentIndex >= node.content.length) {
+      // `.at()`, not a bracket read — see the sibling text route.
+      const block = node.content?.at(contentIndex);
+      if (!block) {
         res.status(400).json({ error: 'Content index out of range' });
         return;
       }
-      const block = node.content[contentIndex];
       if (!isTextBlock(block)) {
         res.status(400).json({ error: 'Cannot set a condition on an assignment block' });
         return;
