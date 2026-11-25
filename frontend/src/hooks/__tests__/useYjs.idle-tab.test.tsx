@@ -74,6 +74,22 @@ function setTabHidden(next: boolean): void {
   document.dispatchEvent(new Event('visibilitychange'));
 }
 
+/**
+ * Change visibility WITHOUT firing visibilitychange.
+ *
+ * This is the scenario the focus/online triggers exist for: a tab that
+ * comes back but never fires the event we primarily listen to. While
+ * suspended we have cleared y-websocket's shouldConnect flag, so
+ * nothing else would re-dial.
+ */
+function setHiddenSilently(next: boolean): void {
+  hidden = next;
+}
+
+function fireWindow(event: 'focus' | 'online'): void {
+  window.dispatchEvent(new Event(event));
+}
+
 beforeEach(() => {
   providers.length = 0;
   hidden = false;
@@ -161,5 +177,53 @@ describe('useYjs idle-tab disconnect', () => {
     act(() => void vi.advanceTimersByTime(IDLE_MS));
 
     expect(provider.disconnectCalls).toBe(1);
+  });
+
+  it('resumes on window focus when visibilitychange never fires', async () => {
+    const { result } = await mountAndFreezeTime();
+    const staleDoc = result.current.doc;
+    const staleProvider = providers[0];
+
+    act(() => setTabHidden(true));
+    act(() => void vi.advanceTimersByTime(IDLE_MS));
+    expect(staleProvider.disconnectCalls).toBe(1);
+
+    act(() => setHiddenSilently(false));
+    act(() => fireWindow('focus'));
+
+    expect(providers).toHaveLength(2);
+    expect(result.current.doc).not.toBe(staleDoc);
+  });
+
+  it('resumes on the online event when the tab is back on screen', async () => {
+    const { result } = await mountAndFreezeTime();
+    const staleDoc = result.current.doc;
+
+    act(() => setTabHidden(true));
+    act(() => void vi.advanceTimersByTime(IDLE_MS));
+
+    act(() => setHiddenSilently(false));
+    act(() => fireWindow('online'));
+
+    expect(providers).toHaveLength(2);
+    expect(result.current.doc).not.toBe(staleDoc);
+  });
+
+  // The guard that makes the extra triggers safe: the network coming
+  // back must not re-open a socket for a tab nobody is looking at,
+  // which is the entire point of suspending it.
+  it('ignores focus and online while the tab is still hidden', async () => {
+    const { result } = await mountAndFreezeTime();
+    const doc = result.current.doc;
+
+    act(() => setTabHidden(true));
+    act(() => void vi.advanceTimersByTime(IDLE_MS));
+
+    act(() => fireWindow('online'));
+    act(() => fireWindow('focus'));
+
+    // Still suspended: no rebuild, no second socket.
+    expect(providers).toHaveLength(1);
+    expect(result.current.doc).toBe(doc);
   });
 });

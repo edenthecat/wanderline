@@ -199,33 +199,61 @@ function resumeFromIdle(): void {
   }
 }
 
-function handleVisibility(): void {
-  if (document.hidden) {
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(suspendForIdle, IDLE_DISCONNECT_MS);
-    return;
-  }
+function cancelIdleTimer(): void {
   if (idleTimer) {
     clearTimeout(idleTimer);
     idleTimer = null;
   }
+}
+
+/**
+ * Resume, but only for a tab that is actually on screen.
+ *
+ * The visibility guard is the whole point of the suspension: `focus`
+ * and `online` can both fire while the tab is still hidden — a
+ * background window can take focus, and the network can come back at
+ * any time — and resuming there would re-open a billable socket for a
+ * tab nobody is looking at.
+ *
+ * Note this is a no-op unless something is flagged idleDisconnected, so
+ * the common case (network blip on a visible tab) still goes through
+ * y-websocket's own backoff rather than a rebuild.
+ */
+function resumeIfVisible(): void {
+  if (document.hidden) return;
+  cancelIdleTimer();
   resumeFromIdle();
+}
+
+function handleVisibility(): void {
+  if (document.hidden) {
+    cancelIdleTimer();
+    idleTimer = setTimeout(suspendForIdle, IDLE_DISCONNECT_MS);
+    return;
+  }
+  resumeIfVisible();
 }
 
 function bindVisibility(): void {
   if (visibilityBound || typeof document === 'undefined') return;
   document.addEventListener('visibilitychange', handleVisibility);
+  // `focus` and `online` are belt-and-braces. While suspended we have
+  // cleared y-websocket's shouldConnect flag, so its backoff loop is
+  // not going to re-dial for us — visibilitychange is otherwise the
+  // only wake-up path, and a tab that comes back without firing it
+  // would sit disconnected indefinitely.
+  window.addEventListener('focus', resumeIfVisible);
+  window.addEventListener('online', resumeIfVisible);
   visibilityBound = true;
 }
 
 function unbindVisibility(): void {
   if (!visibilityBound) return;
   document.removeEventListener('visibilitychange', handleVisibility);
+  window.removeEventListener('focus', resumeIfVisible);
+  window.removeEventListener('online', resumeIfVisible);
   visibilityBound = false;
-  if (idleTimer) {
-    clearTimeout(idleTimer);
-    idleTimer = null;
-  }
+  cancelIdleTimer();
 }
 
 function acquire(projectId: string): DocEntry {
