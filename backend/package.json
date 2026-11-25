@@ -16,7 +16,7 @@
     "migrate:create": "node-pg-migrate -d DATABASE_URL -m migrations create"
   },
   "dependencies": {
-    "@google-cloud/storage": "^7.21.0",
+    "@google-cloud/storage": "^9.0.0",
     "@wanderline/shared": "file:../shared",
     "@sentry/node": "^10.65.0",
     "archiver": "^8.0.0",
