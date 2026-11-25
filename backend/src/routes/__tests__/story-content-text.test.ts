@@ -131,3 +131,41 @@ describe('PATCH /:id/story/node/content/text', () => {
     expect(Object.prototype).not.toHaveProperty('content');
   });
 });
+
+// The nodeId vector was already covered; the INDEX vector was not.
+// `node.content[contentIndex]` with a non-numeric contentIndex
+// resolves to Array.prototype, and the subsequent `block.text =`
+// would then write onto it, polluting every array in the process.
+// CodeQL flags that assignment (alert #102); these pin the
+// Number.isInteger guard that makes it unreachable.
+describe('PATCH /:id/story/node/content/text — prototype-polluting contentIndex', () => {
+  const textGraph = () =>
+    graph({
+      a: { id: 'a', content: [{ kind: 'text', text: 'hi', tags: [] }], choices: [], tags: [] },
+    });
+
+  for (const contentIndex of ['__proto__', 'constructor', 'prototype']) {
+    it(`400s for a ${contentIndex} contentIndex without touching Array.prototype`, async () => {
+      const { app, query } = makeApp(textGraph());
+      const res = await request(app)
+        .patch('/api/projects/p1/story/node/content/text')
+        .send({ nodeId: 'a', contentIndex, newText: 'pwned' });
+
+      expect(res.status).toBe(400);
+      expect(Array.prototype).not.toHaveProperty('text');
+      expect(Object.prototype).not.toHaveProperty('text');
+      expect(([] as unknown as { text?: string }).text).toBeUndefined();
+      // Rejected before any write, not merely rejected after one.
+      expect(query.mock.calls.some(([sql]) => String(sql).includes('UPDATE'))).toBe(false);
+    });
+  }
+
+  it('400s for a numeric-string contentIndex rather than coercing it', async () => {
+    const { app } = makeApp(textGraph());
+    const res = await request(app)
+      .patch('/api/projects/p1/story/node/content/text')
+      .send({ nodeId: 'a', contentIndex: '0', newText: 'coerced' });
+
+    expect(res.status).toBe(400);
+  });
+});
