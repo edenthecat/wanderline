@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import * as Y from 'yjs';
 
@@ -15,6 +15,10 @@ import { bumpLiveSignal, useLiveSignal } from '../useLiveSignal';
 // data fetched before the gap.
 
 const KEY = 'audio-assignments';
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe('useLiveSignal across a doc swap', () => {
   it('does not force a tick for the first doc', () => {
@@ -78,5 +82,28 @@ describe('useLiveSignal across a doc swap', () => {
     });
 
     expect(result.current).not.toBe(0);
+  });
+
+  // Pins the millisecond collision: with a frozen clock a bare
+  // Date.now() would reproduce the existing tick exactly, React would
+  // see no state change, and the catch-up refetch would never fire.
+  it('still changes the tick when the swap lands in the same millisecond as the bump', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-25T20:00:00.000Z'));
+
+    const first = new Y.Doc();
+    bumpLiveSignal(first, KEY);
+    const { result, rerender } = renderHook(({ d }: { d: Y.Doc }) => useLiveSignal(d, KEY), {
+      initialProps: { d: first },
+    });
+    const seeded = result.current;
+    expect(seeded).toBe(Date.now());
+
+    // Clock has not advanced at all.
+    const replacement = new Y.Doc();
+    act(() => rerender({ d: replacement }));
+
+    expect(result.current).not.toBe(seeded);
+    expect(result.current).toBeGreaterThan(seeded);
   });
 });

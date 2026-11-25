@@ -62,7 +62,13 @@ export function useLiveSignal(doc: Y.Doc | null, key: string): number {
     const replaced = seenDocRef.current !== null && seenDocRef.current !== doc;
     seenDocRef.current = doc;
     const seed = (m.get(key) as number | undefined) ?? 0;
-    if (replaced) setTick(Date.now());
+    // Not a bare Date.now(): if the previous tick came from a bump (or
+    // an earlier swap) inside the SAME millisecond, the value would be
+    // identical, React would see no state change, and the catch-up
+    // refetch would silently not happen (found in review). Stepping
+    // past the previous value guarantees the dependency changes, and
+    // still reads as a timestamp in the normal case.
+    if (replaced) setTick((prev) => Math.max(prev + 1, Date.now()));
     else if (seed !== 0) setTick(seed);
     // Y.YMapEvent's `transaction.local` is true when the mutation
     // originated in THIS Y.Doc instance (vs being applied from a
