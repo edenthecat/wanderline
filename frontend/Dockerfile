@@ -18,7 +18,15 @@ WORKDIR /app
 COPY shared/ /shared/
 COPY frontend/package.json ./
 
-RUN npm install
+# npm is upgraded first: the 10.9.9 that node:22-alpine ships crashes
+# resolving this isolated, lockfile-less install with
+# `Cannot read properties of null (reading 'edgesOut')`. Node 20's
+# npm 10.8.2 fails the same way once run on Node 22, so this is a
+# resolver/runtime interaction, not just an npm version. The backend
+# dev image installs cleanly, so the trigger is specific to this
+# package's dependency graph. Pinned rather than `@latest` to keep
+# image builds reproducible.
+RUN npm install -g npm@12.2.3 && npm install
 
 # Copy source code
 COPY frontend/ ./
