@@ -226,4 +226,46 @@ describe('useYjs idle-tab disconnect', () => {
     expect(providers).toHaveLength(1);
     expect(result.current.doc).toBe(doc);
   });
+
+  // An offline provider holds edits that never reached the server.
+  // Rebuilding would throw them away, and suspending it saves nothing
+  // because there is no open socket to close.
+  it('leaves an already-offline provider alone so offline edits survive', async () => {
+    const { result } = await mountAndFreezeTime();
+    const provider = providers[0];
+    const doc = result.current.doc;
+
+    // Network dropped while the tab was still in front, and the author
+    // kept typing into the local doc.
+    provider.wsconnected = false;
+
+    act(() => setTabHidden(true));
+    act(() => void vi.advanceTimersByTime(IDLE_MS));
+
+    expect(provider.disconnectCalls).toBe(0);
+
+    act(() => setTabHidden(false));
+
+    // No rebuild: same doc, same provider, unsent edits intact. The
+    // provider's own backoff is left to reconnect it.
+    expect(providers).toHaveLength(1);
+    expect(result.current.doc).toBe(doc);
+    expect(provider.destroyed).toBe(false);
+  });
+
+  // Opening a project into a background tab fires no visibilitychange,
+  // so binding has to seed from the current state or the socket stays
+  // open forever — the exact case this mechanism targets.
+  it('arms the idle timer when it mounts into an already-hidden tab', () => {
+    vi.useFakeTimers();
+    hidden = true;
+
+    renderHook(() => useYjs('p1'));
+    const provider = providers[0];
+    expect(provider).toBeDefined();
+
+    act(() => void vi.advanceTimersByTime(IDLE_MS));
+
+    expect(provider.disconnectCalls).toBe(1);
+  });
 });

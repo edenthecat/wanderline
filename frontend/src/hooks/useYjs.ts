@@ -164,6 +164,17 @@ function suspendForIdle(): void {
   idleTimer = null;
   for (const entry of registry.values()) {
     if (entry.idleDisconnected) continue;
+    // Leave a provider that is ALREADY offline alone (found in review).
+    // Two reasons, and the second is the important one:
+    //   - There is no open socket, so suspending it saves nothing. The
+    //     whole point here is closing a billable connection.
+    //   - Its doc may be holding edits typed during the outage that
+    //     have never reached the server. Flagging it would make
+    //     resumeFromIdle rebuild — and rebuilding throws those edits
+    //     away. Skipping leaves y-websocket's own backoff to reconnect
+    //     with the doc intact, which is exactly how an offline edit is
+    //     supposed to survive a flaky network.
+    if (!entry.provider.wsconnected) continue;
     entry.idleDisconnected = true;
     // disconnect(), not destroy(): this clears y-websocket's
     // shouldConnect flag, so its backoff loop stops trying to reopen.
@@ -245,6 +256,14 @@ function bindVisibility(): void {
   window.addEventListener('focus', resumeIfVisible);
   window.addEventListener('online', resumeIfVisible);
   visibilityBound = true;
+  // Seed from the CURRENT visibility, don't wait for a transition
+  // (found in review). Opening a project into a background tab — a
+  // middle-click, a restored session, a link opened in the background
+  // — mounts the editor with document.hidden already true, and no
+  // visibilitychange will fire for it. Without this the socket would
+  // stay open indefinitely, which is precisely the forgotten tab this
+  // whole mechanism exists to close.
+  handleVisibility();
 }
 
 function unbindVisibility(): void {
