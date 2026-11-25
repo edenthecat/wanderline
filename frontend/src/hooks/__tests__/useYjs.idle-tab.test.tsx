@@ -268,4 +268,42 @@ describe('useYjs idle-tab disconnect', () => {
 
     expect(provider.disconnectCalls).toBe(1);
   });
+
+  // Skipping an offline provider protects unsent edits, but its own
+  // backoff can reconnect while the tab is still hidden. Without a
+  // re-armed timer that socket would stay open until the user came
+  // back, which is the billing this whole mechanism exists to stop.
+  it('suspends a deferred provider once it reconnects while still hidden', async () => {
+    const { result } = await mountAndFreezeTime();
+    const provider = providers[0];
+    const doc = result.current.doc;
+
+    provider.wsconnected = false;
+
+    act(() => setTabHidden(true));
+    act(() => void vi.advanceTimersByTime(IDLE_MS));
+    // Deferred, not suspended: the doc may hold unsent edits.
+    expect(provider.disconnectCalls).toBe(0);
+
+    // y-websocket's backoff gets the socket back, tab still hidden.
+    provider.wsconnected = true;
+    act(() => void vi.advanceTimersByTime(IDLE_MS));
+
+    expect(provider.disconnectCalls).toBe(1);
+    // Still the same doc — deferring never rebuilt it.
+    expect(result.current.doc).toBe(doc);
+  });
+
+  it('stops re-arming once nothing is deferred', async () => {
+    await mountAndFreezeTime();
+    const provider = providers[0];
+
+    act(() => setTabHidden(true));
+    act(() => void vi.advanceTimersByTime(IDLE_MS));
+    expect(provider.disconnectCalls).toBe(1);
+
+    // Already suspended, so later passes must not fire again.
+    act(() => void vi.advanceTimersByTime(IDLE_MS * 5));
+    expect(provider.disconnectCalls).toBe(1);
+  });
 });

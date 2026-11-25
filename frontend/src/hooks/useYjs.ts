@@ -162,6 +162,7 @@ let visibilityBound = false;
 /** Drop every live socket. The docs stay; only the transport closes. */
 function suspendForIdle(): void {
   idleTimer = null;
+  let deferred = false;
   for (const entry of registry.values()) {
     if (entry.idleDisconnected) continue;
     // Leave a provider that is ALREADY offline alone (found in review).
@@ -174,7 +175,10 @@ function suspendForIdle(): void {
     //     away. Skipping leaves y-websocket's own backoff to reconnect
     //     with the doc intact, which is exactly how an offline edit is
     //     supposed to survive a flaky network.
-    if (!entry.provider.wsconnected) continue;
+    if (!entry.provider.wsconnected) {
+      deferred = true;
+      continue;
+    }
     entry.idleDisconnected = true;
     // disconnect(), not destroy(): this clears y-websocket's
     // shouldConnect flag, so its backoff loop stops trying to reopen.
@@ -182,6 +186,20 @@ function suspendForIdle(): void {
     try {
       entry.provider.disconnect();
     } catch {}
+  }
+  // Something was left connected-but-offline to protect unsent edits.
+  // Its own backoff can reconnect while the tab is STILL hidden, and
+  // then we are paying for an idle socket again with no timer left to
+  // close it — the exact billing we set out to avoid, except now it
+  // lasts until the user happens to come back (found in review). So
+  // check again.
+  //
+  // Self-limiting rather than a permanent poll: once the provider
+  // reconnects the next pass suspends it, and once suspended nothing
+  // is deferred and the loop stops. If it never reconnects the pass is
+  // a no-op, and browsers throttle timers in hidden tabs anyway.
+  if (deferred && document.hidden) {
+    idleTimer = setTimeout(suspendForIdle, IDLE_DISCONNECT_MS);
   }
 }
 
