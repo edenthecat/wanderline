@@ -562,3 +562,55 @@ describe('PATCH /:id/story/variables', () => {
     });
   });
 });
+
+// Companion to the existing nodeId cases: a non-numeric index makes
+// `node.choices[i]` / `node.content[i]` resolve to Array.prototype,
+// so the following `.condition =` (or `delete`) would write through
+// to every array. CodeQL alerts #92/#93/#94 flag those assignments;
+// these pin the Number.isInteger guard that keeps them unreachable.
+describe('prototype-polluting index on the condition routes', () => {
+  const choiceGraph = () =>
+    graph({ a: { id: 'a', content: [], choices: [{ text: 'go', target: 'b' }], tags: [] } });
+  const contentGraph = () =>
+    graph({
+      a: { id: 'a', content: [{ kind: 'text', text: 'hi', tags: [] }], choices: [], tags: [] },
+    });
+
+  for (const index of ['__proto__', 'constructor', 'prototype']) {
+    it(`400s for a ${index} choiceIndex without touching Array.prototype`, async () => {
+      const { app, query } = makeApp(choiceGraph());
+      const res = await request(app)
+        .patch('/api/projects/p1/story/choice/condition')
+        .send({ nodeId: 'a', choiceIndex: index, condition: 'gold > 1' });
+
+      expect(res.status).toBe(400);
+      expect(Array.prototype).not.toHaveProperty('condition');
+      expect(Object.prototype).not.toHaveProperty('condition');
+      expect(query.mock.calls.some(([sql]) => String(sql).includes('UPDATE'))).toBe(false);
+    });
+
+    it(`400s for a ${index} contentIndex without touching Array.prototype`, async () => {
+      const { app, query } = makeApp(contentGraph());
+      const res = await request(app)
+        .patch('/api/projects/p1/story/node/content/condition')
+        .send({ nodeId: 'a', contentIndex: index, condition: 'gold > 1' });
+
+      expect(res.status).toBe(400);
+      expect(Array.prototype).not.toHaveProperty('condition');
+      expect(Object.prototype).not.toHaveProperty('condition');
+      expect(query.mock.calls.some(([sql]) => String(sql).includes('UPDATE'))).toBe(false);
+    });
+  }
+
+  // `condition: null` takes the `delete block.condition` branch
+  // (alert #93) rather than the assignment branch.
+  it('400s for a __proto__ contentIndex on the delete branch too', async () => {
+    const { app } = makeApp(contentGraph());
+    const res = await request(app)
+      .patch('/api/projects/p1/story/node/content/condition')
+      .send({ nodeId: 'a', contentIndex: '__proto__', condition: null });
+
+    expect(res.status).toBe(400);
+    expect(Array.prototype).not.toHaveProperty('condition');
+  });
+});
