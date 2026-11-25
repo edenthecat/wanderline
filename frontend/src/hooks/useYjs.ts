@@ -19,9 +19,29 @@ interface DocEntry {
   doc: Y.Doc;
   provider: WebsocketProvider;
   refCount: number;
+  /** Closed by the idle-tab handler rather than by the network. */
+  idleDisconnected: boolean;
 }
 
 const registry = new Map<string, DocEntry>();
+
+/**
+ * How long a tab may sit hidden before we drop its collab socket.
+ *
+ * This exists for hosting cost, not correctness. Cloud Run bills for
+ * the whole duration of a request, and a WebSocket is one very long
+ * request — so a single forgotten editor tab keeps a backend instance
+ * billable indefinitely, reconnecting through the 900s service
+ * timeout, even with min-instances=0. Dropping the socket lets the
+ * service actually scale to zero.
+ *
+ * 60s rather than something instant: switching tabs for a few seconds
+ * is normal, and a reconnect is not free (see `resumeFromIdle` — it
+ * rebuilds the doc). The delay also guarantees any update typed just
+ * before hiding has long since been flushed to the server, since
+ * y-websocket sends on change rather than on an interval.
+ */
+const IDLE_DISCONNECT_MS = 60_000;
 
 /**
  * The close code the server sends when it tears a collab room down.
@@ -85,7 +105,7 @@ function createEntry(projectId: string): DocEntry {
     // doesn't try the global one before tree-shaking kicks in.
     WebSocketPolyfill: WebSocket,
   });
-  const entry: DocEntry = { doc, provider, refCount: 0 };
+  const entry: DocEntry = { doc, provider, refCount: 0, idleDisconnected: false };
   // A plain reconnect must keep this doc — that is how an offline edit
   // survives a flaky network. But when the SERVER invalidated the room,
   // reconnecting with this doc is exactly wrong: y-websocket sends sync
@@ -136,6 +156,143 @@ function rebuild(projectId: string, stale: DocEntry): void {
   notify(projectId, fresh);
 }
 
+let idleTimer: ReturnType<typeof setTimeout> | null = null;
+let visibilityBound = false;
+
+/** Drop every live socket. The docs stay; only the transport closes. */
+function suspendForIdle(): void {
+  idleTimer = null;
+  let deferred = false;
+  for (const entry of registry.values()) {
+    if (entry.idleDisconnected) continue;
+    // Leave a provider that is ALREADY offline alone (found in review).
+    // Two reasons, and the second is the important one:
+    //   - There is no open socket, so suspending it saves nothing. The
+    //     whole point here is closing a billable connection.
+    //   - Its doc may be holding edits typed during the outage that
+    //     have never reached the server. Flagging it would make
+    //     resumeFromIdle rebuild — and rebuilding throws those edits
+    //     away. Skipping leaves y-websocket's own backoff to reconnect
+    //     with the doc intact, which is exactly how an offline edit is
+    //     supposed to survive a flaky network.
+    if (!entry.provider.wsconnected) {
+      deferred = true;
+      continue;
+    }
+    entry.idleDisconnected = true;
+    // disconnect(), not destroy(): this clears y-websocket's
+    // shouldConnect flag, so its backoff loop stops trying to reopen.
+    // destroy() would also tear down the doc under a mounted consumer.
+    try {
+      entry.provider.disconnect();
+    } catch {}
+  }
+  // Something was left connected-but-offline to protect unsent edits.
+  // Its own backoff can reconnect while the tab is STILL hidden, and
+  // then we are paying for an idle socket again with no timer left to
+  // close it — the exact billing we set out to avoid, except now it
+  // lasts until the user happens to come back (found in review). So
+  // check again.
+  //
+  // Self-limiting rather than a permanent poll: once the provider
+  // reconnects the next pass suspends it, and once suspended nothing
+  // is deferred and the loop stops. If it never reconnects the pass is
+  // a no-op, and browsers throttle timers in hidden tabs anyway.
+  if (deferred && document.hidden) {
+    idleTimer = setTimeout(suspendForIdle, IDLE_DISCONNECT_MS);
+  }
+}
+
+/**
+ * Come back from an idle disconnect with a FRESH doc, not a reconnect.
+ *
+ * Reconnecting the existing doc would be the cheap option, and it is
+ * what a flaky-network reconnect correctly does. It is wrong here. The
+ * `connection-close` guard above can only notice ROOM_INVALIDATED while
+ * we are connected — if the server replaced the room while this tab sat
+ * hidden, we never saw the close code, and y-websocket opens by sending
+ * sync step 1 from our stale doc. That is precisely the merge that
+ * resurrects replaced story state (see createEntry's note: the stale
+ * side wins about half the time).
+ *
+ * Deliberately disconnecting makes that window routine instead of rare,
+ * so resuming rebuilds. The cost is the undo stack, which a structural
+ * edit by any collaborator already discards; the benefit is that a tab
+ * left open overnight cannot push yesterday's graph back over today's.
+ */
+function resumeFromIdle(): void {
+  // Snapshot: rebuild() mutates the registry while we iterate it.
+  for (const [projectId, entry] of [...registry.entries()]) {
+    if (!entry.idleDisconnected) continue;
+    rebuild(projectId, entry);
+  }
+}
+
+function cancelIdleTimer(): void {
+  if (idleTimer) {
+    clearTimeout(idleTimer);
+    idleTimer = null;
+  }
+}
+
+/**
+ * Resume, but only for a tab that is actually on screen.
+ *
+ * The visibility guard is the whole point of the suspension: `focus`
+ * and `online` can both fire while the tab is still hidden — a
+ * background window can take focus, and the network can come back at
+ * any time — and resuming there would re-open a billable socket for a
+ * tab nobody is looking at.
+ *
+ * Note this is a no-op unless something is flagged idleDisconnected, so
+ * the common case (network blip on a visible tab) still goes through
+ * y-websocket's own backoff rather than a rebuild.
+ */
+function resumeIfVisible(): void {
+  if (document.hidden) return;
+  cancelIdleTimer();
+  resumeFromIdle();
+}
+
+function handleVisibility(): void {
+  if (document.hidden) {
+    cancelIdleTimer();
+    idleTimer = setTimeout(suspendForIdle, IDLE_DISCONNECT_MS);
+    return;
+  }
+  resumeIfVisible();
+}
+
+function bindVisibility(): void {
+  if (visibilityBound || typeof document === 'undefined') return;
+  document.addEventListener('visibilitychange', handleVisibility);
+  // `focus` and `online` are belt-and-braces. While suspended we have
+  // cleared y-websocket's shouldConnect flag, so its backoff loop is
+  // not going to re-dial for us — visibilitychange is otherwise the
+  // only wake-up path, and a tab that comes back without firing it
+  // would sit disconnected indefinitely.
+  window.addEventListener('focus', resumeIfVisible);
+  window.addEventListener('online', resumeIfVisible);
+  visibilityBound = true;
+  // Seed from the CURRENT visibility, don't wait for a transition
+  // (found in review). Opening a project into a background tab — a
+  // middle-click, a restored session, a link opened in the background
+  // — mounts the editor with document.hidden already true, and no
+  // visibilitychange will fire for it. Without this the socket would
+  // stay open indefinitely, which is precisely the forgotten tab this
+  // whole mechanism exists to close.
+  handleVisibility();
+}
+
+function unbindVisibility(): void {
+  if (!visibilityBound) return;
+  document.removeEventListener('visibilitychange', handleVisibility);
+  window.removeEventListener('focus', resumeIfVisible);
+  window.removeEventListener('online', resumeIfVisible);
+  visibilityBound = false;
+  cancelIdleTimer();
+}
+
 function acquire(projectId: string): DocEntry {
   const existing = registry.get(projectId);
   if (existing) {
@@ -145,6 +302,7 @@ function acquire(projectId: string): DocEntry {
   const entry = createEntry(projectId);
   entry.refCount = 1;
   registry.set(projectId, entry);
+  bindVisibility();
   return entry;
 }
 
@@ -162,6 +320,7 @@ function release(projectId: string): void {
   } catch {}
   entry.doc.destroy();
   registry.delete(projectId);
+  if (registry.size === 0) unbindVisibility();
 }
 
 export function useYjs(projectId: string): UseYjsResult {
@@ -239,4 +398,7 @@ export function _resetYjsRegistry(): void {
     entry.doc.destroy();
   }
   registry.clear();
+  // Also drops the pending idle timer, so a test that hid the tab
+  // can't fire suspendForIdle into the next test's registry.
+  unbindVisibility();
 }

@@ -160,6 +160,13 @@ else
   echo "frontend URL exists. To pre-seed it: CORS_ORIGINS='https://your.domain' $0"
 fi
 
+# Lifecycle policy. Unlike CORS this needs nothing from the deployed
+# services, so it can be applied at provisioning time and left alone.
+# It contains no delete rules by design — see the script's own header
+# for why age-based expiry would delete pinned build snapshots and
+# in-use audio.
+GCS_BUCKET="$GCS_BUCKET" "$(dirname "$0")/configure-bucket-lifecycle.sh"
+
 echo
 echo "=== Granting Cloud Run service account access to secrets ==="
 PROJECT_NUMBER=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
